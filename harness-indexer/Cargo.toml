@@ -1,0 +1,8 @@
+[package]
+name = "harness-indexer"
+version = "0.1.0"
+edition = "2021"
+description = "Fast read-only harness indexer for Algo CLI"
+license = "MIT"
+
+[dependencies]

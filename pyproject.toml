@@ -1,0 +1,126 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "algo-cli"
+dynamic = ["version"]
+description = "Agent runtime for tools, durable context, and verified work"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [
+    { name = "Algo CLI contributors" },
+]
+keywords = ["agents", "cli", "ollama", "rag", "local-ai"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Environment :: Console",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "ollama>=0.5",
+    "rich>=13.0",
+    "prompt-toolkit>=3.0",
+    "numpy>=1.20",
+    'tomli>=2.0; python_version < "3.11"',
+]
+
+[project.urls]
+"Homepage" = "https://github.com/Seabass-up/algo-cli"
+"Bug Tracker" = "https://github.com/Seabass-up/algo-cli/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=7.0",
+    "ruff>=0.6",
+    "mypy>=1.0",
+]
+pdf = [
+    "PyMuPDF>=1.24",
+]
+quantization = [
+    "scipy>=1.10",
+    "turbovec>=0.7",
+]
+
+[project.scripts]
+algo-cli = "algo_cli.main:main"
+# Legacy shim for 1-2 releases (prints deprecation, then works)
+ollama-cli = "algo_cli.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+# Blocking correctness rules: Pyflakes plus structural Python errors.
+select = ["F", "E4", "E7", "E9"]
+
+[tool.coverage.run]
+branch = true
+source = ["algo_cli"]
+
+[tool.coverage.report]
+fail_under = 57
+show_missing = true
+skip_covered = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["algo_cli", "ollama_cli"]
+
+[tool.hatch.version]
+path = "algo_cli/__init__.py"
+
+[tool.hatch.build.targets.wheel.force-include]
+"docs/ALGO.md" = "algo_cli/resources/docs/ALGO.md"
+"docs/harness-extension-cleanup-recommendation.md" = "algo_cli/resources/docs/harness-extension-cleanup-recommendation.md"
+"docs/index-compute-lab-integration.md" = "algo_cli/resources/docs/index-compute-lab-integration.md"
+"docs/inference-harness-loop-blueprint-2026-06.md" = "algo_cli/resources/docs/inference-harness-loop-blueprint-2026-06.md"
+"docs/main-split-map.md" = "algo_cli/resources/docs/main-split-map.md"
+"docs/reflex-loop-v0.2.md" = "algo_cli/resources/docs/reflex-loop-v0.2.md"
+"docs/privacy-and-context.md" = "algo_cli/resources/docs/privacy-and-context.md"
+"docs/algo-cli-memory-lifecycle-contract.md" = "algo_cli/resources/docs/algo-cli-memory-lifecycle-contract.md"
+"docs/algo-cli-execution-verification-contract.md" = "algo_cli/resources/docs/algo-cli-execution-verification-contract.md"
+"docs/algo-cli-algorithm-evidence-contract.md" = "algo_cli/resources/docs/algo-cli-algorithm-evidence-contract.md"
+"skills" = "algo_cli/resources/skills"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "pyproject.toml",
+    "algo-cli.cmd",
+    "algo-cli.ps1",
+    "algo_cli",
+    "ollama_cli",
+    "docs/ALGO.md",
+    "docs/harness-extension-cleanup-recommendation.md",
+    "docs/index-compute-lab-integration.md",
+    "docs/inference-harness-loop-blueprint-2026-06.md",
+    "docs/main-split-map.md",
+    "docs/reflex-loop-v0.2.md",
+    "docs/privacy-and-context.md",
+    "docs/algo-cli-memory-lifecycle-contract.md",
+    "docs/algo-cli-execution-verification-contract.md",
+    "docs/algo-cli-algorithm-evidence-contract.md",
+    "skills/*.md",
+    "harness-indexer/Cargo.toml",
+    "harness-indexer/Cargo.lock",
+    "harness-indexer/src",
+    "harness-gateway/go.mod",
+    "harness-gateway/main.go",
+]

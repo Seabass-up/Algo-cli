@@ -1,0 +1,7 @@
+/remember Algo CLI embed responses use tools.unpack_embed_response() so slash /embed and embed_text stay identical.
+/remember Algo CLI agent_loop builds build_system_prompt once per tool iteration; compaction uses precomputed_used token estimates.
+/remember Algo CLI prune_stale_tool_messages uses O(n) call_id_to_assistant indexing instead of reverse scans per dropped tool message.
+/remember Algo CLI no longer calls refresh_runtime_status at the end of agent_loop; the REPL refreshes status after each turn.
+/remember Algo CLI lists local_model_names once per agent turn for harness embedding setup.
+/remember Algo CLI CONTEXT_USAGE_CACHE includes identity file mtimes via identity_mtime_key().
+/remember Algo CLI harness cold start skips full source watermark walk when harness_index.json is missing; embed batches compare watermarks against the loaded index.

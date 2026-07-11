@@ -1,0 +1,6 @@
+/remember Algo CLI was rebranded from ollama-cli in version 0.3.0 (June 2026).
+/remember The primary command is algo-cli; ollama-cli remains a temporary compatibility shim.
+/remember Algo CLI stores configuration and durable state under ~/.algo_cli/.
+/remember Algo CLI-specific environment variables use the ALGO_CLI_* prefix; legacy OLLAMA_CLI_* names remain transition compatibility.
+/remember The primary Python package is algo_cli; ollama_cli remains a compatibility package.
+/remember Harness project records use the algo-cli source root, and the canonical knowledge-graph concept is concept:algo-cli.

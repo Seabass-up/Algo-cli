@@ -1,0 +1,235 @@
+from __future__ import annotations
+
+from urllib.parse import parse_qs, urlparse
+
+from algo_cli import google_workspace_auth
+from algo_cli import main
+from algo_cli import session_commands
+from algo_cli import slash_dispatch
+from algo_cli import tools
+
+
+class _Console:
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    def print(self, value="") -> None:
+        self.lines.append(str(value))
+
+
+def _patch_google_runtime(monkeypatch):
+    infos: list[str] = []
+    errors: list[str] = []
+    console = _Console()
+    monkeypatch.setattr(main, "show_info", lambda message: infos.append(str(message)))
+    monkeypatch.setattr(main, "show_error", lambda message: errors.append(str(message)))
+    monkeypatch.setattr(main, "console", console)
+    monkeypatch.setattr(main.google_workspace_auth, "get_valid_token", lambda: "token")
+    return infos, errors, console
+
+
+def test_google_help_and_action_discovery_cover_all_readonly_apis(monkeypatch):
+    infos, errors, _console = _patch_google_runtime(monkeypatch)
+
+    main.run_google("help")
+    actions = tools.available_actions("google")
+    slash = dict(slash_dispatch.SLASH_COMMANDS)["/google"]
+
+    assert not errors
+    help_text = "\n".join(infos)
+    for expected in (
+        "/google docs-get DOCUMENT_ID",
+        "/google sheets-values SPREADSHEET_ID RANGE",
+        "/google calendar-list",
+    ):
+        assert expected in help_text
+        assert expected in actions
+    assert "docs-get" in slash
+    assert "sheets-values" in slash
+    assert "calendar-list" in slash
+    assert "/google-callback --clipboard" in actions
+    assert "/google-callback" in dict(slash_dispatch.SLASH_COMMANDS)
+
+
+def test_google_actions_are_visible_from_agent_prompt_catalog():
+    catalog = session_commands.catalog_for_prompt()
+
+    assert "available_actions(topic='google')" in catalog
+
+
+def test_google_login_waits_for_loopback_and_completes_with_redirect_uri(monkeypatch):
+    infos, errors, console = _patch_google_runtime(monkeypatch)
+    completed: list[tuple[str, str, dict[str, str]]] = []
+
+    monkeypatch.setattr(main.google_workspace_auth, "select_redirect_port", lambda: 56251)
+    monkeypatch.setattr(
+        main.google_workspace_auth,
+        "begin_login",
+        lambda *, no_browser, redirect_port: {
+            "state": "state-1",
+            "code_verifier": "verifier-1",
+            "auth_url": "https://accounts.google.test/approve",
+            "redirect_uri": "http://127.0.0.1:56251/callback",
+            "redirect_port": str(redirect_port),
+            "browser_opened": False,
+        },
+    )
+    monkeypatch.setattr(
+        main.google_workspace_auth,
+        "wait_for_callback",
+        lambda *, redirect_port, timeout=300.0: {"code": "code-1", "state": "state-1"},
+    )
+
+    def fake_complete(code_verifier: str, state: str, callback: dict[str, str]):
+        completed.append((code_verifier, state, callback))
+        return {"expires_at": main.time.time() + 3600}
+
+    monkeypatch.setattr(main.google_workspace_auth, "complete_login", fake_complete)
+
+    main.run_google_login("")
+
+    assert not errors
+    assert "https://accounts.google.test/approve" in "\n".join(console.lines)
+    assert completed == [
+        (
+            "verifier-1",
+            "state-1",
+            {
+                "code": "code-1",
+                "state": "state-1",
+                "redirect_uri": "http://127.0.0.1:56251/callback",
+            },
+        )
+    ]
+    assert any("authentication successful" in message.lower() for message in infos)
+
+
+def test_google_authorize_url_does_not_request_previously_granted_scopes(monkeypatch):
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id.apps.googleusercontent.com")
+
+    url = google_workspace_auth.build_authorize_url(
+        state="state-1",
+        code_challenge="challenge-1",
+        redirect_uri="http://127.0.0.1:56251/callback",
+    )
+    query = parse_qs(urlparse(url).query)
+
+    assert query["scope"] == [google_workspace_auth.GOOGLE_DEFAULT_SCOPE]
+    assert "include_granted_scopes" not in query
+
+
+def test_google_callback_clipboard_completes_pending_login(monkeypatch):
+    infos, errors, _console = _patch_google_runtime(monkeypatch)
+    completed: list[tuple[str, str, dict[str, str]]] = []
+    long_callback = (
+        "27.0.0.1:56251/callback?state=state-1&iss=https://accounts.google.com"
+        "&code=code-1&scope="
+        + "x" * 5000
+    )
+
+    monkeypatch.setattr(
+        main.google_workspace_auth,
+        "load_pending_login",
+        lambda: {
+            "state": "state-1",
+            "code_verifier": "verifier-1",
+            "redirect_uri": "http://127.0.0.1:56251/callback",
+        },
+    )
+    monkeypatch.setattr(main, "read_clipboard_text", lambda: long_callback)
+
+    def fake_complete(code_verifier: str, state: str, callback: dict[str, str]):
+        completed.append((code_verifier, state, callback))
+        return {"expires_at": main.time.time() + 3600}
+
+    monkeypatch.setattr(main.google_workspace_auth, "complete_login", fake_complete)
+
+    main.run_google_callback("--clipboard")
+
+    assert not errors
+    assert completed == [
+        (
+            "verifier-1",
+            "state-1",
+            {
+                "state": "state-1",
+                "iss": "https://accounts.google.com",
+                "code": "code-1",
+                "scope": "x" * 5000,
+                "redirect_uri": "http://127.0.0.1:56251/callback",
+            },
+        )
+    ]
+    assert any("authentication successful" in message.lower() for message in infos)
+
+
+def test_google_drive_list_uses_client_payload_and_formatter(monkeypatch):
+    _infos, errors, console = _patch_google_runtime(monkeypatch)
+    calls: list[tuple[str, str | None, int]] = []
+
+    class _FakeGoogleClient:
+        def drive_list(self, *, query=None, page_size=20):
+            calls.append(("drive_list", query, page_size))
+            return {
+                "files": [
+                    {"id": "file-1", "name": "Algo Spec", "mimeType": "application/pdf", "size": "42"}
+                ]
+            }
+
+    monkeypatch.setattr(main.google_workspace, "GoogleWorkspaceClient", _FakeGoogleClient)
+
+    main.run_google("drive-list name contains algo --max 2")
+
+    assert not errors
+    assert calls == [("drive_list", "name contains algo", 2)]
+    assert "Algo Spec" in "\n".join(console.lines)
+    assert "id=file-1" in "\n".join(console.lines)
+
+
+def test_google_docs_sheets_calendar_subcommands_use_existing_client_methods(monkeypatch):
+    _infos, errors, console = _patch_google_runtime(monkeypatch)
+    calls: list[tuple] = []
+
+    class _FakeGoogleClient:
+        def docs_get(self, document_id: str):
+            calls.append(("docs_get", document_id))
+            return {"title": "Project Notes", "body": {}}
+
+        def docs_to_plain_text(self, _document):
+            return "Hello from docs\n"
+
+        def sheets_values_get(self, spreadsheet_id: str, range_a1: str):
+            calls.append(("sheets_values_get", spreadsheet_id, range_a1))
+            return {"values": [["Name", "Status"], ["Algo", "Ready"]]}
+
+        def calendar_events_list(self, *, time_min=None, time_max=None, max_results=20):
+            calls.append(("calendar_events_list", time_min, time_max, max_results))
+            return {
+                "items": [
+                    {
+                        "id": "event-1",
+                        "summary": "Planning",
+                        "start": {"dateTime": "2026-07-01T10:00:00-05:00"},
+                        "end": {"dateTime": "2026-07-01T10:30:00-05:00"},
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(main.google_workspace, "GoogleWorkspaceClient", _FakeGoogleClient)
+
+    main.run_google("docs-get doc-1")
+    main.run_google("sheets-values sheet-1 'Sheet 1!A1:B2'")
+    main.run_google("calendar-list --max 3 --time-min 2026-07-01T00:00:00Z")
+
+    assert not errors
+    assert calls == [
+        ("docs_get", "doc-1"),
+        ("sheets_values_get", "sheet-1", "Sheet 1!A1:B2"),
+        ("calendar_events_list", "2026-07-01T00:00:00Z", None, 3),
+    ]
+    joined = "\n".join(console.lines)
+    assert "Project Notes" in joined
+    assert "Hello from docs" in joined
+    assert "Name" in joined
+    assert "Status" in joined
+    assert "Planning" in joined
