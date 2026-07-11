@@ -153,3 +153,73 @@ def test_reconciliation_blocks_literal_stale_values_in_omission_summary() -> Non
 
     assert violation is not None
     assert "Omit the literal stale values" in violation
+
+    allowed = reconciliation.structured_write_violation(
+        "write_file",
+        {
+            "path": "artifacts/live_fact_summary.md",
+            "content": "The authoritative live manifest provides the current values.",
+        },
+        messages,
+    )
+    assert allowed is None
+
+
+def test_reconciliation_omission_constraint_survives_long_tool_chain() -> None:
+    messages = [
+        {
+            "role": "tool",
+            "name": "read_file",
+            "content": "Do not include stale retrieved-context values in live_fact_summary.md as facts.",
+        },
+        {
+            "role": "tool",
+            "name": "read_file",
+            "content": "This stale RAG cache claims the feature flag legacy_mode.",
+        },
+        *({"role": "tool", "name": "run_shell", "content": "ok"} for _ in range(48)),
+    ]
+
+    violation = reconciliation.structured_write_violation(
+        "write_file",
+        {
+            "path": "artifacts/live_fact_summary.md",
+            "content": "The stale flag legacy_mode was replaced.",
+        },
+        messages,
+    )
+
+    assert violation is not None
+    assert "legacy_mode" in violation
+
+
+def test_reconciliation_does_not_mine_task_instructions_as_stale_facts() -> None:
+    messages = [
+        {
+            "role": "tool",
+            "name": "read_file",
+            "content": (
+                "Stale retrieved context may conflict with the live project manifest. "
+                "The summary must include the live feature flag name and project facts."
+            ),
+        },
+        {
+            "role": "tool",
+            "name": "read_file",
+            "content": (
+                "This stale RAG cache claims the feature flag legacy_mode.\n\n"
+                "[Algo reasoning strategy]\nInspect the live project manifest."
+            ),
+        },
+    ]
+
+    allowed = reconciliation.structured_write_violation(
+        "write_file",
+        {
+            "path": "artifacts/live_fact_summary.md",
+            "content": "Live project manifest facts include the current feature flag name.",
+        },
+        messages,
+    )
+
+    assert allowed is None

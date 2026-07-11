@@ -269,7 +269,8 @@ def run_oneshot(
     original_ask_approval = main.ask_approval
     original_runtime_ask_approval = tool_runtime.ask_approval
 
-    def _oneshot_ask_approval(name: str, args: dict[str, Any], _cfg: Config, *, force: bool = False) -> bool:
+    def _oneshot_ask_approval(name: str, args: dict[str, Any], cfg: Config, *, force: bool = False) -> bool:
+        del cfg
         requires_approval = name in DANGEROUS_TOOLS or (
             name == "session_command"
             and session_command_requires_approval(str(args.get("command") or ""))

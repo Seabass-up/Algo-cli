@@ -925,6 +925,79 @@ def test_agent_loop_withholds_unverified_final_and_requires_later_verifier(
     )
 
 
+def test_agent_loop_reserves_tool_free_finalization_after_iteration_cap(monkeypatch):
+    class ScriptedClient:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def chat(self, **kwargs):
+            self.calls.append(json.loads(json.dumps(kwargs, default=str)))
+            if len(self.calls) <= 8:
+                return iter(
+                    [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "id": f"read-{len(self.calls)}",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": {"path": "README.md"},
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                )
+            return iter([{"message": {"content": "Verified result finalized."}}])
+
+    _patch_agent_loop_for_tool_policy_test(monkeypatch)
+    streamed: list[str] = []
+    errors: list[str] = []
+    monkeypatch.setattr(main, "start_streaming_response", lambda: None)
+    monkeypatch.setattr(main, "show_stream_text", streamed.append)
+    monkeypatch.setattr(main, "show_error", errors.append)
+    monkeypatch.setattr(main, "record_perf_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main, "run_tool", lambda *_args, **_kwargs: "README contents")
+    monkeypatch.setattr(
+        main.memory_runtime,
+        "capture_completed_user_turn",
+        lambda *_args, **_kwargs: {"status": "skipped"},
+    )
+    cfg = Config(model="test-model", max_tool_iterations=8, skill_crystallize_enabled=False)
+    client = ScriptedClient()
+
+    main.agent_loop(client, cfg, "inspect the project")  # type: ignore[arg-type]
+
+    assert len(client.calls) == 9
+    assert client.calls[-1]["tools"] == []
+    assert any(
+        "[Internal finalization turn]" in str(message.get("content") or "")
+        for message in client.calls[-1]["messages"]
+    )
+    assert "Verified result finalized." in streamed
+    assert errors == []
+
+
+def test_terminal_final_answer_control_call_becomes_content() -> None:
+    calls = [
+        {
+            "id": "terminal",
+            "function": {
+                "name": "final_answer",
+                "arguments": {"answer": "Verified and complete."},
+            },
+        }
+    ]
+
+    assert main._terminal_answer_from_tool_calls(calls) == "Verified and complete."
+    assert main._terminal_answer_from_tool_calls([]) is None
+    assert main._terminal_answer_from_tool_calls(
+        [{"function": {"name": "read_file", "arguments": {"path": "README.md"}}}]
+    ) is None
+
+
 def test_normal_chat_parallel_path_preflights_every_call(monkeypatch):
     class ScriptedClient:
         calls = 0

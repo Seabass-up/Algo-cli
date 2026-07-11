@@ -1912,6 +1912,18 @@ READ_ONLY_TOOLS = frozenset({
 })
 
 
+def _terminal_answer_from_tool_calls(tool_calls: list[Any]) -> str | None:
+    """Normalize a declared final-answer control call into assistant content."""
+
+    if not tool_calls:
+        return None
+    normalized = [normalize_tool_call(call) for call in tool_calls]
+    if any(name != "final_answer" for name, _args in normalized):
+        return None
+    answers = [str(args.get("answer") or "").strip() for _name, args in normalized]
+    return "\n\n".join(answer for answer in answers if answer)
+
+
 def configured_embed_dimensions(cfg: Config) -> int | None:
     """Return a valid configured vector width, or None for model default."""
     value = getattr(cfg, "embed_dimensions", None)
@@ -2758,7 +2770,32 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
         return
 
     try:
-        for _ in range(max_iterations):
+        # Keep the configured tool/model iteration ceiling strict, but reserve
+        # one tool-free response turn when the final capped iteration leaves a
+        # verified state. This prevents a correct run from being reported as
+        # partial solely because its verifier consumed the last work turn.
+        for _ in range(max_iterations + 1):
+            finalization_turn = _ == max_iterations
+            if finalization_turn:
+                completion = execution_guardrails.completion_decision()
+                if not completion.allowed:
+                    show_error(
+                        f"Max tool iterations reached ({max_iterations}) before successful "
+                        "post-mutation verification. Use /toolmax to raise or lower the limit."
+                    )
+                    break
+                optional_context_blocks.clear()
+                cfg.messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "[Internal finalization turn] The configured work-iteration budget is "
+                            "exhausted and the current result is verified. Do not call more tools. "
+                            "Give a concise final answer describing the verified result or any "
+                            "remaining blocker."
+                        ),
+                    }
+                )
             iterations_used += 1
             prune_stale_tool_messages(cfg)
             last_user = persisted_user_message
@@ -2846,7 +2883,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 stream = client.chat(
                     model=cfg.model,
                     messages=request_messages,
-                    tools=active_tools,
+                    tools=[] if finalization_turn else active_tools,
                     stream=True,
                     think=_think,
                     keep_alive=cfg.keep_alive,
@@ -2902,6 +2939,15 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 console.print()
             if stream_error is not None and not (content_text or thinking_text):
                 raise stream_error
+            terminal_answer = _terminal_answer_from_tool_calls(tool_calls)
+            if terminal_answer is not None:
+                tool_calls = []
+                if terminal_answer:
+                    content_text = terminal_answer
+                    if not completion_pending_before_response:
+                        start_streaming_response()
+                        show_stream_text(terminal_answer)
+                        finish_streaming_response()
             assistant: dict[str, Any] = {"role": "assistant"}
             if content_text:
                 assistant["content"] = content_text
@@ -2920,6 +2966,11 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                     "Response stream interrupted after partial output: "
                     f"{stream_error}. Partial response retained; retry the request to continue."
                 )
+                break
+
+            if finalization_turn and tool_calls:
+                final_content = ""
+                show_error("Finalization turn attempted an additional tool call; completion withheld.")
                 break
 
             if not tool_calls:
@@ -3156,8 +3207,6 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 if json_sink() is None:
                     reflection_checkpoint(client, cfg, persisted_user_message, reflection_interval)
                 tool_calls_since_reflection -= reflection_interval
-        else:
-            show_error(f"Max tool iterations reached ({max_iterations}). Use /toolmax to raise or lower the limit.")
     finally:
         try:
             execution_guardrails.end_execution_scope(execution_scope)

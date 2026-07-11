@@ -15,6 +15,7 @@ from .chat_protocol import normalize_tool_call
 _AUTHORITY_CUES = ("authoritative", "source of truth", "live files", "live manifest")
 _STALE_CUES = ("stale", "retrieved context", "retrieved memory", "rag", "lower authority")
 _STRUCTURED_CUES = ("settings", "config", "manifest", "json", "yaml", "structured")
+_RECONCILIATION_MESSAGE_WINDOW = 128
 
 
 def guidance_for_prompt(prompt: str) -> str | None:
@@ -45,7 +46,7 @@ def _read_records(messages: list[dict[str, Any]]) -> list[tuple[str, str]]:
 
     pending: deque[tuple[str, str | None]] = deque()
     records: list[tuple[str, str]] = []
-    for message in messages[-24:]:
+    for message in messages[-_RECONCILIATION_MESSAGE_WINDOW:]:
         if message.get("role") == "assistant":
             for call in message.get("tool_calls") or ():
                 name, args = normalize_tool_call(call)
@@ -174,26 +175,35 @@ def lineage_constraints(
     return list(dict.fromkeys(constraints))
 
 
-_STALE_LABEL_RE = re.compile(
-    r"(?:project(?:\s+name)?(?:\s+is)?|approval\s+ticket|status\s+endpoint|"
-    r"feature\s+flag|operations\s+contact|go-live\s+date(?:/window)?)\s+(.+)$",
-    re.IGNORECASE,
+_STALE_VALUE_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\bproject(?:\s+name)?(?:\s+is)?\s+([^,.\n]+)",
+        r"\bapproval\s+ticket\s+([^,.\n]+)",
+        r"\bstatus\s+endpoint\s+([^,.\n]+)",
+        r"\bfeature\s+flag\s+([^,.\n]+)",
+        r"\boperations\s+contact\s+([^,.\n]+)",
+        r"\bgo-live\s+date(?:/window)?\s+([^,.\n]+)",
+    )
 )
 
 
 def _stale_fact_values(messages: list[dict[str, Any]]) -> list[str]:
     values: list[str] = []
     for _path, text in _read_records(messages):
-        lowered = text.casefold()
-        if "stale" not in lowered or not any(cue in lowered for cue in ("rag", "cache", "lower authority")):
+        source_text = text.split("\n\n[Algo ", 1)[0]
+        lowered = source_text.casefold()
+        if (
+            "stale" not in lowered
+            or "claim" not in lowered
+            or not any(cue in lowered for cue in ("rag", "cache", "lower authority"))
+        ):
             continue
-        for segment in re.split(r",\s+(?:and\s+)?", text.replace("\n", " ")):
-            match = _STALE_LABEL_RE.search(segment.strip())
-            if match is None:
-                continue
-            value = match.group(1).strip().strip(".`'\"")
-            if value:
-                values.append(value)
+        for pattern in _STALE_VALUE_PATTERNS:
+            for match in pattern.finditer(source_text):
+                value = match.group(1).strip().strip(".`'\"")
+                if value:
+                    values.append(value)
     return list(dict.fromkeys(values))
 
 
@@ -213,7 +223,7 @@ def structured_write_violation(
         explicit_omission = any(
             "do not include stale" in str(message.get("content") or "").casefold()
             and write_name in str(message.get("content") or "").casefold()
-            for message in messages[-16:]
+            for message in messages[-_RECONCILIATION_MESSAGE_WINDOW:]
         )
         if explicit_omission:
             stale_present = [value for value in _stale_fact_values(messages) if value in str(raw or "")]
