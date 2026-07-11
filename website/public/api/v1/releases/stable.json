@@ -6,7 +6,7 @@
   "published": false,
   "python": ">=3.10",
   "source_revision": "ec55ae6752bd74a661f0de8541dd9d0bbe0e4262",
-  "package": { "name": "algo-cli", "index": "https://pypi.org/project/algo-cli/", "available": false },
+  "package": { "name": "algo-cli-runtime", "index": "https://pypi.org/project/algo-cli-runtime/", "available": false },
   "source": { "url": "https://github.com/Seabass-up/Algo-cli", "available": true },
   "security_advisory": { "active": true },
   "notes": "The reviewed source is public. PyPI package publication remains pending."

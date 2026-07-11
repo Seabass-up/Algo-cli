@@ -326,6 +326,6 @@ def run_oneshot(
 def _resolve_version() -> str:
     try:
         from importlib.metadata import version
-        return version("algo-cli")
+        return version("algo-cli-runtime")
     except Exception:
         return "unknown"

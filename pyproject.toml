@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "algo-cli"
+name = "algo-cli-runtime"
 dynamic = ["version"]
 description = "Agent runtime for tools, durable context, and verified work"
 readme = "README.md"

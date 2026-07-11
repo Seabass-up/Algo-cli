@@ -26,7 +26,7 @@ test("server-renders the Algo CLI product home", async () => {
   assert.match(html, /9\/9/);
   assert.match(html, /Public knowledge plane/i);
   assert.match(html, /git clone https:\/\/github\.com\/Seabass-up\/Algo-cli\.git/i);
-  assert.doesNotMatch(html, /pipx install algo-cli/i);
+  assert.doesNotMatch(html, /pipx install algo-cli(?:-runtime)?/i);
   assert.match(html, /\/api\/v1\/releases\/stable\.json/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
@@ -66,6 +66,8 @@ test("ships truthful machine-readable release and benchmark contracts", async ()
   assert.equal(release.channel, "release-candidate");
   assert.equal(release.published, false);
   assert.equal(release.package.available, false);
+  assert.equal(release.package.name, "algo-cli-runtime");
+  assert.equal(release.package.index, "https://pypi.org/project/algo-cli-runtime/");
   assert.equal(release.source_revision, "ec55ae6752bd74a661f0de8541dd9d0bbe0e4262");
   assert.equal(release.source.available, true);
   assert.equal(release.security_advisory.active, true);

@@ -86,7 +86,7 @@ def test_generated_node_modules_path_is_rejected():
 
 def test_python_artifact_rejects_embedded_website_tree():
     findings = check_public_release._scan_artifact_name(
-        "algo_cli-0.14.0.tar.gz!algo_cli-0.14.0/website/README.md"
+        "algo_cli_runtime-0.14.0.tar.gz!algo_cli_runtime-0.14.0/website/README.md"
     )
 
     assert findings

@@ -15,6 +15,19 @@ def _drain(stream: io.StringIO) -> list[dict[str, Any]]:
     return [json.loads(line) for line in lines]
 
 
+def test_resolve_version_uses_distribution_name(monkeypatch):
+    requested: list[str] = []
+
+    def fake_version(name: str) -> str:
+        requested.append(name)
+        return "0.14.0"
+
+    monkeypatch.setattr("importlib.metadata.version", fake_version)
+
+    assert oneshot._resolve_version() == "0.14.0"
+    assert requested == ["algo-cli-runtime"]
+
+
 def test_json_event_sink_session_start_and_done_frame(monkeypatch):
     buf = io.StringIO()
     sink = oneshot.JsonEventSink(stream=buf, approval_mode="never")

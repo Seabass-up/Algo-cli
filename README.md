@@ -25,10 +25,10 @@ pipx install .
 # or: uv tool install .
 ```
 
-After the package release is published, `pipx install algo-cli` and
-`uv tool install algo-cli` become the recommended stable-channel commands.
+After the package release is published, `pipx install algo-cli-runtime` and
+`uv tool install algo-cli-runtime` become the recommended stable-channel commands.
 
-Optional extras are available for PDF rendering (`algo-cli[pdf]`) and experimental vector quantization (`algo-cli[quantization]`). Run `algo-cli doctor` for a side-effect-free readiness report.
+Optional extras are available for PDF rendering (`algo-cli-runtime[pdf]`) and experimental vector quantization (`algo-cli-runtime[quantization]`). The distribution installs the `algo-cli` command. Run `algo-cli doctor` for a side-effect-free readiness report.
 
 ## Quick Start
 

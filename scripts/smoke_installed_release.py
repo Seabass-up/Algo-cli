@@ -33,7 +33,7 @@ def main() -> int:
     resource_root = Path(harness.PACKAGE_RESOURCE_DIR)
     if not resource_root.is_dir():
         raise SystemExit(f"installed package resource directory is missing: {resource_root}")
-    print(f"Installed algo-cli {version('algo-cli')} corpus: {len(records)} records")
+    print(f"Installed algo-cli {version('algo-cli-runtime')} corpus: {len(records)} records")
     return 0
 
 

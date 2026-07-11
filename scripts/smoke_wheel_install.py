@@ -22,9 +22,9 @@ def _wheel_from(value: str) -> Path:
     path = Path(value).resolve()
     if path.is_file() and path.suffix == ".whl":
         return path
-    candidates = sorted(path.glob("algo_cli-*.whl")) if path.is_dir() else []
+    candidates = sorted(path.glob("algo_cli_runtime-*.whl")) if path.is_dir() else []
     if len(candidates) != 1:
-        raise SystemExit(f"expected exactly one algo-cli wheel under {path}; found {len(candidates)}")
+        raise SystemExit(f"expected exactly one algo-cli-runtime wheel under {path}; found {len(candidates)}")
     return candidates[0]
 
 

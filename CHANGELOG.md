@@ -21,6 +21,7 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 - Made external agent stores and index-compute-lab explicit opt-ins. Changing either setting rebuilds the index without disabled records.
 - Moved SciPy and TurboVec to the optional `quantization` extra and PDF rendering to the `pdf` extra.
 - Single-sourced the version from `algo_cli.__version__` and updated package, command, documentation, and release metadata to `0.14.0`.
+- Publish the PyPI distribution as `algo-cli-runtime` because `algocli` already occupies the conflicting namespace; the product and installed command remain `algo-cli`.
 - Reduced repeated prompt construction, context scans, vector work, and cache churn on hot runtime paths.
 - Restricted experimental plugin status checks to manifest inspection; loading a plugin no longer claims unsupported dynamic registration.
 

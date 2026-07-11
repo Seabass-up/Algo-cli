@@ -25,8 +25,8 @@ python scripts/check_release_version.py --tag v0.14.0
 python -m build
 python -m twine check dist/*
 python scripts/check_public_release.py --artifacts-only \
-  --artifact dist/algo_cli-0.14.0-py3-none-any.whl \
-  --artifact dist/algo_cli-0.14.0.tar.gz
+  --artifact dist/algo_cli_runtime-0.14.0-py3-none-any.whl \
+  --artifact dist/algo_cli_runtime-0.14.0.tar.gz
 python scripts/smoke_wheel_install.py dist
 ```
 
@@ -73,8 +73,8 @@ npm audit
 ```
 
 Keep aggregate benchmark copy explicit about unpublished raw evidence and
-independent reproducibility. Do not advertise `pipx install algo-cli` or
-`uv tool install algo-cli` as active until the package index confirms the
+independent reproducibility. Do not advertise `pipx install algo-cli-runtime` or
+`uv tool install algo-cli-runtime` as active until the package index confirms the
 release exists.
 
 The release workflow builds, tests, scans, and publishes distributions with short-lived OIDC credentials. It does not use a long-lived PyPI API token.

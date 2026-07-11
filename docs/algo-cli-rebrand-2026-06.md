@@ -43,7 +43,7 @@ This was executed in three deliberate phases to minimize user disruption:
 | Legacy config dir       | `~/.ollama_cli` (auto-migrated)|
 | Env prefix              | `ALGO_CLI_*`                   |
 | Legacy env prefix       | `OLLAMA_CLI_*` (still read)    |
-| PyPI name               | `algo-cli`                     |
+| PyPI distribution       | `algo-cli-runtime`             |
 
 ## Backward Compatibility Window
 
