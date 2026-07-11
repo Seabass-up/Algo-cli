@@ -42,7 +42,8 @@ export default function Home() {
               <span>local</span>
             </div>
             <div className="terminal-body">
-              <CopyInstall command="pipx install algo-cli" />
+              <CopyInstall command="git clone https://github.com/Seabass-up/Algo-cli.git && cd Algo-cli" />
+              <CopyInstall command="pipx install ." />
               <div className="terminal-gap" />
               <p><span className="prompt">$</span> algo-cli --oneshot --json --approval-mode auto</p>
               <p className="task-line">“fix the failing parser test and verify the result”</p>
@@ -59,7 +60,7 @@ export default function Home() {
 
       <section className="proof-rail" aria-label="Algo CLI evidence">
         <div className="proof-wide">
-          <span className="data-label">Repeated local benchmark</span>
+          <span className="data-label">Reported local benchmark</span>
           <div className="benchmark-line"><strong><em>9/9</em> objective passes</strong><div className="mini-bars">{Array.from({ length: 9 }, (_, i) => <i key={i} />)}</div></div>
           <small>Three tasks × three repetitions · same model and machine</small>
         </div>
@@ -106,7 +107,7 @@ export default function Home() {
 
       <section className="claim-strip">
         <div><span className="status-dot" /> EVIDENCE, NOT HYPE</div>
-        <p>Algo CLI ranked first on our balanced 27-run local benchmark. That is a scoped result—not a universal superiority claim.</p>
+        <p>Algo CLI ranked first in our reported 27-run local comparison. That is a scoped result—not independently reproduced evidence or a universal superiority claim.</p>
         <Link href="/benchmarks">Inspect the methodology →</Link>
       </section>
 

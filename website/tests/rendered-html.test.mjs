@@ -25,6 +25,8 @@ test("server-renders the Algo CLI product home", async () => {
   assert.match(html, /Local control\./);
   assert.match(html, /9\/9/);
   assert.match(html, /Public knowledge plane/i);
+  assert.match(html, /git clone https:\/\/github\.com\/Seabass-up\/Algo-cli\.git/i);
+  assert.doesNotMatch(html, /pipx install algo-cli/i);
   assert.match(html, /\/api\/v1\/releases\/stable\.json/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
@@ -64,9 +66,11 @@ test("ships truthful machine-readable release and benchmark contracts", async ()
   assert.equal(release.channel, "release-candidate");
   assert.equal(release.published, false);
   assert.equal(release.package.available, false);
+  assert.equal(release.source_revision, null);
   assert.equal(benchmark.protocol.total_runs, 27);
   assert.equal(benchmark.results[0].objective_passes, 9);
   assert.match(benchmark.limitations, /do not support a universal superiority/i);
+  assert.match(benchmark.limitations, /does not publish raw runs/i);
   assert.equal(docs.version, "0.14.0");
   assert.equal(discovery.schema_version, 1);
   assert.equal(discovery.canonical_origin, "https://algo-cli.com");

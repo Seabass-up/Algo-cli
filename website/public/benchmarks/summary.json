@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "scoped-release-candidate-evidence",
+  "status": "reported-local-release-candidate-result",
   "created_at": "2026-07-11",
   "protocol": {
     "tasks": 3,
@@ -17,6 +17,6 @@
     { "harness": "pi", "objective_passes": 6, "clean_runs": 9, "median_seconds": 34.005466, "p95_seconds": 39.568108 },
     { "harness": "opencode", "objective_passes": 6, "clean_runs": 9, "median_seconds": 59.260209, "p95_seconds": 165.591684 }
   ],
-  "claim": "Algo CLI ranked first on this balanced 27-run local benchmark.",
-  "limitations": "Three draft tasks, one local model, one machine, and three repetitions per cell do not support a universal superiority or model-power claim."
+  "claim": "Algo CLI ranked first in the reported balanced 27-run local comparison.",
+  "limitations": "This aggregate summary does not publish raw runs, competitor revisions, checker versions, or a reproducible evidence bundle. Three draft tasks, one local model, one machine, and three repetitions per cell do not support a universal superiority or model-power claim, and the missing raw evidence prevents independent reproduction."
 }

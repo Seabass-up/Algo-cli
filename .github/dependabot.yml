@@ -1,0 +1,36 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: monthly
+    labels: [dependencies, python]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    directory: /website
+    schedule:
+      interval: monthly
+    labels: [dependencies, website]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: cargo
+    directory: /harness-indexer
+    schedule:
+      interval: monthly
+    labels: [dependencies, rust]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: gomod
+    directory: /harness-gateway
+    schedule:
+      interval: monthly
+    labels: [dependencies, go]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels: [dependencies, github-actions]
+    open-pull-requests-limit: 5

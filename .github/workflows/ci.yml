@@ -15,10 +15,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v6
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
           cache: pip
@@ -38,6 +39,8 @@ jobs:
           scripts/smoke_wheel_install.py
       - name: Public source scan (blocking)
         run: python scripts/check_public_release.py
+      - name: Reachable history scan (blocking)
+        run: python scripts/check_public_history.py --allow-contributor-identities
       - name: Release version source (blocking)
         run: python scripts/check_release_version.py
       - name: Runtime mypy contract (blocking)
@@ -68,7 +71,7 @@ jobs:
           --cov-report=xml:coverage.xml
           --cov-fail-under=57
       - name: Upload coverage evidence
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: coverage-python-3.12-linux
           path: coverage.xml
@@ -89,10 +92,10 @@ jobs:
           - os: macos-latest
             python: "3.12"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -108,7 +111,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
       - name: Rust indexer tests
@@ -117,16 +120,41 @@ jobs:
         working-directory: harness-gateway
         run: go test ./...
 
+  website:
+    name: Website build and safety gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Render and route tests
+        run: npm test
+      - name: Lint
+        run: npm run lint
+      - name: Dependency audit
+        run: npm audit
+
   package:
     name: Build and inspect distributions
     needs: quality
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
       - name: Install build tooling
@@ -137,7 +165,7 @@ jobs:
         run: |
           python -m twine check dist/*
           python scripts/check_public_release.py --artifacts-only --artifact dist/*.whl --artifact dist/*.tar.gz
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: python-package-distributions
           path: dist/
@@ -153,13 +181,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: python-package-distributions
           path: dist/

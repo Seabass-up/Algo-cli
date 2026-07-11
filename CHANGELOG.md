@@ -4,8 +4,6 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
-## [0.14.0] - 2026-07-10
-
 ### Added
 
 - Persistent runtime-agent threads with `/agent resume`, `/agent fork`, and bounded handoff context.

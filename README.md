@@ -3,6 +3,8 @@
 [![CI](https://github.com/Seabass-up/algo-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/Seabass-up/algo-cli/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+[Website](https://algo-cli.com) · [Documentation](https://algo-cli.com/docs) · [Security](SECURITY.md)
+
 An agent runtime for tools, durable context, and verified work. Algo CLI combines direct tool use, routed agent pipelines, persistent memory, repository intelligence, and a searchable cross-agent harness. Run locally with Ollama or connect Ollama Cloud, xAI Grok, and ChatGPT/Codex.
 
 - **Act:** inspect files, edit code, run commands, and work with connected services.
@@ -10,22 +12,21 @@ An agent runtime for tools, durable context, and verified work. Algo CLI combine
 - **Route:** use direct chat for ordinary work or Agent Blocks for larger tasks.
 - **Verify:** ground claims in tool results, Git evidence, and explicit safety policies.
 
-## Install
+## Install the release candidate
 
-Algo CLI requires Python 3.10 or newer. Install it as an isolated command-line application:
-
-```bash
-pipx install algo-cli
-# or: uv tool install algo-cli
-```
-
-For a source checkout:
+Algo CLI requires Python 3.10 or newer. Version 0.14.0 is currently a release
+candidate and is not yet published on PyPI. Install a reviewed source checkout
+as an isolated command-line application:
 
 ```bash
 git clone https://github.com/Seabass-up/algo-cli.git
 cd algo-cli
-python -m pip install .
+pipx install .
+# or: uv tool install .
 ```
+
+After the package release is published, `pipx install algo-cli` and
+`uv tool install algo-cli` become the recommended stable-channel commands.
 
 Optional extras are available for PDF rendering (`algo-cli[pdf]`) and experimental vector quantization (`algo-cli[quantization]`). Run `algo-cli doctor` for a side-effect-free readiness report.
 

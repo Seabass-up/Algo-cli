@@ -31,8 +31,12 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/Seabass-up/algo-cli"
+"Homepage" = "https://algo-cli.com"
+"Documentation" = "https://algo-cli.com/docs"
+"Source" = "https://github.com/Seabass-up/algo-cli"
 "Bug Tracker" = "https://github.com/Seabass-up/algo-cli/issues"
+"Changelog" = "https://github.com/Seabass-up/algo-cli/blob/main/CHANGELOG.md"
+"Security" = "https://github.com/Seabass-up/algo-cli/security/policy"
 
 [project.optional-dependencies]
 dev = [
@@ -96,31 +100,33 @@ path = "algo_cli/__init__.py"
 "skills" = "algo_cli/resources/skills"
 
 [tool.hatch.build.targets.sdist]
+exclude = ["/website/"]
+skip-excluded-dirs = true
 include = [
-    "README.md",
-    "CHANGELOG.md",
-    "LICENSE",
-    "SECURITY.md",
-    "CONTRIBUTING.md",
-    "pyproject.toml",
-    "algo-cli.cmd",
-    "algo-cli.ps1",
-    "algo_cli",
-    "ollama_cli",
-    "docs/ALGO.md",
-    "docs/harness-extension-cleanup-recommendation.md",
-    "docs/index-compute-lab-integration.md",
-    "docs/inference-harness-loop-blueprint-2026-06.md",
-    "docs/main-split-map.md",
-    "docs/reflex-loop-v0.2.md",
-    "docs/privacy-and-context.md",
-    "docs/algo-cli-memory-lifecycle-contract.md",
-    "docs/algo-cli-execution-verification-contract.md",
-    "docs/algo-cli-algorithm-evidence-contract.md",
-    "skills/*.md",
-    "harness-indexer/Cargo.toml",
-    "harness-indexer/Cargo.lock",
-    "harness-indexer/src",
-    "harness-gateway/go.mod",
-    "harness-gateway/main.go",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+    "/SECURITY.md",
+    "/CONTRIBUTING.md",
+    "/pyproject.toml",
+    "/algo-cli.cmd",
+    "/algo-cli.ps1",
+    "/algo_cli",
+    "/ollama_cli",
+    "/docs/ALGO.md",
+    "/docs/harness-extension-cleanup-recommendation.md",
+    "/docs/index-compute-lab-integration.md",
+    "/docs/inference-harness-loop-blueprint-2026-06.md",
+    "/docs/main-split-map.md",
+    "/docs/reflex-loop-v0.2.md",
+    "/docs/privacy-and-context.md",
+    "/docs/algo-cli-memory-lifecycle-contract.md",
+    "/docs/algo-cli-execution-verification-contract.md",
+    "/docs/algo-cli-algorithm-evidence-contract.md",
+    "/skills/*.md",
+    "/harness-indexer/Cargo.toml",
+    "/harness-indexer/Cargo.lock",
+    "/harness-indexer/src",
+    "/harness-gateway/go.mod",
+    "/harness-gateway/main.go",
 ]
