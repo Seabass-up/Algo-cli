@@ -1,6 +1,7 @@
 # Algo CLI
 
 [![CI](https://github.com/Seabass-up/algo-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/Seabass-up/algo-cli/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/algo-cli-runtime.svg)](https://pypi.org/project/algo-cli-runtime/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 [Website](https://algo-cli.com) · [Documentation](https://algo-cli.com/docs) · [Security](SECURITY.md)
@@ -12,21 +13,19 @@ An agent runtime for tools, durable context, and verified work. Algo CLI combine
 - **Route:** use direct chat for ordinary work or Agent Blocks for larger tasks.
 - **Verify:** ground claims in tool results, Git evidence, and explicit safety policies.
 
-## Install the release candidate
+## Install
 
-Algo CLI requires Python 3.10 or newer. Version 0.14.0 is currently a release
-candidate and is not yet published on PyPI. Install a reviewed source checkout
-as an isolated command-line application:
+Algo CLI requires Python 3.10 or newer. The PyPI distribution is named
+`algo-cli-runtime` and installs the `algo-cli` command:
 
 ```bash
-git clone https://github.com/Seabass-up/algo-cli.git
-cd algo-cli
-pipx install .
-# or: uv tool install .
+pipx install algo-cli-runtime
+# or: uv tool install algo-cli-runtime
+algo-cli doctor
 ```
 
-After the package release is published, `pipx install algo-cli-runtime` and
-`uv tool install algo-cli-runtime` become the recommended stable-channel commands.
+To install a reviewed source checkout instead, clone the repository and run
+`pipx install .` from its root.
 
 Optional extras are available for PDF rendering (`algo-cli-runtime[pdf]`) and experimental vector quantization (`algo-cli-runtime[quantization]`). The distribution installs the `algo-cli` command. Run `algo-cli doctor` for a side-effect-free readiness report.
 

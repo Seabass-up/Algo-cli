@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "Algo CLI",
   "canonical_origin": "https://algo-cli.com",
-  "release_channel": "release-candidate",
+  "release_channel": "stable",
   "endpoints": {
     "documentation": "https://algo-cli.com/docs",
     "release": "https://algo-cli.com/api/v1/releases/stable.json",

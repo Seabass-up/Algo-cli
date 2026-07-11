@@ -4,13 +4,13 @@ import { PageFrame, Pill } from "../site-chrome";
 export const metadata = { title: "Install" };
 
 export default function InstallPage() {
-  return <PageFrame eyebrow="INSTALL / v0.14.0 RC" title="Start local. Add only what you need." intro="Algo CLI requires Python 3.10 or newer. Version 0.14.0 is a release candidate; install the public source today and switch to an index install after PyPI publication.">
+  return <PageFrame eyebrow="INSTALL / v0.14.0" title="Start local. Add only what you need." intro="Algo CLI v0.14.0 is available from PyPI for Python 3.10 or newer. The algo-cli-runtime distribution installs the algo-cli command.">
     <section className="content-wrap">
-      <div className="notice"><Pill tone="lime">PUBLIC SOURCE</Pill><p>The reviewed repository is public. Package publication is the remaining stable-release step.</p></div>
+      <div className="notice"><Pill tone="lime">STABLE RELEASE</Pill><p>Version 0.14.0 is published from the reviewed tag through protected OIDC publishing.</p></div>
       <div className="install-grid">
-        <article className="install-card featured"><span>01 / PUBLIC SOURCE</span><h2>Install from the repository</h2><p>Clone the public repository, then let Pipx isolate the application and its dependencies.</p><CopyInstall command="git clone https://github.com/Seabass-up/Algo-cli.git && cd Algo-cli" /><CopyInstall command="pipx install . && algo-cli doctor" /></article>
-        <article className="install-card"><span>02 / AFTER PYPI RELEASE</span><h2>Stable Pipx install</h2><p>This distribution installs the <code>algo-cli</code> command and becomes active when the release manifest reports that the package is published.</p><CopyInstall command="pipx install algo-cli-runtime" /><CopyInstall command="algo-cli doctor" /></article>
-        <article className="install-card"><span>03 / AFTER PYPI RELEASE</span><h2>Fast uv tool install</h2><p>Use Astral uv after the package is available from the public index.</p><CopyInstall command="uv tool install algo-cli-runtime" /><CopyInstall command="algo-cli" /></article>
+        <article className="install-card featured"><span>01 / RECOMMENDED</span><h2>Stable Pipx install</h2><p>Install the isolated distribution, then verify local readiness.</p><CopyInstall command="pipx install algo-cli-runtime" /><CopyInstall command="algo-cli doctor" /></article>
+        <article className="install-card"><span>02 / FAST INSTALL</span><h2>Astral uv</h2><p>Use uv for a fast isolated tool installation.</p><CopyInstall command="uv tool install algo-cli-runtime" /><CopyInstall command="algo-cli" /></article>
+        <article className="install-card"><span>03 / SOURCE</span><h2>Reviewed repository</h2><p>Clone the public repository when you want to inspect the exact source before installation.</p><CopyInstall command="git clone https://github.com/Seabass-up/Algo-cli.git && cd Algo-cli" /><CopyInstall command="pipx install . && algo-cli doctor" /></article>
       </div>
       <div className="provider-grid">
         <article><span>LOCAL OLLAMA</span><h3>Keep inference on your machine</h3><CopyInstall command="ollama pull qwen3" /><CopyInstall command="algo-cli" /></article>

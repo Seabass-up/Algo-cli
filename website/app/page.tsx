@@ -27,7 +27,7 @@ export default function Home() {
             <Link className="button secondary" href="/docs">Read the docs <b>→</b></Link>
           </div>
           <div className="hero-meta">
-            <Pill tone="lime">v0.14.0 release candidate</Pill>
+            <Pill tone="lime">v0.14.0 stable</Pill>
             <span>Python 3.10+</span>
             <span>MIT licensed</span>
           </div>
@@ -42,8 +42,8 @@ export default function Home() {
               <span>local</span>
             </div>
             <div className="terminal-body">
-              <CopyInstall command="git clone https://github.com/Seabass-up/Algo-cli.git && cd Algo-cli" />
-              <CopyInstall command="pipx install ." />
+              <CopyInstall command="pipx install algo-cli-runtime" />
+              <CopyInstall command="algo-cli doctor" />
               <div className="terminal-gap" />
               <p><span className="prompt">$</span> algo-cli --oneshot --json --approval-mode auto</p>
               <p className="task-line">“fix the failing parser test and verify the result”</p>

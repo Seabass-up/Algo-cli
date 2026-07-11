@@ -2,12 +2,12 @@
   "schema_version": 1,
   "product": "algo-cli",
   "version": "0.14.0",
-  "channel": "release-candidate",
-  "published": false,
+  "channel": "stable",
+  "published": true,
   "python": ">=3.10",
-  "source_revision": "ec55ae6752bd74a661f0de8541dd9d0bbe0e4262",
-  "package": { "name": "algo-cli-runtime", "index": "https://pypi.org/project/algo-cli-runtime/", "available": false },
+  "source_revision": "be25ea08fd0d390d0f21fe8f0646582380ef0a79",
+  "package": { "name": "algo-cli-runtime", "index": "https://pypi.org/project/algo-cli-runtime/", "available": true },
   "source": { "url": "https://github.com/Seabass-up/Algo-cli", "available": true },
   "security_advisory": { "active": true },
-  "notes": "The reviewed source is public. PyPI package publication remains pending."
+  "notes": "Version 0.14.0 is published from the reviewed tag through protected GitHub OIDC publishing."
 }
