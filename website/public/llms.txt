@@ -1,0 +1,19 @@
+# Algo CLI
+
+> Algo CLI is a local-first agent runtime for tools, durable context, routed agents, and verified work.
+
+Canonical site: https://algo-cli.com/
+Documentation: https://algo-cli.com/docs
+Install status: https://algo-cli.com/install
+Benchmark methodology: https://algo-cli.com/benchmarks
+Security: https://algo-cli.com/security
+Release manifest: https://algo-cli.com/api/v1/releases/stable.json
+Document index: https://algo-cli.com/docs/index.json
+Benchmark summary: https://algo-cli.com/benchmarks/summary.json
+
+## Operating principles
+
+- Core operation remains local and does not require this website.
+- Remote documentation and registries must be explicit, versioned inputs.
+- The website does not receive prompts, files, memories, or identity records from Algo CLI.
+- Benchmark claims are scoped to their published protocol and evidence.

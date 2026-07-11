@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "product": "algo-cli",
+  "version": "0.14.0",
+  "channel": "release-candidate",
+  "documents": [
+    { "id": "home", "title": "Algo CLI overview", "url": "https://algo-cli.com/", "format": "html" },
+    { "id": "install", "title": "Installation and providers", "url": "https://algo-cli.com/install", "format": "html" },
+    { "id": "commands", "title": "Command field guide", "url": "https://algo-cli.com/docs", "format": "html" },
+    { "id": "benchmarks", "title": "Benchmark evidence and limitations", "url": "https://algo-cli.com/benchmarks", "format": "html" },
+    { "id": "security", "title": "Security and trust boundaries", "url": "https://algo-cli.com/security", "format": "html" },
+    { "id": "agent-map", "title": "Agent-readable site map", "url": "https://algo-cli.com/llms.txt", "format": "text" }
+  ]
+}

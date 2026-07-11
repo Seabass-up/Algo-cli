@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "product": "algo-cli",
+  "version": "0.14.0",
+  "channel": "release-candidate",
+  "published": false,
+  "python": ">=3.10",
+  "source_revision": "3e2768adb8f1912f2311d2c882a1adb298fbeeeb",
+  "package": { "name": "algo-cli", "index": "https://pypi.org/project/algo-cli/", "available": false },
+  "source": { "url": "https://github.com/Seabass-up/Algo-cli", "available": false },
+  "security_advisory": { "active": false },
+  "notes": "Release gates and repeated local benchmark passed. Public package and repository publication remain pending."
+}

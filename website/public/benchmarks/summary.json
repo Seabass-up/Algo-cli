@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "status": "scoped-release-candidate-evidence",
+  "created_at": "2026-07-11",
+  "protocol": {
+    "tasks": 3,
+    "repetitions_per_cell": 3,
+    "runs_per_harness": 9,
+    "total_runs": 27,
+    "balanced_order": true,
+    "same_model": "qwen3.6:35b-mlx",
+    "same_machine": true,
+    "fresh_state_per_run": true
+  },
+  "results": [
+    { "harness": "algo-cli", "objective_passes": 9, "clean_runs": 9, "median_seconds": 33.90038, "p95_seconds": 64.472878 },
+    { "harness": "pi", "objective_passes": 6, "clean_runs": 9, "median_seconds": 34.005466, "p95_seconds": 39.568108 },
+    { "harness": "opencode", "objective_passes": 6, "clean_runs": 9, "median_seconds": 59.260209, "p95_seconds": 165.591684 }
+  ],
+  "claim": "Algo CLI ranked first on this balanced 27-run local benchmark.",
+  "limitations": "Three draft tasks, one local model, one machine, and three repetitions per cell do not support a universal superiority or model-power claim."
+}
