@@ -71,7 +71,7 @@ jobs:
           --cov-report=xml:coverage.xml
           --cov-fail-under=57
       - name: Upload coverage evidence
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-python-3.12-linux
           path: coverage.xml
@@ -165,7 +165,7 @@ jobs:
         run: |
           python -m twine check dist/*
           python scripts/check_public_release.py --artifacts-only --artifact dist/*.whl --artifact dist/*.tar.gz
-      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: python-package-distributions
           path: dist/
