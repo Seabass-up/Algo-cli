@@ -20,6 +20,14 @@ def test_machine_path_scan_allows_neutral_windows_fixture():
     assert check_public_release._scan_text("fixture.py", r"C:\\Users\\example\\workspace") == []
 
 
+def test_github_service_email_is_public_but_personal_email_is_rejected():
+    service_email = "noreply@" + "github.com"
+    personal_email = "person@" + "gmail.com"
+
+    assert check_public_release._scan_text("commit", service_email) == []
+    assert (1, "non-public email") in check_public_release._scan_text("commit", personal_email)
+
+
 def test_valid_lockfile_integrity_is_masked_but_neighboring_metadata_is_scanned():
     private_marker = "x" + "ds"
     encoded = base64.b64encode(hashlib.sha512(b"695").digest()).decode()

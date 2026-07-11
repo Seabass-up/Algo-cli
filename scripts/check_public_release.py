@@ -63,6 +63,7 @@ ALLOWED_EMAIL_DOMAINS = {
     "algo-cli.com",
     "example.com",
     "example.test",
+    "github.com",
     "users.noreply.github.com",
 }
 LOCKFILE_BASENAMES = {"package-lock.json", "npm-shrinkwrap.json"}

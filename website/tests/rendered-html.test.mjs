@@ -66,7 +66,9 @@ test("ships truthful machine-readable release and benchmark contracts", async ()
   assert.equal(release.channel, "release-candidate");
   assert.equal(release.published, false);
   assert.equal(release.package.available, false);
-  assert.equal(release.source_revision, null);
+  assert.equal(release.source_revision, "ec55ae6752bd74a661f0de8541dd9d0bbe0e4262");
+  assert.equal(release.source.available, true);
+  assert.equal(release.security_advisory.active, true);
   assert.equal(benchmark.protocol.total_runs, 27);
   assert.equal(benchmark.results[0].objective_passes, 9);
   assert.match(benchmark.limitations, /do not support a universal superiority/i);
