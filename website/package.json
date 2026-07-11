@@ -30,7 +30,7 @@
     "@vitejs/plugin-rsc": "0.5.26",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
-    "postcss": "8.5.16",
+    "postcss": "8.5.17",
     "react-server-dom-webpack": "19.2.6",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
@@ -39,7 +39,7 @@
     "wrangler": "^4.110.0"
   },
   "overrides": {
-    "postcss": "8.5.16"
+    "postcss": "8.5.17"
   },
   "type": "module"
 }
