@@ -336,6 +336,21 @@ def test_repeated_failed_tool_call_is_skipped_after_runtime_defaults(tmp_path, m
     assert second_msg["role"] == "tool"
 
 
+def test_read_file_missing_suggests_same_name_inside_working_directory(tmp_path):
+    expected = tmp_path / "definition" / "tasks" / "sample" / "task.md"
+    expected.parent.mkdir(parents=True)
+    expected.write_text("task", encoding="utf-8")
+
+    result = tools.read_file(
+        str(tmp_path / "workspace" / "tasks" / "sample" / "task.md"),
+        cwd=str(tmp_path),
+    )
+
+    assert "Error: file not found" in result
+    assert str(expected) in result
+    assert "Retry read_file" in result
+
+
 def test_attempt_signature_excludes_config_and_conversation(monkeypatch, config_dir):
     from algo_cli.config import CONFIG_FILE
 

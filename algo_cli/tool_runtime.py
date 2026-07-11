@@ -247,6 +247,13 @@ def preflight_runtime_tool(
     signature_args = tool_runtime_args(name, args, cfg)
     runtime_hint = classify_tool_runtime(name, signature_args)
     guardrail_reasons: list[str] = []
+    if name == "run_shell" and execution_guardrails.masks_verification_exit_status(
+        str(signature_args.get("command") or "")
+    ):
+        guardrail_reasons.append(
+            "verification command must preserve a failing exit status; remove the trailing "
+            "`; echo ...$?` because run_shell already reports the exit code"
+        )
     if name in {"write_file", "edit_file", "batch_edit"}:
         effective_path = _effective_tool_path(signature_args)
         active_workspace = execution_guardrails.active_workspace()

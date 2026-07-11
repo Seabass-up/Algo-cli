@@ -114,6 +114,32 @@ def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(parsed, maximum))
 
 
+def _missing_file_matches(path: Path, cwd: str | None, *, limit: int = 3) -> list[Path]:
+    """Find bounded same-basename recovery candidates inside the active cwd."""
+
+    if not path.name:
+        return []
+    root = Path(cwd or os.getcwd()).expanduser().resolve()
+    matches: list[Path] = []
+    scanned = 0
+    skipped_dirs = {".git", ".venv", "node_modules", "__pycache__"}
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            scanned += 1
+            dirnames[:] = [name for name in dirnames if name not in skipped_dirs]
+            if path.name in filenames:
+                candidate = (Path(dirpath) / path.name).resolve()
+                if candidate != path:
+                    matches.append(candidate)
+                    if len(matches) >= limit:
+                        break
+            if scanned >= 2_000:
+                break
+    except OSError:
+        return []
+    return matches
+
+
 def unpack_embed_response(
     response: Any,
     model: str,
@@ -180,7 +206,15 @@ def read_file(
     """
     p = _resolve(path, cwd)
     if not p.exists():
-        return f"Error: file not found: {p}"
+        matches = _missing_file_matches(p, cwd)
+        if not matches:
+            return f"Error: file not found: {p}"
+        suggestions = "\n".join(f"- {candidate}" for candidate in matches)
+        return (
+            f"Error: file not found: {p}\n"
+            f"Same-name file(s) found inside the working directory:\n{suggestions}\n"
+            "Retry read_file with the intended exact path."
+        )
     if p.is_dir():
         return f"Error: {p} is a directory. Use list_directory."
     try:

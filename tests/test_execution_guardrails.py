@@ -245,6 +245,14 @@ def test_verification_command_classification_accepts_real_verifiers(command: str
     assert "command" not in asdict(decision)
 
 
+def test_status_masking_verifier_suffix_is_detected() -> None:
+    assert guardrails.masks_verification_exit_status(
+        'python3 healthcheck.py 2>&1; echo "EXIT_CODE=$?"'
+    ) is True
+    assert guardrails.masks_verification_exit_status("python3 healthcheck.py") is False
+    assert guardrails.masks_verification_exit_status('echo "EXIT_CODE=$?"') is False
+
+
 @pytest.mark.parametrize(
     "command",
     [

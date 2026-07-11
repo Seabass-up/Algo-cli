@@ -706,6 +706,20 @@ def classify_verification_command(command: str) -> VerificationCommand:
     return VerificationCommand(False, None, "command is not a recognized verifier")
 
 
+_STATUS_MASKING_ECHO_RE = re.compile(
+    r"(?is)^(?P<base>.+?);\s*echo\s+(?:[\"'])?[^\n;]*\$\?[^\n;]*(?:[\"'])?\s*$"
+)
+
+
+def masks_verification_exit_status(command: str) -> bool:
+    """Return whether a verifier is followed by an echo that masks its status."""
+
+    match = _STATUS_MASKING_ECHO_RE.match(str(command or "").strip())
+    if match is None:
+        return False
+    return classify_verification_command(match.group("base").strip()).qualifies
+
+
 def record_verification(
     verification_kind: str,
     *,
