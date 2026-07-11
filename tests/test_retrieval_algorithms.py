@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import warnings
 
 import pytest
 
@@ -230,6 +231,33 @@ def test_vector_retrieval_reuses_normalized_matrix_and_preserves_scalar_ranking(
 
     harness._set_index_cache(index)
     assert harness._VECTOR_MATRIX_CACHE is None
+
+
+@pytest.mark.skipif(not harness._NUMPY, reason="NumPy is not installed")
+def test_vector_retrieval_filters_nonfinite_rows_without_runtime_warnings(monkeypatch) -> None:
+    index = {
+        "records": [
+            {
+                "id": "finite", "harness": "h", "kind": "wiki", "title": "finite",
+                "path": "finite", "relative_path": "finite", "embedding_model": "m",
+                "embedding": [1.0, 1.0],
+            },
+            {
+                "id": "infinite", "harness": "h", "kind": "wiki", "title": "infinite",
+                "path": "infinite", "relative_path": "infinite", "embedding_model": "m",
+                "embedding": [float("inf"), 1.0],
+            },
+        ]
+    }
+    monkeypatch.setattr(harness, "load_index", lambda refresh=False: index)
+    harness._VECTOR_MATRIX_CACHE = None
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        hits = harness.retrieve_for_query("finite-query", lambda _texts: [[1.0, 1.0]], "m", k=2)
+
+    assert [hit["id"] for hit in hits] == ["finite"]
+    assert caught == []
 
 
 def test_code_rag_reuses_content_identical_embeddings_after_append(tmp_path) -> None:

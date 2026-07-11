@@ -305,6 +305,12 @@ def preflight_runtime_tool(
 
 def run_tool(name: str, args: dict[str, Any], cfg: Config) -> str:
     call_args = tool_runtime_args(name, args, cfg)
+    if name in {"write_file", "edit_file"}:
+        from . import reconciliation
+
+        violation = reconciliation.structured_write_violation(name, call_args, cfg.messages)
+        if violation:
+            return f"Error: {violation}"
     if name in ("remember", "append_lesson", "session_command"):
         call_args["cfg"] = cfg
     if name == "session_slash":
@@ -400,6 +406,10 @@ def augment_tool_result_with_reflex(
     status: str,
 ) -> str:
     augmented, note = reflex.maybe_augment_tool_result(cfg, name, args, result, status)
+    if status == "worked":
+        from . import reconciliation
+
+        augmented = reconciliation.augment_read_result(name, augmented, messages=cfg.messages)
     if note:
         show_info(note)
     return augmented
@@ -414,6 +424,7 @@ def record_tool_attempt(
     status: str,
 ) -> None:
     worked = status == "worked"
+    workspace_changed = False
     effective_path = _effective_tool_path(args)
     if name == "read_file" and effective_path is not None:
         execution_guardrails.record_read(effective_path, success=worked)
@@ -424,6 +435,7 @@ def record_tool_attempt(
             "batch_edit": "Batch-edited ",
         }
         mutation_succeeded = worked and str(result).lstrip().startswith(success_prefixes[name])
+        workspace_changed = mutation_succeeded
         execution_guardrails.record_mutation(
             effective_path,
             success=mutation_succeeded,
@@ -434,6 +446,7 @@ def record_tool_attempt(
         exit_matches = _SHELL_EXIT_CODE_RE.findall(str(result))
         returncode = int(exit_matches[-1]) if exit_matches else None
         if returncode == 0 and tools_module.shell_mutates_workspace(command):
+            workspace_changed = True
             execution_guardrails.record_workspace_mutation(success=True)
         if returncode is not None:
             execution_guardrails.record_shell_verification(command, returncode=returncode)
@@ -445,6 +458,12 @@ def record_tool_attempt(
             and normalized_result not in {"", "(no tracked diff)", "(clean working tree)"},
         )
     signature = tool_attempt_signature(name, args)
+    if workspace_changed:
+        # A workspace mutation invalidates cached failures: the exact same
+        # test/check command is often the correct next action after a fix.
+        cfg.attempt_ledger = [
+            item for item in cfg.attempt_ledger if item.get("status") not in {"failed", "skipped"}
+        ]
     args_preview = json.dumps(
         redact_tool_args(name, args),
         sort_keys=True,

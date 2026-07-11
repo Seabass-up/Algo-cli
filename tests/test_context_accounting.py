@@ -36,18 +36,18 @@ def test_display_total_uses_runtime_cap():
 def test_adaptive_window_feeds_accounting():
     cfg = Config()
     cfg.model_adaptive = True
-    # Known model metadata: adaptive profile should use the native request window.
+    # Native context is a ceiling; local adaptive defaults avoid oversized KV allocations.
     info = {"context_length": 131072, "parameter_size": "70B"}
     runtime_cap, _ = model_info.effective_context_limits(cfg, info)
-    assert runtime_cap == 131072
+    assert runtime_cap == 32768
 
 
-def test_gemma4_adaptive_context_accounting_uses_native_window():
+def test_gemma4_adaptive_context_accounting_uses_bounded_local_window():
     cfg = Config(model="gemma4:12b-mlx-bf16")
     cfg.model_adaptive = True
     info = {"context_length": 262144, "parameter_size": "12.4B"}
     runtime_cap, native = model_info.effective_context_limits(cfg, info)
-    assert runtime_cap == 262144
+    assert runtime_cap == 16384
     assert native == 262144
 
 

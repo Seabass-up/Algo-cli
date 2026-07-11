@@ -60,9 +60,15 @@ REQUIRED_CHANGE_SHELL_MUTATION_RE = re.compile(
     r"\b(?:sed\s+-i|perl\s+-pi|truncate\s+-s)\b|"
     r"\brobocopy\b[^\n]*\s/(?:mir|purge)\b|"
     r"(?:>{1,2}(?!&)|(?:\|\s*)tee\b)|"
-    r"\bpython(?:3)?\b[^\n]*\s-c\s+[^\n]*(?:open\s*\(|write_text\s*\(|write_bytes\s*\(|\.write\s*\(|"
+    r"\bpython(?:3)?\b[^\n]*\s-c\s+[^\n]*(?:write_text\s*\(|write_bytes\s*\(|\.write\s*\(|"
     r"\.unlink\s*\(|\.rename\s*\(|\.replace\s*\(|\.mkdir\s*\(|os\.(?:remove|unlink|rename|replace|mkdir|makedirs)\s*\(|"
     r"shutil\.(?:copy|copy2|copyfile|move|rmtree)\s*\()",
+    re.IGNORECASE,
+)
+PYTHON_OPEN_WRITE_RE = re.compile(
+    r"\bpython(?:3)?\b[^\n]*\s-c\s+[^\n]*\bopen\s*\([^)]*(?:,\s*['\"]"
+    r"(?:[wax][^'\"]*|[^'\"]*\+[^'\"]*)['\"]|\bmode\s*=\s*['\"]"
+    r"(?:[wax][^'\"]*|[^'\"]*\+[^'\"]*)['\"])",
     re.IGNORECASE,
 )
 NULL_REDIRECTION_RE = re.compile(r"\b\d?\s*>{1,2}\s*(?:\$null\b|nul\b|/dev/null\b)", re.IGNORECASE)
@@ -72,7 +78,10 @@ def shell_mutates_workspace(command: str) -> bool:
     """Return whether a shell command appears to alter files or Git state."""
 
     without_null_redirection = NULL_REDIRECTION_RE.sub("", command or "")
-    return bool(REQUIRED_CHANGE_SHELL_MUTATION_RE.search(without_null_redirection))
+    return bool(
+        REQUIRED_CHANGE_SHELL_MUTATION_RE.search(without_null_redirection)
+        or PYTHON_OPEN_WRITE_RE.search(without_null_redirection)
+    )
 
 
 def shell_is_dangerous(command: str) -> bool:

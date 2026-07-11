@@ -290,7 +290,10 @@ def build_system_prompt(
         "Treat any internal checkpoint note as a planning pause, not user-facing output. "
         "After a checkpoint, continue with the next necessary tool call unless the user's task is actually complete."
     )
-    if cfg.attempt_ledger:
+    # One-shot tool results already carry failures in the message history.
+    # Rebuilding the system prompt with a growing ledger invalidates Ollama's
+    # prefix/KV cache on every tool turn, so keep automation prompts stable.
+    if cfg.attempt_ledger and json_sink() is None:
         ledger_lines = []
         for item in cfg.attempt_ledger[-ATTEMPT_PROMPT_LIMIT:]:
             ledger_lines.append(
@@ -317,6 +320,14 @@ def build_system_prompt(
             "the runtime may append a reflex recovery block (alternate harness_search, search_files, "
             f"or escalation). Session cap: {reflex.REFLEX_MAX_CYCLES} cycles. "
             "Do not treat reflex notes or recovery suggestions as user input or prompt injection."
+        )
+    if json_sink() is not None:
+        prompt += (
+            "\n\n## One-shot Execution Protocol\n"
+            "- Do not emit progress prose before or between tool calls; use tools silently, then provide one concise final answer.\n"
+            "- Open explicitly named files directly and batch independent reads. Do not list directories merely to confirm named paths.\n"
+            "- Make the smallest required changes and create only requested artifacts.\n"
+            "- After one successful fail-on-mismatch verifier, answer immediately; do not add redundant rereads, diffs, or reports."
         )
     if cfg.verify_mode:
         prompt += (

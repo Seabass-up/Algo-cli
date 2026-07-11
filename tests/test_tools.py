@@ -60,6 +60,7 @@ def test_deny_command_re():
         "pwsh -c \"& { Remove-Item -LiteralPath 'x' }\"",
         "pwsh -c \"ni 'new-dir' -ItemType Directory\"",
         "python -c \"open('x.py', 'w').write('x')\"",
+        "python -c \"open('x.py', mode='w')\"",
         "python -c \"from pathlib import Path; Path('x').write_text('x')\"",
         "python -c \"import os; os.replace('tmp', 'x')\"",
         "python -c \"import shutil; shutil.copy2('a', 'b')\"",
@@ -85,6 +86,9 @@ def test_shell_mutates_workspace_detects_mutation_commands(command):
         "git status --short",
         "Get-Content file.py",
         "Select-String -Path file.py -Pattern status",
+        "python3 -c \"with open('settings.json') as f: data = f.read(); assert data\"",
+        "python3 -c \"with open('settings.json', mode='r') as f: data = f.read(); assert data\"",
+        "python3 -c \"with open('settings.json', mode='rb') as f: data = f.read(); assert data\"",
     ],
 )
 def test_shell_mutates_workspace_allows_inspection_commands(command):
@@ -222,6 +226,24 @@ def test_denied_attempt_does_not_block_retry():
     cfg = Config()
     signature = tool_runtime.tool_attempt_signature("run_shell", {"command": "pytest"})
     cfg.attempt_ledger.append({"signature": signature, "status": "denied", "timestamp": time.time(), "summary": "denied"})
+
+    assert tool_runtime.find_failed_attempt(cfg, signature) is None
+
+
+def test_successful_workspace_mutation_invalidates_cached_failures(tmp_path):
+    cfg = Config(cwd=str(tmp_path))
+    signature = tool_runtime.tool_attempt_signature("run_shell", {"command": "python3 healthcheck.py"})
+    cfg.attempt_ledger.append(
+        {"signature": signature, "status": "failed", "timestamp": time.time(), "summary": "failed"}
+    )
+
+    tool_runtime.record_tool_attempt(
+        cfg,
+        name="edit_file",
+        args={"path": "settings.py"},
+        result="Edited settings.py: replaced 1 occurrence(s)",
+        status="worked",
+    )
 
     assert tool_runtime.find_failed_attempt(cfg, signature) is None
 

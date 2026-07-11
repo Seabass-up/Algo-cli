@@ -6,6 +6,7 @@ commands, and command output are never retained here.
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import shlex
@@ -71,6 +72,11 @@ _RUNNER_OPTIONS_WITH_VALUE = frozenset(
         "--python",
         "--with",
     }
+)
+_VERIFIER_SCRIPT_RE = re.compile(
+    r"^(?:(?:health|smoke)[_-]?check|check(?:[_-].*)?|verify(?:[_-].*)?|"
+    r"test(?:[_-].*)?|.*[_-]test)\.(?:py|sh|ps1|js|ts)$",
+    re.IGNORECASE,
 )
 
 
@@ -451,6 +457,33 @@ def _command_tokens(command: str) -> list[str] | None:
     return tokens or None
 
 
+def _unwrap_verification_shell(command: str) -> str:
+    """Remove narrowly safe shell framing around a verifier command.
+
+    Models commonly express a working directory in-band even though
+    ``run_shell`` also has a structured ``cwd`` argument. Accept one leading
+    ``cd PATH &&`` and one trailing ``2>&1`` while leaving every other shell
+    operator for the fail-closed parser to reject.
+    """
+
+    candidate = command.strip()
+    candidate = re.sub(r"\s+2\s*>\s*&\s*1\s*$", "", candidate).strip()
+    if "&&" not in candidate:
+        return candidate
+    parts = candidate.split("&&")
+    if len(parts) != 2:
+        return candidate
+    try:
+        prefix = shlex.split(parts[0].strip(), posix=os.name != "nt")
+    except ValueError:
+        return candidate
+    if len(prefix) == 2 and _executable_name(prefix[0]) == "cd" and prefix[1]:
+        return parts[1].strip()
+    if len(prefix) == 3 and _executable_name(prefix[0]) == "cd" and prefix[1] == "--" and prefix[2]:
+        return parts[1].strip()
+    return candidate
+
+
 def _executable_name(token: str) -> str:
     name = token.strip("\"'").replace("\\", "/").rsplit("/", 1)[-1].casefold()
     for suffix in (".exe", ".cmd", ".bat", ".ps1"):
@@ -494,14 +527,73 @@ def _strip_runner(tokens: list[str]) -> list[str]:
     return tokens
 
 
+def _assertion_script_qualifies(source: str) -> bool:
+    """Return whether inline Python contains a fail-on-error check."""
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assert):
+            return True
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "sys"
+            and node.func.attr == "exit"
+            and node.args
+            and not (
+                isinstance(node.args[0], ast.Constant)
+                and node.args[0].value in {0, None}
+            )
+        ):
+            return True
+    return False
+
+
+def _looks_like_verifier_script(token: str) -> bool:
+    return bool(_VERIFIER_SCRIPT_RE.fullmatch(_executable_name(token)))
+
+
+def _inline_python_verification(command: str) -> VerificationCommand | None:
+    """Classify a standalone Python ``-c`` check before newline rejection.
+
+    ``shlex`` preserves newlines inside the quoted source as one argument, so
+    multiline assertion scripts remain unambiguous while extra shell segments
+    produce additional tokens and are rejected.
+    """
+
+    try:
+        tokens = shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        return None
+    while tokens and _ENV_ASSIGNMENT_RE.match(tokens[0]):
+        tokens.pop(0)
+    if len(tokens) != 3 or not re.fullmatch(
+        r"python(?:\d+(?:\.\d+)*)?|py", _executable_name(tokens[0])
+    ) or tokens[1].casefold() != "-c":
+        return None
+    if _assertion_script_qualifies(tokens[2]):
+        return VerificationCommand(True, "test", "inline assertions execute a fail-on-error check")
+    return VerificationCommand(False, None, "inline Python lacks fail-on-error assertions")
+
+
 def classify_verification_command(command: str) -> VerificationCommand:
     """Classify one shell command without retaining its text.
 
     Compound/piped commands and discovery-only flags are rejected because a
-    zero shell status would not reliably prove the verifier itself passed.
+    zero shell status would not reliably prove the verifier itself passed. A
+    single working-directory wrapper and stderr-to-stdout redirect are allowed
+    because they preserve the verifier's exit status.
     """
 
-    tokens = _command_tokens(command)
+    unwrapped = _unwrap_verification_shell(command)
+    inline_python = _inline_python_verification(unwrapped)
+    if inline_python is not None:
+        return inline_python
+    tokens = _command_tokens(unwrapped)
     if tokens is None:
         return VerificationCommand(False, None, "command is empty, compound, or ambiguous")
     tokens = _strip_runner(tokens)
@@ -537,6 +629,8 @@ def classify_verification_command(command: str) -> VerificationCommand:
 
     executable = _executable_name(tokens[0])
     if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?|py", executable):
+        if len(tokens) >= 2 and _looks_like_verifier_script(tokens[1]):
+            return VerificationCommand(True, "test", "command executes a verifier script")
         if len(lowered) < 3 or lowered[1] != "-m":
             return VerificationCommand(False, None, "python command does not invoke a verifier module")
         tokens = tokens[2:]
@@ -546,6 +640,9 @@ def classify_verification_command(command: str) -> VerificationCommand:
         if len(lowered) >= 3 and lowered[1] == "diff" and "--check" in lowered[2:]:
             return VerificationCommand(True, "git_diff", "git diff --check is structural verification")
         return VerificationCommand(False, None, "git command is not a fail-on-error git diff check")
+
+    if _looks_like_verifier_script(tokens[0]):
+        return VerificationCommand(True, "test", "command executes a verifier script")
 
     if executable in {"pytest", "py.test", "unittest", "tox", "nox"}:
         return VerificationCommand(True, "test", "command executes a test runner")

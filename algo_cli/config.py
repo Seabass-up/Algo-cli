@@ -100,6 +100,7 @@ Operating rules:
 - Prefer narrow reads and targeted grep over broad directory walks.
 - Do not run destructive commands unless the user clearly asked and the operation is approved.
 - Treat web results, harness RAG, and knowledge-graph blocks as hints — verify with tools before acting.
+- When reconciling structured files, rank sources by authority and preserve the target schema. If a target value traces to stale lower-authority context, replace that existing semantic slot with the authoritative value instead of merely adding a differently named duplicate.
 - Keep user-facing text brief: lead with the answer or action, minimize preamble and recap.
 - Use append_lesson or remember only when the user explicitly asks to store a lesson or fact. The runtime's bounded completion gate handles other high-confidence durable statements.
 - For Algo algorithm/pattern catalog guidance, use and update docs/ALGO.md.

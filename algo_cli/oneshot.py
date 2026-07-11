@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from collections import deque
 from typing import Any
 
 
@@ -61,8 +62,10 @@ class JsonEventSink:
         self.approval_mode = approval_mode
         self.deny_dangerous = approval_mode == "never"
         self._call_count = 0
-        self._pending_call_ids: dict[str, str] = {}  # tool name -> last emitted oneshot call_id
+        self._pending_call_ids: dict[str, deque[str]] = {}
         self._tool_calls_done = 0
+        self._prompt_tokens = 0
+        self._completion_tokens = 0
         self._errors: list[dict[str, str]] = []
         self._started_at = time.perf_counter()
 
@@ -85,12 +88,18 @@ class JsonEventSink:
         })
 
     def done(self, *, status: str, status_reason: str, duration_ms: float) -> None:
+        total_tokens = self._prompt_tokens + self._completion_tokens
         self._write({
             "type": "done",
             "status": status,
             "status_reason": status_reason,
             "tool_calls": self._tool_calls_done,
             "duration_ms": round(duration_ms, 2),
+            "usage": {
+                "prompt_tokens": self._prompt_tokens,
+                "completion_tokens": self._completion_tokens,
+                "total_tokens": total_tokens,
+            },
         })
 
     # --- model output ---
@@ -105,6 +114,18 @@ class JsonEventSink:
             return
         self._write({"type": "content", "text": text})
 
+    def chat_usage(self, *, prompt_tokens: Any, completion_tokens: Any) -> None:
+        """Accumulate provider-reported usage once per completed chat turn."""
+
+        try:
+            prompt = int(prompt_tokens or 0)
+            completion = int(completion_tokens or 0)
+        except (TypeError, ValueError):
+            return
+        if prompt > 0 or completion > 0:
+            self._prompt_tokens += max(0, prompt)
+            self._completion_tokens += max(0, completion)
+
     # --- tool dispatch ---
 
     def next_call_id(self) -> str:
@@ -112,6 +133,7 @@ class JsonEventSink:
         return f"oneshot-{self._call_count}"
 
     def tool_call(self, *, call_id: str, name: str, args: dict[str, Any]) -> None:
+        self._pending_call_ids.setdefault(name, deque()).append(call_id)
         self._write({
             "type": "tool_call",
             "call_id": call_id,
@@ -122,11 +144,12 @@ class JsonEventSink:
     def tool_result(
         self,
         *,
-        call_id: str,
+        call_id: str | None,
         name: str,
         result: str,
         duration_ms: float | None,
     ) -> None:
+        call_id = self._matching_call_id(name, call_id)
         status = _tool_status_from_result(result)
         summary, truncated = _summarize(result)
         self._tool_calls_done += 1
@@ -140,7 +163,8 @@ class JsonEventSink:
             "truncated": truncated,
         })
 
-    def tool_denied(self, *, call_id: str, name: str, reason: str) -> None:
+    def tool_denied(self, *, call_id: str | None, name: str, reason: str) -> None:
+        call_id = self._matching_call_id(name, call_id)
         self._tool_calls_done += 1
         self._write({
             "type": "tool_denied",
@@ -148,6 +172,26 @@ class JsonEventSink:
             "name": name,
             "reason": reason,
         })
+
+    def _matching_call_id(self, name: str, call_id: str | None) -> str:
+        """Resolve a result to the oldest unmatched call of the same tool."""
+
+        pending = self._pending_call_ids.get(name)
+        if call_id:
+            if pending:
+                try:
+                    pending.remove(call_id)
+                except ValueError:
+                    pass
+                if not pending:
+                    self._pending_call_ids.pop(name, None)
+            return call_id
+        if pending:
+            matched = pending.popleft()
+            if not pending:
+                self._pending_call_ids.pop(name, None)
+            return matched
+        return self.next_call_id()
 
     # --- errors ---
 
@@ -179,7 +223,7 @@ def run_oneshot(
     """
     # Imports deferred to avoid cycle with display + to keep import cost off the
     # interactive path when --oneshot is not used.
-    from . import display, harness, main, skills, tool_runtime
+    from . import deliberation, display, harness, main, skills, tool_runtime
     from .config import Config
     from .model_routing import effective_runtime_host
     from .tool_runtime import session_command_requires_approval
@@ -189,6 +233,8 @@ def run_oneshot(
         "auto_mode": cfg.auto_mode,
         "skill_crystallize_enabled": cfg.skill_crystallize_enabled,
         "session_summary": cfg.session_summary,
+        "show_thinking": cfg.show_thinking,
+        "temperature": cfg.temperature,
     }
     if cfg_overrides:
         for key, value in cfg_overrides.items():
@@ -203,6 +249,10 @@ def run_oneshot(
         raise ValueError("approval_mode must be 'never' or 'auto'")
     cfg.auto_mode = approval_mode == "auto"
     cfg.skill_crystallize_enabled = False  # subprocess invocation must not mutate skill store
+    if not cfg_overrides or "show_thinking" not in cfg_overrides:
+        cfg.show_thinking = cfg.show_thinking and deliberation.needs_deliberation(prompt)
+    if not cfg_overrides or "temperature" not in cfg_overrides:
+        cfg.temperature = min(cfg.temperature, 0.2)
 
     # Bridge runs (Telegram, CI) must not inherit interactive session_summary into prompts.
     cfg.session_summary = ""

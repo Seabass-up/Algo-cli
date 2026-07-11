@@ -2373,11 +2373,15 @@ def retrieve_for_query(
         )
         qv = _np.array(qvec, dtype=_np.float32)
         q_norm = float(_np.linalg.norm(qv))
-        if q_norm <= 0.0:
+        if not math.isfinite(q_norm) or q_norm <= 0.0:
             return []
-        sims = (mat @ (qv / q_norm)).tolist()
+        # np.dot avoids spurious Accelerate/BLAS matmul overflow warnings seen
+        # for otherwise finite float32 cosine inputs on macOS.
+        sims = _np.dot(mat, qv / q_norm).tolist()
         scored: list[tuple[float, dict[str, Any]]] = [
-            (float(s), candidates[i]) for i, s in enumerate(sims) if s > 0.0
+            (float(s), candidates[i])
+            for i, s in enumerate(sims)
+            if math.isfinite(float(s)) and s > 0.0
         ]
     else:
         scored = []
@@ -2414,11 +2418,11 @@ def _normalized_candidate_matrix(
 
     mat = _np.asarray([record["embedding"] for record in candidates], dtype=_np.float32)
     norms = _np.linalg.norm(mat, axis=1)
-    nonzero = norms > 0
-    if not bool(nonzero.all()):
-        candidates = [record for record, keep in zip(candidates, nonzero.tolist()) if keep]
-        mat = mat[nonzero]
-        norms = norms[nonzero]
+    usable = _np.isfinite(norms) & (norms > 0)
+    if not bool(usable.all()):
+        candidates = [record for record, keep in zip(candidates, usable.tolist()) if keep]
+        mat = mat[usable]
+        norms = norms[usable]
     if len(candidates):
         mat = mat / norms[:, None]
     _VECTOR_MATRIX_CACHE = (key, candidates, mat)

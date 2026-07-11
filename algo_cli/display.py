@@ -751,11 +751,10 @@ def show_tool_result(
     call_id: str | None = None,
 ) -> None:
     if _json_sink is not None:
-        cid = call_id or _json_sink.next_call_id()
         if not approved and str(result).strip().lower().startswith("user denied"):
-            _json_sink.tool_denied(call_id=cid, name=name, reason="approval-mode never; tool requires approval")
+            _json_sink.tool_denied(call_id=call_id, name=name, reason="approval-mode never; tool requires approval")
         else:
-            _json_sink.tool_result(call_id=cid, name=name, result=result, duration_ms=duration_ms)
+            _json_sink.tool_result(call_id=call_id, name=name, result=result, duration_ms=duration_ms)
         return
     status = "[success]OK[/]" if approved else "[error]ERR[/]"
     lines = str(result).splitlines()

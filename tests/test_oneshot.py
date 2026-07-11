@@ -29,6 +29,18 @@ def test_json_event_sink_session_start_and_done_frame(monkeypatch):
     assert events[-1]["status"] == "complete"
     assert events[-1]["tool_calls"] == 0
     assert events[-1]["duration_ms"] == 42.0
+    assert events[-1]["usage"]["total_tokens"] == 0
+
+
+def test_json_event_sink_accumulates_chat_usage():
+    buf = io.StringIO()
+    sink = oneshot.JsonEventSink(stream=buf)
+    sink.chat_usage(prompt_tokens=100, completion_tokens=20)
+    sink.chat_usage(prompt_tokens=140, completion_tokens=10)
+    sink.done(status="complete", status_reason="", duration_ms=1)
+
+    usage = _drain(buf)[0]["usage"]
+    assert usage == {"prompt_tokens": 240, "completion_tokens": 30, "total_tokens": 270}
 
 
 def test_json_event_sink_tool_call_then_result(monkeypatch):
@@ -131,6 +143,24 @@ def test_display_helpers_route_through_sink_when_installed(monkeypatch):
     assert events[5]["class"] == "internal"
 
 
+def test_display_generated_call_ids_match_results_and_preserve_fifo():
+    buf = io.StringIO()
+    sink = oneshot.JsonEventSink(stream=buf)
+    display.install_json_sink(sink)
+    try:
+        display.show_tool_call("read_file", {"path": "first.py"})
+        display.show_tool_call("read_file", {"path": "second.py"})
+        display.show_tool_result("read_file", "first")
+        display.show_tool_result("read_file", "second")
+    finally:
+        display.uninstall_json_sink()
+
+    events = _drain(buf)
+    call_ids = [event["call_id"] for event in events if event["type"] == "tool_call"]
+    result_ids = [event["call_id"] for event in events if event["type"] == "tool_result"]
+    assert result_ids == call_ids
+
+
 def test_display_tool_denied_event_on_user_denied_result():
     buf = io.StringIO()
     sink = oneshot.JsonEventSink(stream=buf, approval_mode="never")
@@ -215,6 +245,27 @@ def test_run_oneshot_auto_mode_sets_cfg_auto_mode(monkeypatch):
     assert captured_cfg["auto_mode"] is True
     # Skill crystallization is always disabled in oneshot regardless of approval mode.
     assert captured_cfg["skill_crystallize_enabled"] is False
+
+
+def test_run_oneshot_uses_adaptive_thinking_and_allows_override(monkeypatch):
+    from algo_cli import main as main_module
+
+    captured: list[bool] = []
+
+    def _spy_agent_loop(_client, cfg, _msg):
+        captured.append(cfg.show_thinking)
+
+    monkeypatch.setattr(main_module, "agent_loop", _spy_agent_loop)
+    monkeypatch.setattr(main_module, "create_client", lambda _cfg: object())
+
+    oneshot.run_oneshot(prompt="Fix the failing test", stream=io.StringIO())
+    oneshot.run_oneshot(
+        prompt="Fix the failing test",
+        cfg_overrides={"show_thinking": True},
+        stream=io.StringIO(),
+    )
+
+    assert captured == [False, True]
 
 
 def test_oneshot_ask_approval_denies_dangerous_under_never(monkeypatch):

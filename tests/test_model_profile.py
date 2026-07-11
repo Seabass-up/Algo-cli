@@ -20,30 +20,30 @@ def test_large_model_widens_when_native_context_unknown():
     assert "num_ctx" in params.adapted_fields
 
 
-def test_known_native_context_is_default_request_window():
+def test_known_native_context_is_a_ceiling_not_default_allocation():
     cfg = Config()
     params = mp.effective_params(cfg, {"parameter_size": "671B", "context_length": 131072})
-    assert params.num_ctx == 131072
+    assert params.num_ctx == 32768
     assert "num_ctx" in params.adapted_fields
 
 
-def test_gemma4_12b_uses_native_256k_context():
+def test_gemma4_12b_uses_medium_default_below_native_context():
     cfg = Config(model="gemma4:12b-mlx-bf16")
     params = mp.effective_params(
         cfg,
         {"family": "gemma4_unified", "parameter_size": "12.4B", "context_length": 262144},
     )
-    assert params.num_ctx == 262144
+    assert params.num_ctx == 16384
     assert params.temperature == 0.4
 
 
-def test_gemma4_edge_variant_uses_native_128k_context():
+def test_gemma4_edge_variant_uses_small_default_below_native_context():
     cfg = Config(model="gemma4:e4b-mlx")
     params = mp.effective_params(
         cfg,
         {"family": "gemma4_unified", "parameter_size": "4.5B", "context_length": 131072},
     )
-    assert params.num_ctx == 131072
+    assert params.num_ctx == 8192
     assert params.temperature == 0.3
 
 

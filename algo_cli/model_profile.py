@@ -71,11 +71,10 @@ def recommend_profile(cfg: Any, model_info: dict[str, Any] | None) -> ModelProfi
     provider = _provider(cfg)
     native_ctx = _model_info_module.get_context_length(info)
 
-    # Baseline recommendations by size class. These are only fallbacks for
-    # models whose native context is unknown. When metadata reports a native
-    # window, use it as the default request window so local, cloud, xAI, and
-    # ChatGPT routes all apply the model's real capacity. Explicit /ctx user
-    # overrides are still honored later in effective_params().
+    # Baseline recommendations by size class. Native context is a ceiling, not
+    # a default allocation: requesting a 128K-1M window for a short task wastes
+    # KV-cache memory and can sharply increase local prefill latency. Explicit
+    # /ctx user overrides still opt into wider windows in effective_params().
     if size_class == "small":
         num_ctx, temperature, think_every = 8192, 0.3, 6
         note = "small model: tight fallback window, cooler sampling, frequent reflection"
@@ -95,8 +94,12 @@ def recommend_profile(cfg: Any, model_info: dict[str, Any] | None) -> ModelProfi
             note = "unknown model: conservative fallback defaults"
 
     if isinstance(native_ctx, int) and native_ctx > 0:
-        num_ctx = native_ctx
-        note = f"{note}; native context"
+        if provider == "local":
+            num_ctx = min(num_ctx, native_ctx)
+            note = f"{note}; local allocation capped by native context"
+        else:
+            num_ctx = native_ctx
+            note = f"{note}; remote native context"
 
     return ModelProfile(
         size_class=size_class,

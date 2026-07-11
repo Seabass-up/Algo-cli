@@ -51,6 +51,7 @@ from . import model_info as _model_info_module
 from . import model_profile
 from . import memory_runtime
 from . import reasoning_bridge
+from . import reconciliation
 from . import task_ledger
 from . import skills
 from . import task_router  # noqa: F401 — tests use main.task_router
@@ -131,6 +132,7 @@ from .tool_runtime import (
     tool_result_message,
     tool_runtime_args,
 )
+from .tool_context import select_tools_for_prompt
 from .slash_dispatch import SLASH_COMMANDS, SlashCommandCompleter, handle_command, unknown_command_message
 from .agent_pipeline import (  # noqa: F401
     _session_pipeline_blocks,
@@ -282,7 +284,7 @@ class SafeFileHistory(FileHistory):
     def store_string(self, string: str) -> None:
         safe = sanitize_prompt_text(string)[:PROMPT_HISTORY_MAX_ENTRY_CHARS]
         super().store_string(safe)
-        path = Path(self.filename)
+        path = Path(str(self.filename))
         if os.name == "posix":
             os.chmod(path, 0o600)
         self._stores_since_compaction += 1
@@ -318,7 +320,7 @@ class SafeFileHistory(FileHistory):
             kept_newest.append(item)
             retained_bytes += block_bytes
         payload = "".join(self._history_block(item) for item in reversed(kept_newest))
-        _atomic_write_text(Path(self.filename), payload)
+        _atomic_write_text(Path(str(self.filename)), payload)
         if os.name == "posix":
             os.chmod(self.filename, 0o600)
         self._loaded_strings = list(kept_newest)
@@ -2573,6 +2575,12 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
     persisted_user_message = user_message
     context_query_message = user_message
     optional_context_blocks: list[OptionalContextBlock] = []
+    reconciliation_guidance = reconciliation.guidance_for_prompt(user_message)
+    if reconciliation_guidance:
+        optional_context_blocks.append(
+            OptionalContextBlock("reconciliation", "Structured Reconciliation", reconciliation_guidance)
+        )
+    active_tools = select_tools_for_prompt(user_message, ALL_TOOLS)
     for changed_path in identity.detect_changes():
         show_info(f"↻ identity updated · {changed_path.name}")
     # Single memoized embed function shared by both retrieval calls (same model).
@@ -2608,7 +2616,14 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
     from .session_mode import normalize_mode
 
     _session_mode = normalize_mode(cfg.session_mode)
-    if _session_mode != "execute" and ensure_harness_index(cfg, _turn_local_models):
+    harness_tools_available = any(
+        getattr(tool, "__name__", "").startswith("harness_") for tool in active_tools
+    )
+    if (
+        _session_mode != "execute"
+        and (json_sink() is None or harness_tools_available)
+        and ensure_harness_index(cfg, _turn_local_models)
+    ):
         retrieved_context = harness.hybrid_search(
             context_query_message, _shared_embed, _embed_model, k=HARNESS_TOP_K
         )
@@ -2831,7 +2846,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 stream = client.chat(
                     model=cfg.model,
                     messages=request_messages,
-                    tools=ALL_TOOLS,
+                    tools=active_tools,
                     stream=True,
                     think=_think,
                     keep_alive=cfg.keep_alive,
@@ -2843,6 +2858,13 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                         status.stop()
                         status = None
                     record_chat_metrics(cfg, chunk)
+                    event_sink = json_sink()
+                    record_usage = getattr(event_sink, "chat_usage", None)
+                    if callable(record_usage):
+                        record_usage(
+                            prompt_tokens=get_attr(chunk, "prompt_eval_count", None),
+                            completion_tokens=get_attr(chunk, "eval_count", None),
+                        )
                     message = get_attr(chunk, "message", {})
                     thinking = get_attr(message, "thinking", "")
                     content = get_attr(message, "content", "")
@@ -2927,8 +2949,10 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                             "content": (
                                 "[Internal completion gate] Do not claim completion yet. The last "
                                 "workspace mutation has no successful post-mutation verifier. Run one "
-                                "appropriate non-mutating test, lint/type check, or git_diff tool now; "
-                                "then give a concise final answer grounded in that result."
+                                "appropriate non-mutating test, lint/type check, or git_diff tool now. "
+                                "Custom verification must fail on mismatch: run a healthcheck/check/verify "
+                                "script, or Python -c with one or more assertions; then give a concise "
+                                "final answer grounded in that result."
                             ),
                         }
                     )
@@ -3129,7 +3153,8 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                     tool_calls_since_reflection += 1
 
             if tool_calls_since_reflection >= reflection_interval:
-                reflection_checkpoint(client, cfg, persisted_user_message, reflection_interval)
+                if json_sink() is None:
+                    reflection_checkpoint(client, cfg, persisted_user_message, reflection_interval)
                 tool_calls_since_reflection -= reflection_interval
         else:
             show_error(f"Max tool iterations reached ({max_iterations}). Use /toolmax to raise or lower the limit.")
@@ -3465,6 +3490,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="never",
         help="In --oneshot, control how approval-required tools are handled: never (default, deny + tool_denied event) or auto (auto-approve, equivalent to /auto).",
     )
+    parser.add_argument(
+        "--thinking",
+        choices=["auto", "on", "off"],
+        default="auto",
+        help="In --oneshot, use adaptive deliberation (default), force model thinking on, or force it off.",
+    )
     parser.add_argument("prompt", nargs="*", help="Prompt for --oneshot mode. If omitted, read from stdin. Use `doctor` for readiness diagnostics, `plugin list` for plugins, `credential list` for credential helpers, `url-scheme <url>` for URL scheme parsing.")
     ns = parser.parse_args(argv)
     # Normalize nargs="*" list into a single string for downstream code
@@ -3495,6 +3526,8 @@ def _run_oneshot_entry(args: argparse.Namespace) -> int:
         overrides["cloud"] = True
     if args.cwd:
         overrides["cwd"] = str(Path(args.cwd).expanduser().resolve())
+    if args.thinking != "auto":
+        overrides["show_thinking"] = args.thinking == "on"
     from . import oneshot as _oneshot_module
     return _oneshot_module.run_oneshot(
         prompt=prompt,
