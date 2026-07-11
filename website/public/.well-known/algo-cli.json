@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "product": "Algo CLI",
+  "canonical_origin": "https://algo-cli.com",
+  "release_channel": "release-candidate",
+  "endpoints": {
+    "documentation": "https://algo-cli.com/docs",
+    "release": "https://algo-cli.com/api/v1/releases/stable.json",
+    "benchmark_summary": "https://algo-cli.com/benchmarks/summary.json",
+    "document_index": "https://algo-cli.com/docs/index.json",
+    "llms": "https://algo-cli.com/llms.txt",
+    "doctor": "https://algo-cli.com/doctor"
+  },
+  "privacy": {
+    "core_runtime_requires_site": false,
+    "diagnostics_upload": false,
+    "prompts_upload": false,
+    "memory_upload": false
+  }
+}

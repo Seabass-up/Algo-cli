@@ -24,3 +24,14 @@ npm install
 npm run dev
 npm test
 ```
+
+## Cloudflare publication
+
+The production Worker owns both `algo-cli.com` and `www.algo-cli.com` as
+Cloudflare Custom Domains. Cloudflare creates their DNS records and TLS
+certificates during deployment.
+
+```bash
+npm run deploy:cloudflare:dry-run
+npm run deploy:cloudflare
+```

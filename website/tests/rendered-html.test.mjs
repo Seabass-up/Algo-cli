@@ -29,6 +29,19 @@ test("server-renders the Algo CLI product home", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
 
+test("redirects the www hostname to the canonical origin", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-www`);
+  const { default: worker } = await import(workerUrl.href);
+  const response = await worker.fetch(
+    new Request("https://www.algo-cli.com/docs?source=test"),
+    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(response.status, 308);
+  assert.equal(response.headers.get("location"), "https://algo-cli.com/docs?source=test");
+});
+
 test("renders the core support routes", async () => {
   for (const [path, expected] of [
     ["/install", /Start local/],
@@ -47,6 +60,7 @@ test("ships truthful machine-readable release and benchmark contracts", async ()
   const release = JSON.parse(await readFile(new URL("../public/api/v1/releases/stable.json", import.meta.url), "utf8"));
   const benchmark = JSON.parse(await readFile(new URL("../public/benchmarks/summary.json", import.meta.url), "utf8"));
   const docs = JSON.parse(await readFile(new URL("../public/docs/index.json", import.meta.url), "utf8"));
+  const discovery = JSON.parse(await readFile(new URL("../public/.well-known/algo-cli.json", import.meta.url), "utf8"));
   assert.equal(release.channel, "release-candidate");
   assert.equal(release.published, false);
   assert.equal(release.package.available, false);
@@ -54,7 +68,12 @@ test("ships truthful machine-readable release and benchmark contracts", async ()
   assert.equal(benchmark.results[0].objective_passes, 9);
   assert.match(benchmark.limitations, /do not support a universal superiority/i);
   assert.equal(docs.version, "0.14.0");
+  assert.equal(discovery.schema_version, 1);
+  assert.equal(discovery.canonical_origin, "https://algo-cli.com");
+  assert.equal(discovery.privacy.core_runtime_requires_site, false);
   await access(new URL("../public/llms.txt", import.meta.url));
+  await access(new URL("../public/robots.txt", import.meta.url));
+  await access(new URL("../public/sitemap.xml", import.meta.url));
   await access(new URL("../public/og.png", import.meta.url));
   await assert.rejects(access(new URL("../app/_sites-preview", projectRoot)));
 });
