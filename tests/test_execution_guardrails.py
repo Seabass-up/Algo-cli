@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextvars import Context, copy_context
 from dataclasses import asdict
+import os
 from pathlib import Path
 
 import pytest
@@ -231,11 +232,10 @@ def test_read_and_mutation_evidence_rejects_outside_sensitive_failed_and_unknown
         ("cd -- '/tmp/a workspace' && git diff --check 2>&1", "git_diff"),
         ("python3 healthcheck.py", "test"),
         ("python3 verify_settings.py", "test"),
-        ("python3 -c 'assert 2 + 2 == 4'", "test"),
-        ("python3 -c 'value = 4\nassert value == 4\nprint(value)'", "test"),
-        ("python3 -c 'import sys\nerrors = [1]\nif errors: sys.exit(1)'", "test"),
-        ("python3 -c 'import sys\nok = True\nsys.exit(0 if ok else 1)'", "test"),
-        ("PYTHONPATH=src python3 -c 'value = 4\nassert value == 4' 2>&1", "test"),
+        ('python3 -c "assert 2 + 2 == 4"', "test"),
+        ('python3 -c "value = 4\nassert value == 4\nprint(value)"', "test"),
+        ('python3 -c "import sys\nerrors = [1]\nif errors: sys.exit(1)"', "test"),
+        ('python3 -c "import sys\nok = True\nsys.exit(0 if ok else 1)"', "test"),
     ],
 )
 def test_verification_command_classification_accepts_real_verifiers(command: str, kind: str) -> None:
@@ -243,6 +243,35 @@ def test_verification_command_classification_accepts_real_verifiers(command: str
     assert decision.qualifies is True
     assert decision.kind == kind
     assert "command" not in asdict(decision)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX environment-prefix syntax")
+def test_posix_environment_prefix_preserves_inline_verification() -> None:
+    decision = guardrails.classify_verification_command(
+        'PYTHONPATH=src python3 -c "value = 4\nassert value == 4" 2>&1'
+    )
+
+    assert decision.qualifies is True
+    assert decision.kind == "test"
+
+
+def test_windows_inline_python_requires_cmd_compatible_double_quotes() -> None:
+    accepted = guardrails._inline_python_verification(
+        'python3 -c "assert 2 + 2 == 4"',
+        platform_name="nt",
+    )
+    single_quoted = guardrails._inline_python_verification(
+        "python3 -c 'assert 2 + 2 == 4'",
+        platform_name="nt",
+    )
+    posix_environment = guardrails._inline_python_verification(
+        'PYTHONPATH=src python3 -c "assert True"',
+        platform_name="nt",
+    )
+
+    assert accepted is not None and accepted.qualifies is True
+    assert single_quoted is not None and single_quoted.qualifies is False
+    assert posix_environment is None
 
 
 def test_status_masking_verifier_suffix_is_detected() -> None:

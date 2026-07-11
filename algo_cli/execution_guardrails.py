@@ -445,14 +445,31 @@ def record_workspace_mutation(
     return ledger.append("mutation", operation, relative_path=".")
 
 
+def _shell_split(command: str, *, platform_name: str | None = None) -> list[str]:
+    """Split one shell command using the quoting rules of the target platform."""
+
+    platform = os.name if platform_name is None else platform_name
+    tokens = shlex.split(command, posix=platform != "nt")
+    if platform == "nt":
+        # ``cmd.exe`` uses double quotes for grouping and removes the outer
+        # pair before invoking Python. Single quotes are literal characters.
+        tokens = [
+            token[1:-1]
+            if len(token) >= 2 and token.startswith('"') and token.endswith('"')
+            else token
+            for token in tokens
+        ]
+    return tokens
+
+
 def _command_tokens(command: str) -> list[str] | None:
     if not command.strip() or _CONTROL_OPERATOR_RE.search(command):
         return None
     try:
-        tokens = shlex.split(command, posix=os.name != "nt")
+        tokens = _shell_split(command)
     except ValueError:
         return None
-    while tokens and _ENV_ASSIGNMENT_RE.match(tokens[0]):
+    while os.name != "nt" and tokens and _ENV_ASSIGNMENT_RE.match(tokens[0]):
         tokens.pop(0)
     return tokens or None
 
@@ -474,7 +491,7 @@ def _unwrap_verification_shell(command: str) -> str:
     if len(parts) != 2:
         return candidate
     try:
-        prefix = shlex.split(parts[0].strip(), posix=os.name != "nt")
+        prefix = _shell_split(parts[0].strip())
     except ValueError:
         return candidate
     if len(prefix) == 2 and _executable_name(prefix[0]) == "cd" and prefix[1]:
@@ -557,7 +574,11 @@ def _looks_like_verifier_script(token: str) -> bool:
     return bool(_VERIFIER_SCRIPT_RE.fullmatch(_executable_name(token)))
 
 
-def _inline_python_verification(command: str) -> VerificationCommand | None:
+def _inline_python_verification(
+    command: str,
+    *,
+    platform_name: str | None = None,
+) -> VerificationCommand | None:
     """Classify a standalone Python ``-c`` check before newline rejection.
 
     ``shlex`` preserves newlines inside the quoted source as one argument, so
@@ -565,11 +586,12 @@ def _inline_python_verification(command: str) -> VerificationCommand | None:
     produce additional tokens and are rejected.
     """
 
+    platform = os.name if platform_name is None else platform_name
     try:
-        tokens = shlex.split(command, posix=os.name != "nt")
+        tokens = _shell_split(command, platform_name=platform)
     except ValueError:
         return None
-    while tokens and _ENV_ASSIGNMENT_RE.match(tokens[0]):
+    while platform != "nt" and tokens and _ENV_ASSIGNMENT_RE.match(tokens[0]):
         tokens.pop(0)
     if len(tokens) != 3 or not re.fullmatch(
         r"python(?:\d+(?:\.\d+)*)?|py", _executable_name(tokens[0])
