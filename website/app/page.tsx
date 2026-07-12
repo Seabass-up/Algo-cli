@@ -60,11 +60,11 @@ export default function Home() {
 
       <section className="proof-rail" aria-label="Algo CLI evidence">
         <div className="proof-wide">
-          <span className="data-label">Reported local benchmark</span>
+          <span className="data-label">Reported same-model benchmark</span>
           <div className="benchmark-line"><strong><em>9/9</em> objective passes</strong><div className="mini-bars">{Array.from({ length: 9 }, (_, i) => <i key={i} />)}</div></div>
-          <small>Three tasks × three repetitions · same model and machine</small>
+          <small>Three tasks × three repetitions · 11 measured harnesses</small>
         </div>
-        <div><span className="data-label">Median runtime</span><strong>33.900s</strong><small>27-run comparison</small></div>
+        <div><span className="data-label">Algo median</span><strong>66.8s</strong><small>99-run comparison · p95 89.4s</small></div>
         <div><span className="data-label">Core posture</span><strong>Local first</strong><small>Remote services optional</small></div>
       </section>
 
@@ -107,7 +107,7 @@ export default function Home() {
 
       <section className="claim-strip">
         <div><span className="status-dot" /> EVIDENCE, NOT HYPE</div>
-        <p>Algo CLI ranked first in our reported 27-run local comparison. That is a scoped result—not independently reproduced evidence or a universal superiority claim.</p>
+        <p>Algo CLI tied the top reliability group at 9/9 clean runs and ranked third after latency broke the tie. That is a scoped result—not a universal superiority claim.</p>
         <Link href="/benchmarks">Inspect the methodology →</Link>
       </section>
 

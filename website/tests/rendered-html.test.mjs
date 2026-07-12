@@ -49,7 +49,7 @@ test("renders the core support routes", async () => {
     ["/install", /Start local/],
     ["/docs", /Command field guide/],
     ["/doctor", /Local browser analysis/i],
-    ["/benchmarks", /Show the receipts/],
+    ["/benchmarks", /Benchmark the harness\. Not the hype\./],
     ["/security", /Trust boundaries/i],
   ]) {
     const response = await render(path);
@@ -71,10 +71,13 @@ test("ships truthful machine-readable release and benchmark contracts", async ()
   assert.equal(release.source_revision, "be25ea08fd0d390d0f21fe8f0646582380ef0a79");
   assert.equal(release.source.available, true);
   assert.equal(release.security_advisory.active, true);
-  assert.equal(benchmark.protocol.total_runs, 27);
-  assert.equal(benchmark.results[0].objective_passes, 9);
+  assert.equal(benchmark.schema_version, 2);
+  assert.equal(benchmark.protocol.total_runs, 99);
+  assert.equal(benchmark.protocol.measured_harnesses, 11);
+  assert.equal(benchmark.results.find((row) => row.id === "algo-cli").clean_runs, 9);
+  assert.equal(benchmark.results.find((row) => row.id === "algo-cli").rank, 3);
   assert.match(benchmark.limitations, /do not support a universal superiority/i);
-  assert.match(benchmark.limitations, /does not publish raw runs/i);
+  assert.match(benchmark.limitations, /retained locally rather than published/i);
   assert.equal(docs.version, "0.14.0");
   assert.equal(discovery.schema_version, 1);
   assert.equal(discovery.canonical_origin, "https://algo-cli.com");
@@ -84,5 +87,6 @@ test("ships truthful machine-readable release and benchmark contracts", async ()
   await access(new URL("../public/robots.txt", import.meta.url));
   await access(new URL("../public/sitemap.xml", import.meta.url));
   await access(new URL("../public/og.png", import.meta.url));
+  await access(new URL("../public/benchmarks/results.csv", import.meta.url));
   await assert.rejects(access(new URL("../app/_sites-preview", projectRoot)));
 });

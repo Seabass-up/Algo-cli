@@ -1,22 +1,44 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "status": "reported-local-release-candidate-result",
   "created_at": "2026-07-11",
   "protocol": {
+    "id": "algo-cli-cross-harness-v2-draft",
     "tasks": 3,
     "repetitions_per_cell": 3,
     "runs_per_harness": 9,
-    "total_runs": 27,
-    "balanced_order": true,
+    "measured_harnesses": 11,
+    "total_runs": 99,
+    "order_policy": "deterministic cyclic rotation",
     "same_model": "qwen3.6:35b-mlx",
+    "provider": "local Ollama",
     "same_machine": true,
-    "fresh_state_per_run": true
+    "fresh_state_per_run": true,
+    "timeout_seconds": 300,
+    "ranking_policy": "checker pass rate, scope pass rate, clean-run rate, median duration"
   },
   "results": [
-    { "harness": "algo-cli", "objective_passes": 9, "clean_runs": 9, "median_seconds": 33.90038, "p95_seconds": 64.472878 },
-    { "harness": "pi", "objective_passes": 6, "clean_runs": 9, "median_seconds": 34.005466, "p95_seconds": 39.568108 },
-    { "harness": "opencode", "objective_passes": 6, "clean_runs": 9, "median_seconds": 59.260209, "p95_seconds": 165.591684 }
+    { "rank": 1, "id": "pi", "harness": "Pi", "passes": 9, "clean_runs": 9, "scope_passes": 9, "runs": 9, "median_seconds": 35.333872, "p95_seconds": 53.31303, "code_repair_passes": 3, "tool_trap_passes": 3, "memory_passes": 3 },
+    { "rank": 2, "id": "opencode", "harness": "OpenCode", "passes": 9, "clean_runs": 9, "scope_passes": 9, "runs": 9, "median_seconds": 54.373749, "p95_seconds": 73.233417, "code_repair_passes": 3, "tool_trap_passes": 3, "memory_passes": 3 },
+    { "rank": 3, "id": "algo-cli", "harness": "Algo CLI", "passes": 9, "clean_runs": 9, "scope_passes": 9, "runs": 9, "median_seconds": 66.795381, "p95_seconds": 89.442585, "code_repair_passes": 3, "tool_trap_passes": 3, "memory_passes": 3 },
+    { "rank": 4, "id": "goose", "harness": "Goose", "passes": 9, "clean_runs": 9, "scope_passes": 9, "runs": 9, "median_seconds": 68.228616, "p95_seconds": 185.367366, "code_repair_passes": 3, "tool_trap_passes": 3, "memory_passes": 3 },
+    { "rank": 5, "id": "openclaw", "harness": "OpenClaw", "passes": 9, "clean_runs": 9, "scope_passes": 9, "runs": 9, "median_seconds": 80.372175, "p95_seconds": 132.473389, "code_repair_passes": 3, "tool_trap_passes": 3, "memory_passes": 3 },
+    { "rank": 6, "id": "hermes-agent", "harness": "Hermes Agent", "passes": 9, "clean_runs": 9, "scope_passes": 9, "runs": 9, "median_seconds": 85.991251, "p95_seconds": 149.114012, "code_repair_passes": 3, "tool_trap_passes": 3, "memory_passes": 3 },
+    { "rank": 7, "id": "codex-cli", "harness": "Codex CLI", "passes": 8, "clean_runs": 8, "scope_passes": 8, "runs": 9, "median_seconds": 36.636926, "p95_seconds": 39.837425, "code_repair_passes": 3, "tool_trap_passes": 2, "memory_passes": 3 },
+    { "rank": 8, "id": "claude-code", "harness": "Claude Code", "passes": 8, "clean_runs": 8, "scope_passes": 8, "runs": 9, "median_seconds": 39.600229, "p95_seconds": 71.285904, "code_repair_passes": 3, "tool_trap_passes": 2, "memory_passes": 3 },
+    { "rank": 9, "id": "copilot-cli", "harness": "Copilot CLI", "passes": 8, "clean_runs": 8, "scope_passes": 8, "runs": 9, "median_seconds": 98.823846, "p95_seconds": 284.579931, "code_repair_passes": 3, "tool_trap_passes": 2, "memory_passes": 3 },
+    { "rank": 10, "id": "oh-my-pi", "harness": "Oh My Pi", "passes": 7, "clean_runs": 7, "scope_passes": 7, "runs": 9, "median_seconds": 40.625812, "p95_seconds": 48.116694, "code_repair_passes": 3, "tool_trap_passes": 1, "memory_passes": 3 },
+    { "rank": 11, "id": "droid", "harness": "Droid", "passes": 6, "clean_runs": 5, "scope_passes": 7, "runs": 9, "median_seconds": 159.14025, "p95_seconds": 226.658741, "code_repair_passes": 3, "tool_trap_passes": 2, "memory_passes": 1 }
   ],
-  "claim": "Algo CLI ranked first in the reported balanced 27-run local comparison.",
-  "limitations": "This aggregate summary does not publish raw runs, competitor revisions, checker versions, or a reproducible evidence bundle. Three draft tasks, one local model, one machine, and three repetitions per cell do not support a universal superiority or model-power claim, and the missing raw evidence prevents independent reproduction."
+  "blocked_or_non_comparable": [
+    { "product": "Grok Build", "reason": "Installed but not authenticated." },
+    { "product": "Cline CLI", "reason": "The installed binary exits without a usable CLI response." },
+    { "product": "Pool", "reason": "License acceptance is required before installation." },
+    { "product": "Mercury", "reason": "No identifiable Mercury harness or headless CLI was supplied." },
+    { "product": "Codex App", "reason": "The desktop UI has no deterministic headless benchmark adapter." },
+    { "product": "Hermes Desktop", "reason": "The desktop UI has no deterministic headless benchmark adapter." },
+    { "product": "Assistants", "reason": "This is an Ollama documentation category, not a separate harness." }
+  ],
+  "claim": "Algo CLI achieved 9/9 clean runs and tied the top reliability group in the reported three-task, same-model benchmark.",
+  "limitations": "Three draft tasks, one local model, one machine, and three repetitions per cell do not support a universal superiority or native-model-power claim. Raw run artifacts remain retained locally rather than published, and the results have not been independently reproduced."
 }
