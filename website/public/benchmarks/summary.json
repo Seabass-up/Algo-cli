@@ -2,6 +2,8 @@
   "schema_version": 2,
   "status": "reported-local-release-candidate-result",
   "created_at": "2026-07-11",
+  "source_revision": "eadb5701ea1df31e706e0a939f06670e445c4e6c",
+  "runner_path": "benchmarks/competitors",
   "protocol": {
     "id": "algo-cli-cross-harness-v2-draft",
     "tasks": 3,
@@ -40,5 +42,6 @@
     { "product": "Assistants", "reason": "This is an Ollama documentation category, not a separate harness." }
   ],
   "claim": "Algo CLI achieved 9/9 clean runs and tied the top reliability group in the reported three-task, same-model benchmark.",
+  "result_provenance": "The published runner revision adds environment-variable scrubbing and fail-closed error handling after the measured run. Task fixtures, checker expectations, scoring, ranking, and reported measurements are unchanged.",
   "limitations": "Three draft tasks, one local model, one machine, and three repetitions per cell do not support a universal superiority or native-model-power claim. Raw run artifacts remain retained locally rather than published, and the results have not been independently reproduced."
 }

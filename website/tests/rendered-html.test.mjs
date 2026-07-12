@@ -74,6 +74,8 @@ test("ships truthful machine-readable release and benchmark contracts", async ()
   assert.equal(benchmark.schema_version, 2);
   assert.equal(benchmark.protocol.total_runs, 99);
   assert.equal(benchmark.protocol.measured_harnesses, 11);
+  assert.match(benchmark.source_revision, /^[0-9a-f]{40}$/);
+  assert.equal(benchmark.runner_path, "benchmarks/competitors");
   assert.equal(benchmark.results.find((row) => row.id === "algo-cli").clean_runs, 9);
   assert.equal(benchmark.results.find((row) => row.id === "algo-cli").rank, 3);
   assert.match(benchmark.limitations, /do not support a universal superiority/i);
