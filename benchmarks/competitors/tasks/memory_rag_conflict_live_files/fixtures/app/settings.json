@@ -1,0 +1,5 @@
+{
+  "approval_ticket": "MEM-0042",
+  "status_endpoint": "/api/v1/legacy-status",
+  "feature_flag": "legacy_mode"
+}
