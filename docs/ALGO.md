@@ -6134,7 +6134,11 @@ class CodeRank:
         ...
 ```
 
-**Harness use:** Compute CodeRank for the algo_cli codebase. Symbols with high CodeRank (like `agent_loop`, `make_maintenance_llm_fn`) are structurally critical — changes need extra care. Bridge nodes are connectors between modules. Add `/code rank` and `/code bridges`.
+**Harness use (active):** `algo_cli/intelligence/repo_map.py` builds a compact file/symbol snapshot from the existing project graph. `algo_cli/code_rag.py` runs weighted personalized CodeRank over import edges, fuses the normalized structural score with embedding similarity, exposes semantic and structural score provenance, and places a token-budgeted repository map ahead of retrieved chunks. Dangling rank is redistributed correctly, edge weights are honored, and task-matching paths/symbols personalize the walk. The project graph reuses Code RAG's consent-filtered file inventory and does not perform a second broad repository walk.
+
+**Effectiveness evidence (2026-07-13):** `python benchmarks/structural_rag.py` runs five deterministic warm-cache cells with 25 repetitions each: three ambiguous central-module retrieval cases and two exact-semantic guardrails. On the recorded local run, semantic-only top-1 accuracy was `0.40` with MRR `0.60`; semantic-plus-structural retrieval reached top-1 `1.00` and MRR `1.00` while preserving both exact-semantic winners. Mean warm retrieval time moved from about `0.032 ms` to `0.105 ms`. This is a focused algorithm regression benchmark, not a claim about broad coding-agent quality.
+
+**Next extension:** symbol-level call/reference edges and optional multi-language parsers can deepen the map after they demonstrate enough retrieval lift to justify their dependency and indexing cost. Bridge-centrality remains planned.
 
 ---
 

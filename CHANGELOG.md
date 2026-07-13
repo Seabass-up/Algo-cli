@@ -6,12 +6,15 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ### Added
 
+- Query-aware structural repository maps with weighted personalized CodeRank, token-budgeted symbol outlines, and score provenance in code-RAG results.
+- A deterministic baseline-versus-structural retrieval benchmark with ambiguous central-module cases and semantic-specificity guardrails.
 - Worktree-backed durable agent threads with `/worktree`, `/agent switch`, repository/branch/HEAD validation, collision-safe repository-hashed paths, and isolated forks by default.
 - A structured `/ship` workflow for fingerprinted and scoped commit, freshly checked push, and idempotent draft pull-request creation.
 - Active `worktree-isolation` and `pre-push-gate` kernel contracts with explicit approval and safety metadata.
 
 ### Changed
 
+- Code RAG now fuses embedding similarity with structural importance while retaining a semantic-only baseline mode; project-graph construction reuses the consent-filtered file inventory instead of walking the repository twice.
 - Agent-thread records now persist bounded workspace and Git-digest evidence while omitting absolute paths from model handoffs.
 - Direct `/model NAME` selection now reconciles the provider route instead of inheriting stale Ollama Cloud state; dashboards label xAI and ChatGPT routes correctly.
 - The runtime overview now advertises only controls the prompt loop actually implements.

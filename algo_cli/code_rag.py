@@ -35,6 +35,8 @@ except ImportError:
     _NUMPY = False
 
 from .config import CONFIG_DIR, _atomic_write_text
+from .intelligence.project_graph import build_project_graph
+from .intelligence.repo_map import rank_repo_map, render_repo_map, snapshot_project_graph
 from .retrieval_algorithms import stable_top_k
 
 EmbedFn = Callable[[list[str]], list[list[float]]]
@@ -47,6 +49,8 @@ MAX_FILE_BYTES = 400_000
 MAX_CHUNKS = 4000
 EMBED_PER_TURN_CAP = 64
 SNIPPET_CHARS = 600
+STRUCTURAL_WEIGHT = 0.18
+REPO_MAP_TOKEN_BUDGET = 320
 
 CODE_EXTENSIONS: frozenset[str] = frozenset({
     ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".kt",
@@ -58,6 +62,7 @@ SKIP_DIRS: frozenset[str] = frozenset({
     ".git", "node_modules", ".venv", "venv", "env", "__pycache__", "dist",
     "build", "target", ".next", ".mypy_cache", ".pytest_cache", ".ruff_cache",
     "site-packages", ".tox", ".idea", ".vscode", "coverage", ".cache",
+    "benchmark-results", "htmlcov",
 })
 
 # Same policy as harness.SECRET_RE: never index files whose names suggest
@@ -94,11 +99,17 @@ def _iter_source_files(root: Path) -> list[Path]:
     resolved_root = root.resolve()
     found: list[Path] = []
     for current, dirs, files in os.walk(root):
-        dirs[:] = [
-            d for d in dirs
-            if d not in SKIP_DIRS and not d.startswith(".") and not SECRET_RE.search(d)
-        ]
-        for name in files:
+        dirs[:] = sorted(
+            [
+                directory
+                for directory in dirs
+                if directory not in SKIP_DIRS
+                and not directory.startswith(".")
+                and not SECRET_RE.search(directory)
+            ],
+            key=str.lower,
+        )
+        for name in sorted(files, key=str.lower):
             if Path(name).suffix.lower() not in CODE_EXTENSIONS:
                 continue
             path = Path(current) / name
@@ -342,10 +353,26 @@ def build_or_update_index(cwd: str, *, force: bool = False) -> dict[str, Any]:
         if len(new_chunks) >= MAX_CHUNKS:
             break
 
+    prior_structural = index.get("structural") if isinstance(index, dict) else None
+    if reused_files == len(new_files) and isinstance(prior_structural, dict):
+        structural = prior_structural
+    else:
+        try:
+            graph = build_project_graph(
+                root,
+                persist=False,
+                source_files=new_files,
+                include_git_recency=False,
+            )
+            structural = snapshot_project_graph(graph)
+        except Exception:
+            structural = {}
+
     index = {
         "cwd": str(root),
         "files": new_files,
         "chunks": new_chunks,
+        "structural": structural,
         "refresh_stats": {
             "reused_files": reused_files,
             "content_reused_embeddings": reused_chunk_embeddings,
@@ -387,13 +414,24 @@ def _cosine(a: list[float], b: list[float]) -> float:
         nb += y * y
     if na == 0.0 or nb == 0.0:
         return 0.0
-    return dot / ((na ** 0.5) * (nb ** 0.5))
+    return float(dot / ((na ** 0.5) * (nb ** 0.5)))
 
 
-def retrieve(cwd: str, query: str, embed_fn: EmbedFn, model: str, *, k: int = 4) -> list[dict[str, Any]]:
+def retrieve(
+    cwd: str,
+    query: str,
+    embed_fn: EmbedFn,
+    model: str,
+    *,
+    k: int = 4,
+    structural_weight: float = STRUCTURAL_WEIGHT,
+) -> list[dict[str, Any]]:
+    """Retrieve chunks by semantic similarity fused with structural importance."""
+
     query = (query or "").strip()
     if not query:
         return []
+    structural_weight = min(1.0, max(0.0, structural_weight))
     index = ensure_embeddings(cwd, embed_fn, model)
     candidates = [c for c in index.get("chunks", []) if c.get("embedding") and c.get("embedding_model") == model]
     if not candidates:
@@ -417,20 +455,52 @@ def retrieve(cwd: str, query: str, embed_fn: EmbedFn, model: str, *, k: int = 4)
         if qnorm > 0.0:
             qv = qv / qnorm
         sims = (mat @ qv).tolist()
-        scored = [(float(s), candidates[i]) for i, s in enumerate(sims) if s > 0.0]
+        semantic_scored = [
+            (float(score), candidates[index])
+            for index, score in enumerate(sims)
+            if score > 0.0
+        ]
     else:
-        scored = [(_cosine(qvec, c["embedding"]), c) for c in candidates]
-        scored = [(s, c) for s, c in scored if s > 0.0]
-    scored = stable_top_k(scored, k, score=lambda pair: pair[0])
+        semantic_scored = [(_cosine(qvec, chunk["embedding"]), chunk) for chunk in candidates]
+        semantic_scored = [
+            (score, chunk) for score, chunk in semantic_scored if score > 0.0
+        ]
+
+    structural_snapshot = index.get("structural", {})
+    structural_by_path = (
+        {entry.path: entry.rank for entry in rank_repo_map(structural_snapshot, query)}
+        if structural_weight
+        else {}
+    )
+    scored = []
+    for semantic_score, chunk in semantic_scored:
+        structural_score = structural_by_path.get(str(chunk.get("relative_path", "")), 0.0)
+        combined_score = (
+            (1.0 - structural_weight) * semantic_score
+            + structural_weight * structural_score
+        )
+        scored.append((combined_score, semantic_score, structural_score, chunk))
+    scored = stable_top_k(scored, k, score=lambda row: row[0])
     out: list[dict[str, Any]] = []
-    for sim, chunk in scored:
+    for combined_score, semantic_score, structural_score, chunk in scored:
         out.append({
             "relative_path": chunk.get("relative_path", ""),
             "start_line": chunk.get("start_line", 1),
             "end_line": chunk.get("end_line", 1),
             "text": chunk.get("text", ""),
-            "score": round(float(sim), 4),
+            "score": round(float(combined_score), 4),
+            "semantic_score": round(float(semantic_score), 4),
+            "structural_score": round(float(structural_score), 4),
+            "retrieval_strategy": "semantic+structural" if structural_weight else "semantic",
         })
+    if out and structural_weight:
+        repo_map = render_repo_map(
+            structural_snapshot,
+            query,
+            token_budget=REPO_MAP_TOKEN_BUDGET,
+        )
+        if repo_map:
+            out[0]["repo_map"] = repo_map
     return out
 
 
@@ -441,6 +511,9 @@ def format_code_context(results: list[dict[str, Any]]) -> str:
         "Relevant code from the working directory (read_file the path for full context):",
         "",
     ]
+    repo_map = str(results[0].get("repo_map", ""))
+    if repo_map:
+        lines.extend((repo_map, ""))
     for r in results:
         body = r.get("text", "")
         if len(body) > SNIPPET_CHARS:

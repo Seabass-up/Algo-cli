@@ -14,7 +14,7 @@ import subprocess
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 
 SOURCE_SUFFIXES = frozenset({".py", ".pyi"})
@@ -27,7 +27,9 @@ SKIP_DIRS = frozenset({
     ".venv",
     "__pycache__",
     "build",
+    "benchmark-results",
     "dist",
+    "htmlcov",
     "node_modules",
     "venv",
 })
@@ -156,7 +158,10 @@ def save_project_graph(graph: ProjectGraph) -> Path:
 def _iter_source_files(root: Path) -> list[Path]:
     files: list[Path] = []
     for current, dirs, names in os.walk(root):
-        dirs[:] = [name for name in dirs if name not in SKIP_DIRS]
+        dirs[:] = sorted(
+            (name for name in dirs if name not in SKIP_DIRS and not name.startswith(".")),
+            key=str.lower,
+        )
         for name in names:
             path = Path(current) / name
             if path.suffix.lower() in SOURCE_SUFFIXES:
@@ -301,13 +306,31 @@ def _build_test_mappings(files: dict[str, FileNode], imports: list[ImportEdge]) 
     return mappings
 
 
-def build_project_graph(root: Path | str, *, persist: bool = True) -> ProjectGraph:
+def build_project_graph(
+    root: Path | str,
+    *,
+    persist: bool = True,
+    source_files: Iterable[str] | None = None,
+    include_git_recency: bool = True,
+) -> ProjectGraph:
     root_path = Path(root).resolve()
-    recent_counts = _git_recent_counts(root_path)
+    recent_counts = _git_recent_counts(root_path) if include_git_recency else {}
     files: dict[str, FileNode] = {}
     symbols: dict[str, SymbolNode] = {}
     imports: list[ImportEdge] = []
-    source_paths = _iter_source_files(root_path)
+    if source_files is None:
+        source_paths = _iter_source_files(root_path)
+    else:
+        source_paths = []
+        for relative in sorted(set(source_files), key=str.lower):
+            candidate = root_path / relative
+            try:
+                resolved = candidate.resolve(strict=True)
+                resolved.relative_to(root_path)
+            except (OSError, ValueError):
+                continue
+            if candidate.suffix.lower() in SOURCE_SUFFIXES:
+                source_paths.append(candidate)
     source_rel = {path.relative_to(root_path).as_posix() for path in source_paths}
 
     max_recent = max(recent_counts.values(), default=0)
