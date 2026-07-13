@@ -4,6 +4,10 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- `algo-cli update` upgrades the published distribution through pipx, uv tool, or the current Python environment's pip without initializing or changing user runtime state.
+
 ## [0.15.0] - 2026-07-13
 
 ### Added

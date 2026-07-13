@@ -14,6 +14,7 @@ from algo_cli import main
 from algo_cli import model_routing
 from algo_cli import action_registry
 from algo_cli import context_budget
+from algo_cli import updater
 
 
 def test_imports_ok():
@@ -22,6 +23,31 @@ def test_imports_ok():
     import algo_cli.harness  # noqa: F401
     import algo_cli.identity  # noqa: F401
     import algo_cli.skills  # noqa: F401
+
+
+def test_update_command_exits_before_runtime_state_initialization(monkeypatch):
+    result = updater.UpdateResult(
+        returncode=0,
+        manager="pip",
+        before_version="0.15.0",
+        after_version="0.16.0",
+        message="Updated Algo CLI 0.15.0 → 0.16.0. Restart the command to use the new version.",
+    )
+    rendered: list[str] = []
+    monkeypatch.setattr(main.sys, "argv", ["algo-cli", "update"])
+    monkeypatch.setattr(main.updater, "update_algo_cli", lambda: result)
+    monkeypatch.setattr(main.console, "print", lambda value, **_kwargs: rendered.append(str(value)))
+    monkeypatch.setattr(
+        main.Config,
+        "load",
+        lambda: pytest.fail("update must exit before loading user configuration"),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+
+    assert exc.value.code == 0
+    assert "0.15.0 → 0.16.0" in rendered[0]
 
 
 def test_model_name_classifiers():

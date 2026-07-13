@@ -22,7 +22,14 @@ Algo CLI requires Python 3.10 or newer. The PyPI distribution is named
 pipx install algo-cli-runtime
 # or: uv tool install algo-cli-runtime
 algo-cli doctor
+algo-cli update
 ```
+
+`algo-cli update` upgrades the published `algo-cli-runtime` package using the
+installation's owning tool: pipx, uv, or the current Python environment's pip.
+It leaves configuration, credentials, memory, and other files under
+`~/.algo_cli` untouched. Set `ALGO_CLI_UPDATE_MANAGER=pipx`, `uv`, or `pip`
+only when automatic installation detection needs an explicit override.
 
 To install a reviewed source checkout instead, clone the repository and run
 `pipx install .` from its root.
