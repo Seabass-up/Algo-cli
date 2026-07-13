@@ -184,6 +184,7 @@ def test_chatgpt_login_device_code_flag_uses_codex_device_flow(monkeypatch):
     monkeypatch.setattr(main, "show_info", infos.append)
     monkeypatch.setattr(main, "show_error", errors.append)
     monkeypatch.setattr(main.chatgpt_auth, "run_codex_device_login", lambda: {"access_token": "AT", "expires_at": int(time.time()) + 3600})
+    monkeypatch.setattr(main, "_show_chatgpt_models_after_login", lambda: None)
 
     main.run_chatgpt_login("--device-code")
 
@@ -211,6 +212,7 @@ def test_chatgpt_login_defaults_to_codex_browser_oauth(monkeypatch):
             "state": "state",
         },
     )
+    monkeypatch.setattr(main, "_show_chatgpt_models_after_login", lambda: None)
     monkeypatch.setattr(main.chatgpt_auth, "run_loopback_capture", lambda **kw: {"code": "CODE", "state": "state"})
     monkeypatch.setattr(
         main.chatgpt_auth,
@@ -296,6 +298,24 @@ def test_slash_toggles_accept_explicit_on_off_status(monkeypatch):
     assert cfg.show_thinking is True
     assert cfg.verify_mode is True
     assert any("Thinking display: ON" in message for message in messages)
+
+
+def test_thinking_effort_is_stored_per_gpt_56_model(monkeypatch):
+    cfg = Config(model="gpt-5.6-sol")
+    messages: list[str] = []
+    monkeypatch.setattr(cfg, "save", lambda: None)
+    monkeypatch.setattr(main, "show_info", messages.append)
+
+    main.handle_command("/thinking effort sol max", cfg, object())  # type: ignore[arg-type]
+    main.handle_command("/thinking effort terra high", cfg, object())  # type: ignore[arg-type]
+    main.handle_command("/thinking effort luna low", cfg, object())  # type: ignore[arg-type]
+
+    assert cfg.chatgpt_reasoning_efforts == {
+        "gpt-5.6-sol": "max",
+        "gpt-5.6-terra": "high",
+        "gpt-5.6-luna": "low",
+    }
+    assert any("gpt-5.6-sol: max" in message for message in messages)
 
 
 def test_save_with_empty_sanitized_name_reports_error(monkeypatch):
@@ -1125,12 +1145,23 @@ def test_xai_models_hidden_until_oauth(monkeypatch):
 
 def test_chatgpt_models_visible_after_codex_oauth(monkeypatch):
     monkeypatch.setattr(main.chatgpt_auth, "get_valid_token", lambda: "token")
+    monkeypatch.setattr(
+        main.chatgpt_client,
+        "get_codex_models",
+        lambda: [
+            {"slug": "gpt-5.6-sol"},
+            {"slug": "gpt-5.6-terra"},
+            {"slug": "gpt-5.6-luna"},
+            {"slug": "gpt-5.5"},
+        ],
+    )
 
     names, authenticated = main.chatgpt_model_names()
 
     assert authenticated is True
-    assert "gpt-5.5" in names
-    assert "gpt-5.4-mini" in names
+    assert "gpt-5.6-sol" in names
+    assert "gpt-5.6-terra" in names
+    assert "gpt-5.6-luna" in names
 
 
 def test_model_picker_includes_authenticated_chatgpt_models(monkeypatch, tmp_path):
@@ -1143,7 +1174,7 @@ def test_model_picker_includes_authenticated_chatgpt_models(monkeypatch, tmp_pat
     monkeypatch.setattr(main, "choose_from_menu", lambda _title, choices: captured.extend(choices) or None)
 
     assert main.model_picker(cfg) is False
-    assert ("gpt-5.5", "OpenAI Codex CLI (subscription quota)") in captured
+    assert ("gpt-5.5", "OpenAI Codex · reasoning medium · subscription quota") in captured
 
 
 def test_onboarding_remains_pending_when_model_selection_fails(monkeypatch):
@@ -1380,6 +1411,31 @@ def test_direct_model_command_reconciles_provider_route(
     assert returned_client is replacement_client
     assert cfg.model == model
     assert cfg.cloud is expected_cloud
+
+
+@pytest.mark.parametrize(
+    ("alias", "canonical"),
+    [
+        ("sol", "gpt-5.6-sol"),
+        ("terra", "gpt-5.6-terra"),
+        ("luna", "gpt-5.6-luna"),
+        ("lunna", "gpt-5.6-luna"),
+    ],
+)
+def test_direct_model_command_canonicalizes_codex_alias(monkeypatch, alias, canonical):
+    cfg = Config(model="qwen3", cloud=True)
+    replacement_client = object()
+    monkeypatch.setattr(cfg, "save", lambda: None)
+    monkeypatch.setattr(main, "create_client", lambda _cfg: replacement_client)
+    monkeypatch.setattr(main, "refresh_runtime_status", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main, "invalidate_prompt_toolbar", lambda _session: None)
+
+    handled, returned = main.handle_command(f"/model {alias}", cfg, object())  # type: ignore[arg-type]
+
+    assert handled is True
+    assert returned is replacement_client
+    assert cfg.model == canonical
+    assert cfg.cloud is False
 
 
 @pytest.mark.parametrize(

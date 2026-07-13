@@ -14,6 +14,7 @@ import time
 from typing import Any
 
 from .config import CONFIG_DIR, _atomic_write_text
+from .model_aliases import normalize_codex_model
 
 
 MODEL_INFO_DIR = CONFIG_DIR / "model_info"
@@ -58,7 +59,7 @@ def _context_length(raw_info: dict) -> int | None:
 
 
 def _bare_model_name(model: str) -> str:
-    return (model or "").split(":", 1)[0].strip().lower()
+    return normalize_codex_model(model).split(":", 1)[0].strip().lower()
 
 
 _SHOW_CTX_RE = re.compile(r"^\s*context\s+length\s+(\d+)\s*$", re.IGNORECASE | re.MULTILINE)
@@ -504,11 +505,18 @@ def is_chatgpt_model(model: str) -> bool:
     """
     if not model or not isinstance(model, str):
         return False
-    bare = model.split(":", 1)[0]
+    bare = _bare_model_name(model)
     return bool(_CHATGPT_NAME_RE.match(bare))
 
 
 _CHATGPT_CONTEXT_LENGTHS: dict[str, int] = {
+    # The ChatGPT/Codex subscription catalog currently exposes a 272K runtime
+    # window for these models. Public API model pages advertise a wider window,
+    # but Algo routes this family through the subscription backend.
+    "gpt-5.6": 272_000,
+    "gpt-5.6-sol": 272_000,
+    "gpt-5.6-terra": 272_000,
+    "gpt-5.6-luna": 272_000,
     "gpt-5.5": 1_000_000,
     "gpt-5.4": 1_000_000,
     "gpt-5.4-mini": 400_000,
@@ -526,7 +534,7 @@ def synthesize_chatgpt_info(model: str) -> dict[str, Any]:
         "quantization": "",
         "context_length": _CHATGPT_CONTEXT_LENGTHS.get(bare, 128_000),
         "supports_thinking": True,
-        "supports_vision": False,
+        "supports_vision": bare.startswith("gpt-5.6"),
         "supports_tools": True,
         "provider": "chatgpt",
     }

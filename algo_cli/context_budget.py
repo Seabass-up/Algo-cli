@@ -12,11 +12,12 @@ from typing import Any, Callable
 from ollama import Client
 
 from .config import Config, load_runtime_env
+from . import context_supersession
 from . import harness
 from . import identity
 from . import model_info as _model_info_module
 from . import reflex
-from .chat_protocol import get_attr
+from .chat_protocol import get_attr, normalize_tool_call
 from .display import json_sink
 
 CONTEXT_COMPACT_THRESHOLD = 0.85
@@ -392,11 +393,20 @@ def estimate_context_usage(
     return total
 
 
-def estimate_usage_with_system_prompt(system_prompt: str, cfg: Config) -> int:
-    """Token estimate for a fully-built system prompt plus current messages."""
+def estimate_usage_with_system_prompt(
+    system_prompt: str,
+    cfg: Config,
+    *,
+    tools: list[Any] | None = None,
+) -> int:
+    """Estimate a request including system, messages, and visible tool schemas."""
     total = estimate_text_tokens(system_prompt)
     for message in cfg.messages:
         total += estimate_message_tokens(message)
+    if tools:
+        from .tool_schema import estimate_tool_schema_tokens
+
+        total += estimate_tool_schema_tokens(tools)
     return total
 
 
@@ -525,6 +535,7 @@ def _strip_tool_call_at(
     assistant_index: int,
     *,
     call_id: str | None = None,
+    call: Any | None = None,
 ) -> bool:
     if assistant_index < 0 or assistant_index >= len(messages):
         return False
@@ -535,6 +546,12 @@ def _strip_tool_call_at(
     if call_id:
         filtered = [c for c in calls if _tool_call_id(c) != call_id]
         if len(filtered) == len(calls):
+            return False
+    elif call is not None:
+        filtered = list(calls)
+        try:
+            filtered.remove(call)
+        except ValueError:
             return False
     else:
         filtered = calls[1:]
@@ -548,6 +565,21 @@ def _strip_tool_call_at(
 
 
 def prune_stale_tool_messages(cfg: Config) -> int:
+    supersession = context_supersession.supersede_tool_results(
+        cfg.messages,
+        cwd=cfg.cwd,
+    )
+    if supersession.superseded:
+        # Supersession changes earlier messages without changing list length or
+        # the last message, so the ordinary cache key cannot observe it.
+        invalidate_context_usage_cache()
+        from . import perf_telemetry
+
+        perf_telemetry.record_perf_event(
+            "semantic_supersession",
+            **supersession.to_dict(),
+        )
+
     total = len(cfg.messages)
     if total <= cfg.prune_after_messages:
         return 0
@@ -557,8 +589,8 @@ def prune_stale_tool_messages(cfg: Config) -> int:
 
     removed = 0
     new_messages: list[dict[str, Any]] = []
-    call_id_to_assistant: dict[str, int] = {}
-    pending_assistants: list[int] = []
+    pending_calls: list[tuple[int, str | None, str, Any]] = []
+    call_id_to_pending: dict[str, tuple[int, str | None, str, Any]] = {}
 
     for index, message in enumerate(cfg.messages):
         if index >= keep_from:
@@ -567,29 +599,58 @@ def prune_stale_tool_messages(cfg: Config) -> int:
         role = message.get("role")
         if role == "assistant":
             tool_calls = message.get("tool_calls") or []
-            if tool_calls:
-                pending_assistants.append(len(new_messages))
+            assistant_index = len(new_messages)
             for call in tool_calls:
                 cid = _tool_call_id(call)
+                name, _args = normalize_tool_call(call)
+                pending_call = (assistant_index, cid, name, call)
+                pending_calls.append(pending_call)
                 if cid:
-                    call_id_to_assistant[cid] = len(new_messages)
+                    call_id_to_pending[cid] = pending_call
             new_messages.append(message)
             continue
         if role != "tool":
             new_messages.append(message)
             continue
-        call_id = message.get("tool_call_id")
-        if call_id and call_id in call_id_to_assistant:
-            idx = call_id_to_assistant.pop(call_id)
-            _strip_tool_call_at(new_messages, idx, call_id=call_id)
-        elif not call_id:
-            while pending_assistants:
-                idx = pending_assistants[0]
-                if idx >= len(new_messages) or not (new_messages[idx].get("tool_calls") or []):
-                    pending_assistants.pop(0)
-                    continue
-                _strip_tool_call_at(new_messages, idx)
-                break
+        call_id = str(message.get("tool_call_id") or "").strip() or None
+        pending: tuple[int, str | None, str, Any] | None = None
+        if call_id:
+            pending = call_id_to_pending.pop(call_id, None)
+            if pending is not None:
+                try:
+                    pending_calls.remove(pending)
+                except ValueError:
+                    pass
+        elif pending_calls:
+            result_name = str(message.get("tool_name") or message.get("name") or "")
+            pending_index = next(
+                (
+                    position
+                    for position, item in enumerate(pending_calls)
+                    if not result_name or item[2] == result_name
+                ),
+                0,
+            )
+            pending = pending_calls.pop(pending_index)
+            if pending[1]:
+                call_id_to_pending.pop(pending[1], None)
+
+        paired_name = pending[2] if pending is not None else ""
+        tool_name = str(message.get("tool_name") or message.get("name") or paired_name)
+        # Count pruning is a lossy last resort.  Limit it to read-only snapshots;
+        # mutation calls, verification evidence, approvals, and unknown/custom
+        # tools remain intact until ordinary context compaction summarizes them.
+        if not context_supersession.is_supersedable_tool(tool_name):
+            new_messages.append(message)
+            continue
+        if pending is not None:
+            assistant_index, pending_id, _name, call = pending
+            _strip_tool_call_at(
+                new_messages,
+                assistant_index,
+                call_id=pending_id,
+                call=call,
+            )
         removed += 1
 
     if removed:

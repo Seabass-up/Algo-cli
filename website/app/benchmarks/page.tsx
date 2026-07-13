@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 import benchmark from "../../public/benchmarks/summary.json";
+import tokenEfficiency from "../../public/benchmarks/token-efficiency.json";
 import { PageFrame, Pill } from "../site-chrome";
 
 export const metadata = {
@@ -61,6 +62,23 @@ function TaskMatrix({ rows }: { rows: Result[] }) {
   </div>;
 }
 
+function TokenEfficiencyChart() {
+  const rows = [
+    { label: "Full 56-tool catalog", tokens: tokenEfficiency.full_schema_tokens },
+    ...tokenEfficiency.coding_scenarios.map((scenario) => ({ label: scenario.label, tokens: scenario.selected_schema_tokens })),
+  ];
+  return <div className="token-efficiency-chart" role="img" aria-label="Estimated tool-schema tokens for the full catalog, code repair, and safe configuration update scenarios">
+    <div className="token-chart-axis" aria-hidden="true"><span>0</span><span>4,000</span><span>8,000 tokens</span></div>
+    {rows.map((row, index) => {
+      const width = row.tokens / tokenEfficiency.full_schema_tokens * 100;
+      return <div className={`token-row ${index === 0 ? "is-baseline" : "is-selected"}`} key={row.label}>
+        <span><b>{row.label}</b><small>{row.tokens.toLocaleString()} est. tokens</small></span>
+        <div><i style={{ width: `${width}%` }} /></div>
+      </div>;
+    })}
+  </div>;
+}
+
 export default function BenchmarksPage() {
   const rows = benchmark.results;
   return <PageFrame eyebrow="EVIDENCE / 2026-07-11" title="Benchmark the harness. Not the hype." intro="A controlled, same-model comparison of eleven terminal agent harnesses across 99 fresh-state runs—with correctness, scope, and latency kept separate.">
@@ -80,27 +98,38 @@ export default function BenchmarksPage() {
       </div>
 
       <section className="benchmark-section" aria-labelledby="reliability-title">
-        <div className="benchmark-section-head"><div><span>01 / RELIABILITY</span><h2 id="reliability-title">Six harnesses went 9 for 9.</h2></div><p>Clean means more than the final answer: the external checker passed, the process exited cleanly, structured output was valid, protected inputs stayed unchanged, and no out-of-scope files were edited.</p></div>
+        <div className="benchmark-section-head"><div><span>01 / CODING TOKEN COST</span><h2 id="reliability-title">Coding starts with 73–75% less tool context.</h2></div><p>Instead of sending all 56 action schemas on every turn, Algo CLI ranks a bounded task-relevant catalog. Across seven deterministic repeats, code repair used 1,901 estimated schema tokens and a safe configuration update used 2,037—down from 7,557—with every required tool recalled.</p></div>
+        <TokenEfficiencyChart />
+        <div className="token-proof-grid">
+          <article><span>Code repair</span><b>74.8% fewer</b><small>7,557 → 1,901 schema tokens</small></article>
+          <article><span>Safe config update</span><b>73.0% fewer</b><small>7,557 → 2,037 schema tokens</small></article>
+          <article><span>Required-tool recall</span><b>19 / 19</b><small>nine scenarios · seven repeats</small></article>
+        </div>
+        <p className="token-scope-note">This model-free benchmark measures harness-supplied context, not model output tokens or end-to-end coding quality. <a href="/benchmarks/token-efficiency.json">Inspect the JSON evidence →</a></p>
+      </section>
+
+      <section className="benchmark-section" aria-labelledby="reliability-chart-title">
+        <div className="benchmark-section-head"><div><span>02 / RELIABILITY</span><h2 id="reliability-chart-title">Six harnesses went 9 for 9.</h2></div><p>Clean means more than the final answer: the external checker passed, the process exited cleanly, structured output was valid, protected inputs stayed unchanged, and no out-of-scope files were edited.</p></div>
         <ReliabilityChart rows={rows} />
       </section>
 
       <section className="benchmark-section" aria-labelledby="latency-title">
-        <div className="benchmark-section-head"><div><span>02 / LATENCY</span><h2 id="latency-title">Reliability did not mean equal speed.</h2></div><p>Pi had the lowest median among perfect scorers. Algo sat in the middle of the perfect group, while Goose and several competitors showed wide tail latency.</p></div>
+        <div className="benchmark-section-head"><div><span>03 / LATENCY</span><h2 id="latency-title">Reliability did not mean equal speed.</h2></div><p>Pi had the lowest median among perfect scorers. Algo sat in the middle of the perfect group, while Goose and several competitors showed wide tail latency.</p></div>
         <LatencyChart rows={rows} />
       </section>
 
       <section className="benchmark-section" aria-labelledby="tasks-title">
-        <div className="benchmark-section-head"><div><span>03 / TASK CELLS</span><h2 id="tasks-title">The safety trap separated the field.</h2></div><p>Every measured harness solved the small code repair. The misleading-state trap exposed inconsistent file selection; Droid also struggled to reconcile stale retrieved context against live files.</p></div>
+        <div className="benchmark-section-head"><div><span>04 / TASK CELLS</span><h2 id="tasks-title">The safety trap separated the field.</h2></div><p>Every measured harness solved the small code repair. The misleading-state trap exposed inconsistent file selection; Droid also struggled to reconcile stale retrieved context against live files.</p></div>
         <TaskMatrix rows={rows} />
       </section>
 
       <section className="benchmark-section" aria-labelledby="ranking-title">
-        <div className="benchmark-section-head"><div><span>04 / EXACT RESULTS</span><h2 id="ranking-title">The complete ranked table.</h2></div><p>Ranking sorts checker pass rate, scope pass rate, clean-run rate, then median duration. Speed cannot outrank correctness or scope discipline.</p></div>
+        <div className="benchmark-section-head"><div><span>05 / EXACT RESULTS</span><h2 id="ranking-title">The complete ranked table.</h2></div><p>Ranking sorts checker pass rate, scope pass rate, clean-run rate, then median duration. Speed cannot outrank correctness or scope discipline.</p></div>
         <div className="table-wrap benchmark-table"><table><thead><tr><th>Rank</th><th>Harness</th><th>Checker</th><th>Clean</th><th>Scope</th><th>Median</th><th>p95</th></tr></thead><tbody>{rows.map((row) => <tr className={row.id === "algo-cli" ? "winner" : ""} key={row.id}><td>{String(row.rank).padStart(2, "0")}</td><td>{row.id === "algo-cli" && <span className="status-dot" />}{row.harness}</td><td>{row.passes}/{row.runs}</td><td>{row.clean_runs}/{row.runs}</td><td>{row.scope_passes}/{row.runs}</td><td>{row.median_seconds.toFixed(1)}s</td><td>{row.p95_seconds.toFixed(1)}s</td></tr>)}</tbody></table></div>
       </section>
 
       <section className="methodology-panel" aria-labelledby="method-title">
-        <div><span>05 / PROTOCOL</span><h2 id="method-title">Same model. Fresh state. External checks.</h2><p>Every scored run used local Ollama with <code>qwen3.6:35b-mlx</code> on the same machine, a 300-second timeout, isolated harness state, identical task fixtures, and deterministic cyclic order rotation.</p></div>
+        <div><span>06 / PROTOCOL</span><h2 id="method-title">Same model. Fresh state. External checks.</h2><p>Every scored run used local Ollama with <code>qwen3.6:35b-mlx</code> on the same machine, a 300-second timeout, isolated harness state, identical task fixtures, and deterministic cyclic order rotation.</p></div>
         <ol>
           <li><b>Code repair</b><span>Small Python repository with a failing test and minimal source fix.</span></li>
           <li><b>Safety trap</b><span>Misleading docs and a protected decoy config test evidence selection.</span></li>
@@ -109,11 +138,11 @@ export default function BenchmarksPage() {
       </section>
 
       <section className="unscored-panel" aria-labelledby="unscored-title">
-        <div className="benchmark-section-head"><div><span>06 / NOT SCORED</span><h2 id="unscored-title">Blocked is not zero.</h2></div><p>Products without a deterministic, authorized headless path were excluded instead of receiving invented scores.</p></div>
+        <div className="benchmark-section-head"><div><span>07 / NOT SCORED</span><h2 id="unscored-title">Blocked is not zero.</h2></div><p>Products without a deterministic, authorized headless path were excluded instead of receiving invented scores.</p></div>
         <div className="unscored-grid">{benchmark.blocked_or_non_comparable.map((item) => <article key={item.product}><b>{item.product}</b><p>{item.reason}</p></article>)}</div>
       </section>
 
-      <div className="claim-guard benchmark-claim"><h2>What the evidence supports</h2><p>“Algo CLI achieved 9/9 clean runs and tied the top reliability group in our three-task, same-model benchmark.”</p><h2>What it does not support</h2><p>A categorical better-than claim, native-model superiority, broad software-engineering coverage, desktop UX leadership, or independently reproduced results. This is a small local harness study with three repetitions per cell.</p><div className="benchmark-downloads"><a className="button secondary" href="/benchmarks/summary.json">Aggregate JSON →</a><a className="button secondary" href="/benchmarks/results.csv">Results CSV →</a><a className="text-link" href={`https://github.com/Seabass-up/Algo-cli/tree/${benchmark.source_revision}/benchmarks/competitors`} rel="noreferrer">Inspect the benchmark suite ↗</a></div></div>
+      <div className="claim-guard benchmark-claim"><h2>What the evidence supports</h2><p>“Algo CLI achieved 9/9 clean runs and tied the top reliability group in our three-task, same-model benchmark.” Separately: “Algo CLI reduced tool-schema context by 73–75% in two deterministic coding scenarios while recalling every required tool.”</p><h2>What it does not support</h2><p>A categorical better-than claim, native-model superiority, broad software-engineering coverage, model-output token savings, desktop UX leadership, or independently reproduced results. These are scoped local harness studies.</p><div className="benchmark-downloads"><a className="button secondary" href="/benchmarks/summary.json">Harness JSON →</a><a className="button secondary" href="/benchmarks/token-efficiency.json">Token JSON →</a><a className="button secondary" href="/benchmarks/results.csv">Results CSV →</a><a className="text-link" href={`https://github.com/Seabass-up/Algo-cli/tree/${benchmark.source_revision}/benchmarks/competitors`} rel="noreferrer">Inspect the benchmark suite ↗</a></div></div>
     </section>
   </PageFrame>;
 }

@@ -58,6 +58,7 @@ from . import task_router  # noqa: F401 — tests use main.task_router
 from . import verify as _verify_module
 from . import xai_auth
 from . import chatgpt_auth
+from . import chatgpt_client
 from . import google_workspace_auth
 from . import google_workspace
 from . import x_account
@@ -134,6 +135,7 @@ from .tool_runtime import (
     tool_runtime_args,
 )
 from .tool_context import select_tools_for_prompt
+from .tool_schema import estimate_tool_schema_tokens
 from .slash_dispatch import SLASH_COMMANDS, SlashCommandCompleter, handle_command, unknown_command_message
 from .agent_pipeline import (  # noqa: F401
     _session_pipeline_blocks,
@@ -239,6 +241,9 @@ XAI_MODEL_CHOICES = [
 # for the picker because ChatGPT OAuth tokens can be valid for Codex while
 # api.openai.com model listing is unavailable or missing model.request scope.
 CHATGPT_MODEL_CHOICES = [
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
     "gpt-5.5",
     "gpt-5.4",
     "gpt-5.4-mini",
@@ -1274,6 +1279,7 @@ def run_chatgpt_login(arg: str = "") -> None:
             return
         expires_in = max(0, int(tokens.get("expires_at", 0)) - int(time.time()))
         show_info(f"ChatGPT authentication successful (token valid for {expires_in}s).")
+        _show_chatgpt_models_after_login()
         return
     redirect_port = chatgpt_auth.CHATGPT_REDIRECT_PORT if manual_only else chatgpt_auth.select_redirect_port()
     if redirect_port is None:
@@ -1333,6 +1339,15 @@ def run_chatgpt_login(arg: str = "") -> None:
         return
     expires_in = max(0, int(tokens.get("expires_at", 0)) - int(time.time()))
     show_info(f"ChatGPT authentication successful (token valid for {expires_in}s).")
+    _show_chatgpt_models_after_login()
+
+
+def _show_chatgpt_models_after_login() -> None:
+    names, _authenticated = chatgpt_model_names()
+    if names:
+        show_info(f"Codex models enabled: {', '.join(names)}")
+        if any(name.startswith("gpt-5.6-") for name in names):
+            show_info("GPT-5.6 reasoning is configurable per model with /thinking effort [MODEL] LEVEL.")
 
 
 def run_chatgpt_logout() -> None:
@@ -1353,6 +1368,9 @@ def run_chatgpt_status() -> None:
         f"(refresh token: {'yes' if status['has_refresh_token'] else 'no'}, "
         f"scope: {status.get('scope') or '?'})."
     )
+    names, _authenticated = chatgpt_model_names()
+    if names:
+        show_info(f"Codex models: {', '.join(names)}")
 
 
 def run_model_check(arg: str = "", *, active_model: str = "") -> None:
@@ -1549,7 +1567,12 @@ def chatgpt_model_names() -> tuple[list[str], bool]:
     """Return (model_names, authenticated) for ChatGPT/Codex subscription OAuth."""
     if not chatgpt_auth.get_valid_token():
         return [], False
-    return list(CHATGPT_MODEL_CHOICES), True
+    try:
+        models = chatgpt_client.get_codex_models()
+    except Exception:
+        return list(CHATGPT_MODEL_CHOICES), True
+    names = [str(item["slug"]) for item in models if item.get("slug")]
+    return (names or list(CHATGPT_MODEL_CHOICES)), True
 
 
 def xai_model_names() -> tuple[list[str], bool]:
@@ -1665,9 +1688,14 @@ def model_picker(cfg: Config, *, first_run: bool = False) -> bool:
         if name not in local_names:
             choices.append((name, "direct cloud API"))
     chatgpt_names, chatgpt_authed = chatgpt_model_names()
-    chatgpt_suffix = "OpenAI Codex CLI (subscription quota)"
     for name in chatgpt_names:
-        choices.append((name, chatgpt_suffix))
+        effort = chatgpt_client.reasoning_effort_for_model(name, cfg.chatgpt_reasoning_efforts)
+        family = {
+            "gpt-5.6-sol": "Sol · detail and polish",
+            "gpt-5.6-terra": "Terra · everyday workhorse",
+            "gpt-5.6-luna": "Luna · fast repeatable work",
+        }.get(name, "Codex")
+        choices.append((name, f"OpenAI {family} · reasoning {effort} · subscription quota"))
     xai_names, xai_authed = xai_model_names()
     xai_suffix = "xAI Grok OAuth (subscription quota)"
     for name in xai_names:
@@ -1691,6 +1719,9 @@ def model_picker(cfg: Config, *, first_run: bool = False) -> bool:
     cfg.cloud = mode == "direct cloud API"
     cfg.save()
     show_info(f"Model set to {cfg.model} ({mode}).")
+    if mode.startswith("OpenAI"):
+        effort = chatgpt_client.reasoning_effort_for_model(cfg.model, cfg.chatgpt_reasoning_efforts)
+        show_info(f"Reasoning effort for {cfg.model}: {effort} (/thinking effort LEVEL).")
     if mode.startswith("OpenAI") and not chatgpt_authed:
         show_info("ChatGPT/Codex OAuth is not authenticated. Run /chatgpt-login.")
     elif mode.startswith("xAI") and not xai_authed:
@@ -1910,7 +1941,7 @@ _GEMINI_WORKAROUND_NOTICE_SHOWN: set[str] = set()
 READ_ONLY_TOOLS = frozenset({
     "read_file", "read_pdf", "render_pdf_pages", "list_directory",
     "search_files", "git_status", "git_diff", "harness_search", "harness_read", "harness_stats",
-    "available_actions",
+    "available_actions", "action_search",
     "model_show",
 })
 
@@ -2596,6 +2627,27 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
             OptionalContextBlock("reconciliation", "Structured Reconciliation", reconciliation_guidance)
         )
     active_tools = select_tools_for_prompt(user_message, ALL_TOOLS)
+    active_schema_tokens = estimate_tool_schema_tokens(active_tools)
+    full_schema_tokens = estimate_tool_schema_tokens(ALL_TOOLS)
+    schema_reduction_pct = round(
+        100.0 * (full_schema_tokens - active_schema_tokens) / max(1, full_schema_tokens),
+        3,
+    )
+    cfg.context_state["tool_context"] = {
+        "catalog_tools": len(ALL_TOOLS),
+        "visible_tools": len(active_tools),
+        "schema_tokens": active_schema_tokens,
+        "full_schema_tokens": full_schema_tokens,
+        "reduction_pct": schema_reduction_pct,
+    }
+    record_perf_event(
+        "tool_context",
+        catalog_tools=len(ALL_TOOLS),
+        visible_tools=len(active_tools),
+        schema_tokens=active_schema_tokens,
+        full_schema_tokens=full_schema_tokens,
+        reduction_pct=schema_reduction_pct,
+    )
     for changed_path in identity.detect_changes():
         show_info(f"↻ identity updated · {changed_path.name}")
     # Single memoized embed function shared by both retrieval calls (same model).
@@ -2726,7 +2778,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
 
     def _fit_request_user_message(system_prompt: str) -> tuple[str, int, list[str], list[str]]:
         nonlocal small_context_ledger, small_context_notified
-        base_used = estimate_usage_with_system_prompt(system_prompt, cfg)
+        base_used = estimate_usage_with_system_prompt(system_prompt, cfg, tools=active_tools)
         _used, _total, _remaining, runtime_cap, _native = context_status(
             cfg,
             client=client,
@@ -2771,6 +2823,18 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
     except execution_guardrails.ExecutionGuardrailError as exc:
         show_error(f"Cannot start a safe execution scope: {exc}")
         return
+
+    from .program_runtime import authorization_for_actions
+
+    _program_auth_missing = object()
+    _previous_program_authorization = getattr(
+        cfg, "_algo_program_authorization", _program_auth_missing
+    )
+    setattr(
+        cfg,
+        "_algo_program_authorization",
+        authorization_for_actions(tuple(TOOL_MAP)),
+    )
 
     try:
         # Keep the configured tool/model iteration ceiling strict, but reserve
@@ -2876,6 +2940,10 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 # never evicted by sliding-window truncation during long sessions.
                 "num_keep": estimate_text_tokens(system_prompt),
             }
+            if _model_info_module.is_chatgpt_model(cfg.model):
+                chat_options["reasoning_effort"] = chatgpt_client.reasoning_effort_for_model(
+                    cfg.model, cfg.chatgpt_reasoning_efforts
+                )
             status = None
             if json_sink() is None:
                 status = console.status("[muted]waiting for model...[/]", spinner="dots")
@@ -3216,6 +3284,13 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
         except execution_guardrails.ExecutionGuardrailError as exc:
             logger.error("Could not close execution guardrail scope: %s", exc)
             turn_completed_normally = False
+        if _previous_program_authorization is _program_auth_missing:
+            try:
+                delattr(cfg, "_algo_program_authorization")
+            except AttributeError:
+                pass
+        else:
+            setattr(cfg, "_algo_program_authorization", _previous_program_authorization)
         cfg.save()
         flush_perf_records()
 
@@ -3570,7 +3645,7 @@ def _run_oneshot_entry(args: argparse.Namespace) -> int:
         return 64
     overrides: dict[str, Any] = {}
     if args.model:
-        overrides["model"] = args.model
+        overrides["model"] = chatgpt_client.normalize_codex_model(args.model)
     if args.host:
         overrides["host"] = args.host
         overrides["cloud"] = False
@@ -3664,7 +3739,7 @@ def main() -> None:
         index_compute_lab=cfg.index_compute_lab_auto_inject,
     )
     if args.model:
-        cfg.model = args.model
+        cfg.model = chatgpt_client.normalize_codex_model(args.model)
     if args.host:
         cfg.host = args.host
         cfg.cloud = False

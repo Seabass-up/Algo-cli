@@ -8,6 +8,8 @@ truncated history long before compaction ever fired.
 from algo_cli import context_budget, model_info
 from algo_cli.config import Config
 from algo_cli.tool_runtime import tool_result_message
+from algo_cli.tool_schema import estimate_tool_schema_tokens
+from algo_cli import tools
 
 
 def _big_native_info() -> dict:
@@ -31,6 +33,19 @@ def test_display_total_uses_runtime_cap():
     assert total == runtime_cap
     assert native == 131072
     assert total < native
+
+
+def test_request_estimate_accounts_for_visible_tool_schemas():
+    cfg = Config()
+    cfg.messages = [{"role": "user", "content": "inspect the repository"}]
+    without_tools = context_budget.estimate_usage_with_system_prompt("system", cfg)
+    selected = tools.ALL_TOOLS[:3]
+
+    with_tools = context_budget.estimate_usage_with_system_prompt(
+        "system", cfg, tools=selected
+    )
+
+    assert with_tools - without_tools == estimate_tool_schema_tokens(selected)
 
 
 def test_adaptive_window_feeds_accounting():

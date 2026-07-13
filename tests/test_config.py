@@ -79,6 +79,22 @@ def test_save_load_roundtrip():
     assert code_rag_consent_granted(reloaded) is True
 
 
+@pytest.mark.parametrize(
+    ("alias", "canonical"),
+    [
+        ("sol", "gpt-5.6-sol"),
+        ("terra", "gpt-5.6-terra"),
+        ("luna", "gpt-5.6-luna"),
+        ("lunna", "gpt-5.6-luna"),
+    ],
+)
+def test_load_canonicalizes_persisted_codex_alias(alias, canonical):
+    config.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    config.CONFIG_FILE.write_text(json.dumps({"model": alias}), encoding="utf-8")
+
+    assert Config.load().model == canonical
+
+
 def test_legacy_code_rag_true_does_not_migrate_as_consent() -> None:
     config.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     config.CONFIG_FILE.write_text(

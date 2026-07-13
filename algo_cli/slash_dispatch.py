@@ -31,7 +31,7 @@ from . import skills
 SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "Show help"),
     ("/model", "Show or switch model"),
-    ("/models", "Browse available local models"),
+    ("/models", "Browse available local and authenticated provider models"),
     ("/host", "Set local Ollama host"),
     ("/cloud", "Set/toggle direct Ollama Cloud API mode: /cloud [on|off|status]"),
     ("/login", "Run Ollama signin"),
@@ -56,7 +56,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/policy", "Toggle or inspect algorithmic tool policy enforcement"),
     ("/reflex", "Toggle reflex self-heal loop (v0.1, default off)"),
     ("/reason", "Reasoning engine: /reason status|guide|react|reflexion|tot|got|mcts|qcr|neuro_symbolic"),
-    ("/thinking", "Set/toggle thinking display: /thinking [on|off|status]"),
+    ("/thinking", "Thinking display/effort: /thinking [on|off|status|efforts|effort [MODEL] LEVEL]"),
     ("/verify", "Set/toggle claim-grounding verify mode: /verify [on|off|status]"),
     ("/keepalive", "Show or set model keep-alive"),
     ("/perf", "Show recent latency metrics"),
@@ -290,6 +290,8 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         display.show_help()
     elif command == "/model":
         if arg:
+            if m.chatgpt_client.is_codex_subscription_model(arg):
+                arg = m.chatgpt_client.normalize_codex_model(arg)
             cfg.model = arg
             # Direct model selection must not inherit a stale provider route.
             # A cloud-suffixed Ollama model selects direct cloud; xAI and
@@ -441,15 +443,60 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         detail = "enforced for Agent Blocks" if cfg.algorithmic_tool_policy_enabled else "preview only"
         m.show_info(f"Algorithmic tool policy: {state} ({detail}).")
     elif command == "/thinking":
-        parsed = _parse_toggle_arg(arg, bool(cfg.show_thinking))
-        if parsed is None:
-            m.show_error("Usage: /thinking [on|off|status]")
-            return True, client
-        new_value, should_change = parsed
-        if should_change:
-            cfg.show_thinking = new_value
+        thinking_args = arg.strip().split()
+        sub = thinking_args[0].lower() if thinking_args else "status"
+        if sub in {"efforts", "models"}:
+            for model in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+                effort = m.chatgpt_client.reasoning_effort_for_model(model, cfg.chatgpt_reasoning_efforts)
+                supported = ", ".join(m.chatgpt_client.supported_reasoning_efforts(model))
+                m.show_info(f"{model}: {effort} (supports {supported})")
+            m.show_info("Ultra is multi-agent orchestration, not an effort level; use /agent team for that workflow.")
+        elif sub == "effort":
+            if len(thinking_args) == 1:
+                if not m.chatgpt_client.is_codex_subscription_model(cfg.model):
+                    m.show_error("The active model is not a ChatGPT/Codex reasoning model.")
+                    return True, client
+                effort = m.chatgpt_client.reasoning_effort_for_model(
+                    cfg.model, cfg.chatgpt_reasoning_efforts
+                )
+                m.show_info(f"Reasoning effort for {cfg.model}: {effort}")
+                return True, client
+            if len(thinking_args) == 2:
+                target_model, raw_effort = cfg.model, thinking_args[1]
+            elif len(thinking_args) == 3:
+                target_model, raw_effort = thinking_args[1], thinking_args[2]
+            else:
+                m.show_error("Usage: /thinking effort [MODEL] LEVEL")
+                return True, client
+            target_model = m.chatgpt_client.normalize_codex_model(target_model)
+            if not m.chatgpt_client.is_codex_subscription_model(target_model):
+                m.show_error(f"{target_model} is not a ChatGPT/Codex reasoning model.")
+                return True, client
+            try:
+                effort = m.chatgpt_client.parse_reasoning_effort(raw_effort, target_model)
+            except ValueError as exc:
+                m.show_error(str(exc))
+                return True, client
+            cfg.chatgpt_reasoning_efforts[target_model] = effort
             cfg.save()
-        m.show_info(f"Thinking display: {'ON' if cfg.show_thinking else 'OFF'}")
+            m.show_info(f"Reasoning effort for {target_model}: {effort}")
+        else:
+            parsed = _parse_toggle_arg(arg, bool(cfg.show_thinking))
+            if parsed is None:
+                m.show_error(
+                    "Usage: /thinking [on|off|status|efforts|effort [MODEL] LEVEL]"
+                )
+                return True, client
+            new_value, should_change = parsed
+            if should_change:
+                cfg.show_thinking = new_value
+                cfg.save()
+            m.show_info(f"Thinking display: {'ON' if cfg.show_thinking else 'OFF'}")
+            if m.chatgpt_client.is_codex_subscription_model(cfg.model):
+                effort = m.chatgpt_client.reasoning_effort_for_model(
+                    cfg.model, cfg.chatgpt_reasoning_efforts
+                )
+                m.show_info(f"Reasoning effort for {cfg.model}: {effort}")
     elif command == "/verify":
         parsed = _parse_toggle_arg(arg, bool(cfg.verify_mode))
         if parsed is None:

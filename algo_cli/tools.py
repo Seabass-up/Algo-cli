@@ -1661,7 +1661,7 @@ def available_actions(topic: str | None = None) -> str:
             "/mode [execute|explore|publish|status]",
             "/exit",
         ],
-        "tools": ["/auto [on|off|status]", "/safe [on|off|status]", "/policy [on|off|status]", "/thinking [on|off|status]", "/verify [on|off|status]", "/ctx NUM", "/temp NUM", "/toolmax NUM", "/thinkevery NUM", "/cd PATH", "/route TASK"],
+        "tools": ["/auto [on|off|status]", "/safe [on|off|status]", "/policy [on|off|status]", "/thinking [on|off|status|efforts|effort [MODEL] LEVEL]", "/verify [on|off|status]", "/ctx NUM", "/temp NUM", "/toolmax NUM", "/thinkevery NUM", "/cd PATH", "/route TASK"],
         "agent": [
             "/agent help",
             "/agent init",
@@ -2090,7 +2090,7 @@ def session_command(command: str, cfg: Any = None) -> str:
     Prefer idempotent commands with explicit state when available:
     - /status, /info — inspect model, cwd, context, and active toggles
     - /cloud on|off|status, /auto on|off|status, /safe on|off|status
-    - /thinking on|off|status, /verify on|off|status, /policy on|off|status
+    - /thinking on|off|status|efforts|effort [MODEL] LEVEL, /verify on|off|status, /policy on|off|status
     - /mode execute|explore|publish|status — switch/check session mode
     - /reason status|guide — inspect reasoning posture and mode-selection guidance
     - /reason react|reflexion|tot|got|mcts|qcr|neuro_symbolic|hybrid — set reasoning posture only for complex/failed/ambiguous/verification-heavy work
@@ -3351,6 +3351,103 @@ def url_scheme_parse(url: str) -> str:
     return json.dumps(result, indent=2, sort_keys=True)
 
 
+def action_search(query: str, limit: int = 6) -> str:
+    """Discover relevant deferred actions and return their exact schemas.
+
+    Use this when the small visible tool set does not contain a needed action.
+    Discovery grants no permission; execution still goes through action_program,
+    ActionSpec policy, runtime guardrails, and per-action approvals.
+
+    Args:
+        query: Capability or operation to find, such as "render a PDF" or "store a credential".
+        limit: Maximum matching action schemas to return (1-12).
+    """
+
+    from .action_registry import get_action_spec
+    from .tool_context import rank_tools_for_prompt
+    from .tool_schema import serialized_tool_schemas
+
+    normalized_query = str(query or "").strip()
+    if not normalized_query:
+        return json.dumps({"status": "error", "error": "query must not be empty"})
+    bounded_limit = max(1, min(12, int(limit)))
+    excluded = {"action_search", "action_program", "session_command", "session_slash"}
+    candidates = [fn for name, fn in TOOL_MAP.items() if name not in excluded]
+    ranked = rank_tools_for_prompt(normalized_query, candidates)[:bounded_limit]
+    actions: list[dict[str, Any]] = []
+    for fn in ranked:
+        name = str(getattr(fn, "__name__", "") or "")
+        try:
+            wire_schema = json.loads(serialized_tool_schemas([fn]))[0]
+        except (IndexError, TypeError, ValueError, json.JSONDecodeError):
+            wire_schema = {"type": "function", "function": {"name": name}}
+        try:
+            spec = get_action_spec(name)
+            policy: dict[str, Any] = {
+                "risk": spec.risk_level,
+                "mutates_state": spec.mutates_state,
+                "requires_approval": spec.requires_approval,
+                "safe_retry": spec.safe_retry,
+            }
+        except KeyError:
+            policy = {
+                "risk": "unknown",
+                "mutates_state": None,
+                "requires_approval": None,
+                "safe_retry": None,
+            }
+        actions.append({"name": name, "schema": wire_schema, "policy": policy})
+    return json.dumps(
+        {
+            "status": "ok",
+            "query": normalized_query,
+            "count": len(actions),
+            "actions": actions,
+            "next": "Call action_program with a bounded typed plan; discovery does not grant permission.",
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def action_program(plan: dict, cfg: Any = None) -> str:
+    """Compile and execute a bounded typed action plan without evaluating code.
+
+    Plans use version 1 and ordered steps. An action step has ``id``,
+    ``kind: action``, ``action``, and ``args``. A transform step has ``id``,
+    ``kind: transform``, ``op``, ``input``, and optional ``args``. References
+    use ``{"$ref": "earlier_step", "path": ["optional", "keys"]}``.
+    Supported deterministic transforms are returned by validation errors.
+    Large intermediates become content-addressed artifacts; every nested action
+    retains its normal policy, approval, guardrail, attempt-ledger, and telemetry
+    path. Session/meta calls and recursive programs are forbidden.
+
+    Args:
+        plan: Typed version-1 plan object with bounded ordered steps and outputs.
+    """
+
+    if cfg is None:
+        return json.dumps({"status": "error", "error": "runtime config was not injected"})
+    from .program_runtime import ProgramAuthorization, execute_program
+
+    authorization = getattr(cfg, "_algo_program_authorization", None)
+    if not isinstance(authorization, ProgramAuthorization):
+        return json.dumps(
+            {"status": "error", "error": "runtime program authorization was not bound"},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    try:
+        result = execute_program(plan, cfg, authorization=authorization)
+    except Exception as exc:
+        return json.dumps(
+            {"status": "error", "error": f"{type(exc).__name__}: {exc}"},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    return json.dumps(result.to_dict(compact=True), ensure_ascii=False, separators=(",", ":"))
+
+
 ALL_TOOLS = [
     read_file,
     edit_file,
@@ -3378,6 +3475,8 @@ ALL_TOOLS = [
     update_user_profile,
     embed_text,
     vision_describe,
+    action_search,
+    _hide_cfg_param(action_program),
     available_actions,
     session_slash,
     _hide_cfg_param(session_command),
