@@ -63,6 +63,8 @@ _KERNELS: tuple[KernelSpec, ...] = (
             "algo_cli.intelligence.graph_rag",
             "algo_cli.intelligence.code_graph",
             "algo_cli.intelligence.coderank",
+            "algo_cli.intelligence.repo_map",
+            "algo_cli.code_rag",
         ],
         actions=["repo.status", "repo.query", "repo.reindex"],
         slash_commands=["/intelligence status", "/intelligence query TERM", "/intel query TERM"],

@@ -38,12 +38,14 @@ def test_skips_non_code_and_skip_dirs(tmp_path):
     _write(tmp_path, "keep.py", "widget = 1\n")
     _write(tmp_path, "image.png", "not text")
     _write(tmp_path, "node_modules/dep.js", "stuff")
+    _write(tmp_path, "benchmark-results/run/generated.py", "generated = True")
     _write(tmp_path, "__pycache__/x.py", "cached")
     index = code_rag.build_or_update_index(str(tmp_path))
     rels = {c["relative_path"] for c in index["chunks"]}
     assert "keep.py" in rels
     assert "image.png" not in rels
     assert not any("node_modules" in r for r in rels)
+    assert not any("benchmark-results" in r for r in rels)
     assert not any("__pycache__" in r for r in rels)
 
 

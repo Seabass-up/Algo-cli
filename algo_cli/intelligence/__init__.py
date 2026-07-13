@@ -197,6 +197,7 @@ from .golden_master import GoldenMaster, GoldenMasterRunner
 from .refactor_transaction import RefactorTransaction, Savepoint, TransactionResult
 from .task_classifier import TaskClassifier, AgentDelegator, TaskClassification, TaskComplexity, TaskDomain
 from .coderank import CodeRank, CodeRankResult
+from .repo_map import RepoMapEntry, rank_repo_map, render_repo_map, snapshot_project_graph
 from .backpressure import BackpressureMonitor, BackpressureMonitor as BackpressureController, BackpressureSignal, PressureLevel
 # B87-B105: Finance / CPA / Controller patterns
 from .finance import (
@@ -796,6 +797,10 @@ __all__ = [
     "TaskDomain",
     "CodeRank",
     "CodeRankResult",
+    "RepoMapEntry",
+    "rank_repo_map",
+    "render_repo_map",
+    "snapshot_project_graph",
     "BackpressureMonitor",
     "BackpressureController",
     "BackpressureSignal",
