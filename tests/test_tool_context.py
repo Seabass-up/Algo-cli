@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 from algo_cli import deliberation, reconciliation, tools
-from algo_cli.tool_context import declared_tool_classes, select_tools_for_prompt
+from algo_cli.tool_context import (
+    CORE_TOOL_NAMES,
+    DEFAULT_TOOL_LIMIT,
+    declared_tool_classes,
+    rank_tools_for_prompt,
+    select_tools_for_prompt,
+)
 
 
 def _names(selected: list) -> set[str]:
@@ -32,12 +38,46 @@ def test_explicit_filesystem_and_shell_classes_reduce_model_tool_context() -> No
     assert len(selected) < len(tools.ALL_TOOLS) / 2
 
 
-def test_missing_declaration_keeps_all_tools_but_unknown_class_fails_closed() -> None:
-    assert select_tools_for_prompt("Inspect this project", tools.ALL_TOOLS) == tools.ALL_TOOLS
+def test_missing_declaration_uses_bounded_discovery_but_unknown_class_fails_closed() -> None:
+    selected_default = select_tools_for_prompt("Inspect this project", tools.ALL_TOOLS)
+    assert set(CORE_TOOL_NAMES) <= _names(selected_default)
+    assert len(selected_default) <= DEFAULT_TOOL_LIMIT
+    assert len(selected_default) < len(tools.ALL_TOOLS)
     assert select_tools_for_prompt("Allowed tool classes: browser", tools.ALL_TOOLS) == []
     selected = select_tools_for_prompt("Allowed tool classes: filesystem, browser", tools.ALL_TOOLS)
     assert "read_file" in _names(selected)
     assert "web_search" not in _names(selected)
+
+
+def test_ordinary_prompt_ranking_recalls_required_code_tools_and_is_stable() -> None:
+    prompt = "Fix the failing parser and run tests, then verify the diff."
+    selections = [select_tools_for_prompt(prompt, tools.ALL_TOOLS) for _ in range(5)]
+    names = _names(selections[0])
+
+    assert {"read_file", "search_files", "edit_file", "run_shell", "git_diff"} <= names
+    assert len(selections[0]) <= DEFAULT_TOOL_LIMIT
+    assert [[tool.__name__ for tool in selected] for selected in selections] == [
+        [tool.__name__ for tool in selections[0]]
+    ] * 5
+    assert [tool.__name__ for tool in rank_tools_for_prompt(prompt, tools.ALL_TOOLS)] == [
+        tool.__name__ for tool in rank_tools_for_prompt(prompt, tools.ALL_TOOLS)
+    ]
+
+
+def test_deferred_runtime_tools_are_always_visible_when_installed() -> None:
+    def action_search(query: str) -> str:
+        return query
+
+    def action_program(steps: list[dict]) -> str:
+        return str(steps)
+
+    selected = select_tools_for_prompt(
+        "A deliberately unrelated request",
+        [*tools.ALL_TOOLS, action_search, action_program],
+    )
+
+    assert {"action_search", "action_program"} <= _names(selected)
+    assert "available_actions" not in _names(selected)
 
 
 def test_reconciliation_guidance_is_task_local_and_schema_aware() -> None:

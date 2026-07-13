@@ -4,8 +4,13 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-07-13
+
 ### Added
 
+- OAuth-backed Codex model discovery for GPT-5.6 Sol, Terra, and Luna, plus independent per-model reasoning effort controls through `/thinking effort`.
+- Deferred BM25 action discovery and a bounded typed program runtime with runtime-owned capability ceilings, canonical per-action approvals, content-addressed intermediate artifacts, and immutable hash-chained mutation receipts.
+- A repeated context-efficiency release benchmark covering schema conversion/recall, selected-schema tokens, typed-program intermediate-result compression, and semantic supersession.
 - Query-aware structural repository maps with weighted personalized CodeRank, token-budgeted symbol outlines, and score provenance in code-RAG results.
 - A deterministic baseline-versus-structural retrieval benchmark with ambiguous central-module cases and semantic-specificity guardrails.
 - Worktree-backed durable agent threads with `/worktree`, `/agent switch`, repository/branch/HEAD validation, collision-safe repository-hashed paths, and isolated forks by default.
@@ -14,6 +19,7 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ### Changed
 
+- Ordinary turns now expose a bounded task-relevant tool catalog instead of all schemas; request budgeting includes the visible schema cost, and older successful resource snapshots are replaced with compact provenance receipts while mutation and verification evidence stays protected.
 - Code RAG now fuses embedding similarity with structural importance while retaining a semantic-only baseline mode; project-graph construction reuses the consent-filtered file inventory instead of walking the repository twice.
 - Agent-thread records now persist bounded workspace and Git-digest evidence while omitting absolute paths from model handoffs.
 - Direct `/model NAME` selection now reconciles the provider route instead of inheriting stale Ollama Cloud state; dashboards label xAI and ChatGPT routes correctly.
@@ -29,6 +35,7 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ### Fixed
 
+- GPT-5.6 subscription requests now use the Codex Responses Lite contract, preserve `max` effort, surface reasoning-summary deltas, and avoid forwarding unsupported Ollama output-limit fields. Short or previously persisted `sol`, `terra`, `luna`, and `lunna` names are canonicalized before provider routing instead of falling through to Ollama.
 - NDJSON tool events now report non-zero shell exits as failures.
 - Resumed threads no longer lose their restored workspace to heuristic project resolution.
 

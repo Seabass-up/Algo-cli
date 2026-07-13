@@ -322,7 +322,7 @@ def run_tool(name: str, args: dict[str, Any], cfg: Config) -> str:
         violation = reconciliation.structured_write_violation(name, call_args, cfg.messages)
         if violation:
             return f"Error: {violation}"
-    if name in ("remember", "append_lesson", "session_command"):
+    if name in ("remember", "append_lesson", "session_command", "action_program"):
         call_args["cfg"] = cfg
     if name == "session_slash":
         from . import session_commands

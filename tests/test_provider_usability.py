@@ -6,6 +6,8 @@ No network calls are made: clients/auth helpers are monkeypatched.
 """
 from __future__ import annotations
 
+import pytest
+
 from algo_cli import model_info, model_routing, runtime_services
 from algo_cli.config import Config
 
@@ -89,6 +91,18 @@ def test_chatgpt_model_routes_to_chatgpt_client_without_ollama_key(monkeypatch):
 
     monkeypatch.setattr(chatgpt_client, "active_chatgpt_client", lambda: fake)
     cfg = Config(model="gpt-5.1", cloud=False)
+
+    assert runtime_services.create_client(cfg) is fake
+    assert model_routing.effective_runtime_host(cfg) == "chatgpt"
+
+
+@pytest.mark.parametrize("alias", ["sol", "terra", "luna", "lunna"])
+def test_codex_alias_routes_to_chatgpt_client(monkeypatch, alias):
+    fake = object()
+    from algo_cli import chatgpt_client
+
+    monkeypatch.setattr(chatgpt_client, "active_chatgpt_client", lambda: fake)
+    cfg = Config(model=alias, cloud=False)
 
     assert runtime_services.create_client(cfg) is fake
     assert model_routing.effective_runtime_host(cfg) == "chatgpt"

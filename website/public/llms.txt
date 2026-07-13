@@ -10,6 +10,7 @@ Security: https://algo-cli.com/security
 Release manifest: https://algo-cli.com/api/v1/releases/stable.json
 Document index: https://algo-cli.com/docs/index.json
 Benchmark summary: https://algo-cli.com/benchmarks/summary.json
+Coding token-efficiency evidence: https://algo-cli.com/benchmarks/token-efficiency.json
 Runtime discovery: https://algo-cli.com/.well-known/algo-cli.json
 
 ## Operating principles

@@ -8,6 +8,7 @@
     { "id": "install", "title": "Installation and providers", "url": "https://algo-cli.com/install", "format": "html" },
     { "id": "commands", "title": "Command field guide", "url": "https://algo-cli.com/docs", "format": "html" },
     { "id": "benchmarks", "title": "Benchmark evidence and limitations", "url": "https://algo-cli.com/benchmarks", "format": "html" },
+    { "id": "token-efficiency", "title": "Coding token-efficiency benchmark evidence", "url": "https://algo-cli.com/benchmarks/token-efficiency.json", "format": "json" },
     { "id": "security", "title": "Security and trust boundaries", "url": "https://algo-cli.com/security", "format": "html" },
     { "id": "agent-map", "title": "Agent-readable site map", "url": "https://algo-cli.com/llms.txt", "format": "text" }
   ]

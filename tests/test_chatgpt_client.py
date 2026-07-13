@@ -47,25 +47,28 @@ def test_requires_chatgpt_oauth_token(monkeypatch):
         chatgpt_client._post_chat({"model": "gpt-5.1"}, stream=False)
 
 
-def test_codex_subscription_model_uses_codex_exec_not_openai_api(monkeypatch):
-    calls: list[tuple[str, str]] = []
+def test_codex_subscription_model_without_tools_uses_backend(monkeypatch):
+    captured: dict[str, Any] = {}
 
     def fake_post(payload: dict[str, Any], **kw):
-        raise AssertionError("Codex subscription models must not call OpenAI Chat Completions")
+        captured.update(payload)
+        return _FakeStreamResponse([{"type": "response.output_text.delta", "delta": "hello"}, "[DONE]"])
 
-    def fake_exec(model: str, messages: list[dict[str, Any]], **kw) -> str:
-        calls.append((model, messages[-1]["content"]))
-        return "hello from codex"
-
-    monkeypatch.setattr(chatgpt_client, "_post_chat", fake_post)
-    monkeypatch.setattr(chatgpt_client, "_run_codex_exec", fake_exec)
-
-    chunk = chatgpt_client.ChatGptClient().chat(
-        model="gpt-5.5", messages=[{"role": "user", "content": "hi"}], stream=False
+    monkeypatch.setattr(chatgpt_client, "_post_codex_responses", fake_post)
+    monkeypatch.setattr(
+        chatgpt_client,
+        "_run_codex_exec",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("backend should be used first")),
     )
 
-    assert chunk["message"]["content"] == "hello from codex"
-    assert calls == [("gpt-5.5", "hi")]
+    chunk = chatgpt_client.ChatGptClient().chat(
+        model="gpt-5.6-sol", messages=[{"role": "user", "content": "hi"}], stream=False
+    )
+
+    assert chunk["message"]["content"] == "hello"
+    assert captured["model"] == "gpt-5.6-sol"
+    assert "tools" not in captured
+    assert "tool_choice" not in captured
 
 
 def test_codex_subscription_model_passes_reasoning_effort_to_exec(monkeypatch):
@@ -77,6 +80,7 @@ def test_codex_subscription_model_passes_reasoning_effort_to_exec(monkeypatch):
 
     monkeypatch.setattr(chatgpt_client, "_run_codex_exec", fake_exec)
 
+    monkeypatch.setattr(chatgpt_client, "_MODEL_REQUEST_SCOPE_MISSING", True)
     chatgpt_client.ChatGptClient().chat(
         model="gpt-5.5",
         messages=[{"role": "user", "content": "hi"}],
@@ -85,6 +89,49 @@ def test_codex_subscription_model_passes_reasoning_effort_to_exec(monkeypatch):
     )
 
     assert captured["reasoning_effort"] == "high"
+
+
+def test_gpt_56_aliases_and_reasoning_levels():
+    assert chatgpt_client.normalize_codex_model("sol") == "gpt-5.6-sol"
+    assert chatgpt_client.normalize_codex_model("lunna") == "gpt-5.6-luna"
+    assert chatgpt_client.is_codex_subscription_model("terra") is True
+    assert chatgpt_client.parse_reasoning_effort("max", "gpt-5.6-luna") == "max"
+    assert chatgpt_client.parse_reasoning_effort("max", "gpt-5.5") == "xhigh"
+
+
+def test_codex_model_discovery_uses_supported_protocol_and_hides_internal_models(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    class _Response(_FakeJsonResponse):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    def fake_urlopen(req: Any, timeout: float):
+        captured["url"] = req.full_url
+        captured["headers"] = dict(req.header_items())
+        captured["timeout"] = timeout
+        return _Response(
+            {
+                "models": [
+                    {"slug": "gpt-5.6-sol", "visibility": "list"},
+                    {"slug": "codex-auto-review", "visibility": "hide"},
+                ]
+            }
+        )
+
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_valid_token", lambda: "token")
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_chatgpt_account_id", lambda: "acct_123")
+    monkeypatch.setattr(chatgpt_client.urllib.request, "urlopen", fake_urlopen)
+
+    models = chatgpt_client.get_codex_models(timeout=7)
+
+    assert models == [{"slug": "gpt-5.6-sol", "visibility": "list"}]
+    assert "client_version=0.144.2" in captured["url"]
+    assert captured["headers"]["Chatgpt-account-id"] == "acct_123"
+    assert captured["timeout"] == 7
 
 
 def test_codex_subscription_model_with_tools_uses_chatgpt_backend(monkeypatch):
@@ -178,6 +225,57 @@ def test_payload_includes_reasoning_effort_from_options(monkeypatch):
 
     assert captured["reasoning"]["effort"] == "xhigh"
     assert captured["reasoning"]["summary"] == "auto"
+
+
+def test_gpt_56_payload_preserves_max_reasoning_effort(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_post(payload: dict[str, Any], **kw):
+        captured.update(payload)
+        return _FakeStreamResponse([{"type": "response.output_text.delta", "delta": "ok"}, "[DONE]"])
+
+    monkeypatch.setattr(chatgpt_client, "_post_codex_responses", fake_post)
+    chatgpt_client.ChatGptClient().chat(
+        model="gpt-5.6-terra",
+        messages=[],
+        stream=False,
+        options={"reasoning_effort": "max"},
+    )
+
+    assert captured["reasoning"]["effort"] == "max"
+    assert captured["reasoning"]["context"] == "all_turns"
+    assert captured["parallel_tool_calls"] is False
+
+
+def test_codex_backend_does_not_forward_ollama_num_predict(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_post(payload: dict[str, Any], **kw):
+        captured.update(payload)
+        return _FakeStreamResponse([{"type": "response.output_text.delta", "delta": "ok"}, "[DONE]"])
+
+    monkeypatch.setattr(chatgpt_client, "_post_codex_responses", fake_post)
+    chatgpt_client.ChatGptClient().chat(
+        model="gpt-5.6-luna",
+        messages=[],
+        stream=False,
+        options={"num_predict": 32},
+    )
+
+    assert "max_output_tokens" not in captured
+
+
+def test_codex_reasoning_summary_streams_as_thinking():
+    events = [
+        {"type": "response.reasoning_summary_text.delta", "delta": "Checking the plan"},
+        {"type": "response.output_text.delta", "delta": "Done"},
+        "[DONE]",
+    ]
+
+    chunks = list(chatgpt_client._stream_codex_responses_iter(_FakeStreamResponse(events)))
+
+    assert chunks[0]["message"]["thinking"] == "Checking the plan"
+    assert chunks[1]["message"]["content"] == "Done"
 
 
 def test_responses_input_drops_malformed_empty_tool_call_names():
@@ -368,6 +466,28 @@ def test_post_codex_responses_uses_chatgpt_backend_headers(monkeypatch):
     assert captured["headers"]["Originator"] == "pi"
     assert captured["headers"]["Openai-beta"] == "responses=experimental"
     assert "User-agent" in captured["headers"]
+
+
+def test_gpt_56_uses_codex_responses_lite_header(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    class _Response:
+        pass
+
+    def fake_urlopen(req: Any, timeout: float):
+        captured["headers"] = dict(req.header_items())
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_valid_token", lambda: "token")
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_chatgpt_account_id", lambda: "acct_123")
+    monkeypatch.setattr(chatgpt_client.urllib.request, "urlopen", fake_urlopen)
+
+    chatgpt_client._post_codex_responses({"model": "gpt-5.6-luna"})
+
+    assert captured["headers"]["X-openai-internal-codex-responses-lite"] == "true"
+    assert captured["headers"]["Originator"] == "codex_cli_rs"
+    assert captured["headers"]["User-agent"] == "codex_cli_rs/0.144.2"
 
 
 def test_post_codex_responses_refreshes_once_on_token_invalidated(monkeypatch):

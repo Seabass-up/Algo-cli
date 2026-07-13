@@ -11,7 +11,7 @@ from algo_cli import extensions_manifest, tools, version_manifest
 class TestVersionManifest:
     def test_build_manifest_has_cli_version(self):
         m = version_manifest.build_manifest()
-        assert m.cli_version == "0.14.0"
+        assert m.cli_version == "0.15.0"
 
     def test_build_manifest_has_python_version(self):
         m = version_manifest.build_manifest()

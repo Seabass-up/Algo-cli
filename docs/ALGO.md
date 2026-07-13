@@ -13,7 +13,7 @@
 
 - Main CLI: `algo_cli/main.py` owns process startup, provider setup, chat loop helpers, and re-exports display helpers used by slash dispatch.
 - Slash commands: `algo_cli/slash_dispatch.py` routes interactive `/...` commands and should preserve existing command behavior when adding subcommands.
-- Tool system: `algo_cli/tools.py`, `algo_cli/tool_runtime.py`, `algo_cli/tool_policy.py`, and `algo_cli/action_registry.py` define callable tools, execution policy, and capability display.
+- Tool system: `algo_cli/tools.py`, `algo_cli/tool_context.py`, `algo_cli/tool_schema.py`, `algo_cli/program_runtime.py`, `algo_cli/tool_runtime.py`, `algo_cli/tool_policy.py`, and `algo_cli/action_registry.py` define deferred discovery, typed programs, callable tools, execution policy, and capability display.
 - Legacy harness/RAG: `algo_cli/harness.py` and `algo_cli/code_rag.py` provide the existing file/asset index and embedding-backed retrieval.
 - Algorithmic runtime: `algo_cli/intelligence/`, `algo_cli/evals/`, `algo_cli/_internal/`, `algo_cli/harness.py`, and `algo_cli/agent_pipeline.py` provide deterministic graph, retrieval, workflow, policy, multi-agent, and evaluation algorithms.
 - Gateway: `algo_cli/plugin_gateway.py` and `algo_cli/plugin_gateway_adapters.py` own plugin gateway routing and must remain behavior-compatible.
@@ -869,6 +869,64 @@ Tests:
 
 - Large synthetic history prunes in linear time.
 - Valid tool-call/result pairs remain intact.
+
+---
+
+### A12a. Semantic Supersession by Resource Key
+
+**Status:** implemented in `algo_cli/context_supersession.py` and invoked before count-based pruning on every turn.
+
+**Use for:** replacing older successful snapshots of the same file, directory, status query, or exact search without deleting the provider-visible tool-call/result pair.
+
+Pattern:
+
+```text
+semantic key = (tool family, normalized workspace/resource, normalized query arguments)
+older successful snapshot -> bounded SHA-256 supersession receipt
+latest snapshot            -> full content
+mutation/failure/verifier  -> protected
+```
+
+This is an O(n) reverse scan with latest-value-register semantics. It reduces repeated context while preserving causal protocol structure, provenance hashes, and current evidence.
+
+Tests:
+
+- Repeated identical reads supersede only older successful results.
+- Different paths/queries do not collide.
+- Mutations, failures, shell verification, and Git diffs remain byte-stable.
+- A second pass is idempotent.
+
+---
+
+### A12b. Bounded Typed Dataflow Programs
+
+**Status:** implemented in `algo_cli/program_runtime.py`, exposed through `action_search` and `action_program`, and measured by `algo_cli.evals.tool_context_efficiency`.
+
+**Use for:** composing several registered actions and deterministic transforms while keeping large intermediate results out of the main model transcript.
+
+Algorithm stack:
+
+```text
+BM25 action discovery
+-> versioned JSON DAG compilation
+-> earlier-step reference validation
+-> runtime-owned capability intersection
+-> ActionSpec/preflight/approval dispatch
+-> bounded deterministic transforms
+-> SHA-256 content-addressed artifacts
+-> hash-chained immutable receipts
+```
+
+The compiler rejects forward references, recursive/meta actions, oversized plans, excessive steps/outputs, non-finite JSON, and actions outside the runtime ceiling. The executor bounds elapsed time between calls, total intermediate bytes, collection sizes, output previews, and step count. It never evaluates generated code or grants ambient filesystem, process, environment, import, or network capabilities.
+
+Tests:
+
+- Forward/cyclic capability attempts fail before any action executes.
+- Restricted authorization cannot be widened by plan JSON.
+- Nested mutations retain individual approval and a compact immutable receipt.
+- Large intermediates become content-addressed private artifacts.
+- Numeric sorting and deterministic transforms preserve correctness.
+- Repeated benchmark cells must pass token-reduction and recall gates.
 
 ---
 

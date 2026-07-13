@@ -11,6 +11,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
+from .model_aliases import normalize_codex_model
+
 
 # Branding compatibility constants. New names take precedence; old names remain
 # readable so existing installs continue to start cleanly.
@@ -331,6 +333,9 @@ class Config:
     # Never persisted: see save(); resets on every new session.
     session_auto_approve: bool = False
     show_thinking: bool = True
+    # Per-model Codex reasoning effort. Empty entries use the provider default
+    # (medium); keeping a map lets Sol, Terra, and Luna have independent knobs.
+    chatgpt_reasoning_efforts: dict[str, str] = field(default_factory=dict)
     num_ctx: int = 8192
     temperature: float = 0.4
     chat_stream_timeout_seconds: float = DEFAULT_CHAT_STREAM_TIMEOUT_SECONDS
@@ -539,6 +544,10 @@ class Config:
         # current policy version.
         if not code_rag_consent_granted(cfg):
             cfg.code_rag_enabled = False
+        # Older/live sessions may have persisted a short GPT-5.6 name before
+        # alias-aware routing was available. Canonicalize in memory on load so
+        # startup cannot send Sol/Terra/Luna to the local Ollama provider.
+        cfg.model = normalize_codex_model(cfg.model)
         # Refresh only the exact prompt shipped by older releases. User-authored
         # system prompts are preserved verbatim.
         if cfg.system == LEGACY_DEFAULT_SYSTEM:

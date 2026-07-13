@@ -635,6 +635,24 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         ("url-scheme", "deep-link", "read-only"),
         "Parses algo-cli:// URLs into structured action descriptors.", "low", False, False, True,
     ),
+    _spec(
+        "action_search", "tool", "Discover deferred registered actions and their exact schemas.",
+        "program",
+        ("action", "discovery", "deferred-schema", "read-only", "bm25"),
+        "Searches the capability catalog without granting or executing any action.",
+        "low", False, False, True,
+    ),
+    _spec(
+        "action_program", "tool", "Compile and execute a bounded typed action plan.",
+        "program",
+        ("action", "typed-plan", "bounded", "artifact", "approval", "orchestrator"),
+        "Orchestrates only runtime-authorized actions; every nested effect retains its own policy and approval.",
+        "high", True, False, False,
+        known_limitations=(
+            "The orchestrator itself is not blanket-approved; nested mutation and external actions keep per-action approval.",
+            "Session commands, plugin loading, recursive programs, ambient code execution, and capability expansion are forbidden.",
+        ),
+    ),
 )
 
 

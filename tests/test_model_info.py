@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from algo_cli import model_info
 
 
@@ -172,9 +174,20 @@ def test_synthesize_xai_info_shape():
 
 
 def test_synthesize_chatgpt_info_uses_model_context_window():
+    assert model_info.synthesize_chatgpt_info("gpt-5.6-sol")["context_length"] == 272_000
+    assert model_info.synthesize_chatgpt_info("gpt-5.6-terra")["supports_vision"] is True
+    assert model_info.synthesize_chatgpt_info("gpt-5.6-luna")["supports_thinking"] is True
     assert model_info.synthesize_chatgpt_info("gpt-5.5")["context_length"] == 1_000_000
     assert model_info.synthesize_chatgpt_info("gpt-5.4")["context_length"] == 1_000_000
     assert model_info.synthesize_chatgpt_info("gpt-5.4-mini")["context_length"] == 400_000
+
+
+@pytest.mark.parametrize("alias", ["sol", "terra", "luna", "lunna"])
+def test_codex_short_aliases_are_chatgpt_models(alias):
+    assert model_info.is_chatgpt_model(alias) is True
+    info = model_info.synthesize_chatgpt_info(alias)
+    assert info["context_length"] == 272_000
+    assert info["provider"] == "chatgpt"
 
 
 def test_cloud_model_hints_minimax():

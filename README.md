@@ -46,7 +46,9 @@ export OLLAMA_API_KEY="..."
 algo-cli --cloud --model qwen3
 
 # ChatGPT/Codex subscription (authenticate once with /chatgpt-login)
-algo-cli --model gpt-5.5
+algo-cli --model gpt-5.6-sol
+# Short aliases also work: sol, terra, luna
+algo-cli --model terra
 
 # One-shot non-interactive JSON event mode (for bridges, scripts, CI)
 algo-cli --oneshot --json "summarize this folder"
@@ -102,7 +104,10 @@ Common credential forms are redacted and connector/MCP JSON is metadata-only, bu
 | `/auto [on\|off\|status]` | Set/toggle auto-approve for tool calls |
 | `/safe [on\|off\|status]` | Set/toggle safe mode for shell/file tools |
 | `/policy [on\|off\|status]` | Toggle Agent Block tool-policy enforcement (off by default) |
-| `/thinking [on\|off\|status]` | Set/toggle thinking display |
+| `/thinking [on\|off\|status]` | Set/toggle reasoning-summary display |
+| `/thinking efforts` | Show independent Sol, Terra, and Luna reasoning settings |
+| `/thinking effort [MODEL] LEVEL` | Set Codex reasoning effort (`low`, `medium`, `high`, `xhigh`, or GPT-5.6 `max`) |
+| `/agent team ...` | Algo's multi-agent counterpart to Codex Ultra; fan out specialists, then integrate and verify |
 | `/memory-auto [on\|off\|status]` | Inspect or toggle bounded, privacy-gated automatic memory capture after successful turns |
 | `/code-rag [on\|off\|status]` | Opt in or out of cwd source indexing and prompt retrieval; `off` purges persisted indexes |
 | `/skills [on\|off\|status\|crystallize]` | Opt in to local run-history capture and review local-only skill candidates |
@@ -173,7 +178,7 @@ When a `requires_change` implementation becomes partial for a recoverable execut
 
 After an agent pipeline run, `/diff` shows the most recent verified Git diff captured by a `requires_change` block (with status, status reason, verification warning, and recorded writes), and `/changes` summarizes per-block activity (role, status, duration, tool calls, evidence). Both commands read session-scoped state — cleared by `/clear`, overwritten by the next pipeline run, never persisted to disk.
 
-Long sessions automatically drop stale tool-result messages once `cfg.messages` exceeds `prune_after_messages` (default 80), preserving the most recent `prune_keep_recent` (default 40) messages and never touching user/assistant/system messages. When a tool result is dropped, the matching `tool_calls` entry on its originating assistant message is stripped to prevent orphan references. Runs before context compaction every turn; emits a `prune` perf event only when at least one message was removed.
+Every turn semantically supersedes older successful snapshots of the same resource—such as repeated file reads, directory listings, status calls, and identical searches—with compact SHA-256 receipts while preserving the latest result and the assistant/tool protocol pair. Mutation results, failures, shell verification, and Git-diff evidence are protected. Once `cfg.messages` exceeds `prune_after_messages` (default 80), count-based cleanup may remove only older allowlisted snapshots outside `prune_keep_recent` (default 40); it strips the matching call entry so providers never receive orphaned tool messages. Token savings are emitted as `semantic_supersession` and `prune` performance events.
 
 When a `requires_change` block completes on recorded `write_file` evidence but Git verification is unavailable, the manual-confirmation notice is carried on a dedicated verification field. The block's output stays untouched; the warning is rendered on the completion panel and passed to downstream blocks in a separate `## Verification` section.
 
@@ -199,6 +204,8 @@ The model can call these tools during a conversation:
 
 **Multimodal:** `embed_text`, `vision_describe`
 
+**Programmatic actions:** `action_search` retrieves a small set of exact deferred action schemas. `action_program` compiles a bounded typed dataflow plan—never arbitrary Python or JavaScript—and routes every nested action through its existing ActionSpec policy, guardrails, approval, attempt ledger, and telemetry. Large intermediate values are content-addressed in the private runtime store; compact results retain hash-chained mutation receipts.
+
 **Models:** `model_show`, `model_pull`, `model_copy`, `model_create`, `model_delete`
 
 **Files and Git:** `read_file`, `read_pdf`, `render_pdf_pages`, `edit_file`, `write_file`, `list_directory`, `search_files`, `find_unique_anchor`, `batch_edit`, `git_status`, `git_diff`
@@ -207,7 +214,9 @@ The model can call these tools during a conversation:
 
 After `/icl on`, `query_knowledge_graph` reads the configured index-compute-lab ranked association index through its public query CLI. Set `ALGO_CLI_INDEX_COMPUTE_LAB_ROOT` to use a different local checkout.
 
-`write_file`, `run_shell`, `model_delete`, and `model_create` require approval unless `/auto` is enabled. Safe mode blocks destructive shell patterns by default. Agent Blocks with `requires_change = true` are instructed prescriptively that file creation, edits, appends, and deletes must go through `write_file`; `run_shell` is restricted to read-only verification (status, tests, lint, diff, grep, ls). Shell-based file mutation (heredocs, output redirection, `sed -i`, `Set-Content`, `Out-File`, etc.) is not counted as evidence of a change, and the model is told to stop and report rather than route edits through shell when `write_file` is unavailable.
+`write_file`, `run_shell`, `model_delete`, and `model_create` require approval unless `/auto` is enabled. A typed program is not blanket-approved: each nested mutation or external action keeps its own approval decision, and restricted Agent Blocks supply their own runtime-owned capability ceiling. Safe mode blocks destructive shell patterns by default. Agent Blocks with `requires_change = true` are instructed prescriptively that file creation, edits, appends, and deletes must go through `write_file`; `run_shell` is restricted to read-only verification (status, tests, lint, diff, grep, ls). Shell-based file mutation (heredocs, output redirection, `sed -i`, `Set-Content`, `Out-File`, etc.) is not counted as evidence of a change, and the model is told to stop and report rather than route edits through shell when `write_file` is unavailable.
+
+Run the deterministic context-efficiency release gate with `python -m algo_cli.evals.tool_context_efficiency`. It repeats tool selection, verifies required-action recall and schema conversion, measures semantic supersession, and compares raw intermediate data with compact typed-program output.
 
 Agent Block runs automatically snapshot `git status` and tracked `git diff` around implementation blocks, so review and final blocks receive verified change evidence rather than relying only on model narrative.
 

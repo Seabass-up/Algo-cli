@@ -64,7 +64,7 @@ export default function Home() {
           <div className="benchmark-line"><strong><em>9/9</em> objective passes</strong><div className="mini-bars">{Array.from({ length: 9 }, (_, i) => <i key={i} />)}</div></div>
           <small>Three tasks × three repetitions · 11 measured harnesses</small>
         </div>
-        <div><span className="data-label">Algo median</span><strong>66.8s</strong><small>99-run comparison · p95 89.4s</small></div>
+        <div><span className="data-label">Coding tool context</span><strong>73–75% less</strong><small>full catalog vs task-selected schemas</small></div>
         <div><span className="data-label">Core posture</span><strong>Local first</strong><small>Remote services optional</small></div>
       </section>
 
@@ -107,7 +107,7 @@ export default function Home() {
 
       <section className="claim-strip">
         <div><span className="status-dot" /> EVIDENCE, NOT HYPE</div>
-        <p>Algo CLI tied the top reliability group at 9/9 clean runs and ranked third after latency broke the tie. That is a scoped result—not a universal superiority claim.</p>
+        <p>Algo CLI tied the top reliability group at 9/9 clean runs. A separate deterministic benchmark measured 73–75% fewer tool-schema tokens on two coding scenarios with every required tool recalled.</p>
         <Link href="/benchmarks">Inspect the methodology →</Link>
       </section>
 

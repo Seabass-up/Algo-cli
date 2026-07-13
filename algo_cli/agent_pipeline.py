@@ -30,6 +30,7 @@ from . import task_router
 from . import tool_policy
 from . import worktree_runtime
 from . import model_info as _model_info_module
+from . import chatgpt_client
 from . import tools as tools_module
 from .chat_protocol import (
     collapse_tool_history_for_gemini,
@@ -62,6 +63,15 @@ from .tool_runtime import (
 
 TOOL_MAP = tools_module.TOOL_MAP
 logger = logging.getLogger(__name__)
+
+
+def _model_chat_options(model: str, cfg: Config) -> dict[str, Any]:
+    options: dict[str, Any] = {"temperature": cfg.temperature, "num_ctx": cfg.num_ctx}
+    if _model_info_module.is_chatgpt_model(model):
+        options["reasoning_effort"] = chatgpt_client.reasoning_effort_for_model(
+            model, cfg.chatgpt_reasoning_efforts
+        )
+    return options
 
 
 @dataclass
@@ -206,7 +216,7 @@ def run_agent_block(
                 stream=True,
                 think=cfg.show_thinking,
                 keep_alive=cfg.keep_alive,
-                options={"temperature": cfg.temperature, "num_ctx": cfg.num_ctx},
+                options=_model_chat_options(block_model, cfg),
             )
             for chunk in stream:
                 record_chat_metrics(cfg, chunk)
@@ -254,6 +264,19 @@ def run_agent_block(
         )
         return
 
+
+    from .program_runtime import authorization_for_actions
+
+    _program_auth_missing = object()
+    _previous_program_authorization = getattr(
+        cfg, "_algo_program_authorization", _program_auth_missing
+    )
+    setattr(
+        cfg,
+        "_algo_program_authorization",
+        authorization_for_actions(tuple(runtime_tool_names)),
+    )
+
     try:
         for _ in range(max(1, int(block.max_iterations))):
             request_messages = messages
@@ -266,7 +289,7 @@ def run_agent_block(
                 stream=True,
                 think=cfg.show_thinking,
                 keep_alive=cfg.keep_alive,
-                options={"temperature": cfg.temperature, "num_ctx": cfg.num_ctx},
+                options=_model_chat_options(block_model, cfg),
             )
             thinking_text = ""
             content_text = ""
@@ -430,6 +453,13 @@ def run_agent_block(
             block.status = "failed"
             block.status_code = "guardrail_scope_error"
             block.status_reason = f"Execution evidence scope failed to close: {exc}"
+        if _previous_program_authorization is _program_auth_missing:
+            try:
+                delattr(cfg, "_algo_program_authorization")
+            except AttributeError:
+                pass
+        else:
+            setattr(cfg, "_algo_program_authorization", _previous_program_authorization)
         block.duration_ms = round((time.perf_counter() - started) * 1000, 2)
         show_agent_block_complete(
             block.role,

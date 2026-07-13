@@ -11,11 +11,13 @@ import subprocess
 import tempfile
 import uuid
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from . import chatgpt_auth
+from .model_aliases import normalize_codex_model
 
 try:
     from ollama._utils import convert_function_to_tool
@@ -28,40 +30,130 @@ class ChatGptOAuthAccessError(RuntimeError):
 
 
 CODEX_SUBSCRIPTION_MODELS = {
+    "gpt-5.6",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
     "gpt-5.5",
     "gpt-5.4",
     "gpt-5.4-mini",
     "gpt-5.3-codex-spark",
     "gpt-5.1-codex",
 }
+CODEX_56_MODELS = frozenset({"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"})
+CODEX_MODELS_CLIENT_VERSION = os.environ.get("OPENAI_CODEX_MODELS_CLIENT_VERSION", "0.144.2").strip() or "0.144.2"
 _MODEL_REQUEST_SCOPE_MISSING = False
 CODEX_RESPONSES_BASE_URL = os.environ.get("OPENAI_CODEX_RESPONSES_BASE", "https://chatgpt.com/backend-api").rstrip("/")
 CODEX_RESPONSES_ORIGINATOR = os.environ.get("OPENAI_CODEX_ORIGINATOR", "pi").strip() or "pi"
+CODEX_LITE_ORIGINATOR = os.environ.get("OPENAI_CODEX_LITE_ORIGINATOR", "codex_cli_rs").strip() or "codex_cli_rs"
 _REASONING_EFFORT_ALIASES = {
     "": "medium",
     "default": "medium",
     "normal": "medium",
     "med": "medium",
-    "maximum": "xhigh",
-    "max": "xhigh",
+    "light": "low",
+    "minimal": "low",
+    "maximum": "max",
     "extra-high": "xhigh",
     "extra_high": "xhigh",
     "very-high": "xhigh",
     "very_high": "xhigh",
 }
-_REASONING_EFFORT_LEVELS = {"minimal", "low", "medium", "high", "xhigh"}
+_REASONING_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 
 def is_codex_subscription_model(model: str) -> bool:
-    return str(model or "").split(":", 1)[0] in CODEX_SUBSCRIPTION_MODELS
+    return normalize_codex_model(model) in CODEX_SUBSCRIPTION_MODELS
 
 
-def _normalize_reasoning_effort(value: Any) -> str:
+def supported_reasoning_efforts(model: str) -> tuple[str, ...]:
+    if normalize_codex_model(model) in CODEX_56_MODELS:
+        return ("low", "medium", "high", "xhigh", "max")
+    return ("low", "medium", "high", "xhigh")
+
+
+def parse_reasoning_effort(value: Any, model: str) -> str:
     text = str(value or "").strip().lower()
     normalized = _REASONING_EFFORT_ALIASES.get(text, text)
+    supported = supported_reasoning_efforts(model)
+    if normalized == "max" and "max" not in supported:
+        return "xhigh"
+    if normalized not in supported:
+        raise ValueError(f"reasoning effort must be one of: {', '.join(supported)}")
+    return normalized
+
+
+def _normalize_reasoning_effort(value: Any, model: str = "") -> str:
+    text = str(value or "").strip().lower()
+    normalized = _REASONING_EFFORT_ALIASES.get(text, text)
+    if normalized == "max" and normalize_codex_model(model) not in CODEX_56_MODELS:
+        return "xhigh"
     if normalized in _REASONING_EFFORT_LEVELS:
         return normalized
     return "medium"
+
+
+def reasoning_effort_for_model(model: str, configured: dict[str, str] | None = None) -> str:
+    canonical = normalize_codex_model(model)
+    values = configured or {}
+    raw = values.get(canonical, values.get(str(model or ""), "medium"))
+    return _normalize_reasoning_effort(raw, canonical)
+
+
+def get_codex_models(*, timeout: float = 20.0) -> list[dict[str, Any]]:
+    """Return the current OAuth account's visible Codex model catalog.
+
+    The ChatGPT backend gates model metadata by Codex protocol version. Algo
+    advertises the protocol version it implements instead of inheriting a stale
+    locally installed Codex binary version.
+    """
+    token = chatgpt_auth.get_valid_token()
+    if not token:
+        raise ChatGptOAuthAccessError("Not authenticated with ChatGPT/Codex OAuth. Run /chatgpt-login first.")
+    account_id = chatgpt_auth.get_chatgpt_account_id()
+    if not account_id:
+        raise ChatGptOAuthAccessError(
+            "ChatGPT/Codex OAuth token does not include a ChatGPT account id. Run /chatgpt-login again."
+        )
+    query = urllib.parse.urlencode({"client_version": CODEX_MODELS_CLIENT_VERSION})
+    req = urllib.request.Request(
+        f"{CODEX_RESPONSES_BASE_URL}/codex/models?{query}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "chatgpt-account-id": account_id,
+            "originator": CODEX_RESPONSES_ORIGINATOR,
+            "User-Agent": "algo-cli model discovery",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")[:1000].strip()
+        except Exception:
+            pass
+        raise ChatGptOAuthAccessError(
+            f"ChatGPT Codex model discovery failed ({exc.code}): {detail or '(no body)'}"
+        ) from exc
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise ChatGptOAuthAccessError(f"ChatGPT Codex model discovery failed: {exc}") from exc
+    items = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        raise ChatGptOAuthAccessError("ChatGPT Codex model discovery returned no model list.")
+    visible: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("visibility") == "hide":
+            continue
+        slug = item.get("slug") or item.get("id")
+        if not slug:
+            continue
+        normalized = dict(item)
+        normalized["slug"] = str(slug)
+        visible.append(normalized)
+    return visible
 
 
 def _messages_to_codex_prompt(messages: list[dict[str, Any]]) -> str:
@@ -93,9 +185,21 @@ def _run_codex_exec(
         raise ChatGptOAuthAccessError("Codex CLI is not installed or not discoverable. Run /chatgpt-login again after installing Codex.")
     if not chatgpt_auth.get_valid_token():
         raise ChatGptOAuthAccessError("Not authenticated with ChatGPT/Codex OAuth. Run /chatgpt-login first.")
+    codex_home = chatgpt_auth.CODEX_AUTH_HOME
+    if not (codex_home / "auth.json").is_file():
+        inherited_home = Path(os.environ.get("CODEX_HOME", "")).expanduser() if os.environ.get("CODEX_HOME") else None
+        default_home = Path.home() / ".codex"
+        if inherited_home is not None and (inherited_home / "auth.json").is_file():
+            codex_home = inherited_home
+        elif (default_home / "auth.json").is_file():
+            codex_home = default_home
+        else:
+            raise ChatGptOAuthAccessError(
+                "Codex CLI fallback needs a Codex auth file. Run /chatgpt-login --device-code."
+            )
     prompt = _messages_to_codex_prompt(messages)
     env = os.environ.copy()
-    env["CODEX_HOME"] = str(chatgpt_auth.CODEX_AUTH_HOME)
+    env["CODEX_HOME"] = str(codex_home)
     with tempfile.TemporaryDirectory(prefix="algo-codex-") as tmpdir:
         output_path = Path(tmpdir) / "last-message.txt"
         cmd = [
@@ -104,7 +208,7 @@ def _run_codex_exec(
             "-m",
             model,
             "-c",
-            f'model_reasoning_effort="{_normalize_reasoning_effort(reasoning_effort)}"',
+            f'model_reasoning_effort="{_normalize_reasoning_effort(reasoning_effort, model)}"',
             "--skip-git-repo-check",
             "--sandbox",
             "read-only",
@@ -145,18 +249,18 @@ def _run_codex_exec(
     raise ChatGptOAuthAccessError(f"Codex CLI completed for {model} but produced no response.")
 
 
-def _reasoning_effort_from_options(options: dict[str, Any] | None) -> str:
+def _reasoning_effort_from_options(options: dict[str, Any] | None, model: str = "") -> str:
     if not options:
         return "medium"
     effort = options.get("reasoning_effort") or options.get("chatgpt_reasoning_effort") or "medium"
-    return _normalize_reasoning_effort(effort)
+    return _normalize_reasoning_effort(effort, model)
 
 
 def _codex_exec_chunk(model: str, messages: list[dict[str, Any]], options: dict[str, Any] | None) -> dict[str, Any]:
     content = _run_codex_exec(
         model,
         messages,
-        reasoning_effort=_reasoning_effort_from_options(options),
+        reasoning_effort=_reasoning_effort_from_options(options, model),
         timeout=300.0,
     )
     return {"message": {"content": content}}
@@ -354,19 +458,24 @@ def _is_token_invalidated_error(detail: str) -> bool:
 def _build_codex_responses_request(payload: dict[str, Any], *, token: str, account_id: str) -> urllib.request.Request:
     body = json.dumps(payload).encode("utf-8")
     request_id = str(uuid.uuid4())
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "chatgpt-account-id": account_id,
+        "originator": CODEX_RESPONSES_ORIGINATOR,
+        "User-Agent": "pi (Windows; x64)",
+        "OpenAI-Beta": "responses=experimental",
+        "x-client-request-id": request_id,
+    }
+    if normalize_codex_model(str(payload.get("model") or "")) in CODEX_56_MODELS:
+        headers["X-OpenAI-Internal-Codex-Responses-Lite"] = "true"
+        headers["originator"] = CODEX_LITE_ORIGINATOR
+        headers["User-Agent"] = f"codex_cli_rs/{CODEX_MODELS_CLIENT_VERSION}"
     return urllib.request.Request(
         _codex_responses_url(),
         data=body,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-            "chatgpt-account-id": account_id,
-            "originator": CODEX_RESPONSES_ORIGINATOR,
-            "User-Agent": "pi (Windows; x64)",
-            "OpenAI-Beta": "responses=experimental",
-            "x-client-request-id": request_id,
-        },
+        headers=headers,
         method="POST",
     )
 
@@ -473,6 +582,11 @@ def _stream_codex_responses_iter(resp: Any) -> Iterator[dict[str, Any]]:
 
     for event in _parse_sse_events(resp):
         event_type = str(event.get("type") or "")
+        if event_type == "response.reasoning_summary_text.delta":
+            text = _extract_responses_event_text(event)
+            if text:
+                yield {"message": {"thinking": text}}
+            continue
         if event_type in {"response.output_text.delta", "response.refusal.delta"}:
             text = _extract_responses_event_text(event)
             if text:
@@ -562,14 +676,10 @@ class ChatGptClient:
         **_ignored: Any,
     ) -> Any:
         global _MODEL_REQUEST_SCOPE_MISSING
-        if is_codex_subscription_model(model) and not tools:
-            chunk = _codex_exec_chunk(model, messages, options)
-            if stream:
-                return iter([chunk])
-            return chunk
+        codex_model = normalize_codex_model(model)
 
         if is_codex_subscription_model(model) and _MODEL_REQUEST_SCOPE_MISSING:
-            chunk = _codex_exec_chunk(model, messages, options)
+            chunk = _codex_exec_chunk(codex_model, messages, options)
             note = (
                 "Note: ChatGPT OAuth is Codex-CLI-only in this session, so this response used "
                 "Codex CLI fallback without Algo CLI tool calls. For full file edits, shell, "
@@ -582,62 +692,68 @@ class ChatGptClient:
             return chunk
 
         if is_codex_subscription_model(model):
+            is_gpt_56 = codex_model in CODEX_56_MODELS
             payload: dict[str, Any] = {
-                "model": model,
+                "model": codex_model,
                 "store": False,
                 "stream": True,
                 "input": _build_responses_input(messages),
                 "include": ["reasoning.encrypted_content"],
-                "tool_choice": "auto",
-                "parallel_tool_calls": True,
             }
+            if is_gpt_56:
+                payload["parallel_tool_calls"] = False
+                payload["reasoning"] = {
+                    "effort": _reasoning_effort_from_options(options, codex_model),
+                    "summary": "auto",
+                    "context": "all_turns",
+                }
             built_tools = _build_responses_tools(tools)
             if built_tools:
                 payload["tools"] = built_tools
+                payload["tool_choice"] = "auto"
+                if not is_gpt_56:
+                    payload["parallel_tool_calls"] = True
             if options:
                 effort = options.get("reasoning_effort") or options.get("chatgpt_reasoning_effort")
-                if effort:
+                if effort and not is_gpt_56:
                     payload["reasoning"] = {
-                        "effort": _normalize_reasoning_effort(effort),
+                        "effort": _normalize_reasoning_effort(effort, codex_model),
                         "summary": "auto",
                     }
-                if "num_predict" in options:
-                    payload["max_output_tokens"] = options["num_predict"]
-            resp = _post_codex_responses(payload, timeout=120.0)
+            try:
+                resp = _post_codex_responses(payload, timeout=120.0)
+            except ChatGptOAuthAccessError as exc:
+                if not _is_missing_model_request_scope(exc):
+                    raise
+                _MODEL_REQUEST_SCOPE_MISSING = True
+                chunk = _codex_exec_chunk(codex_model, messages, options)
+                note = (
+                    "Note: ChatGPT OAuth lacks the model.request scope, so this response used "
+                    "Codex CLI fallback without Algo CLI tool calls. For full file edits, shell, "
+                    "approval gates, and tool ledger, reauthenticate with /chatgpt-login --device-code.\n\n"
+                )
+                chunk["message"]["content"] = note + str(chunk["message"].get("content", ""))
+                if stream:
+                    return iter([chunk])
+                return chunk
             if stream:
                 return _stream_codex_responses_iter(resp)
             return _codex_responses_to_chunk(resp)
 
-        payload: dict[str, Any] = {
+        openai_payload: dict[str, Any] = {
             "model": model,
             "messages": _build_openai_messages(messages),
             "stream": bool(stream),
         }
         built_tools = _build_openai_tools(tools)
         if built_tools:
-            payload["tools"] = built_tools
+            openai_payload["tools"] = built_tools
         if options:
             if "temperature" in options:
-                payload["temperature"] = options["temperature"]
+                openai_payload["temperature"] = options["temperature"]
             if "num_predict" in options:
-                payload["max_tokens"] = options["num_predict"]
-        try:
-            resp = _post_chat(payload, stream=stream, timeout=120.0)
-        except ChatGptOAuthAccessError as exc:
-            if not is_codex_subscription_model(model) or not _is_missing_model_request_scope(exc):
-                raise
-            _MODEL_REQUEST_SCOPE_MISSING = True
-            chunk = _codex_exec_chunk(model, messages, options)
-            note = (
-                "Note: ChatGPT OAuth lacks the model.request scope, so this response used "
-                "Codex CLI fallback without Algo CLI tool calls. For full file edits, shell, "
-                "approval gates, and tool ledger, switch to a local/Ollama/xAI tool-capable model "
-                "or authenticate with an OpenAI token that has model.request.\n\n"
-            )
-            chunk["message"]["content"] = note + str(chunk["message"].get("content", ""))
-            if stream:
-                return iter([chunk])
-            return chunk
+                openai_payload["max_tokens"] = options["num_predict"]
+        resp = _post_chat(openai_payload, stream=stream, timeout=120.0)
         if stream:
             return _stream_iter(resp)
         try:

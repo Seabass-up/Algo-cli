@@ -24,6 +24,7 @@ test("server-renders the Algo CLI product home", async () => {
   assert.match(html, /Verified work\./);
   assert.match(html, /Local control\./);
   assert.match(html, /9\/9/);
+  assert.match(html, /73–75% less/);
   assert.match(html, /Public knowledge plane/i);
   assert.match(html, /pipx install algo-cli-runtime/i);
   assert.match(html, /v0\.14\.0 stable/i);
@@ -61,6 +62,7 @@ test("renders the core support routes", async () => {
 test("ships truthful machine-readable release and benchmark contracts", async () => {
   const release = JSON.parse(await readFile(new URL("../public/api/v1/releases/stable.json", import.meta.url), "utf8"));
   const benchmark = JSON.parse(await readFile(new URL("../public/benchmarks/summary.json", import.meta.url), "utf8"));
+  const tokenEfficiency = JSON.parse(await readFile(new URL("../public/benchmarks/token-efficiency.json", import.meta.url), "utf8"));
   const docs = JSON.parse(await readFile(new URL("../public/docs/index.json", import.meta.url), "utf8"));
   const discovery = JSON.parse(await readFile(new URL("../public/.well-known/algo-cli.json", import.meta.url), "utf8"));
   assert.equal(release.channel, "stable");
@@ -80,6 +82,13 @@ test("ships truthful machine-readable release and benchmark contracts", async ()
   assert.equal(benchmark.results.find((row) => row.id === "algo-cli").rank, 3);
   assert.match(benchmark.limitations, /do not support a universal superiority/i);
   assert.match(benchmark.limitations, /retained locally rather than published/i);
+  assert.equal(tokenEfficiency.schema_version, 1);
+  assert.equal(tokenEfficiency.repeats, 7);
+  assert.equal(tokenEfficiency.catalog_tool_count, 56);
+  assert.equal(tokenEfficiency.serialized_catalog_tool_count, 56);
+  assert.equal(tokenEfficiency.coding_scenarios.length, 2);
+  assert.equal(tokenEfficiency.required_tool_recall, 1);
+  assert.match(tokenEfficiency.limitations, /does not measure model output tokens/i);
   assert.equal(docs.version, "0.14.0");
   assert.equal(discovery.schema_version, 1);
   assert.equal(discovery.canonical_origin, "https://algo-cli.com");
