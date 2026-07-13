@@ -115,7 +115,15 @@ Common credential forms are redacted and connector/MCP JSON is metadata-only, bu
 | `/agent [--pipeline NAME] TASK` | Run a named Agent Blocks pipeline and record a resumable thread |
 | `/agent team [--roles A,B[,C,D]] TASK` | Run 2–4 independent read-only specialists, then one integrating pipeline |
 | `/agent threads` / `/agent show ID` | List persistent parent/child runs or inspect their evidence |
-| `/agent resume ID [TASK]` / `/agent fork ID TASK` | Continue a thread or branch from its bounded handoff context |
+| `/agent switch ID` | Restore a thread's recorded repository, branch, HEAD, and working directory after identity checks |
+| `/agent resume ID [TASK]` / `/agent fork ID [--same-worktree] TASK` | Continue an exact recorded thread state or create an isolated child worktree; dirty parents require `--same-worktree`, or a new worktree/thread after commit |
+| `/worktree status` / `/worktree list` | Inspect the active Git workspace or list Algo-managed worktrees |
+| `/worktree new NAME [--from REF]` | Create and activate a collision-safe feature worktree outside the source repository |
+| `/worktree use ID` / `/worktree remove ID` | Activate a verified worktree or remove one only when tracked, untracked, and ignored-file gates pass |
+| `/ship status` | Preview branch, HEAD, divergence, remote, diff checks, and a state fingerprint without mutation |
+| `/ship commit [--expect HASH] [--files PATHS] MESSAGE` | Scope, scrub, stage, and commit feature-branch changes |
+| `/ship push [--expect HASH]` | Refresh the remote, reject divergence, scrub every outgoing commit and its metadata, then push the reviewed object ID |
+| `/ship pr [--ready]` / `/ship all [--ready] MESSAGE` | Reuse or create a draft PR; or resume the guarded commit → push → PR stack |
 | `/kernel list` / `/kernel show NAME` | Inspect kernel contracts without executing workloads |
 | `/kernel check [NAME]` | Validate kernel imports, slash routes, metadata, and active action contracts |
 | `/status` | Show current model, context usage, and active features |
@@ -151,7 +159,11 @@ Use `/agent init` to create a starter `blocks.toml` defining `default`, `code-ch
 
 `/agent team` follows the Algo delegation loop: classify the task, choose two to four explicit specialist roles, fan them out with fresh read-only contexts, join their evidence in deterministic role order, and hand that bounded context to one normal integration pipeline. Child threads never mutate the shared workspace. The integration pipeline is the sole write owner and retains the existing approval, safe-mode, required-change, Git-evidence, review, and recovery gates. This gives parallel exploration without parallel-edit conflicts or unbounded recursive swarms.
 
-Agent runs are recorded in `~/.algo_cli/agent_threads.json` (up to 100 recent records, with bounded outputs and turn history). `/agent resume` continues the same record with its prior evidence; `/agent fork` creates a child record for a distinct follow-up. Custom roles must be unique short names, and team size is structurally capped at four.
+Agent runs are recorded in `~/.algo_cli/agent_threads.json` (up to 100 recent records, with bounded outputs and turn history). Records include bounded workspace identity, the initial/current HEAD, branch, and full-state Git digests without persisting diff contents or injecting absolute paths into model handoffs. `/agent resume` and `/agent switch` restore only the exact recorded state. `/agent fork` creates a collision-safe linked worktree by default when the parent has Git metadata, uses the verified immutable HEAD as its base, and refuses to silently drop dirty tracked or untracked files. Dirty state can continue only with `--same-worktree`; after committing it, create a new worktree and agent thread rather than rebinding the old record to a different state. Managed worktrees are recorded separately in `~/.algo_cli/worktrees.json`, active records are never evicted by the history cap, and cleanup refuses tracked, untracked, or ignored data. Custom team roles must be unique short names, and team size is structurally capped at four.
+
+`/ship` is the terminal equivalent of a one-action Git publish control: status is read-only; every mutating phase remains approval-gated when model-invoked. The workflow blocks detached/protected branches, stale reviewed fingerprints, path escapes, high-confidence secrets, oversized security inputs, dirty pushes, missing/ambiguous remote defaults, non-feature upstreams, and branches behind their freshly fetched base or upstream. Before push, it reviews every immutable outgoing commit's raw metadata, paths, and delta with bounded disk-backed capture, rejects unresolved Git LFS payloads and Git object overlays, revalidates the destination, and pushes the reviewed object ID through an isolated destination binding. Repository-provided scripts are never executed implicitly, while normal user-configured commit hooks retain Git semantics and are verified after they run. Project-specific public-release scans remain separate CI gates. New pull requests default to draft, and the state-derived phases resume after partial failure without creating a duplicate commit.
+
+See [T3 Code parity review](docs/t3-code-parity-2026-07.md) for the revision-pinned comparison, verified advantages, and remaining gaps.
 
 When a block reaches its iteration budget after gathering evidence, the CLI requests a tool-free partial summary and allows the finalizer to report those incomplete findings instead of discarding the run.
 

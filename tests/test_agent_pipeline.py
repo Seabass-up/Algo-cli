@@ -787,6 +787,7 @@ def test_non_change_mutation_is_audited_without_status_gate(monkeypatch):
     infos: list[str] = []
     _quiet_display(monkeypatch)
     monkeypatch.setattr(agent_pipeline, "resolve_pipeline_for_cli", lambda _name: ([review, final], "test"))
+    monkeypatch.setattr(agent_pipeline, "_capture_thread_workspace", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(git_evidence, "capture_git_snapshot", lambda _cwd: next(snapshots))
     monkeypatch.setattr(agent_pipeline, "show_info", lambda message: infos.append(message))
     monkeypatch.setattr(
@@ -1227,3 +1228,226 @@ def test_agent_resume_and_fork_pass_prior_thread_handoff(monkeypatch):
     assert calls[1]["thread_id"] is None
     assert calls[1]["parent_id"] == original["id"]
     assert "Verified prior evidence" in calls[0]["prior_context"]
+
+
+def test_agent_fork_creates_and_activates_isolated_worktree(monkeypatch, tmp_path):
+    parent_path = tmp_path / "parent"
+    child_path = tmp_path / "child"
+    parent_path.mkdir()
+    child_path.mkdir()
+    cfg = Config(cwd=str(tmp_path))
+    record = {
+        "id": "abc12345",
+        "task": "Original task",
+        "pipeline": "review",
+        "status": "complete",
+        "output": "Prior evidence",
+        "blocks": [],
+        "workspace": {
+            "available": True,
+            "workspace_root": str(parent_path),
+            "branch": "algo/parent",
+            "head": "a" * 40,
+            "initial_head": "a" * 40,
+        },
+    }
+    calls: dict[str, Any] = {}
+
+    monkeypatch.setattr(agent_threads, "resolve_thread", lambda _ref: record)
+
+    def fake_restore(_record, loaded_cfg):
+        loaded_cfg.cwd = str(parent_path)
+        return True
+
+    def fake_create(cwd, name, *, base_ref):
+        calls["create"] = {"cwd": cwd, "name": name, "base_ref": base_ref}
+        return {"id": "work1234", "branch": "algo/child", "path": str(child_path)}
+
+    def fake_activate(ref, loaded_cfg):
+        calls["activate"] = ref
+        loaded_cfg.cwd = str(child_path)
+
+    def fake_run(task, loaded_cfg, _client, pipeline_name="default", **kwargs):
+        calls["run"] = {"task": task, "cwd": loaded_cfg.cwd, **kwargs}
+        return agent_pipeline.AgentRunResult(
+            thread_id="forked01",
+            status="complete",
+            pipeline=pipeline_name,
+            output="done",
+        )
+
+    monkeypatch.setattr(agent_pipeline.worktree_runtime, "activate_thread_workspace", fake_restore)
+    monkeypatch.setattr(
+        agent_pipeline.worktree_runtime,
+        "capture_workspace",
+        lambda _cwd: {"available": True, "clean": True, "head": "b" * 40},
+    )
+    monkeypatch.setattr(agent_pipeline.worktree_runtime, "create_worktree", fake_create)
+    monkeypatch.setattr(agent_pipeline.worktree_runtime, "activate_worktree", fake_activate)
+    monkeypatch.setattr(agent_pipeline, "run_agent_pipeline", fake_run)
+    monkeypatch.setattr(
+        agent_pipeline.memory_runtime,
+        "capture_completed_user_turn",
+        lambda *_args, **_kwargs: {"status": "rejected"},
+    )
+
+    result = agent_pipeline.execute_agent_command(
+        "fork abc12345 Explore an alternative",
+        cfg,
+        object(),
+    )
+
+    assert "Agent thread forked01" in result
+    assert calls["create"]["cwd"] == str(parent_path)
+    assert calls["create"]["base_ref"] == "b" * 40
+    assert calls["activate"] == "work1234"
+    assert calls["run"]["cwd"] == str(child_path)
+    assert calls["run"]["parent_id"] == "abc12345"
+
+
+def test_agent_fork_refuses_to_drop_dirty_parent_state(monkeypatch, tmp_path):
+    parent_path = tmp_path / "parent"
+    parent_path.mkdir()
+    cfg = Config(cwd=str(tmp_path))
+    record = {
+        "id": "abc12345",
+        "task": "Original task",
+        "pipeline": "review",
+        "status": "complete",
+        "output": "Prior evidence",
+        "blocks": [],
+        "workspace": {
+            "available": True,
+            "workspace_root": str(parent_path),
+            "branch": "algo/parent",
+            "head": "a" * 40,
+        },
+    }
+    create_calls: list[str] = []
+
+    monkeypatch.setattr(agent_threads, "resolve_thread", lambda _ref: record)
+
+    def fake_restore(_record, loaded_cfg):
+        loaded_cfg.cwd = str(parent_path)
+        return True
+
+    monkeypatch.setattr(agent_pipeline.worktree_runtime, "activate_thread_workspace", fake_restore)
+    monkeypatch.setattr(
+        agent_pipeline.worktree_runtime,
+        "capture_workspace",
+        lambda _cwd: {"available": True, "clean": False},
+    )
+    monkeypatch.setattr(
+        agent_pipeline.worktree_runtime,
+        "create_worktree",
+        lambda *_args, **_kwargs: create_calls.append("created"),
+    )
+
+    result = agent_pipeline.execute_agent_command(
+        "fork abc12345 Explore an alternative",
+        cfg,
+        object(),
+    )
+
+    assert result.startswith("Error:")
+    assert "start a new /worktree and agent thread" in result
+    assert "--same-worktree" in result
+    assert create_calls == []
+
+
+def test_agent_fork_refuses_missing_or_invalid_verified_head(monkeypatch, tmp_path):
+    parent_path = tmp_path / "parent"
+    parent_path.mkdir()
+    cfg = Config(cwd=str(tmp_path))
+    record = {
+        "id": "abc12345",
+        "task": "Original task",
+        "pipeline": "review",
+        "status": "complete",
+        "output": "Prior evidence",
+        "blocks": [],
+        "workspace": {"available": True, "workspace_root": str(parent_path)},
+    }
+    create_calls: list[str] = []
+
+    monkeypatch.setattr(agent_threads, "resolve_thread", lambda _ref: record)
+
+    def fake_restore(_record, loaded_cfg):
+        loaded_cfg.cwd = str(parent_path)
+        return True
+
+    monkeypatch.setattr(agent_pipeline.worktree_runtime, "activate_thread_workspace", fake_restore)
+    monkeypatch.setattr(
+        agent_pipeline.worktree_runtime,
+        "capture_workspace",
+        lambda _cwd: {"available": True, "clean": True, "head": "not-an-oid"},
+    )
+    monkeypatch.setattr(
+        agent_pipeline.worktree_runtime,
+        "create_worktree",
+        lambda *_args, **_kwargs: create_calls.append("created"),
+    )
+
+    result = agent_pipeline.execute_agent_command(
+        "fork abc12345 Explore an alternative",
+        cfg,
+        object(),
+    )
+
+    assert result.startswith("Error:")
+    assert "HEAD is missing or invalid" in result
+    assert create_calls == []
+
+
+def test_thread_workspace_capture_uses_fresh_full_state_evidence(monkeypatch, tmp_path):
+    cfg = Config(cwd=str(tmp_path))
+    evidence = {
+        "available": True,
+        "workspace_root": str(tmp_path),
+        "head": "a" * 40,
+        "status": "## feature",
+        "tracked_diff_digest": "b" * 64,
+        "untracked_digest": "c" * 64,
+        "clean": False,
+    }
+    calls: list[str] = []
+
+    def fake_capture(cwd):
+        calls.append(cwd)
+        return dict(evidence)
+
+    monkeypatch.setattr(agent_pipeline.worktree_runtime, "capture_workspace", fake_capture)
+
+    captured = agent_pipeline._capture_thread_workspace(cfg)
+
+    assert captured == evidence
+    assert calls == [str(tmp_path)]
+
+
+def test_resumed_pipeline_does_not_run_heuristic_workspace_resolver(monkeypatch, tmp_path):
+    cfg = Config(cwd=str(tmp_path))
+    final = agent_blocks.AgentBlock(role="final", prompt="final")
+    client = ScriptedClient([{"content": "## Block Output\nDone."}])
+    resolver_calls: list[str] = []
+    _quiet_display(monkeypatch)
+    monkeypatch.setattr(
+        agent_pipeline,
+        "resolve_pipeline_for_cli",
+        lambda _name: ([final], "test"),
+    )
+    monkeypatch.setattr(
+        agent_pipeline,
+        "resolve_agent_workspace",
+        lambda task, _cfg: resolver_calls.append(task) or True,
+    )
+    monkeypatch.setattr(agent_pipeline, "_start_thread_record", lambda *_args, **_kwargs: "")
+
+    agent_pipeline.run_agent_pipeline(
+        "Continue work on Algo CLI",
+        cfg,
+        client,
+        pipeline_name="default",
+        prior_context="verified parent handoff",
+    )
+
+    assert resolver_calls == []

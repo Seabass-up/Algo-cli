@@ -12,7 +12,8 @@ from . import config
 
 
 THREADS_FILE_NAME = "agent_threads.json"
-THREADS_SCHEMA_VERSION = 1
+THREADS_SCHEMA_VERSION = 2
+_COMPATIBLE_SCHEMA_VERSIONS = frozenset({1, THREADS_SCHEMA_VERSION})
 MAX_THREAD_RECORDS = 100
 MAX_THREAD_TURNS = 16
 MAX_THREAD_OUTPUT_CHARS = 12_000
@@ -36,6 +37,56 @@ def _clean_text(value: Any, limit: int) -> str:
 
 def _empty_store() -> dict[str, Any]:
     return {"version": THREADS_SCHEMA_VERSION, "threads": []}
+
+
+def _normalize_workspace(raw: Any) -> dict[str, Any]:
+    """Bound persisted workspace evidence without retaining diff contents."""
+
+    if not isinstance(raw, dict):
+        return {}
+    text_limits = {
+        "cwd": 2_000,
+        "workspace_root": 2_000,
+        "repository_root": 2_000,
+        "git_common_dir": 2_000,
+        "branch": 240,
+        "head": 64,
+        "initial_head": 64,
+        "status": 4_000,
+        "status_digest": 64,
+        "tracked_diff_digest": 64,
+        "untracked_digest": 64,
+        "captured_at": 64,
+        "error": 1_000,
+    }
+    workspace: dict[str, Any] = {
+        key: _clean_text(raw.get(key), limit)
+        for key, limit in text_limits.items()
+        if raw.get(key) is not None
+    }
+    try:
+        untracked_total = int(raw.get("untracked_total") or 0)
+    except (TypeError, ValueError):
+        untracked_total = 0
+    workspace["available"] = bool(raw.get("available", False))
+    if "clean" in raw:
+        workspace["clean"] = bool(raw.get("clean"))
+    if "is_linked_worktree" in raw:
+        workspace["is_linked_worktree"] = bool(raw.get("is_linked_worktree"))
+    if "untracked_total" in raw:
+        workspace["untracked_total"] = max(0, min(untracked_total, 1_000_000))
+    if not workspace.get("initial_head") and workspace.get("head"):
+        workspace["initial_head"] = workspace["head"]
+    return workspace
+
+
+def _merge_workspace(previous: Any, current: Any) -> dict[str, Any]:
+    before = _normalize_workspace(previous)
+    after = _normalize_workspace(current)
+    if not after:
+        return before
+    after["initial_head"] = before.get("initial_head") or before.get("head") or after.get("head", "")
+    return after
 
 
 def _normalize_record(raw: Any) -> dict[str, Any] | None:
@@ -72,13 +123,14 @@ def _normalize_record(raw: Any) -> dict[str, Any] | None:
         "blocks": [item for item in blocks if isinstance(item, dict)]
         if isinstance(blocks, list)
         else [],
+        "workspace": _normalize_workspace(raw.get("workspace")),
     }
 
 
 def load_threads(path: Path | None = None) -> list[dict[str, Any]]:
     target = path or threads_path()
     loaded = config._load_json_file(target, _empty_store())
-    if not isinstance(loaded, dict) or loaded.get("version") != THREADS_SCHEMA_VERSION:
+    if not isinstance(loaded, dict) or loaded.get("version") not in _COMPATIBLE_SCHEMA_VERSIONS:
         return []
     records = loaded.get("threads", [])
     if not isinstance(records, list):
@@ -120,6 +172,7 @@ def create_thread(
     title: str = "",
     status: str = "queued",
     start_turn: bool = False,
+    workspace: dict[str, Any] | None = None,
     path: Path | None = None,
 ) -> dict[str, Any]:
     if status not in _VALID_STATUSES:
@@ -150,6 +203,7 @@ def create_thread(
                 else []
             ),
             "blocks": [],
+            "workspace": _normalize_workspace(workspace),
         }
         records.append(record)
         if parent_id:
@@ -164,7 +218,7 @@ def create_thread(
 
 
 def update_thread(thread_id: str, *, path: Path | None = None, **changes: Any) -> dict[str, Any]:
-    allowed = {"title", "task", "role", "pipeline", "model", "status", "output", "error", "blocks"}
+    allowed = {"title", "task", "role", "pipeline", "model", "status", "output", "error", "blocks", "workspace"}
     unknown = set(changes) - allowed
     if unknown:
         raise ValueError(f"Unsupported agent thread fields: {', '.join(sorted(unknown))}")
@@ -182,6 +236,8 @@ def update_thread(thread_id: str, *, path: Path | None = None, **changes: Any) -
                     record[key] = _clean_text(value, 2_000)
                 elif key == "blocks":
                     record[key] = [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+                elif key == "workspace":
+                    record[key] = _merge_workspace(record.get("workspace"), value)
                 else:
                     record[key] = _clean_text(value, 8_000 if key == "task" else 120)
             record["updated_at"] = _now()
@@ -197,6 +253,7 @@ def begin_turn(
     *,
     pipeline: str | None = None,
     model: str | None = None,
+    workspace: dict[str, Any] | None = None,
     path: Path | None = None,
 ) -> dict[str, Any]:
     def begin(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -212,6 +269,8 @@ def begin_turn(
                 record["pipeline"] = _clean_text(pipeline, 80)
             if model:
                 record["model"] = _clean_text(model, 120)
+            if workspace is not None:
+                record["workspace"] = _merge_workspace(record.get("workspace"), workspace)
             record["turns"].append(
                 {"task": _clean_text(task, 8_000), "status": "running", "started_at": now, "output": ""}
             )
@@ -230,6 +289,7 @@ def finish_turn(
     error: str = "",
     blocks: list[dict[str, Any]] | None = None,
     pipeline: str | None = None,
+    workspace: dict[str, Any] | None = None,
     path: Path | None = None,
 ) -> dict[str, Any]:
     if status not in _VALID_STATUSES - {"queued", "running"}:
@@ -248,6 +308,8 @@ def finish_turn(
                 record["blocks"] = [item for item in blocks if isinstance(item, dict)]
             if pipeline:
                 record["pipeline"] = _clean_text(pipeline, 80)
+            if workspace is not None:
+                record["workspace"] = _merge_workspace(record.get("workspace"), workspace)
             if record["turns"]:
                 turn = record["turns"][-1]
                 if turn.get("status") == "running":
@@ -302,6 +364,10 @@ def context_handoff(record: dict[str, Any], *, limit: int = 8_000) -> str:
         f"Thread: {record.get('id', '?')}\n"
         f"Original task: {record.get('task', '')}\n"
         f"Last status: {record.get('status', '?')}\n"
+        f"Workspace: {'recorded' if record.get('workspace', {}).get('workspace_root') else '(not recorded)'}\n"
+        f"Branch: {record.get('workspace', {}).get('branch') or '(not recorded)'}\n"
+        f"Initial HEAD: {record.get('workspace', {}).get('initial_head') or '(not recorded)'}\n"
+        f"Current HEAD: {record.get('workspace', {}).get('head') or '(not recorded)'}\n"
         f"Block evidence:\n{chr(10).join(block_lines) or '- none'}\n\n"
         f"Last output:\n{record.get('output', '') or '(no output)'}"
     )

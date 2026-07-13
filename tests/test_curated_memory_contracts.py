@@ -76,7 +76,7 @@ def test_curated_project_source_tuples_are_contract_focused() -> None:
 
 @pytest.mark.parametrize(
     ("filename", "category"),
-    zip(EXPECTED_MEMORY_DOCS, EXPECTED_CATEGORIES),
+    tuple(zip(EXPECTED_MEMORY_DOCS, EXPECTED_CATEGORIES)),
 )
 def test_curated_memory_contract_frontmatter_and_scope(filename: str, category: str) -> None:
     text = (DOCS_ROOT / filename).read_text(encoding="utf-8")

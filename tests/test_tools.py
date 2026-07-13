@@ -45,6 +45,10 @@ def test_deny_command_re():
         "git add ollama_cli/main.py",
         "git status; git add ollama_cli/main.py",
         "git commit -m update",
+        "git push --set-upstream origin feature/runtime",
+        "git worktree add ../feature feature/runtime",
+        "git worktree remove --force ../feature",
+        "git branch -D feature/runtime",
         "git restore ollama_cli/main.py",
         "git reset --hard",
         "git clean -fd",
@@ -73,6 +77,113 @@ def test_deny_command_re():
 )
 def test_shell_mutates_workspace_detects_mutation_commands(command):
     assert tools.shell_mutates_workspace(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -C repo push origin feature/runtime",
+        "git -C repo worktree add ../feature feature/runtime",
+        "git --git-dir=.git --work-tree=. branch -D feature/runtime",
+        "git -c core.fsmonitor=false commit -m update",
+        "git --no-pager -C repo branch new-feature",
+        "sh -c 'git -C repo push origin feature/runtime'",
+    ],
+)
+def test_shell_mutates_workspace_detects_git_mutation_after_global_options(command):
+    assert tools.shell_mutates_workspace(command)
+    assert tools.shell_is_dangerous(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -C repo status --short",
+        "git --git-dir=.git --work-tree=. log -1",
+        "git -c color.ui=false --no-pager diff --stat",
+        "git -C repo worktree list --porcelain",
+        "git -C repo branch --list 'feature/*'",
+        "sh -c 'git -C repo status --short'",
+    ],
+)
+def test_shell_mutates_workspace_allows_git_inspection_after_global_options(command):
+    assert not tools.shell_mutates_workspace(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -C",
+        "git -c missing_equals status",
+        "git --git-dir status",
+        "git --unknown-global-option status",
+        "git -C 'unterminated status",
+        "git " + " ".join(["--no-pager"] * (tools._GIT_PARSE_MAX_GLOBAL_OPTIONS + 1)) + " status",
+    ],
+)
+def test_shell_mutates_workspace_fails_closed_for_malformed_git_global_options(command):
+    assert tools.shell_mutates_workspace(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git deploy",
+        "git -C repo deploy",
+        "git -c alias.deploy='!git push origin main' deploy",
+        "sh -c \"git -c alias.deploy='!git push origin main' deploy\"",
+    ],
+)
+def test_shell_mutates_workspace_fails_closed_for_possible_git_aliases(command):
+    assert tools.shell_mutates_workspace(command)
+    assert tools.shell_is_dangerous(command)
+
+
+@pytest.mark.parametrize("subcommand", sorted(tools._GIT_READ_ONLY_SUBCOMMANDS))
+def test_shell_mutates_workspace_allows_explicit_git_inspection_subcommands(subcommand):
+    assert not tools.shell_mutates_workspace(f"git -C repo {subcommand}")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git diff --output=owned.txt HEAD",
+        "git show --output owned.txt HEAD",
+        "git grep --open-files-in-pager='sh -c touch-owned' pattern",
+        "git grep -Ovim pattern",
+        "git diff --ext-diff HEAD",
+        "git show --textconv HEAD:file.txt",
+        "git cat-file --filters HEAD:file.txt",
+        "sh -c 'git -C repo diff --output=owned.txt HEAD'",
+    ],
+)
+def test_shell_mutates_workspace_blocks_unsafe_git_inspection_options(command):
+    assert tools.shell_mutates_workspace(command)
+    assert tools.shell_is_dangerous(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git diff --no-ext-diff --no-textconv HEAD",
+        "git cat-file -p HEAD",
+        "git grep -n pattern",
+        "git show --format=oneline HEAD",
+    ],
+)
+def test_shell_mutates_workspace_retains_safe_git_inspection_options(command):
+    assert not tools.shell_mutates_workspace(command)
+
+
+def test_run_shell_safe_mode_blocks_git_inspection_output_write(tmp_path):
+    output = tools.run_shell(
+        "git diff --output=owned.txt HEAD",
+        cwd=str(tmp_path),
+        safe_mode=True,
+    )
+
+    assert output.startswith("Blocked by safe mode")
+    assert not (tmp_path / "owned.txt").exists()
 
 
 @pytest.mark.parametrize(
@@ -107,6 +218,7 @@ def test_run_shell_safe_mode_blocks_destructive():
         "powershell -Command \"ri -Recurse -Force build\"",
         "cmd /c \"del output.txt\"",
         "robocopy source target /MIR",
+        "git -C repo push origin feature/runtime",
     ],
 )
 def test_run_shell_safe_mode_uses_mutation_detector(command):
@@ -417,6 +529,17 @@ def test_empty_toggle_session_commands_require_approval():
     assert tool_runtime.session_command_requires_approval("/code-rag status") is False
     assert tool_runtime.session_command_requires_approval("/code-rag on") is True
     assert tool_runtime.session_command_requires_approval("/code-rag off") is True
+    assert tool_runtime.session_command_requires_approval("/worktree status") is False
+    assert tool_runtime.session_command_requires_approval("/worktree list") is False
+    assert tool_runtime.session_command_requires_approval("/worktree new feature") is True
+    assert tool_runtime.session_command_requires_approval("/worktree use abc123") is True
+    assert tool_runtime.session_command_requires_approval("/worktree remove abc123") is True
+    assert tool_runtime.session_command_requires_approval("/ship status") is False
+    assert tool_runtime.session_command_requires_approval("/ship plan") is False
+    assert tool_runtime.session_command_requires_approval("/ship commit Add feature") is True
+    assert tool_runtime.session_command_requires_approval("/ship push") is True
+    assert tool_runtime.session_command_requires_approval("/ship pr") is True
+    assert tool_runtime.session_command_requires_approval("/ship all Add feature") is True
 
 
 def test_model_invoked_agent_execution_requires_approval(monkeypatch):
@@ -1195,6 +1318,23 @@ def test_session_command_allows_runtime_agent_delegation(monkeypatch):
 
     assert out == "delegated"
     assert calls == [("team review auth", cfg, client)]
+
+
+def test_model_invoked_agent_output_redacts_workspace_path(monkeypatch, tmp_path):
+    from algo_cli import agent_pipeline, runtime_services
+
+    cfg = Config(cwd=str(tmp_path))
+    monkeypatch.setattr(runtime_services, "create_client", lambda _cfg: object())
+    monkeypatch.setattr(
+        agent_pipeline,
+        "execute_agent_command",
+        lambda _arg, _cfg, _client: f"Switched workspace to {tmp_path}",
+    )
+
+    out = tools.session_command("/agent switch abc123", cfg=cfg)
+
+    assert str(tmp_path) not in out
+    assert "$WORKSPACE" in out
 
 
 def test_session_command_rejects_recursive_agent_delegation(monkeypatch):

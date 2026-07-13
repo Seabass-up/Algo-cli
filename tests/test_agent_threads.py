@@ -79,3 +79,73 @@ def test_thread_output_and_history_are_bounded(tmp_path):
     assert loaded["task"] == "Task"
     assert len(loaded["turns"]) == agent_threads.MAX_THREAD_TURNS
     assert len(loaded["output"]) == agent_threads.MAX_THREAD_OUTPUT_CHARS
+
+
+def test_thread_workspace_preserves_initial_head_and_updates_git_evidence(tmp_path):
+    path = tmp_path / "threads.json"
+    initial = {
+        "available": True,
+        "workspace_root": "/workspace/feature",
+        "repository_root": "/workspace/repo",
+        "branch": "algo/feature",
+        "head": "a" * 40,
+        "clean": True,
+    }
+    record = agent_threads.create_thread("Task", workspace=initial, path=path)
+
+    finished = agent_threads.finish_turn(
+        record["id"],
+        status="complete",
+        workspace={
+            **initial,
+            "head": "b" * 40,
+            "clean": False,
+            "status": " M algo_cli/main.py",
+            "status_digest": "e" * 64,
+            "tracked_diff_digest": "c" * 64,
+            "untracked_digest": "d" * 64,
+        },
+        path=path,
+    )
+
+    assert finished["workspace"]["initial_head"] == "a" * 40
+    assert finished["workspace"]["head"] == "b" * 40
+    assert finished["workspace"]["clean"] is False
+    assert finished["workspace"]["status_digest"] == "e" * 64
+    assert finished["workspace"]["tracked_diff_digest"] == "c" * 64
+    handoff = agent_threads.context_handoff(finished)
+    assert "algo/feature" in handoff
+    assert "Initial HEAD" in handoff
+    assert "/workspace/feature" not in handoff
+
+
+def test_version_one_thread_store_migrates_without_losing_records(tmp_path):
+    path = tmp_path / "threads.json"
+    path.write_text(
+        '{"version": 1, "threads": [{"id": "legacy01", "status": "complete", '
+        '"task": "old task", "turns": [], "blocks": [], "children": []}]}',
+        encoding="utf-8",
+    )
+
+    records = agent_threads.load_threads(path)
+
+    assert records[0]["id"] == "legacy01"
+    assert records[0]["workspace"] == {}
+
+
+def test_missing_clean_evidence_stays_unknown_instead_of_false(tmp_path):
+    path = tmp_path / "threads.json"
+    record = agent_threads.create_thread(
+        "Read-only task",
+        workspace={
+            "available": True,
+            "workspace_root": "/workspace",
+            "branch": "feature/read",
+            "head": "a" * 40,
+        },
+        path=path,
+    )
+
+    loaded = agent_threads.resolve_thread(record["id"], path=path)
+
+    assert "clean" not in loaded["workspace"]

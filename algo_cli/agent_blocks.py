@@ -71,6 +71,12 @@ class AgentBlock:
     context_output: str = ""
     successful_writes: list[str] = field(default_factory=list)
     git_evidence: str = ""
+    git_head: str = ""
+    git_status: str = ""
+    status_digest: str = ""
+    tracked_diff_digest: str = ""
+    untracked_digest: str = ""
+    git_clean: bool = False
     verification_warning: str = ""
     failed_writes: list[str] = field(default_factory=list)
     mutation_denied: bool = False

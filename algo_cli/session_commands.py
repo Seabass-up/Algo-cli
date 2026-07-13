@@ -41,7 +41,7 @@ def catalog_for_prompt() -> str:
         "  - /route TASK: preview the recommended Agent Blocks route before a complex task.",
         "  - /agent [--pipeline NAME] TASK: run a traceable multi-block pipeline for larger implementation/research/review work.",
         "  - /agent team [--roles ROLE,ROLE[,ROLE,ROLE]] TASK: delegate independent analysis to 2-4 read-only child threads, then integrate once with normal write and verification gates.",
-        "  - /agent threads or /agent show THREAD: inspect run history; /agent resume THREAD [TASK] continues it and /agent fork THREAD TASK branches it.",
+        "  - /agent threads or /agent show THREAD: inspect run history; /agent resume THREAD [TASK] continues it and /agent fork THREAD [--same-worktree] TASK creates an isolated child by default.",
         "    Delegate only when work has genuinely independent angles. Keep mutations in the integration pipeline; never ask child threads to edit the same workspace.",
         "  - /kernel check [NAME]: verify kernel imports, slash routes, and active action contracts without executing workloads.",
         "Do not use slash commands for file edits; use write_file. Do not use slash commands for build/test; use run_shell.",

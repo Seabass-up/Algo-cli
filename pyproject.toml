@@ -97,6 +97,7 @@ path = "algo_cli/__init__.py"
 "docs/algo-cli-memory-lifecycle-contract.md" = "algo_cli/resources/docs/algo-cli-memory-lifecycle-contract.md"
 "docs/algo-cli-execution-verification-contract.md" = "algo_cli/resources/docs/algo-cli-execution-verification-contract.md"
 "docs/algo-cli-algorithm-evidence-contract.md" = "algo_cli/resources/docs/algo-cli-algorithm-evidence-contract.md"
+"docs/t3-code-parity-2026-07.md" = "algo_cli/resources/docs/t3-code-parity-2026-07.md"
 "skills" = "algo_cli/resources/skills"
 
 [tool.hatch.build.targets.sdist]
@@ -123,6 +124,7 @@ include = [
     "/docs/algo-cli-memory-lifecycle-contract.md",
     "/docs/algo-cli-execution-verification-contract.md",
     "/docs/algo-cli-algorithm-evidence-contract.md",
+    "/docs/t3-code-parity-2026-07.md",
     "/skills/*.md",
     "/harness-indexer/Cargo.toml",
     "/harness-indexer/Cargo.lock",
