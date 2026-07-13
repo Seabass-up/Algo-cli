@@ -62,6 +62,7 @@ from . import chatgpt_client
 from . import google_workspace_auth
 from . import google_workspace
 from . import x_account
+from . import updater
 from .display import (
     compact_path,
     _format_bytes,
@@ -3623,7 +3624,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="auto",
         help="In --oneshot, use adaptive deliberation (default), force model thinking on, or force it off.",
     )
-    parser.add_argument("prompt", nargs="*", help="Prompt for --oneshot mode. If omitted, read from stdin. Use `doctor` for readiness diagnostics, `plugin list` for plugins, `credential list` for credential helpers, `url-scheme <url>` for URL scheme parsing.")
+    parser.add_argument("prompt", nargs="*", help="Prompt for --oneshot mode. If omitted, read from stdin. Use `update` for the latest release, `doctor` for readiness diagnostics, `plugin list` for plugins, `credential list` for credential helpers, or `url-scheme <url>` for URL scheme parsing.")
     ns = parser.parse_args(argv)
     # Normalize nargs="*" list into a single string for downstream code
     if ns.prompt:
@@ -3661,6 +3662,16 @@ def _run_oneshot_entry(args: argparse.Namespace) -> int:
         approval_mode=args.approval_mode,
         cfg_overrides=overrides or None,
     )
+
+
+def _run_update_entry() -> int:
+    """Upgrade the published package without initializing user runtime state."""
+    result = updater.update_algo_cli()
+    style = "green" if result.returncode == 0 else "red"
+    console.print(f"[{style}]{result.message}[/{style}]")
+    if result.returncode != 0 and result.details:
+        console.print(result.details, markup=False)
+    return result.returncode
 
 
 def _force_utf8_console() -> None:
@@ -3715,6 +3726,8 @@ def main() -> None:
         from .version_manifest import build_manifest, format_version_string
         console.print(format_version_string(build_manifest()))
         return
+    if (args.prompt or "").strip().casefold() == "update" and not args.oneshot:
+        raise SystemExit(_run_update_entry())
     if args.oneshot:
         _exit = _run_oneshot_entry(args)
         sys.exit(_exit)
