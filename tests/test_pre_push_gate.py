@@ -1,7 +1,7 @@
 """Tests for H32 — Pre-Push Scrubbing Gate."""
 from __future__ import annotations
 
-from algo_cli.intelligence.pre_push_gate import PrePushGate, GateResult
+from algo_cli.intelligence.pre_push_gate import PrePushGate, GateResult, ScrubEvidence
 
 
 class TestPrePushGate:
@@ -39,6 +39,20 @@ class TestPrePushGate:
         result = gate.check(allow_override=True)
         assert result.allowed
         assert result.override_used
+
+    def test_allows_structured_scrub_without_marking_override(self) -> None:
+        gate = PrePushGate()
+        result = gate.check(scrub_evidence=ScrubEvidence("a" * 64, 42))
+        assert result.allowed
+        assert not result.override_used
+        assert "scrub" in result.reason.lower()
+
+    def test_rejects_invalid_or_failed_scrub_evidence(self) -> None:
+        gate = PrePushGate()
+        assert not gate.check(scrub_evidence=ScrubEvidence("bad", 42)).allowed
+        assert not gate.check(
+            scrub_evidence=ScrubEvidence("a" * 64, 42, ("secret",))
+        ).allowed
 
     def test_require_override_returns_true_when_blocked(self) -> None:
         gate = PrePushGate()

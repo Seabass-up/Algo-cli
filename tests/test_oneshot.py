@@ -92,6 +92,8 @@ def test_json_event_sink_status_classification():
     assert oneshot._tool_status_from_result("Skipped repeated failed attempt.") == "skipped"
     assert oneshot._tool_status_from_result("Error: not found") == "failed"
     assert oneshot._tool_status_from_result("Tool error for read_file: x") == "failed"
+    assert oneshot._tool_status_from_result("tests failed\n[exit code: 1]") == "failed"
+    assert oneshot._tool_status_from_result("tests passed\n[exit code: 0]") == "ok"
 
 
 def test_json_event_sink_tool_denied():
@@ -308,6 +310,33 @@ def test_oneshot_ask_approval_denies_dangerous_under_never(monkeypatch):
         ("session_command", False),
         ("runtime:session_command", False),
     ]
+
+
+def test_oneshot_never_uses_registry_approval_policy(monkeypatch):
+    """Never mode must deny every mutation declared by the central action registry."""
+    from algo_cli import main as main_module
+
+    decisions: dict[str, bool] = {}
+    approval_required = [
+        "model_pull",
+        "model_copy",
+        "harness_refresh",
+        "reindex_knowledge_graph",
+        "plugins_load",
+        "credential_helpers_store",
+        "x_account_post",
+    ]
+
+    def _spy_agent_loop(_client, cfg, _msg):
+        for name in approval_required:
+            decisions[name] = main_module.ask_approval(name, {}, cfg)
+
+    monkeypatch.setattr(main_module, "agent_loop", _spy_agent_loop)
+    monkeypatch.setattr(main_module, "create_client", lambda _cfg: object())
+
+    oneshot.run_oneshot(prompt="x", approval_mode="never", stream=io.StringIO())
+
+    assert decisions == {name: False for name in approval_required}
 
 
 def test_oneshot_ask_approval_never_overrides_persisted_auto_mode(monkeypatch):

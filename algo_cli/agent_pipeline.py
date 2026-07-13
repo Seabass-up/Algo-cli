@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 import shlex
 import threading
 import time
@@ -27,6 +28,7 @@ from . import memory_runtime
 from . import reflex
 from . import task_router
 from . import tool_policy
+from . import worktree_runtime
 from . import model_info as _model_info_module
 from . import tools as tools_module
 from .chat_protocol import (
@@ -446,7 +448,7 @@ def run_agent_block(
 
 AGENT_USAGE = "Usage: /agent [--pipeline NAME] <task>"
 AGENT_TEAM_USAGE = "Usage: /agent team [--roles ROLE,ROLE[,ROLE,ROLE]] <task>"
-AGENT_THREAD_USAGE = "Usage: /agent show THREAD | resume THREAD [task] | fork THREAD <task>"
+AGENT_THREAD_USAGE = "Usage: /agent show THREAD | switch THREAD | resume THREAD [task] | fork THREAD [--same-worktree] <task>"
 MIN_TEAM_ROLES = 2
 MAX_TEAM_ROLES = 4
 
@@ -456,7 +458,7 @@ def agent_usage_text() -> str:
         f"{AGENT_USAGE}\n"
         f"{AGENT_TEAM_USAGE}\n"
         f"{AGENT_THREAD_USAGE}\n"
-        "Thread commands: /agent threads | show THREAD | resume THREAD [task] | fork THREAD <task>\n"
+        "Thread commands: /agent threads | show THREAD | switch THREAD | resume THREAD [task] | fork THREAD [--same-worktree] <task>\n"
         f"Available pipelines: {', '.join(agent_blocks.pipeline_names())}\n"
         "Examples:\n"
         "  /agent --pipeline code-change Fix the failing tests\n"
@@ -828,7 +830,38 @@ def _block_record(block: agent_blocks.AgentBlock) -> dict[str, Any]:
         "duration_ms": block.duration_ms,
         "successful_writes": list(block.successful_writes),
         "verification_warning": block.verification_warning,
+        "git_head": block.git_head,
+        "git_status": block.git_status,
+        "status_digest": block.status_digest,
+        "tracked_diff_digest": block.tracked_diff_digest,
+        "untracked_digest": block.untracked_digest,
+        "git_clean": block.git_clean,
     }
+
+
+def _capture_thread_workspace(
+    cfg: Config,
+    block: agent_blocks.AgentBlock | None = None,
+) -> dict[str, Any]:
+    """Keep optional thread metadata from interrupting the agent pipeline."""
+
+    try:
+        workspace = worktree_runtime.capture_workspace(cfg.cwd)
+        if not workspace.get("available") and block is not None and block.git_head:
+            workspace.update(
+                {
+                    "head": block.git_head,
+                    "clean": block.git_clean,
+                    "status": block.git_status,
+                    "status_digest": block.status_digest,
+                    "tracked_diff_digest": block.tracked_diff_digest,
+                    "untracked_digest": block.untracked_digest,
+                }
+            )
+        return workspace
+    except Exception as exc:
+        logger.debug("Could not capture thread workspace metadata: %s", exc)
+        return {"available": False, "cwd": str(cfg.cwd), "error": str(exc)[:1_000]}
 
 
 def _start_thread_record(
@@ -839,9 +872,16 @@ def _start_thread_record(
     thread_id: str | None,
     parent_id: str,
 ) -> str:
+    workspace = _capture_thread_workspace(cfg)
     try:
         if thread_id:
-            agent_threads.begin_turn(thread_id, task, pipeline=pipeline_name, model=cfg.model)
+            agent_threads.begin_turn(
+                thread_id,
+                task,
+                pipeline=pipeline_name,
+                model=cfg.model,
+                workspace=workspace,
+            )
             return thread_id
         record = agent_threads.create_thread(
             task,
@@ -850,6 +890,7 @@ def _start_thread_record(
             parent_id=parent_id,
             status="queued",
             start_turn=True,
+            workspace=workspace,
         )
         return str(record["id"])
     except (OSError, ValueError, KeyError) as exc:
@@ -866,6 +907,7 @@ def _finish_thread_record(
     error: str,
     blocks: list[dict[str, Any]],
     pipeline: str,
+    workspace: dict[str, Any] | None = None,
 ) -> None:
     if not thread_id:
         return
@@ -877,6 +919,7 @@ def _finish_thread_record(
             error=error,
             blocks=blocks,
             pipeline=pipeline,
+            workspace=workspace,
         )
     except (OSError, ValueError, KeyError) as exc:
         logger.debug("Could not finish agent thread record %s: %s", thread_id, exc)
@@ -897,7 +940,8 @@ def run_agent_pipeline(
         show_error(AGENT_USAGE)
         return AgentRunResult(status="failed", pipeline=pipeline_name, error=AGENT_USAGE)
     reflex.begin_agent_pipeline(cfg)
-    resolve_agent_workspace(task, cfg)
+    if thread_id is None and not parent_id and not prior_context.strip():
+        resolve_agent_workspace(task, cfg)
     started = time.perf_counter()
     completed: list[agent_blocks.AgentBlock] = []
     resolved = resolve_pipeline_for_cli(pipeline_name)
@@ -951,6 +995,12 @@ def run_agent_pipeline(
         if before_git is not None:
             def completion_check(completed_block: agent_blocks.AgentBlock, baseline=before_git) -> None:
                 after_git = git_evidence.capture_git_snapshot(cfg.cwd)
+                completed_block.git_head = after_git.head or ""
+                completed_block.git_status = after_git.status
+                completed_block.status_digest = after_git.status_digest
+                completed_block.tracked_diff_digest = after_git.tracked_diff_digest
+                completed_block.untracked_digest = after_git.untracked_digest
+                completed_block.git_clean = git_evidence.snapshot_is_clean(after_git)
                 if completed_block.requires_change:
                     enforce_required_change_contract(completed_block, baseline, after_git)
                 else:
@@ -1053,6 +1103,10 @@ def run_agent_pipeline(
             status = "partial"
             error = "Pipeline ended before the final block."
         block_records = [_block_record(block) for block in persisted_blocks]
+        latest_git_block = next(
+            (block for block in reversed(persisted_blocks) if block.git_head),
+            None,
+        )
         _finish_thread_record(
             active_thread_id,
             status=status,
@@ -1060,6 +1114,7 @@ def run_agent_pipeline(
             error=error,
             blocks=block_records,
             pipeline=record_pipeline,
+            workspace=_capture_thread_workspace(cfg, latest_git_block),
         )
         cfg.save()
         flush_perf_records()
@@ -1143,6 +1198,7 @@ def run_agent_team(
     child_ids: list[str] = []
     child_by_role: dict[str, str] = {}
     try:
+        workspace = _capture_thread_workspace(cfg)
         parent = agent_threads.create_thread(
             task,
             role="orchestrator",
@@ -1150,6 +1206,7 @@ def run_agent_team(
             model=cfg.model,
             status="running",
             title=f"Team: {' '.join(task.split())[:72]}",
+            workspace=workspace,
         )
         parent_id = str(parent["id"])
         for role in selected_roles:
@@ -1162,6 +1219,7 @@ def run_agent_team(
                 status="queued",
                 start_turn=True,
                 title=f"{role}: {' '.join(task.split())[:64]}",
+                workspace=workspace,
             )
             child_id = str(child["id"])
             child_ids.append(child_id)
@@ -1339,6 +1397,9 @@ def show_agent_thread(thread_ref: str) -> str:
         ("parent", record["parent_id"] or "-"),
         ("children", ", ".join(record["children"]) or "-"),
         ("updated", record["updated_at"]),
+        ("workspace", record.get("workspace", {}).get("workspace_root") or "-"),
+        ("branch", record.get("workspace", {}).get("branch") or "-"),
+        ("HEAD", record.get("workspace", {}).get("head") or "-"),
         ("task", record["task"]),
         ("error", record["error"] or "-"),
     ):
@@ -1407,6 +1468,24 @@ def execute_agent_command(arg: str, cfg: Config, client: Any) -> str:
     if lowered == "show":
         show_error(AGENT_THREAD_USAGE)
         return f"Error: {AGENT_THREAD_USAGE}"
+    if lowered.startswith("switch "):
+        try:
+            record = agent_threads.resolve_thread(text.split(maxsplit=1)[1])
+            restored = worktree_runtime.activate_thread_workspace(record, cfg)
+        except (KeyError, worktree_runtime.WorktreeError) as exc:
+            message = str(exc).strip("'")
+            show_error(message)
+            return f"Error: {message}"
+        if not restored:
+            message = "That thread has no recorded Git workspace."
+            show_error(message)
+            return f"Error: {message}"
+        message = (
+            f"Switched to thread {record['id']} workspace · "
+            f"{record.get('workspace', {}).get('branch') or 'unknown branch'} · {cfg.cwd}"
+        )
+        show_info(message)
+        return message
     if lowered.startswith("team") and (len(text) == 4 or text[4].isspace()):
         roles, task, error = parse_agent_team_invocation(text[4:].strip())
         if error:
@@ -1425,6 +1504,10 @@ def execute_agent_command(arg: str, cfg: Config, client: Any) -> str:
                 message = f"{AGENT_THREAD_USAGE} ({exc})"
                 show_error(message)
                 return f"Error: {message}"
+            same_worktree = False
+            if action == "fork" and "--same-worktree" in parts[2:]:
+                parts.remove("--same-worktree")
+                same_worktree = True
             if len(parts) < 2 or (action == "fork" and len(parts) < 3):
                 show_error(AGENT_THREAD_USAGE)
                 return f"Error: {AGENT_THREAD_USAGE}"
@@ -1434,7 +1517,65 @@ def execute_agent_command(arg: str, cfg: Config, client: Any) -> str:
                 message = str(exc).strip("'")
                 show_error(message)
                 return f"Error: {message}"
+            try:
+                restored = worktree_runtime.activate_thread_workspace(record, cfg)
+            except worktree_runtime.WorktreeError as exc:
+                message = str(exc)
+                show_error(message)
+                return f"Error: {message}"
+            if restored:
+                show_info(
+                    f"Restored thread {record['id']} workspace: "
+                    f"{record.get('workspace', {}).get('branch') or cfg.cwd}"
+                )
             task = " ".join(parts[2:]).strip() or "Continue from the latest verified state and finish remaining work."
+            if action == "fork" and restored and not same_worktree:
+                source_state = worktree_runtime.capture_workspace(cfg.cwd)
+                if not source_state.get("available"):
+                    message = (
+                        "Could not isolate forked thread because its parent Git state could not be verified. "
+                        "Inspect the workspace; use --same-worktree only if it still matches the recorded "
+                        "state, or start a new /worktree and agent thread."
+                    )
+                    show_error(message)
+                    return f"Error: {message}"
+                if source_state.get("clean") is not True:
+                    message = (
+                        "Could not isolate forked thread without dropping the parent workspace's "
+                        "uncommitted tracked or untracked changes. Use --same-worktree to preserve "
+                        "the current recorded state, or commit the changes and start a new /worktree "
+                        "and agent thread."
+                    )
+                    show_error(message)
+                    return f"Error: {message}"
+                source_head = str(source_state.get("head") or "").strip()
+                if not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", source_head):
+                    message = (
+                        "Could not isolate forked thread because the verified parent HEAD is "
+                        "missing or invalid. Inspect the workspace and start a new /worktree "
+                        "and agent thread."
+                    )
+                    show_error(message)
+                    return f"Error: {message}"
+                try:
+                    fork_workspace = worktree_runtime.create_worktree(
+                        cfg.cwd,
+                        f"{record['id']}-{task}",
+                        base_ref=source_head,
+                    )
+                    worktree_runtime.activate_worktree(fork_workspace["id"], cfg)
+                except worktree_runtime.WorktreeError as exc:
+                    message = f"Could not isolate forked thread: {exc}"
+                    show_error(message)
+                    return f"Error: {message}"
+                show_info(
+                    f"Fork workspace {fork_workspace['id']} · {fork_workspace['branch']}"
+                )
+            elif action == "fork" and not restored and not same_worktree:
+                show_info(
+                    "Legacy thread has no recorded Git workspace; fork is using the current cwd. "
+                    "Use /worktree new first for isolation."
+                )
             handoff = agent_threads.context_handoff(record)
             result = run_agent_pipeline(
                 task,

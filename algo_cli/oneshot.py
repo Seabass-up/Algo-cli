@@ -29,10 +29,39 @@ import json
 import sys
 import time
 from collections import deque
+from collections.abc import Iterator, Set
 from typing import Any
 
 
-DANGEROUS_TOOLS = {"run_shell", "write_file", "edit_file", "batch_edit", "update_user_profile", "model_delete", "model_create"}
+class _RegistryApprovalSet(Set[str]):
+    """Compatibility view that cannot drift from the central approval registry."""
+
+    @staticmethod
+    def _names() -> tuple[str, ...]:
+        from .action_registry import action_requires_approval
+        from .tools import TOOL_MAP
+
+        return tuple(name for name in TOOL_MAP if action_requires_approval(name))
+
+    def __contains__(self, value: object) -> bool:
+        if not isinstance(value, str):
+            return False
+        from .action_registry import action_requires_approval
+
+        return action_requires_approval(value)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._names())
+
+    def __len__(self) -> int:
+        return len(self._names())
+
+
+# Deprecated compatibility surface. Never use this as an independent policy
+# source; membership resolves lazily through Action Registry.
+DANGEROUS_TOOLS: Set[str] = _RegistryApprovalSet()
+
+
 SUMMARY_LIMIT = 600
 
 
@@ -49,9 +78,11 @@ def _tool_status_from_result(result: str) -> str:
         return "denied"
     if lowered.startswith("skipped repeated"):
         return "skipped"
-    if lowered.startswith(("error", "tool error", "tool argument error", "unknown tool")):
-        return "failed"
-    return "ok"
+    # Keep bridge event status aligned with the interactive runtime, including
+    # non-zero ``run_shell`` exit-code suffixes.
+    from .tool_runtime import classify_tool_status
+
+    return "failed" if classify_tool_status(result) == "failed" else "ok"
 
 
 class JsonEventSink:
@@ -224,6 +255,7 @@ def run_oneshot(
     # Imports deferred to avoid cycle with display + to keep import cost off the
     # interactive path when --oneshot is not used.
     from . import deliberation, display, harness, main, skills, tool_runtime
+    from .action_registry import action_requires_approval
     from .config import Config
     from .model_routing import effective_runtime_host
     from .tool_runtime import session_command_requires_approval
@@ -271,7 +303,7 @@ def run_oneshot(
 
     def _oneshot_ask_approval(name: str, args: dict[str, Any], cfg: Config, *, force: bool = False) -> bool:
         del cfg
-        requires_approval = name in DANGEROUS_TOOLS or (
+        requires_approval = action_requires_approval(name) or (
             name == "session_command"
             and session_command_requires_approval(str(args.get("command") or ""))
         )

@@ -93,6 +93,7 @@ from .chat_protocol import (
 )
 from .model_routing import (
     effective_runtime_host,  # noqa: F401 — re-exported for tests and oneshot callers
+    runtime_mode_label,  # noqa: F401 — re-exported for slash/dashboard callers
     is_cloud_model_name,
     is_embedding_model_name,
     is_vision_model_name,
@@ -1585,44 +1586,46 @@ def collect_dashboard_state(client: Client, cfg: Config) -> tuple[list[dict[str,
     running_models: list[dict[str, str]] = []
     event_lines: list[str] = []
 
-    try:
-        list_response = client.list()
-        items = get_attr(list_response, "models", []) or []
-        for item in items:
-            if len(installed_models) >= 4:
-                break
-            details = get_attr(item, "details", {}) or {}
-            installed_models.append(
-                {
-                    "name": str(get_attr(item, "model", None) or get_attr(item, "name", "?")),
-                    "size": _format_bytes(get_attr(item, "size", None)),
-                    "quant": str(get_attr(details, "quantization_level", None) or "?"),
-                }
-            )
-    except Exception as exc:
-        event_lines.append(f"installed models unavailable: {exc}")
+    provider_mode = runtime_mode_label(cfg)
+    if provider_mode == "local":
+        try:
+            list_response = client.list()
+            items = get_attr(list_response, "models", []) or []
+            for item in items:
+                if len(installed_models) >= 4:
+                    break
+                details = get_attr(item, "details", {}) or {}
+                installed_models.append(
+                    {
+                        "name": str(get_attr(item, "model", None) or get_attr(item, "name", "?")),
+                        "size": _format_bytes(get_attr(item, "size", None)),
+                        "quant": str(get_attr(details, "quantization_level", None) or "?"),
+                    }
+                )
+        except Exception as exc:
+            event_lines.append(f"installed models unavailable: {exc}")
 
-    try:
-        process_response = client.ps()
-        items = get_attr(process_response, "models", []) or []
-        for item in items:
-            if len(running_models) >= 3:
-                break
-            details = get_attr(item, "details", {}) or {}
-            running_models.append(
-                {
-                    "name": str(get_attr(item, "name", None) or get_attr(item, "model", None) or "?"),
-                    "size_vram": _format_bytes(get_attr(item, "size_vram", None) or get_attr(item, "size", None)),
-                    "context": str(get_attr(item, "context_length", None) or get_attr(details, "parameter_size", None) or "?"),
-                }
-            )
-    except Exception as exc:
-        event_lines.append(f"running models unavailable: {exc}")
+        try:
+            process_response = client.ps()
+            items = get_attr(process_response, "models", []) or []
+            for item in items:
+                if len(running_models) >= 3:
+                    break
+                details = get_attr(item, "details", {}) or {}
+                running_models.append(
+                    {
+                        "name": str(get_attr(item, "name", None) or get_attr(item, "model", None) or "?"),
+                        "size_vram": _format_bytes(get_attr(item, "size_vram", None) or get_attr(item, "size", None)),
+                        "context": str(get_attr(item, "context_length", None) or get_attr(details, "parameter_size", None) or "?"),
+                    }
+                )
+        except Exception as exc:
+            event_lines.append(f"running models unavailable: {exc}")
 
     event_lines.extend(
         [
-            f"connected {cfg.host}",
-            f"mode {'cloud' if cfg.cloud else 'local'}",
+            f"connected {effective_runtime_host(cfg)}",
+            f"mode {provider_mode}",
             f"context {cfg.num_ctx}",
             f"theme {cfg.theme}",
             f"memories {len(cfg.memories)}",

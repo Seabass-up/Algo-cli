@@ -1353,6 +1353,63 @@ def test_models_command_force_refreshes_runtime_after_switch(monkeypatch, tmp_pa
     assert calls == [("gpt-5.5", new_client, True)]
 
 
+@pytest.mark.parametrize(
+    ("starting_cloud", "model", "expected_cloud"),
+    [
+        (True, "qwen3:8b", False),
+        (False, "qwen3.6:cloud", True),
+        (True, "grok-4-latest", False),
+        (True, "gpt-5.5", False),
+    ],
+)
+def test_direct_model_command_reconciles_provider_route(
+    monkeypatch, tmp_path, starting_cloud, model, expected_cloud
+):
+    cfg = Config(cwd=str(tmp_path), model="old-model", cloud=starting_cloud)
+    replacement_client = object()
+    monkeypatch.setattr(cfg, "save", lambda: None)
+    monkeypatch.setattr(main, "create_client", lambda _cfg: replacement_client)
+    monkeypatch.setattr(main, "refresh_runtime_status", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main, "invalidate_prompt_toolbar", lambda _session: None)
+
+    handled, returned_client = main.handle_command(
+        f"/model {model}", cfg, object()
+    )  # type: ignore[arg-type]
+
+    assert handled is True
+    assert returned_client is replacement_client
+    assert cfg.model == model
+    assert cfg.cloud is expected_cloud
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_mode", "expected_host"),
+    [
+        ("grok-4-latest", "xai", "xai"),
+        ("gpt-5.5", "chatgpt", "chatgpt"),
+    ],
+)
+def test_dashboard_state_skips_ollama_probes_for_dedicated_providers(
+    tmp_path, model, expected_mode, expected_host
+):
+    class DedicatedProviderClient:
+        def list(self):
+            raise AssertionError("dashboard must not call Ollama list()")
+
+        def ps(self):
+            raise AssertionError("dashboard must not call Ollama ps()")
+
+    cfg = Config(cwd=str(tmp_path), model=model, cloud=True)
+
+    installed, running, events = main.collect_dashboard_state(DedicatedProviderClient(), cfg)
+
+    assert installed == []
+    assert running == []
+    assert f"connected {expected_host}" in events
+    assert f"mode {expected_mode}" in events
+    assert not any("unavailable" in event for event in events)
+
+
 def test_refresh_runtime_status_labels_chatgpt_and_uses_adaptive_context(monkeypatch, tmp_path):
     cfg = Config(cwd=str(tmp_path), model="gpt-5.5")
     cfg.model_adaptive = True

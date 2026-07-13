@@ -27,6 +27,7 @@ class GitSnapshot:
     tracked_diff_digest: str = ""
     untracked_digest: str = ""
     untracked_total: int = 0
+    status_digest: str = ""
 
 
 def _digest(text: str) -> str:
@@ -141,19 +142,31 @@ def capture_git_snapshot(cwd: str | None = None) -> GitSnapshot:
         tracked_diff_digest=_digest(full_diff),
         untracked_digest=_untracked_state_digest(cwd, all_untracked),
         untracked_total=len(all_untracked),
+        status_digest=_digest(full_status),
     )
 
 
 def _state_changed(before: GitSnapshot, after: GitSnapshot) -> bool:
     return (
-        before.tracked_diff_digest != after.tracked_diff_digest
+        before.status_digest != after.status_digest
+        or before.tracked_diff_digest != after.tracked_diff_digest
         or before.untracked_digest != after.untracked_digest
     )
 
 
+def _status_is_clean(status: str) -> bool:
+    """Return whether bounded short status contains only its branch header."""
+
+    lines = [line for line in status.splitlines() if line.strip()]
+    if lines and lines[0].startswith("## "):
+        lines = lines[1:]
+    return not lines
+
+
 def _baseline_is_clean(snapshot: GitSnapshot) -> bool:
     return (
-        snapshot.tracked_diff_digest == _digest("")
+        _status_is_clean(snapshot.status)
+        and snapshot.tracked_diff_digest == _digest("")
         and snapshot.untracked_digest == _digest("")
     )
 

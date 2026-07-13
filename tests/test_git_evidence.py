@@ -96,9 +96,31 @@ def test_capture_git_snapshot_caps_display_but_hashes_full_state(monkeypatch, tm
 
     assert snapshot.available
     assert "characters omitted" in snapshot.tracked_diff
+    assert snapshot.status_digest == git_evidence._digest("## main")
     assert snapshot.tracked_diff_digest == git_evidence._digest(long_diff)
     assert len(snapshot.untracked_files) == git_evidence.MAX_UNTRACKED_FILES
     assert snapshot.untracked_total == git_evidence.MAX_UNTRACKED_FILES + 2
+
+
+def test_capture_intent_to_add_empty_file_is_not_clean(monkeypatch, tmp_path):
+    empty = git_evidence._digest("")
+    outputs = iter(
+        [
+            (0, "true"),
+            (0, "abc"),
+            (0, "## main\n A empty.txt"),
+            (0, ""),
+            (0, ""),
+        ]
+    )
+    monkeypatch.setattr(git_evidence, "_run_git", lambda *_args, **_kwargs: next(outputs))
+
+    snapshot = git_evidence.capture_git_snapshot(str(tmp_path))
+
+    assert snapshot.tracked_diff_digest == empty
+    assert snapshot.untracked_digest == empty
+    assert snapshot.status_digest == git_evidence._digest("## main\n A empty.txt")
+    assert git_evidence.snapshot_is_clean(snapshot) is False
 
 
 def test_untracked_digest_detects_content_change_without_filename_change(tmp_path):

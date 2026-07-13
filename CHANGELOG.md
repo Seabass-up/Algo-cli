@@ -4,6 +4,31 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- Worktree-backed durable agent threads with `/worktree`, `/agent switch`, repository/branch/HEAD validation, collision-safe repository-hashed paths, and isolated forks by default.
+- A structured `/ship` workflow for fingerprinted and scoped commit, freshly checked push, and idempotent draft pull-request creation.
+- Active `worktree-isolation` and `pre-push-gate` kernel contracts with explicit approval and safety metadata.
+
+### Changed
+
+- Agent-thread records now persist bounded workspace and Git-digest evidence while omitting absolute paths from model handoffs.
+- Direct `/model NAME` selection now reconciles the provider route instead of inheriting stale Ollama Cloud state; dashboards label xAI and ChatGPT routes correctly.
+- The runtime overview now advertises only controls the prompt loop actually implements.
+
+### Security
+
+- One-shot `approval-mode=never` now derives denials from the central Action Registry rather than a stale hard-coded mutation list.
+- Structured publishing blocks stale plans, protected branches, path escapes, oversized or secret-bearing security inputs, Git object overlays, unresolved LFS payloads, mismatched upstreams, and remote divergence. Bounded disk-backed scans cover every outgoing commit's raw metadata, paths, and delta; immutable object-ID refspecs and destination binding prevent prefix-truncation, metadata-secret, remote-default, and remote-rewrite bypasses.
+- Repository-provided release scripts are never executed implicitly by `/ship`; the public-release scanner remains an explicit CI/release gate and normal user-configured Git hooks retain standard Git semantics.
+- Worktree removal refuses ignored files as well as tracked and untracked changes, derives its removal boundary independently of editable records, and validates live Git identity. Resume, switch, and isolated fork require the exact recorded HEAD plus working-state digests; dirty state must stay in the same worktree or continue in a new worktree/thread after commit.
+- Raw Git mutation classification now handles bounded global options and fails closed for aliases or unknown subcommands instead of allowing `git -C`, `git -c`, or configured-alias bypasses.
+
+### Fixed
+
+- NDJSON tool events now report non-zero shell exits as failures.
+- Resumed threads no longer lose their restored workspace to heuristic project resolution.
+
 ## [0.14.0] - 2026-07-11
 
 ### Added

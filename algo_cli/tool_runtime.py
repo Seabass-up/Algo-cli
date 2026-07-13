@@ -150,6 +150,10 @@ def session_command_requires_approval(command_line: str) -> bool:
             arg in {"help", "--help", "-h", "?", "threads", "list", "status", "show"}
             or arg.startswith("show ")
         )
+    if command == "/worktree":
+        return arg not in {"", "status", "show", "list", "help", "?"}
+    if command == "/ship":
+        return arg not in {"", "status", "plan", "show", "help", "?"}
     if command in _SAFE_SESSION_STATUS_COMMANDS and arg in {"", "status", "show", "?", "guide", "help"}:
         return False
     if command == "/x-account" and arg == "status":

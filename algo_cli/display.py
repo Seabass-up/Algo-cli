@@ -481,7 +481,7 @@ def _render_chat_panel(cfg: Any) -> Panel:
     num_ctx = getattr(cfg, "num_ctx", None)
     ctx_label = str(num_ctx) if num_ctx is not None else "?"
     hint_row = Text(
-        f"Tab panes   Enter send   Esc stop   / filter   temp {cfg.temperature}   ctx {ctx_label}",
+        f"Tab complete   Enter send   Ctrl+C stop   slash commands   temp {cfg.temperature}   ctx {ctx_label}",
         style="muted",
     )
     blocks.append(hint_row)
@@ -568,6 +568,7 @@ def show_session_overview(
     tool_think_every: int,
     max_tool_iterations: int,
     memory_count: int,
+    provider_mode: str | None = None,
     system_prompt: str | None = None,
     messages: list[dict[str, Any]] | None = None,
     installed_models: list[dict[str, str]] | None = None,
@@ -577,8 +578,8 @@ def show_session_overview(
     used = min(max(used_tokens, 0), total_tokens) if total_tokens > 0 else used_tokens
     remaining = max(total_tokens - used, 0) if total_tokens > 0 else 0
     context_line = f"{used}/{total_tokens} ({int(round((remaining / total_tokens) * 100))}% left)" if total_tokens > 0 else "unknown"
-    mode_label = "cloud" if cloud else "local"
-    execution_label = "Ollama Cloud API" if cloud else host
+    mode_label = provider_mode or ("cloud" if cloud else "local")
+    execution_label = "Ollama Cloud API" if mode_label == "cloud" else host
     installed_models = installed_models or []
     running_models = running_models or []
     event_lines = event_lines or []
@@ -698,6 +699,7 @@ def show_session_overview(
     console.print(
         Panel(
             "[bold primary]Work[/]: /agent TASK  /route TASK  /changes  /diff\n"
+            "[bold primary]Git[/]: /worktree status  /ship status\n"
             "[bold primary]Context[/]: /status  /context  /harness  /hsearch  /memories\n"
             "[bold primary]Safety[/]: /doctor  /safe  /auto  /policy\n"
             "[bold primary]Setup[/]: /model  /models  /theme  /reload  /actions",

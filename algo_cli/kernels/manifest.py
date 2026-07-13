@@ -290,13 +290,36 @@ _KERNELS: tuple[KernelSpec, ...] = (
         status="preview",
     ),
     KernelSpec(
+        name="worktree-isolation",
+        description="Create collision-safe Git worktrees and bind durable agent threads to verified repository state.",
+        modules=[
+            "algo_cli.worktree_runtime",
+            "algo_cli.agent_threads",
+            "algo_cli.agent_pipeline",
+        ],
+        actions=[
+            "worktree.inspect",
+            "worktree.create",
+            "worktree.activate",
+            "worktree.remove",
+        ],
+        slash_commands=[
+            "/worktree status",
+            "/worktree new NAME",
+            "/agent switch THREAD",
+            "/agent fork THREAD TASK",
+        ],
+        safety_level="high",
+        status="active",
+    ),
+    KernelSpec(
         name="pre-push-gate",
-        description="Hard-block raw pushes of private working tree; require explicit env var override or scrubbed export path.",
-        modules=["algo_cli.intelligence.pre_push_gate"],
-        actions=["gate.pre_push"],
-        slash_commands=["/kernel show pre-push-gate"],
-        safety_level="medium",
-        status="preview",
+        description="Guard structured commit, push, and draft-PR phases with fingerprints, scrubs, and remote freshness checks.",
+        modules=["algo_cli.intelligence.pre_push_gate", "algo_cli.git_publish"],
+        actions=["gate.pre_push", "ship.plan", "ship.execute"],
+        slash_commands=["/ship status", "/ship all MESSAGE", "/kernel show pre-push-gate"],
+        safety_level="high",
+        status="active",
     ),
     # --- Phase 2: Medium deterministic kernels (H1, H3, H4, H9, H11) ---
     KernelSpec(

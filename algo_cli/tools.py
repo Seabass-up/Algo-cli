@@ -9,6 +9,7 @@ import os
 import json
 import fnmatch
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -53,7 +54,6 @@ DENY_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 REQUIRED_CHANGE_SHELL_MUTATION_RE = re.compile(
-    r"\bgit\s+(?:add|apply|commit|checkout|restore|reset|clean|mv|rm|switch|merge|rebase|cherry-pick)\b|"
     r"\b(?:remove-item|move-item|copy-item|rename-item|new-item|set-content|add-content|clear-content|"
     r"out-file|export-csv|export-clixml|start-transcript)\b|"
     r"(?:^|[\s;&|\"']+)(?:rm|mv|cp|del|erase|rd|rmdir|touch|mkdir|md|ni|ri|mi|cpi)\b|"
@@ -73,13 +73,341 @@ PYTHON_OPEN_WRITE_RE = re.compile(
 )
 NULL_REDIRECTION_RE = re.compile(r"\b\d?\s*>{1,2}\s*(?:\$null\b|nul\b|/dev/null\b)", re.IGNORECASE)
 
+_GIT_EXECUTABLE_RE = re.compile(r"(?:^|[\\/])git(?:\.exe)?$", re.IGNORECASE)
+_GIT_TEXT_RE = re.compile(r"(?<![\w-])git(?:\.exe)?(?:\s|$)", re.IGNORECASE)
+_GIT_PARSE_MAX_CHARS = 32_768
+_GIT_PARSE_MAX_TOKENS = 512
+_GIT_PARSE_MAX_GLOBAL_OPTIONS = 32
+_GIT_PARSE_MAX_READ_ONLY_OPTIONS = 128
+_GIT_GLOBAL_FLAGS = frozenset(
+    {
+        "-p",
+        "-P",
+        "--paginate",
+        "--no-pager",
+        "--no-replace-objects",
+        "--bare",
+        "--literal-pathspecs",
+        "--glob-pathspecs",
+        "--noglob-pathspecs",
+        "--icase-pathspecs",
+        "--no-optional-locks",
+        "--no-lazy-fetch",
+        "--no-advice",
+    }
+)
+_GIT_GLOBAL_QUERY_OPTIONS = frozenset(
+    {
+        "--version",
+        "-v",
+        "--help",
+        "-h",
+        "--html-path",
+        "--man-path",
+        "--info-path",
+        "--exec-path",
+    }
+)
+_GIT_GLOBAL_EQUALS_OPTIONS = frozenset(
+    {
+        "--exec-path",
+        "--git-dir",
+        "--work-tree",
+        "--namespace",
+        "--super-prefix",
+        "--config-env",
+        "--attr-source",
+    }
+)
+_GIT_MUTATING_SUBCOMMANDS = frozenset(
+    {
+        "add",
+        "apply",
+        "commit",
+        "checkout",
+        "restore",
+        "reset",
+        "clean",
+        "mv",
+        "rm",
+        "switch",
+        "merge",
+        "rebase",
+        "cherry-pick",
+        "push",
+    }
+)
+_GIT_READ_ONLY_SUBCOMMANDS = frozenset(
+    {
+        "blame",
+        "cat-file",
+        "describe",
+        "diff",
+        "for-each-ref",
+        "grep",
+        "log",
+        "ls-files",
+        "ls-tree",
+        "merge-base",
+        "name-rev",
+        "rev-list",
+        "rev-parse",
+        "shortlog",
+        "show",
+        "show-ref",
+        "status",
+    }
+)
+_GIT_UNSAFE_READ_ONLY_FLAGS = frozenset(
+    {
+        "--ext-diff",
+        "--filters",
+        "--open-files-in-pager",
+        "--textconv",
+    }
+)
+_GIT_UNSAFE_READ_ONLY_VALUE_OPTIONS = frozenset(
+    {
+        "--open-files-in-pager",
+        "--output",
+    }
+)
+_GIT_MUTATING_WORKTREE_ACTIONS = frozenset(
+    {"add", "remove", "move", "lock", "unlock", "prune", "repair"}
+)
+_GIT_MUTATING_BRANCH_OPTIONS = frozenset(
+    {
+        "--delete",
+        "--move",
+        "--copy",
+        "--edit-description",
+        "--set-upstream-to",
+        "--unset-upstream",
+        "--create-reflog",
+        "--no-create-reflog",
+        "--track",
+        "--no-track",
+        "--recurse-submodules",
+    }
+)
+_GIT_READ_ONLY_BRANCH_FLAGS = frozenset(
+    {
+        "-a",
+        "--all",
+        "-r",
+        "--remotes",
+        "-v",
+        "-vv",
+        "--verbose",
+        "-q",
+        "--quiet",
+        "--show-current",
+        "--ignore-case",
+        "--no-color",
+    }
+)
+_GIT_READ_ONLY_BRANCH_VALUE_OPTIONS = frozenset(
+    {
+        "--contains",
+        "--no-contains",
+        "--merged",
+        "--no-merged",
+        "--points-at",
+        "--format",
+        "--sort",
+        "--abbrev",
+    }
+)
+
+
+def _is_shell_control_token(token: str) -> bool:
+    return bool(token) and all(char in ";&|()" for char in token)
+
+
+def _tokenize_shell_for_git(command: str) -> list[str] | None:
+    """Return a bounded shell-like token stream, or None when parsing is unsafe."""
+
+    if len(command) > _GIT_PARSE_MAX_CHARS:
+        return None
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens: list[str] = []
+        for token in lexer:
+            tokens.append(token)
+            if len(tokens) > _GIT_PARSE_MAX_TOKENS:
+                return None
+        return tokens
+    except ValueError:
+        return None
+
+
+def _git_global_equals_option(token: str) -> tuple[str, str] | None:
+    for option in _GIT_GLOBAL_EQUALS_OPTIONS:
+        prefix = f"{option}="
+        if token.startswith(prefix):
+            return option, token[len(prefix):]
+    return None
+
+
+def _git_branch_mutates(tokens: list[str], start: int) -> bool:
+    """Classify branch inspection separately from branch creation/mutation."""
+
+    index = start
+    explicit_list = False
+    positionals = 0
+    while index < len(tokens) and not _is_shell_control_token(tokens[index]):
+        token = tokens[index]
+        if token in {"--list", "-l"}:
+            explicit_list = True
+            index += 1
+            continue
+        if token in _GIT_MUTATING_BRANCH_OPTIONS or any(
+            token.startswith(f"{option}=") for option in _GIT_MUTATING_BRANCH_OPTIONS
+        ):
+            return True
+        if token.startswith("-") and not token.startswith("--"):
+            if any(flag in "dDmMcC" for flag in token[1:]):
+                return True
+            if all(flag in "arvql" for flag in token[1:]):
+                explicit_list = explicit_list or "l" in token[1:]
+                index += 1
+                continue
+            return True
+        if token in _GIT_READ_ONLY_BRANCH_FLAGS:
+            index += 1
+            continue
+        if token in _GIT_READ_ONLY_BRANCH_VALUE_OPTIONS:
+            index += 1
+            if index >= len(tokens) or _is_shell_control_token(tokens[index]) or not tokens[index]:
+                return True
+            index += 1
+            continue
+        if any(token.startswith(f"{option}=") for option in _GIT_READ_ONLY_BRANCH_VALUE_OPTIONS):
+            if token.endswith("="):
+                return True
+            index += 1
+            continue
+        if token.startswith("-"):
+            return True
+        positionals += 1
+        index += 1
+    return bool(positionals and not explicit_list)
+
+
+def _git_read_only_options_mutate(subcommand: str, tokens: list[str], start: int) -> bool:
+    """Fail closed for inspection flags that write output or execute helpers."""
+
+    scanned = 0
+    index = start
+    while index < len(tokens) and not _is_shell_control_token(tokens[index]):
+        scanned += 1
+        if scanned > _GIT_PARSE_MAX_READ_ONLY_OPTIONS:
+            return True
+        token = tokens[index]
+        if token in _GIT_UNSAFE_READ_ONLY_FLAGS or any(
+            token.startswith(f"{option}=") for option in _GIT_UNSAFE_READ_ONLY_FLAGS
+        ):
+            return True
+        if token in _GIT_UNSAFE_READ_ONLY_VALUE_OPTIONS or any(
+            token.startswith(f"{option}=") for option in _GIT_UNSAFE_READ_ONLY_VALUE_OPTIONS
+        ):
+            return True
+        # `git grep -O[pager]` is the short form of
+        # --open-files-in-pager and can execute an arbitrary pager command.
+        if subcommand == "grep" and token.startswith("-O"):
+            return True
+        index += 1
+    return False
+
+
+def _git_invocation_mutates(tokens: list[str], git_index: int) -> bool:
+    index = git_index + 1
+    global_options = 0
+    while index < len(tokens) and not _is_shell_control_token(tokens[index]):
+        token = tokens[index]
+        if token in _GIT_GLOBAL_QUERY_OPTIONS:
+            return False
+        if token in _GIT_GLOBAL_FLAGS:
+            global_options += 1
+            index += 1
+        elif token in {"-C", "-c"}:
+            global_options += 1
+            index += 1
+            if index >= len(tokens) or _is_shell_control_token(tokens[index]) or not tokens[index]:
+                return True
+            if token == "-c" and ("=" not in tokens[index] or tokens[index].startswith("=")):
+                return True
+            index += 1
+        else:
+            equals_option = _git_global_equals_option(token)
+            if equals_option is not None:
+                global_options += 1
+                option, value = equals_option
+                if not value:
+                    return True
+                if option == "--config-env" and ("=" not in value or value.startswith("=") or value.endswith("=")):
+                    return True
+                index += 1
+            elif token.startswith("-"):
+                # Unknown or malformed global options may hide an alias or
+                # change parsing. Safe mode must fail closed in this case.
+                return True
+            else:
+                subcommand = token.lower()
+                if subcommand in _GIT_MUTATING_SUBCOMMANDS:
+                    return True
+                if subcommand == "worktree":
+                    action_index = index + 1
+                    if action_index >= len(tokens) or _is_shell_control_token(tokens[action_index]):
+                        return True
+                    action = tokens[action_index].lower()
+                    if action in _GIT_MUTATING_WORKTREE_ACTIONS:
+                        return True
+                    return action != "list"
+                if subcommand == "branch":
+                    return _git_branch_mutates(tokens, index + 1)
+                if subcommand in _GIT_READ_ONLY_SUBCOMMANDS:
+                    return _git_read_only_options_mutate(subcommand, tokens, index + 1)
+                # Git aliases are arbitrary commands and may execute shell
+                # snippets. Unknown names therefore cannot be assumed to be
+                # inspections, even when they look harmless.
+                return True
+        if global_options > _GIT_PARSE_MAX_GLOBAL_OPTIONS:
+            return True
+    # A bare `git` is an inspection/help request. An option-only invocation is
+    # incomplete, so fail closed instead of guessing what the caller intended.
+    return global_options > 0
+
+
+def _git_command_mutates_workspace(command: str, *, _depth: int = 0) -> bool:
+    if not _GIT_TEXT_RE.search(command):
+        return False
+    tokens = _tokenize_shell_for_git(command)
+    if tokens is None:
+        return True
+    for index, token in enumerate(tokens):
+        if _GIT_EXECUTABLE_RE.search(token) and _git_invocation_mutates(tokens, index):
+            return True
+    if _depth >= 2:
+        return False
+    # Shells commonly put a complete command in one quoted `-c` token. Inspect
+    # those bounded nested snippets so quoting cannot bypass the Git policy.
+    for token in tokens:
+        if token != command and _GIT_TEXT_RE.search(token):
+            if _git_command_mutates_workspace(token, _depth=_depth + 1):
+                return True
+    return False
+
 
 def shell_mutates_workspace(command: str) -> bool:
-    """Return whether a shell command appears to alter files or Git state."""
+    """Return whether a shell command appears to alter files or local/remote Git state."""
 
     without_null_redirection = NULL_REDIRECTION_RE.sub("", command or "")
     return bool(
-        REQUIRED_CHANGE_SHELL_MUTATION_RE.search(without_null_redirection)
+        _git_command_mutates_workspace(without_null_redirection)
+        or REQUIRED_CHANGE_SHELL_MUTATION_RE.search(without_null_redirection)
         or PYTHON_OPEN_WRITE_RE.search(without_null_redirection)
     )
 
@@ -1341,10 +1669,24 @@ def available_actions(topic: str | None = None) -> str:
             "/agent team [--roles ROLE,ROLE[,ROLE,ROLE]] TASK",
             "/agent threads",
             "/agent show THREAD",
+            "/agent switch THREAD",
             "/agent resume THREAD [TASK]",
-            "/agent fork THREAD TASK",
+            "/agent fork THREAD [--same-worktree] TASK",
             "/route TASK",
             "/goal [--rounds N] TASK",
+        ],
+        "workspace": [
+            "/worktree status",
+            "/worktree list",
+            "/worktree new NAME [--from REF]",
+            "/worktree use ID_OR_NAME",
+            "/worktree remove ID_OR_NAME",
+            "/cd PATH",
+            "/ship status",
+            "/ship commit MESSAGE",
+            "/ship push",
+            "/ship pr [--ready]",
+            "/ship all [--ready] MESSAGE",
         ],
         "reasoning": ["/reason status", "/reason guide", "/reason react", "/reason reflexion", "/reason tot", "/reason got", "/reason mcts", "/reason qcr", "/reason neuro_symbolic", "/reason depth N", "/reason branches N", "/reason auto-reflexion on|off", "/reason auto-verify on|off"],
         "xai": ["/xai-login", "/xai-status", "/xai-test", "/x-account status"],
@@ -1455,7 +1797,7 @@ def available_actions(topic: str | None = None) -> str:
         "Prefer explicit on/off/status forms for toggles (/auto on, /safe off, /memory-auto status, /code-rag status, /thinking status, /verify on, /cloud off) so you do not accidentally flip state.",
         "For /reason, check /reason status or /reason guide first; only change reasoning mode for genuinely complex, failed, ambiguous, or verification-heavy work.",
         "For independent complex work, the parent runtime may invoke /agent team through session_command. Use 2-4 clear roles; specialists are read-only and one integration pipeline owns mutations and verification.",
-        "Use /agent resume THREAD to continue the same context or /agent fork THREAD TASK to explore a distinct follow-up. Do not delegate routine one-step work.",
+        "Use /agent resume THREAD to continue the same context or /agent fork THREAD [--same-worktree] TASK to explore an isolated child follow-up. Do not delegate routine one-step work.",
         "Call available_actions('agent'), available_actions('kernel'), available_actions('intel'), available_actions('google'), available_actions('chatgpt'), available_actions('slash'), or available_actions('reason') when unsure which command/tool should be used.",
     ]
     reasoning_guidance = [
@@ -1550,7 +1892,9 @@ _SESSION_OUTPUT_COMMANDS = frozenset({
     "/route",
     "/selfcheck",
     "/status",
+    "/ship",
     "/url-scheme",
+    "/worktree",
     "/xai-status",
 })
 _SESSION_STATUS_COMMANDS = frozenset({
@@ -1662,7 +2006,7 @@ def _session_command_captures_output(command_line: str) -> bool:
     return False
 
 
-def _redact_session_command_output(output: str) -> str:
+def _redact_session_command_output(output: str, *, workspace: str = "") -> str:
     """Remove common credential forms from captured slash-command output."""
 
     redacted = _SESSION_BEARER_RE.sub("Bearer <redacted>", str(output))
@@ -1670,8 +2014,14 @@ def _redact_session_command_output(output: str) -> str:
     # Read-only slash output can be returned to a cloud model. Preserve useful
     # logical locations without disclosing the user's home or an overridden
     # config directory. Interactive console output remains unchanged.
+    prefixes = [
+        (str(CONFIG_DIR), "$ALGO_CLI_CONFIG_DIR"),
+        (str(Path.home()), "~"),
+    ]
+    if workspace:
+        prefixes.append((str(Path(workspace).expanduser().resolve()), "$WORKSPACE"))
     for prefix, replacement in sorted(
-        ((str(CONFIG_DIR), "$ALGO_CLI_CONFIG_DIR"), (str(Path.home()), "~")),
+        prefixes,
         key=lambda item: len(item[0]),
         reverse=True,
     ):
@@ -1680,8 +2030,8 @@ def _redact_session_command_output(output: str) -> str:
     return redacted
 
 
-def _captured_session_result(output: str, normalized: str) -> str:
-    rendered = _redact_session_command_output(output).strip()
+def _captured_session_result(output: str, normalized: str, *, workspace: str = "") -> str:
+    rendered = _redact_session_command_output(output, workspace=workspace).strip()
     # Rich error output begins with the product glyph. Normalize it so the
     # runtime's existing error classifier still recognizes failed tool calls.
     first_line, separator, remainder = rendered.partition("\n")
@@ -1748,7 +2098,7 @@ def session_command(command: str, cfg: Any = None) -> str:
     - /agent [--pipeline NAME] TASK — run a traceable agent pipeline for larger tasks
     - /agent team [--roles ROLE,ROLE[,ROLE,ROLE]] TASK — run 2-4 independent read-only specialists, then one verified integration pipeline
     - /agent threads, /agent show THREAD — inspect persistent parent/child run records
-    - /agent resume THREAD [TASK], /agent fork THREAD TASK — continue or branch prior verified context
+    - /agent resume THREAD [TASK], /agent fork THREAD [--same-worktree] TASK — continue or create an isolated child from prior verified context
     - /route TASK — preview route/budget/tool policy without running a pipeline
     - /kernel list, /kernel show NAME — inspect promoted kernel specs without executing workloads
     - /kernel check [NAME] — validate imports, slash routes, metadata, and active ActionSpecs
@@ -1779,10 +2129,14 @@ def session_command(command: str, cfg: Any = None) -> str:
             return "Error: recursive /agent delegation is blocked while an Agent Blocks run is active."
         client = create_client(cfg)
         arg = normalized[len("/agent"):].strip()
-        return execute_agent_command(arg, cfg, client)
+        return _captured_session_result(
+            execute_agent_command(arg, cfg, client),
+            normalized,
+            workspace=cfg.cwd,
+        )
     direct_result = _direct_read_only_session_result(normalized)
     if direct_result is not None:
-        return _captured_session_result(direct_result, normalized)
+        return _captured_session_result(direct_result, normalized, workspace=cfg.cwd)
     client = create_client(cfg)
     try:
         if _session_command_captures_output(normalized):
@@ -1795,7 +2149,7 @@ def session_command(command: str, cfg: Any = None) -> str:
                 handled, _client = handle_command(normalized, cfg, client)
             if not handled:
                 return unknown_command_message(normalized)
-            return _captured_session_result(capture.get(), normalized)
+            return _captured_session_result(capture.get(), normalized, workspace=cfg.cwd)
         handled, _client = handle_command(normalized, cfg, client)
         if not handled:
             return unknown_command_message(normalized)

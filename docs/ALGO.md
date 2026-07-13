@@ -18,6 +18,8 @@
 - Algorithmic runtime: `algo_cli/intelligence/`, `algo_cli/evals/`, `algo_cli/_internal/`, `algo_cli/harness.py`, and `algo_cli/agent_pipeline.py` provide deterministic graph, retrieval, workflow, policy, multi-agent, and evaluation algorithms.
 - Gateway: `algo_cli/plugin_gateway.py` and `algo_cli/plugin_gateway_adapters.py` own plugin gateway routing and must remain behavior-compatible.
 - Config: `algo_cli/config.py` owns persisted settings under the Algo CLI config directory.
+- Worktree isolation: `algo_cli/worktree_runtime.py` allocates repository-hashed paths, protects ignored data, and binds durable agent threads to verified Git identity.
+- Structured publish: `algo_cli/git_publish.py` implements fingerprinted, scoped, scrubbed, divergence-aware commit → push → draft-PR phases and activates the pre-push kernel.
 - Tests: `tests/` contains focused unit coverage; prefer adding narrow tests for new deterministic algorithms.
 
 ## Gotchas
@@ -5602,7 +5604,7 @@ class SpawnStrategy:
 | Git Worktree | 10-100 | Filesystem | Medium | Code migration, bulk edits |
 | Cloud Worker | 100+ | Container | High | Enterprise-scale processing |
 
-**Future extension:** `/agent team` currently caps execution at 2-4 read-only local specialists. If worktree or cloud isolation is implemented, expose it as an explicit team scale and retain the single-owner merge/verification contract.
+**Current implementation:** `/agent fork` creates a repository-hashed Git worktree by default when the parent thread has recorded Git identity. Resume, switch, and fork compare the exact recorded HEAD plus tracked, untracked, and staging/status evidence; the isolated child is created from that verified immutable OID. A dirty thread stays in the same worktree with `--same-worktree`, or continues after commit in a new worktree and agent thread instead of silently rebinding old evidence. `/worktree` also exposes explicit create/list/use/remove controls, and removal fails closed on tracked, untracked, ignored, stale-identity, or unpruned Git metadata. `/agent team` still caps execution at 2-4 read-only specialists and retains one integration writer. A future writable-team scale should allocate one worktree per writer and preserve the single-owner merge/verification contract.
 
 ---
 

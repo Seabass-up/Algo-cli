@@ -80,6 +80,18 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/agent", "Run, delegate, resume, and inspect agent threads"),
     ("/agent team", "Fan out 2-4 read-only specialists, then integrate and verify"),
     ("/agent threads", "List persistent agent runs and child threads"),
+    ("/agent switch", "Restore a persistent thread's recorded workspace"),
+    ("/worktree", "Inspect or manage isolated Git workspaces"),
+    ("/worktree list", "List Algo-managed Git worktrees"),
+    ("/worktree new", "Create and activate an isolated Git worktree"),
+    ("/worktree use", "Activate a managed Git worktree"),
+    ("/worktree remove", "Remove a clean managed worktree while retaining its branch"),
+    ("/ship", "Plan or run a guarded commit, push, and pull-request workflow"),
+    ("/ship status", "Inspect structured publish readiness without changing state"),
+    ("/ship commit", "Scrub, stage, and commit the active feature branch"),
+    ("/ship push", "Scrub and push the clean active feature branch"),
+    ("/ship pr", "Create or find a pull request; draft by default"),
+    ("/ship all", "Commit, push, and open a draft pull request in one guarded flow"),
     ("/goal", "Work a task until complete: /goal [--rounds N] <task> | resume | status | clear"),
     ("/route", "Preview routing, Agent Blocks budget, and tool policy"),
     ("/memory-auto", "Inspect or toggle bounded automatic memory capture: /memory-auto [on|off|status]"),
@@ -279,6 +291,10 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
     elif command == "/model":
         if arg:
             cfg.model = arg
+            # Direct model selection must not inherit a stale provider route.
+            # A cloud-suffixed Ollama model selects direct cloud; xAI and
+            # ChatGPT models route through their dedicated clients.
+            cfg.cloud = m.is_cloud_model_name(arg)
             cfg.save()
             m.show_info(f"Model set to {cfg.model}")
             client = m.create_client(cfg)
@@ -473,10 +489,11 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         used, total, _remaining, _runtime_cap, _native = m.context_status(cfg, client=client)
         m.show_session_overview(
             model=cfg.model,
-            host=cfg.host,
+            host=m.effective_runtime_host(cfg),
             cwd=cfg.cwd,
             theme_name=cfg.theme,
             cloud=cfg.cloud,
+            provider_mode=m.runtime_mode_label(cfg),
             auto_mode=cfg.auto_approve_active,
             safe_mode=cfg.safe_mode,
             temperature=cfg.temperature,
@@ -658,6 +675,24 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         m.handle_kernel_command(arg)
     elif command == "/agent":
         m.execute_agent_command(arg, cfg, client)
+    elif command == "/worktree":
+        from . import worktree_runtime
+
+        try:
+            worktree_text = worktree_runtime.handle_command(arg, cfg)
+        except worktree_runtime.WorktreeError as exc:
+            m.show_error(str(exc))
+        else:
+            m.console.print(worktree_text)
+    elif command == "/ship":
+        from . import git_publish
+
+        try:
+            ship_text = git_publish.handle_command(arg, cfg)
+        except git_publish.PublishError as exc:
+            m.show_error(str(exc))
+        else:
+            m.console.print(ship_text)
     elif command == "/goal":
         m.run_goal_loop(client, cfg, arg)
     elif command == "/route":
@@ -1084,10 +1119,11 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             info_used, info_total, *_rest = m.context_status(cfg, client=client)
             m.show_session_overview(
                 model=cfg.model,
-                host=cfg.host,
+                host=m.effective_runtime_host(cfg),
                 cwd=cfg.cwd,
                 theme_name=cfg.theme,
                 cloud=cfg.cloud,
+                provider_mode=m.runtime_mode_label(cfg),
                 auto_mode=cfg.auto_approve_active,
                 safe_mode=cfg.safe_mode,
                 temperature=cfg.temperature,

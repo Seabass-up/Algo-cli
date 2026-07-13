@@ -12,6 +12,16 @@ def is_cloud_model_name(name: str) -> bool:
     return name.endswith(":cloud") or name.endswith("-cloud") or ":cloud-" in name
 
 
+def runtime_mode_label(cfg: Config) -> str:
+    """Return the configured provider route used by status and dashboard UI."""
+
+    if _model_info_module.is_xai_model(cfg.model):
+        return "xai"
+    if _model_info_module.is_chatgpt_model(cfg.model):
+        return "chatgpt"
+    return "cloud" if cfg.cloud else "local"
+
+
 def _runtime_ollama_api_key() -> str:
     """Return OLLAMA_API_KEY after loading Algo CLI's runtime env file.
 
