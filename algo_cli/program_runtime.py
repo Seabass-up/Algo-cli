@@ -15,6 +15,7 @@ is not part of the model-authored plan and therefore cannot be widened by it.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -77,7 +78,15 @@ class ProgramStoreError(RuntimeError):
 
 @dataclass(frozen=True)
 class ProgramLimits:
-    """Hard ceilings for one typed program execution."""
+    """Resource ceilings for one typed program execution.
+
+    ``max_runtime_seconds`` is a cooperative wall-clock budget. The runtime
+    propagates the remaining budget into actions that expose a ``timeout``
+    argument and checks the budget around every step. Python cannot safely
+    preempt an arbitrary synchronous tool on every supported platform, so an
+    action without a timeout contract can finish after the budget and will then
+    be recorded as ``limit_exceeded``.
+    """
 
     max_steps: int = 12
     max_runtime_seconds: float = 30.0
@@ -787,6 +796,34 @@ def _action_mutates_state(action: str) -> bool:
         return False
 
 
+def _apply_remaining_action_timeout(
+    action: str,
+    args: Mapping[str, Any],
+    *,
+    remaining_seconds: float,
+) -> dict[str, Any]:
+    """Clamp a timeout-aware action to the program's remaining budget."""
+
+    resolved = dict(args)
+    try:
+        parameters = inspect.signature(TOOL_MAP[action]).parameters
+    except (KeyError, TypeError, ValueError):
+        return resolved
+    if "timeout" not in parameters:
+        return resolved
+
+    requested = resolved.get("timeout", remaining_seconds)
+    if (
+        isinstance(requested, bool)
+        or not isinstance(requested, (int, float))
+        or not math.isfinite(float(requested))
+        or float(requested) <= 0
+    ):
+        raise ProgramValidationError(f"{action} timeout must be a positive finite number")
+    resolved["timeout"] = min(float(requested), max(0.001, remaining_seconds))
+    return resolved
+
+
 def _make_receipt(
     *,
     run_id: str,
@@ -895,7 +932,12 @@ def execute_program(
     store: ProgramArtifactStore | None = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> ProgramResult:
-    """Execute a compiled bounded program through Algo CLI's canonical tool path."""
+    """Execute a compiled bounded program through Algo CLI's canonical tool path.
+
+    The elapsed-time budget is enforced cooperatively: timeout-aware actions
+    receive no more than the time remaining, and all actions are checked before
+    and after dispatch.
+    """
 
     compiled = plan if isinstance(plan, CompiledProgram) else compile_program(
         plan,
@@ -936,7 +978,8 @@ def execute_program(
             now = float(clock())
             if not math.isfinite(now):
                 raise ValueError("clock must return finite values")
-            if now - started > limits.max_runtime_seconds:
+            elapsed = now - started
+            if elapsed >= limits.max_runtime_seconds:
                 status = "limit_exceeded"
                 error = f"program runtime exceeded {limits.max_runtime_seconds:.3f} seconds before {step.step_id}"
                 encoded, media_type = _value_bytes(error)
@@ -975,6 +1018,11 @@ def execute_program(
                     resolved_input = _resolve_refs(step.args(), values)
                     if not isinstance(resolved_input, dict):
                         raise ProgramValidationError(f"resolved args for {step.step_id} are not an object")
+                    resolved_input = _apply_remaining_action_timeout(
+                        step.action,
+                        resolved_input,
+                        remaining_seconds=max(0.001, limits.max_runtime_seconds - elapsed),
+                    )
                     _message, action_result = execute_tool_call_for_pipeline(
                         step.action,
                         resolved_input,

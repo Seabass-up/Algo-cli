@@ -211,7 +211,7 @@ The model can call these tools during a conversation:
 
 **Multimodal:** `embed_text`, `vision_describe`
 
-**Programmatic actions:** `action_search` retrieves a small set of exact deferred action schemas. `action_program` compiles a bounded typed dataflow plan—never arbitrary Python or JavaScript—and routes every nested action through its existing ActionSpec policy, guardrails, approval, attempt ledger, and telemetry. Large intermediate values are content-addressed in the private runtime store; compact results retain hash-chained mutation receipts.
+**Programmatic actions:** `action_search` retrieves a small set of exact deferred action schemas; discovery does not bypass the active capability ceiling, runtime policy, or approval. `action_program` compiles a bounded typed dataflow plan—never arbitrary Python or JavaScript—and routes every nested action through its existing ActionSpec policy, guardrails, approval, attempt ledger, and telemetry. Its wall-clock budget is cooperative: the remaining budget is propagated into timeout-aware actions and checked around every step, while actions without a timeout contract can only be marked over-budget after they return. Large intermediate values are content-addressed in the private runtime store; compact results retain hash-chained mutation receipts.
 
 **Models:** `model_show`, `model_pull`, `model_copy`, `model_create`, `model_delete`
 

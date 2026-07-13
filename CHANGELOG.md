@@ -4,6 +4,12 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-07-13
+
+### Changed
+
+- Typed action programs now clamp timeout-aware nested actions to the remaining wall-clock budget and accurately document the cooperative limit; semantic supersession preserves read snapshots across intervening mutation epochs.
+
 ### Added
 
 - `algo-cli update` upgrades the published distribution through pipx, uv tool, or the current Python environment's pip without initializing or changing user runtime state.
