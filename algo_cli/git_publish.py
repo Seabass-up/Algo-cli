@@ -74,16 +74,16 @@ def _run_program(
     timeout: int = 120,
     input_text: str | None = None,
 ) -> tuple[int, str]:
+    # Keep line-oriented Git plumbing input byte-exact. Text-mode pipes convert
+    # LF to CRLF on Windows, which ``git update-ref --stdin`` rejects.
+    encoded_input = None if input_text is None else input_text.encode("utf-8")
     try:
         proc = subprocess.run(
             [program, *args],
             cwd=Path(cwd).expanduser().resolve(),
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=timeout,
-            input=input_text,
+            input=encoded_input,
         )
     except FileNotFoundError:
         return 127, f"{program} is not installed or is not available on PATH"
@@ -91,7 +91,8 @@ def _run_program(
         return 124, f"{program} timed out after {timeout} seconds"
     except OSError as exc:
         return 1, f"{program} could not start: {exc}"
-    output = (proc.stdout or proc.stderr or "").strip()
+    raw_output = proc.stdout or proc.stderr or b""
+    output = raw_output.decode("utf-8", errors="replace").strip()
     if proc.returncode != 0:
         output = _sanitize_error_text(output)
     if len(output) > MAX_COMMAND_OUTPUT_CHARS:
@@ -266,7 +267,10 @@ def _normalized_repository_identity(url: str, cwd: str | Path) -> str:
                 return _network_repository_identity(
                     parsed.hostname or "", parsed.path, port=port
                 )
-            local_path = Path(unquote(parsed.path)).expanduser().resolve(strict=False)
+            decoded_path = unquote(parsed.path)
+            if os.name == "nt" and re.match(r"^/[A-Za-z]:[\\/]", decoded_path):
+                decoded_path = decoded_path[1:]
+            local_path = Path(decoded_path).expanduser().resolve(strict=False)
             return f"local:{local_path}"
         if scheme not in {"git", "http", "https", "ssh"} or not parsed.hostname:
             raise PublishError("Remote destination cannot be normalized safely.")

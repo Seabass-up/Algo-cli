@@ -210,9 +210,7 @@ def test_publish_fingerprint_reads_remote_refs_past_display_cap(
     subprocess.run(
         ["git", "update-ref", "--stdin"],
         cwd=root,
-        input="\n".join(updates) + "\n",
-        text=True,
-        encoding="utf-8",
+        input=("\n".join(updates) + "\n").encode("utf-8"),
         check=True,
     )
     before = git_publish.publish_fingerprint(root)
