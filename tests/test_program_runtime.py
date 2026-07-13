@@ -273,6 +273,76 @@ def test_force_approval_flag_is_passed_to_canonical_dispatch(monkeypatch, tmp_pa
     assert calls == [("read_file", True)]
 
 
+def test_timeout_aware_action_is_clamped_to_remaining_program_budget(monkeypatch, tmp_path) -> None:
+    from algo_cli import program_runtime
+
+    calls: list[tuple[str, dict]] = []
+    clock_values = iter((100.0, 102.0, 103.0))
+
+    def fake_execute(name, args, cfg, *, tool_call_id=None, force_approval=False):
+        calls.append((name, args))
+        return ({"role": "tool", "content": "ok"}, "ok")
+
+    monkeypatch.setattr(program_runtime, "execute_tool_call_for_pipeline", fake_execute)
+    plan = {
+        "version": 1,
+        "steps": [
+            {
+                "id": "command",
+                "kind": "action",
+                "action": "run_shell",
+                "args": {"command": "pytest -q", "timeout": 60},
+            }
+        ],
+    }
+
+    result = execute_program(
+        plan,
+        Config(cwd=str(tmp_path)),
+        authorization=_authorization("run_shell"),
+        limits=ProgramLimits(max_runtime_seconds=5),
+        store=ProgramArtifactStore(tmp_path / "program-store"),
+        clock=lambda: next(clock_values),
+    )
+
+    assert result.worked is True
+    assert calls == [("run_shell", {"command": "pytest -q", "timeout": 3.0})]
+
+
+def test_timeout_aware_action_keeps_shorter_requested_timeout(monkeypatch, tmp_path) -> None:
+    from algo_cli import program_runtime
+
+    calls: list[dict] = []
+
+    def fake_execute(name, args, cfg, *, tool_call_id=None, force_approval=False):
+        calls.append(args)
+        return ({"role": "tool", "content": "ok"}, "ok")
+
+    monkeypatch.setattr(program_runtime, "execute_tool_call_for_pipeline", fake_execute)
+    plan = {
+        "version": 1,
+        "steps": [
+            {
+                "id": "command",
+                "kind": "action",
+                "action": "run_shell",
+                "args": {"command": "pytest -q", "timeout": 1},
+            }
+        ],
+    }
+
+    result = execute_program(
+        plan,
+        Config(cwd=str(tmp_path)),
+        authorization=_authorization("run_shell"),
+        limits=ProgramLimits(max_runtime_seconds=5),
+        store=ProgramArtifactStore(tmp_path / "program-store"),
+    )
+
+    assert result.worked is True
+    assert calls == [{"command": "pytest -q", "timeout": 1.0}]
+
+
 def test_mutation_keeps_per_action_approval_and_immutable_compact_receipt(monkeypatch, tmp_path) -> None:
     from algo_cli import tool_runtime
 

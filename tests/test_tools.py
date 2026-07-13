@@ -321,6 +321,23 @@ def test_web_fetch_timeout_returns_without_waiting_for_worker(monkeypatch):
     assert elapsed < 1.5
 
 
+def test_web_fetch_honors_fractional_timeout(monkeypatch):
+    monkeypatch.setenv("OLLAMA_API_KEY", "token")
+
+    class SlowClient:
+        def web_fetch(self, _url):
+            time.sleep(0.2)
+            return {"content": "late"}
+
+    monkeypatch.setattr(tools, "active_ollama_client", lambda cloud=False: SlowClient())
+    started = time.perf_counter()
+
+    out = tools.web_fetch("https://example.test", timeout=0.02)
+
+    assert time.perf_counter() - started < 0.15
+    assert "timed out after 0.02 seconds" in out
+
+
 def test_failed_attempt_skip_is_not_self_perpetuating():
     cfg = Config()
     signature = tool_runtime.tool_attempt_signature("read_file", {"path": "missing.txt"})

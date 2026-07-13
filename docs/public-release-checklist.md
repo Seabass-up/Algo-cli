@@ -21,12 +21,12 @@ Use this checklist before publishing a tag or changing repository visibility.
 ## Package
 
 ```bash
-python scripts/check_release_version.py --tag v0.15.0
+python scripts/check_release_version.py --tag v0.15.1
 python -m build
 python -m twine check dist/*
 python scripts/check_public_release.py --artifacts-only \
-  --artifact dist/algo_cli_runtime-0.15.0-py3-none-any.whl \
-  --artifact dist/algo_cli_runtime-0.15.0.tar.gz
+  --artifact dist/algo_cli_runtime-0.15.1-py3-none-any.whl \
+  --artifact dist/algo_cli_runtime-0.15.1.tar.gz
 python scripts/smoke_wheel_install.py dist
 ```
 

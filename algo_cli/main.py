@@ -2834,6 +2834,10 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
     setattr(
         cfg,
         "_algo_program_authorization",
+        # Ordinary chat deliberately owns the full registered capability
+        # ceiling so action_search can defer schemas without making actions
+        # unreachable. Restricted Agent Blocks bind their narrower tool set in
+        # agent_pipeline; discovery never bypasses either ceiling or approval.
         authorization_for_actions(tuple(TOOL_MAP)),
     )
 

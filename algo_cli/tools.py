@@ -1121,7 +1121,7 @@ def _isolated_process_group_kwargs(platform_name: str | None = None) -> dict[str
     return {"start_new_session": True}
 
 
-def run_shell(command: str, cwd: str | None = None, timeout: int = 30, safe_mode: bool = False) -> str:
+def run_shell(command: str, cwd: str | None = None, timeout: float = 30, safe_mode: bool = False) -> str:
     """Run a shell command and return output.
 
     On Windows this executes under cmd.exe: Unix tools like head, tail, grep,
@@ -1141,7 +1141,7 @@ def run_shell(command: str, cwd: str | None = None, timeout: int = 30, safe_mode
             "Toggle /safe only for an explicitly approved, narrower operation."
         )
     workdir = _resolve(cwd or ".", None)
-    actual_timeout = min(timeout, 120)
+    actual_timeout = max(0.001, min(float(timeout), 120.0))
     # Isolate the child in its own process group. Without this, every child
     # shares the CLI's console group, and any Ctrl+C/Ctrl+Break console event
     # raised inside the child tree (test runners, scripts, taskkill) is also
@@ -1160,7 +1160,7 @@ def run_shell(command: str, cwd: str | None = None, timeout: int = 30, safe_mode
             **popen_kwargs,
         )
     except subprocess.TimeoutExpired:
-        return f"Error: command timed out after {actual_timeout} seconds."
+        return f"Error: command timed out after {actual_timeout:g} seconds."
     except Exception as exc:
         return f"Error running command: {exc}"
     output = ""
@@ -1255,7 +1255,7 @@ def web_search(query: str, max_results: int = 5) -> str:
     return _cap("\n\n---\n\n".join(rendered))
 
 
-def web_fetch(url: str, timeout: int = 30) -> str:
+def web_fetch(url: str, timeout: float = 30) -> str:
     """Fetch web page text through Ollama Cloud, when configured.
 
     Args:
@@ -1276,14 +1276,14 @@ def web_fetch(url: str, timeout: int = 30) -> str:
         except Exception as exc:
             results.put(("error", exc))
 
-    actual_timeout = max(1, min(int(timeout or 30), 120))
+    actual_timeout = max(0.001, min(float(timeout), 120.0))
     results: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
     thread = threading.Thread(target=_fetch, name="algo-cli-web-fetch", daemon=True)
     thread.start()
     try:
         status, payload = results.get(timeout=actual_timeout)
     except queue.Empty:
-        return f"Error fetching URL: timed out after {actual_timeout} seconds."
+        return f"Error fetching URL: timed out after {actual_timeout:g} seconds."
     if status == "ok":
         return str(payload)
     exc = payload
@@ -3355,8 +3355,9 @@ def action_search(query: str, limit: int = 6) -> str:
     """Discover relevant deferred actions and return their exact schemas.
 
     Use this when the small visible tool set does not contain a needed action.
-    Discovery grants no permission; execution still goes through action_program,
-    ActionSpec policy, runtime guardrails, and per-action approvals.
+    Discovery does not bypass runtime policy or approval. Execution still goes
+    through action_program, ActionSpec policy, runtime guardrails, and per-action
+    approvals within the active runtime-owned capability ceiling.
 
     Args:
         query: Capability or operation to find, such as "render a PDF" or "store a credential".
@@ -3403,7 +3404,7 @@ def action_search(query: str, limit: int = 6) -> str:
             "query": normalized_query,
             "count": len(actions),
             "actions": actions,
-            "next": "Call action_program with a bounded typed plan; discovery does not grant permission.",
+            "next": "Call action_program with a bounded typed plan; discovery does not bypass runtime policy or approval.",
         },
         ensure_ascii=False,
         separators=(",", ":"),

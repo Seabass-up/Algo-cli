@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .action_registry import get_action_spec
 from .chat_protocol import normalize_tool_call
 
 
@@ -83,6 +84,7 @@ class _ToolExchange:
     call_id: str | None
     name: str
     args: dict[str, Any]
+    mutation_epoch: int
 
 
 def is_supersession_receipt(content: Any) -> bool:
@@ -135,6 +137,7 @@ def _pair_tool_exchanges(messages: list[dict[str, Any]]) -> list[_ToolExchange]:
     pending: list[tuple[str | None, str, dict[str, Any]]] = []
     by_id: dict[str, tuple[str | None, str, dict[str, Any]]] = {}
     exchanges: list[_ToolExchange] = []
+    mutation_epoch = 0
 
     for index, message in enumerate(messages):
         role = message.get("role")
@@ -180,8 +183,20 @@ def _pair_tool_exchanges(messages: list[dict[str, Any]]) -> list[_ToolExchange]:
                 call_id=call_id,
                 name=name,
                 args=args,
+                mutation_epoch=mutation_epoch,
             )
         )
+        try:
+            mutates_state = bool(get_action_spec(name).mutates_state)
+        except KeyError:
+            # Unknown/custom tools are not assumed to mutate; they are never
+            # supersedable unless deliberately added to the narrow allowlist.
+            mutates_state = False
+        if mutates_state:
+            # Advance conservatively even when the result reports denial or
+            # failure. Losing a pre-attempt snapshot is worse than retaining
+            # one extra piece of evidence.
+            mutation_epoch += 1
     return exchanges
 
 
@@ -256,6 +271,7 @@ def _semantic_key(exchange: _ToolExchange, cwd: str) -> str:
     payload = {
         "tool": exchange.name,
         "args": _canonical_args(exchange.name, exchange.args, cwd),
+        "mutation_epoch": exchange.mutation_epoch,
     }
     return json.dumps(payload, sort_keys=True, ensure_ascii=True, default=str, separators=(",", ":"))
 

@@ -140,6 +140,37 @@ def test_failures_mutations_and_verification_evidence_are_never_superseded() -> 
     assert messages == before
 
 
+def test_mutation_epoch_preserves_pre_mutation_snapshot() -> None:
+    baseline = "baseline\n" * 2_000
+    changed_once = "changed once\n" * 2_000
+    changed_twice = "changed twice\n" * 2_000
+    messages = [
+        *_read_exchange("before", "config.py", baseline),
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "edit",
+                    "function": {
+                        "name": "edit_file",
+                        "arguments": {"path": "config.py", "old_string": "a", "new_string": "b"},
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "name": "edit_file", "tool_call_id": "edit", "content": "Edited config.py"},
+        *_read_exchange("after-one", "config.py", changed_once),
+        *_read_exchange("after-two", "config.py", changed_twice),
+    ]
+
+    stats = context_supersession.supersede_tool_results(messages, cwd="/workspace")
+
+    assert stats.superseded == 1
+    assert messages[1]["content"] == baseline
+    assert context_supersession.is_supersession_receipt(messages[5]["content"])
+    assert messages[7]["content"] == changed_twice
+
+
 def test_prune_integrates_supersession_and_emits_token_savings(monkeypatch) -> None:
     cfg = Config()
     cfg.cwd = "/workspace"
