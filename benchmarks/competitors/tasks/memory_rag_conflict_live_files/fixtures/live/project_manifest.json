@@ -1,0 +1,11 @@
+{
+  "project_name": "Riverbend Fare Gate Refresh",
+  "client": "Riverbend Transit Authority",
+  "approval_ticket": "RTA-2026-118",
+  "current_status_endpoint": "/api/v2/status",
+  "feature_flag": "fare_sync_enabled",
+  "feature_flag_state": "enabled",
+  "go_live_window": "2026-07-22 to 2026-07-24",
+  "operations_contact": "Maya Chen",
+  "authority_note": "This manifest is the live source of truth for this run."
+}

@@ -1,0 +1,4 @@
+{
+  "statusEndpoint": "/status-old",
+  "note": "Example only. The runtime does not read this file."
+}
