@@ -8,28 +8,26 @@ from decimal import Decimal
 from statistics import median
 from typing import Any, Iterable
 
-from .common import ReviewGate, RiskLevel, SourceRef, decimalize
+from .common import ReviewGate, RiskLevel, SourceRef, dateize, datetimeize, decimalize
 
 
 @dataclass(frozen=True)
 class JournalEntry:
     id: str
     account: str
-    amount: Decimal | int | str
-    entry_date: date | str
+    amount: Decimal
+    entry_date: date
     user: str
     description: str = ""
     manual: bool = True
     approved_by: str | None = None
-    posted_at: datetime | str | None = None
+    posted_at: datetime | None = None
     source_refs: list[SourceRef] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "amount", decimalize(self.amount))
-        if isinstance(self.entry_date, str):
-            object.__setattr__(self, "entry_date", datetime.fromisoformat(self.entry_date[:10]).date())
-        if isinstance(self.posted_at, str):
-            object.__setattr__(self, "posted_at", datetime.fromisoformat(self.posted_at))
+        object.__setattr__(self, "entry_date", dateize(self.entry_date, field_name="entry date"))
+        object.__setattr__(self, "posted_at", datetimeize(self.posted_at, field_name="posted at"))
 
 
 @dataclass(frozen=True)
@@ -103,7 +101,7 @@ def _coerce_entry(entry: JournalEntry | dict[str, Any]) -> JournalEntry:
         id=str(entry["id"]),
         account=str(entry.get("account", "")),
         amount=entry.get("amount", 0),
-        entry_date=entry.get("entry_date") or entry.get("date"),
+        entry_date=dateize(entry.get("entry_date") or entry.get("date"), field_name="entry date"),
         user=str(entry.get("user", "")),
         description=str(entry.get("description", "")),
         manual=bool(entry.get("manual", True)),

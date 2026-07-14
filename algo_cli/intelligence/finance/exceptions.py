@@ -7,7 +7,14 @@ from datetime import date
 from decimal import Decimal
 from typing import Iterable
 
-from .common import FinanceException, MaterialityPolicy, ReviewGate, Severity, stable_exception_id
+from .common import (
+    FinanceException,
+    MaterialityPolicy,
+    ReviewGate,
+    Severity,
+    decimalize,
+    stable_exception_id,
+)
 
 
 @dataclass
@@ -141,7 +148,7 @@ def make_exception(
         id=stable_exception_id(pattern_id, key),
         pattern_id=pattern_id,
         severity=severity,
-        amount=amount,
+        amount=decimalize(amount) if amount is not None else None,
         message=message,
         source_refs=list(source_refs or []),
         tags=set(tags),

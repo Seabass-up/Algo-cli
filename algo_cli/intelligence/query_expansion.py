@@ -121,8 +121,8 @@ class CrossEncoderReranker:
                 )
             )
         scored.sort(key=lambda x: x.rerank_score, reverse=True)
-        for i, r in enumerate(scored):
-            r.rank = i + 1
+        for i, ranked_result in enumerate(scored):
+            ranked_result.rank = i + 1
         return scored[:top_k]
 
 

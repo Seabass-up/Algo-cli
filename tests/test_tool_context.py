@@ -64,6 +64,31 @@ def test_ordinary_prompt_ranking_recalls_required_code_tools_and_is_stable() -> 
     ]
 
 
+def test_incidental_harness_word_does_not_activate_specialist_context() -> None:
+    prompt = (
+        "You are participating in a controlled agent-harness benchmark. "
+        "Read the task file, fix the source, run its verification, and summarize."
+    )
+
+    names = _names(select_tools_for_prompt(prompt, tools.ALL_TOOLS))
+
+    assert {"read_file", "edit_file", "run_shell", "git_diff"} <= names
+    assert not any(name.startswith("harness_") for name in names)
+    assert "screenshot_description_verify" not in names
+    assert "url_scheme_parse" not in names
+
+
+def test_explicit_harness_search_intent_passes_specialist_gate() -> None:
+    names = _names(
+        select_tools_for_prompt(
+            "Search the harness memory records and show harness stats.",
+            tools.ALL_TOOLS,
+        )
+    )
+
+    assert {"harness_search", "harness_stats"} <= names
+
+
 def test_deferred_runtime_tools_are_always_visible_when_installed() -> None:
     def action_search(query: str) -> str:
         return query

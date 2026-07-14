@@ -1,0 +1,7 @@
+{
+  "upstreamUrl": "https://preview.northstar.example/v2",
+  "region": "us-west-2",
+  "rollout": "NSF-2026-02",
+  "featureFlag": "predictive_dispatch_beta",
+  "maxJobs": 8
+}

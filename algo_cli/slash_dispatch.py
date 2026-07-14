@@ -791,8 +791,8 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             display_index = int(arg)
             if display_index < 1:
                 raise ValueError
-            removed = cfg.forget_memory_index(display_index - 1)
-            m.show_info(f"Forgot: {removed}")
+            forgotten = cfg.forget_memory_index(display_index - 1)
+            m.show_info(f"Forgot: {forgotten}")
         except (ValueError, IndexError):
             m.show_error("Usage: /forget <number>")
     elif command == "/clear":

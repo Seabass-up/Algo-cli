@@ -1,0 +1,8 @@
+{
+  "client": "Northstar Freight Legacy",
+  "release_id": "NSF-2025-44",
+  "region": "us-east-1",
+  "api_base": "https://legacy.northstar.example/v1",
+  "feature_flag": "dispatch_legacy",
+  "rollout_window": "2025-11-02T01:00Z/03:00Z"
+}

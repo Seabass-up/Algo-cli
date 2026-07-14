@@ -185,6 +185,32 @@ def decimalize(value: Decimal | int | float | str | None) -> Decimal:
     return -amount if negative else amount
 
 
+def dateize(value: date | datetime | str | None, *, field_name: str = "date") -> date:
+    """Normalize a required date value and reject missing inputs early."""
+
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value.strip():
+        return datetime.fromisoformat(value.strip()[:10]).date()
+    raise ValueError(f"{field_name} is required")
+
+
+def datetimeize(
+    value: datetime | str | None,
+    *,
+    field_name: str = "datetime",
+) -> datetime | None:
+    """Normalize an optional datetime value while preserving ``None``."""
+
+    if value is None or isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value.strip():
+        return datetime.fromisoformat(value.strip())
+    raise ValueError(f"{field_name} must be an ISO datetime")
+
+
 def within_tolerance(left: Any, right: Any, tolerance: Any = Decimal("0")) -> bool:
     return abs(decimalize(left) - decimalize(right)) <= abs(decimalize(tolerance))
 

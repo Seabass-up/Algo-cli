@@ -172,7 +172,13 @@ def _runtime_status() -> dict[str, Any]:
 def append_perf_record(record: dict[str, Any]) -> None:
     with _PERF_BUFFER_LOCK:
         PERF_BUFFER.append(record)
-        should_flush = len(PERF_BUFFER) >= 12 or record.get("event") != "tool"
+        # Tool and per-round receipts are high-frequency diagnostics. Buffer
+        # them until the next chat/run boundary or a bounded batch fills so
+        # telemetry does not add an fsync-shaped delay between model rounds.
+        should_flush = len(PERF_BUFFER) >= 12 or record.get("event") not in {
+            "tool",
+            "model_round",
+        }
     if should_flush:
         flush_perf_records()
 

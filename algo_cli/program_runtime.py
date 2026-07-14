@@ -35,7 +35,7 @@ from .tools import TOOL_MAP
 
 
 PROGRAM_SCHEMA_VERSION = 1
-RECEIPT_SCHEMA_VERSION = 1
+RECEIPT_SCHEMA_VERSION = 2
 ZERO_RECEIPT_HASH = "0" * 64
 _STEP_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -66,6 +66,7 @@ _TRANSFORM_OPS = frozenset(
     }
 )
 _PROGRAM_STATUSES = frozenset({"worked", "failed", "denied", "skipped", "limit_exceeded"})
+_SUCCESSFUL_SHELL_RESULT_RE = re.compile(r"\[exit code:\s*0\]", re.IGNORECASE)
 
 
 class ProgramValidationError(ValueError):
@@ -246,6 +247,7 @@ class ProgramReceipt:
     kind: str
     operation: str
     mutates_state: bool
+    verification_kind: str
     status: str
     input_hash: str
     result_hash: str
@@ -265,6 +267,7 @@ class ProgramReceipt:
             "kind": self.kind,
             "operation": self.operation,
             "mutates_state": self.mutates_state,
+            "verification_kind": self.verification_kind,
             "status": self.status,
             "input_hash": self.input_hash,
             "result_hash": self.result_hash,
@@ -337,6 +340,17 @@ class ProgramResult:
                 }
                 for receipt in self.receipts
                 if receipt.mutates_state
+            ]
+            payload["verification_receipts"] = [
+                {
+                    "step_id": receipt.step_id,
+                    "operation": receipt.operation,
+                    "verification_kind": receipt.verification_kind,
+                    "status": receipt.status,
+                    "receipt_hash": receipt.receipt_hash,
+                }
+                for receipt in self.receipts
+                if receipt.verification_kind
             ]
         else:
             payload["receipts"] = [receipt.to_dict() for receipt in self.receipts]
@@ -833,6 +847,7 @@ def _make_receipt(
     kind: str,
     operation: str,
     mutates_state: bool,
+    verification_kind: str,
     status: str,
     input_hash: str,
     result_hash: str,
@@ -852,6 +867,7 @@ def _make_receipt(
         "kind": kind,
         "operation": operation,
         "mutates_state": mutates_state,
+        "verification_kind": verification_kind,
         "status": status,
         "input_hash": input_hash,
         "result_hash": result_hash,
@@ -869,6 +885,7 @@ def _make_receipt(
         kind=kind,
         operation=operation,
         mutates_state=mutates_state,
+        verification_kind=verification_kind,
         status=status,
         input_hash=input_hash,
         result_hash=result_hash,
@@ -996,6 +1013,7 @@ def execute_program(
                     kind=step.kind,
                     operation=step.action if isinstance(step, ActionProgramStep) else step.op,
                     mutates_state=_action_mutates_state(step.action) if isinstance(step, ActionProgramStep) else False,
+                    verification_kind="",
                     status=status,
                     input_hash=_sha256_json(None),
                     result_hash=_sha256_bytes(encoded),
@@ -1013,6 +1031,8 @@ def execute_program(
             resolved_input: Any = None
             value: Any
             step_status = "worked"
+            verification_kind = ""
+            evidence_before = len(execution_guardrails.evidence_snapshot())
             try:
                 if isinstance(step, ActionProgramStep):
                     resolved_input = _resolve_refs(step.args(), values)
@@ -1074,6 +1094,33 @@ def execute_program(
             elif step_status != "worked":
                 error = str(value)
 
+            # A typed program must not depend on an incidental nested side
+            # effect to satisfy the outer completion gate. Classify a passing
+            # run_shell verifier deterministically, encode it in the immutable
+            # receipt, and reconcile it into the active ledger if the canonical
+            # nested dispatch did not already do so.
+            if (
+                isinstance(step, ActionProgramStep)
+                and step.action == "run_shell"
+                and step_status == "worked"
+                and _SUCCESSFUL_SHELL_RESULT_RE.search(str(value))
+            ):
+                verification = execution_guardrails.classify_verification_command(
+                    str(resolved_input.get("command") or "")
+                )
+                if verification.qualifies and verification.kind:
+                    verification_kind = verification.kind
+                    new_evidence = execution_guardrails.evidence_snapshot()[evidence_before:]
+                    if not any(
+                        event.kind == "verification"
+                        and event.verification_kind == verification_kind
+                        for event in new_evidence
+                    ):
+                        execution_guardrails.record_verification(
+                            verification_kind,
+                            success=True,
+                        )
+
             receipt = _make_receipt(
                 run_id=run_id,
                 plan_hash=compiled.plan_hash,
@@ -1082,6 +1129,7 @@ def execute_program(
                 kind=step.kind,
                 operation=operation,
                 mutates_state=mutates_state,
+                verification_kind=verification_kind,
                 status=step_status,
                 input_hash=_sha256_json(resolved_input),
                 result_hash=digest,

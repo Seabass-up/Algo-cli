@@ -11,7 +11,7 @@ from algo_cli import extensions_manifest, tools, version_manifest
 class TestVersionManifest:
     def test_build_manifest_has_cli_version(self):
         m = version_manifest.build_manifest()
-        assert m.cli_version == "0.15.1"
+        assert m.cli_version == "0.16.0"
 
     def test_build_manifest_has_python_version(self):
         m = version_manifest.build_manifest()
@@ -110,6 +110,32 @@ def test_extensions_manifest_has_component_records():
     names = {component.name for component in manifest.components}
     assert {"ollama", "git", "gh", "lms"}.issubset(names)
     assert all(component.kind for component in manifest.components)
+
+
+def test_extensions_manifest_includes_discovered_plugin_path(tmp_path, monkeypatch):
+    from algo_cli import plugins
+
+    plugin_dir = tmp_path / "example-plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.json").write_text(
+        json.dumps(
+            {
+                "name": "example-plugin",
+                "version": "1.2.3",
+                "description": "test plugin",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(plugins, "PLUGINS_DIR", tmp_path)
+
+    manifest = extensions_manifest.build_extensions_manifest()
+    component = next(
+        item for item in manifest.components if item.name == "example-plugin"
+    )
+
+    assert component.version == "1.2.3"
+    assert component.path == str(plugin_dir)
 
 
 def test_extensions_manifest_tool_returns_json():

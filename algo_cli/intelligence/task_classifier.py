@@ -76,7 +76,7 @@ class TaskClassifier:
             score = sum(1 for kw in keywords if kw in desc_lower)
             complexity_scores[comp] = score
 
-        complexity = max(complexity_scores, key=complexity_scores.get)
+        complexity = max(complexity_scores, key=lambda item: complexity_scores[item])
         if complexity_scores[complexity] == 0:
             complexity = TaskComplexity.SIMPLE  # default
 
@@ -86,7 +86,7 @@ class TaskClassifier:
             score = sum(1 for kw in keywords if kw in desc_lower)
             domain_scores[domain] = score
 
-        domain = max(domain_scores, key=domain_scores.get)
+        domain = max(domain_scores, key=lambda item: domain_scores[item])
         if domain_scores[domain] == 0:
             domain = TaskDomain.UNKNOWN
 

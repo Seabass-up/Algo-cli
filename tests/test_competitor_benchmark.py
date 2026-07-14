@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -55,6 +56,25 @@ def test_rotating_order_is_deterministic_and_complete() -> None:
             assert sum(row[1:] == (task, harness) for row in first) == 3
 
 
+def test_model_warmup_is_receipted_and_excluded_from_scores(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(runner, "resolve_executable", lambda _candidates: "/usr/bin/ollama")
+    monkeypatch.setattr(
+        runner.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "WARM\n", ""),
+    )
+
+    receipt = runner.warm_model(tmp_path, "test-model", 30, "2h")
+
+    assert receipt["success"] is True
+    assert receipt["included_in_scored_duration"] is False
+    assert receipt["keepalive"] == "2h"
+    assert json.loads((tmp_path / "warmup_receipt.json").read_text())["success"] is True
+    assert (tmp_path / "warmup_stdout.txt").read_text() == "WARM\n"
+
+
 def test_code_repair_checker_fails_then_passes(tmp_path: Path) -> None:
     workspace, artifacts = fixture_copy(tmp_path, "code_repair_small_repo")
     passed, _receipt = runner.run_task_checker("code_repair_small_repo", workspace, artifacts)
@@ -103,6 +123,67 @@ def test_memory_checker_requires_live_values_and_allows_stale_comparison(tmp_pat
     assert "PASS memory_rag_conflict_live_files" in receipt
 
 
+def test_evidence_reconciliation_checker_fails_then_passes(tmp_path: Path) -> None:
+    workspace, artifacts = fixture_copy(tmp_path, "evidence_reconciliation_medium_repo")
+    passed, _receipt = runner.run_task_checker(
+        "evidence_reconciliation_medium_repo", workspace, artifacts
+    )
+    assert passed is False
+
+    manifest = json.loads(
+        (workspace / "control_plane/release_manifest.json").read_text()
+    )
+    updates = {
+        "services/gateway/settings.json": {
+            "apiEndpoint": manifest["api_base"],
+            "deploymentRegion": manifest["region"],
+            "releaseId": manifest["release_id"],
+            "featureFlag": manifest["feature_flag"],
+            "timeoutSeconds": 30,
+        },
+        "services/worker/settings.json": {
+            "upstreamUrl": manifest["api_base"],
+            "region": manifest["region"],
+            "rollout": manifest["release_id"],
+            "featureFlag": manifest["feature_flag"],
+            "maxJobs": 8,
+        },
+        "services/notifier/settings.json": {
+            "baseUrl": manifest["api_base"],
+            "zone": manifest["region"],
+            "release": manifest["release_id"],
+            "featureFlag": manifest["feature_flag"],
+            "channel": "ops",
+        },
+    }
+    for relative, value in updates.items():
+        (workspace / relative).write_text(json.dumps(value), encoding="utf-8")
+    (artifacts / "rollout_receipt.md").write_text(
+        "Northstar Freight release NSF-2026-09 in us-central-1 uses "
+        "https://api.northstar.example/v3 with predictive_dispatch_v2 during "
+        "2026-08-14T02:00Z/04:00Z. Stale sources were rejected.",
+        encoding="utf-8",
+    )
+
+    passed, receipt = runner.run_task_checker(
+        "evidence_reconciliation_medium_repo", workspace, artifacts
+    )
+
+    assert passed is True
+    assert "PASS evidence_reconciliation_medium_repo" in receipt
+
+
+def test_task_suite_digest_is_stable_and_changes_with_selection() -> None:
+    first = runner.task_suite_digest(["code_repair_small_repo"])
+    second = runner.task_suite_digest(["code_repair_small_repo"])
+    expanded = runner.task_suite_digest(
+        ["code_repair_small_repo", "evidence_reconciliation_medium_repo"]
+    )
+
+    assert first == second
+    assert first != expanded
+
+
 def test_generated_cache_files_do_not_fail_scope_gate(tmp_path: Path) -> None:
     workspace, _artifacts = fixture_copy(tmp_path, "code_repair_small_repo")
     before = runner.tree_snapshot(workspace)
@@ -125,6 +206,38 @@ def test_base_environment_does_not_inherit_credentials(tmp_path: Path, monkeypat
     assert environment["HOME"].startswith(str(tmp_path))
     assert "OPENAI_API_KEY" not in environment
     assert "GITHUB_TOKEN" not in environment
+
+
+def test_algo_round_receipts_feed_diagnostic_metrics(tmp_path: Path) -> None:
+    events = [
+        {
+            "type": "model_round",
+            "round": 1,
+            "prompt_tokens": 100,
+            "prompt_eval_ms": 20.0,
+            "generation_ms": 4.0,
+            "context_build_ms": 1.0,
+        },
+        {
+            "type": "model_round",
+            "round": 2,
+            "prompt_tokens": 175,
+            "prompt_eval_ms": 30.0,
+            "generation_ms": 6.0,
+            "context_build_ms": 2.0,
+        },
+        {"type": "done", "usage": {"total_tokens": 300}},
+    ]
+
+    metrics = runner.event_metrics("algo_cli", events, tmp_path)
+
+    assert metrics["tokens"] == 300
+    assert metrics["model_rounds"] == 2
+    assert metrics["cumulative_prompt_tokens"] == 275
+    assert metrics["max_prompt_tokens"] == 175
+    assert metrics["prompt_eval_ms"] == 50.0
+    assert metrics["generation_ms"] == 10.0
+    assert metrics["context_build_ms"] == 3.0
 
 
 def test_tool_trap_checker_fails_closed_when_live_settings_are_deleted(tmp_path: Path) -> None:

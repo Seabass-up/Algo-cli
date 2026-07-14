@@ -15,7 +15,7 @@ from .exceptions import ControllerExceptionQueue
 class CloseTask:
     id: str
     name: str
-    duration_hours: Decimal | int | str = Decimal("1")
+    duration_hours: Decimal = Decimal("1")
     dependencies: set[str] = field(default_factory=set)
     owner: str | None = None
     due_day: int | None = None
@@ -99,7 +99,7 @@ class CloseDAG:
             predecessor[task_id] = best_dep
         if not distance:
             return []
-        end = max(distance, key=lambda task_id: (distance[task_id], task_id))
+        end: str | None = max(distance, key=lambda task_id: (distance[task_id], task_id))
         path_ids: list[str] = []
         while end is not None:
             path_ids.append(end)
@@ -329,4 +329,6 @@ def _is_tautology(account: str, explanation: str) -> bool:
         return True
     tokens = [token for token in account.lower().replace("-", " ").split() if len(token) > 3]
     tautology_phrases = ("increased due to higher", "decreased due to lower", "changed due to change")
-    return any(phrase in low for phrase in tautology_phrases) or (tokens and all(token in low for token in tokens) and len(low.split()) < 8)
+    return any(phrase in low for phrase in tautology_phrases) or (
+        bool(tokens) and all(token in low for token in tokens) and len(low.split()) < 8
+    )

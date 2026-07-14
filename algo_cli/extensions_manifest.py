@@ -51,7 +51,7 @@ def _plugin_components() -> list[ExtensionComponent]:
                 name=m.name,
                 kind="plugin",
                 version=m.version,
-                path=str(m.path),
+                path=str(plugins.PLUGINS_DIR / m.name),
                 status="discovered",
             )
             for m in manifests

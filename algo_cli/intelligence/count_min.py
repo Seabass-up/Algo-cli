@@ -123,7 +123,7 @@ class HeavyHitters:
             self._counts[key] = count
         else:
             # Replace the item with minimum count
-            min_key = min(self._counts, key=self._counts.get)
+            min_key = min(self._counts, key=lambda candidate: self._counts[candidate])
             min_count = self._counts[min_key]
             del self._counts[min_key]
             self._counts[key] = min_count + count

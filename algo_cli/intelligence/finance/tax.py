@@ -13,7 +13,7 @@ from .common import ReviewGate, SourceRef, decimalize, stable_exception_id
 class TaxPolicy:
     id: str
     taxable_categories: set[str]
-    rate: Decimal | int | str
+    rate: Decimal
     exempt_categories: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:

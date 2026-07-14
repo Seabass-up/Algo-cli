@@ -198,7 +198,7 @@ def _resolve_value(expr: Any, context: dict[str, Any]) -> Any:
     end = expr.index("}", start)
     ref = expr[start:end]
     parts = ref.split(".")
-    val = context
+    val: Any = context
     for p in parts:
         if isinstance(val, dict):
             val = val.get(p)

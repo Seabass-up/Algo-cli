@@ -12,10 +12,10 @@ from .common import ReviewGate, SourceRef, decimalize, stable_exception_id, with
 @dataclass(frozen=True)
 class JobCost:
     id: str
-    contract_value: Decimal | int | str
-    costs_to_date: Decimal | int | str
-    estimated_total_cost: Decimal | int | str
-    billed_to_date: Decimal | int | str
+    contract_value: Decimal
+    costs_to_date: Decimal
+    estimated_total_cost: Decimal
+    billed_to_date: Decimal
     source_refs: list[SourceRef] = field(default_factory=list)
 
     def __post_init__(self) -> None:

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
@@ -35,13 +35,37 @@ class TurboQuantMSE:
     bits: int = 4
     seed: int = 42
 
-    _rotation: np.ndarray | None = field(default=None, init=False, repr=False)
-    _boundaries: np.ndarray | None = field(default=None, init=False, repr=False)
-    _levels: np.ndarray | None = field(default=None, init=False, repr=False)
+    _rotation: np.ndarray = field(init=False, repr=False)
+    _boundaries: np.ndarray = field(init=False, repr=False)
+    _levels: np.ndarray = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        if self.dim < 2:
+            raise ValueError("dim must be at least 2")
+        if self.bits < 0 or self.bits > 8:
+            raise ValueError("bits must be between 0 and 8")
         self._rotation = self._make_rotation()
-        self._boundaries, self._levels = get_codebook(self.dim, self.bits)
+        self._boundaries, self._levels = get_codebook(self.dim, self._mse_bits())
+
+    def _mse_bits(self) -> int:
+        """Bit width used by the MSE stage."""
+        return self.bits
+
+    def _coerce_vectors(self, x: np.ndarray, *, name: str = "x") -> tuple[np.ndarray, bool]:
+        """Validate vectors and return a float32 matrix plus original rank."""
+        values = np.asarray(x, dtype=np.float32)
+        vector_input = values.ndim == 1
+        if values.ndim not in (1, 2):
+            raise ValueError(f"{name} must be a 1D vector or 2D matrix")
+        if values.shape[-1] != self.dim:
+            raise ValueError(
+                f"{name} has dimension {values.shape[-1]}; expected {self.dim}"
+            )
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"{name} must contain only finite values")
+        if vector_input:
+            values = values.reshape(1, -1)
+        return values, vector_input
 
     def _make_rotation(self) -> np.ndarray:
         """Generate a random orthogonal matrix via QR decomposition."""
@@ -59,9 +83,7 @@ class TurboQuantMSE:
         Returns:
             Integer codes: (n, dim) with values in [0, 2^bits - 1].
         """
-        if x.ndim == 1:
-            x = x.reshape(1, -1)
-        x = x.astype(np.float32)
+        x, vector_input = self._coerce_vectors(x)
         # Step 1: Rotate
         x_rot = x @ self._rotation.T
         # Step 2: Normalize to [-1, 1] range for quantization
@@ -70,8 +92,8 @@ class TurboQuantMSE:
         x_normalized = x_rot / norms
         # Step 3: Quantize each coordinate using codebook boundaries
         codes = np.searchsorted(self._boundaries, x_normalized, side="right") - 1
-        codes = np.clip(codes, 0, 2**self.bits - 1)
-        return codes.squeeze(0) if x.shape[0] == 1 else codes
+        codes = np.clip(codes, 0, 2 ** self._mse_bits() - 1).astype(np.uint8)
+        return codes[0] if vector_input else codes
 
     def dequantize(self, codes: np.ndarray, norms: np.ndarray | None = None) -> np.ndarray:
         """Dequantize codes back to approximate vectors.
@@ -83,7 +105,17 @@ class TurboQuantMSE:
         Returns:
             Reconstructed vectors (n, dim).
         """
-        if codes.ndim == 1:
+        codes = np.asarray(codes)
+        vector_input = codes.ndim == 1
+        if codes.ndim not in (1, 2):
+            raise ValueError("codes must be a 1D vector or 2D matrix")
+        if codes.shape[-1] != self.dim:
+            raise ValueError(
+                f"codes have dimension {codes.shape[-1]}; expected {self.dim}"
+            )
+        if not np.issubdtype(codes.dtype, np.integer):
+            raise ValueError("codes must use an integer dtype")
+        if vector_input:
             codes = codes.reshape(1, -1)
         # Map codes to reconstruction levels
         level_indices = np.clip(codes, 0, len(self._levels) - 1)
@@ -92,46 +124,74 @@ class TurboQuantMSE:
         result = reconstructed @ self._rotation
         # Rescale if norms provided
         if norms is not None:
-            if norms.ndim == 0:
-                norms = norms.reshape(1)
-            result = result * norms[:, np.newaxis]
-        return result.squeeze(0) if codes.shape[0] == 1 else result
+            norm_values = np.asarray(norms, dtype=np.float32).reshape(-1)
+            if norm_values.size != result.shape[0]:
+                raise ValueError(
+                    f"norm count {norm_values.size} does not match "
+                    f"vector count {result.shape[0]}"
+                )
+            if not np.all(np.isfinite(norm_values)) or np.any(norm_values < 0):
+                raise ValueError("norms must be finite and non-negative")
+            result = result * norm_values[:, np.newaxis]
+        return result[0] if vector_input else result
 
     def compress(self, x: np.ndarray) -> dict[str, Any]:
         """Full compress pipeline: quantize + pack metadata.
 
         Returns a dict with codes, norms, and config for later decompression.
         """
-        if x.ndim == 1:
-            x = x.reshape(1, -1)
-        norms = np.linalg.norm(x, axis=1)
+        matrix, vector_input = self._coerce_vectors(x)
+        norms = np.linalg.norm(matrix, axis=1).astype(np.float32)
         codes = self.quantize(x)
         return {
             "codes": codes,
             "norms": norms,
             "dim": self.dim,
             "bits": self.bits,
+            "mse_bits": self._mse_bits(),
             "seed": self.seed,
-            "n": x.shape[0],
+            "n": matrix.shape[0],
+            "method": "mse",
+            "vector_input": vector_input,
         }
 
     def decompress(self, payload: dict[str, Any]) -> np.ndarray:
         """Decompress a payload back to approximate vectors."""
+        self._validate_payload_config(payload, method="mse")
         return self.dequantize(payload["codes"], norms=payload["norms"])
+
+    def _validate_payload_config(self, payload: dict[str, Any], *, method: str) -> None:
+        """Reject payloads that were encoded with an incompatible quantizer."""
+        payload_method = payload.get("method")
+        if payload_method is not None and payload_method != method:
+            raise ValueError(
+                f"payload method is {payload_method!r}; expected {method!r}"
+            )
+        expected = {"dim": self.dim, "bits": self.bits, "seed": self.seed}
+        for key, value in expected.items():
+            if key in payload and int(payload[key]) != value:
+                raise ValueError(
+                    f"payload {key} is {payload[key]!r}; expected {value!r}"
+                )
 
     def mse(self, x: np.ndarray) -> float:
         """Measure MSE distortion between original and reconstructed vectors."""
-        if x.ndim == 1:
-            x = x.reshape(1, -1)
-        norms = np.linalg.norm(x, axis=1)
-        codes = self.quantize(x)
+        matrix, vector_input = self._coerce_vectors(x)
+        source = matrix[0] if vector_input else matrix
+        norms = np.linalg.norm(matrix, axis=1)
+        codes = self.quantize(source)
         recon = self.dequantize(codes, norms=norms)
-        return float(np.mean((x - recon) ** 2))
+        return float(np.mean((source - recon) ** 2))
 
     def compression_ratio(self, n: int = 1) -> float:
-        """Ratio of original bytes to compressed bytes per vector."""
+        """Ratio of float32 bytes to the in-memory NumPy payload bytes."""
+        if n < 1:
+            raise ValueError("n must be positive")
         original_bytes = n * self.dim * 4  # float32
-        compressed_bytes = n * self.dim * self.bits / 8  # packed bits
+        # Quantized codes are stored as uint8 and each vector retains a float32
+        # norm. This reports real payload storage rather than an unimplemented
+        # bit-packing ideal.
+        compressed_bytes = n * self.dim + n * 4
         return original_bytes / max(compressed_bytes, 1)
 
 
@@ -150,42 +210,53 @@ class TurboQuantIP(TurboQuantMSE):
     """
     qjl_dim: int = 0  # 0 = same as dim; override for reduced sketch size
 
-    _S: np.ndarray | None = field(default=None, init=False, repr=False)
+    _S: np.ndarray = field(init=False, repr=False)
+
+    def _mse_bits(self) -> int:
+        return self.bits - 1
 
     def __post_init__(self) -> None:
+        if self.bits < 1:
+            raise ValueError("TurboQuantIP requires at least 1 total bit")
         super().__post_init__()
         qjl_dim = self.qjl_dim or self.dim
+        if qjl_dim < 1:
+            raise ValueError("qjl_dim must be positive")
         rng = np.random.default_rng(self.seed + 1000)
-        self._S = np.sign(rng.standard_normal((qjl_dim, self.dim))).astype(np.float32)
+        self._S = rng.standard_normal((qjl_dim, self.dim)).astype(np.float32)
 
     def quantize_ip(self, x: np.ndarray) -> dict[str, Any]:
         """Quantize with IP-preservation: MSE stage (b-1 bits) + QJL residual (1 bit).
 
         Returns payload with codes, qjl_signs, norms, and config.
         """
-        if x.ndim == 1:
-            x = x.reshape(1, -1)
-        norms = np.linalg.norm(x, axis=1)
+        matrix, vector_input = self._coerce_vectors(x)
+        norms = np.linalg.norm(matrix, axis=1).astype(np.float32)
 
-        # Stage 1: MSE quantization (uses self.bits as configured)
-        codes = self.quantize(x)
+        # Stage 1: MSE quantization uses one less bit than the total budget.
+        codes = self.quantize(matrix)
         recon_mse = self.dequantize(codes, norms=norms)
 
         # Stage 2: Compute residual and QJL 1-bit sketch
-        residual = x - recon_mse
+        residual = matrix - recon_mse
+        residual_norms = np.linalg.norm(residual, axis=1).astype(np.float32)
         qjl_dim = self.qjl_dim or self.dim
-        signs = np.sign(self._S @ residual.T).astype(np.int8)  # (qjl_dim, n)
-        signs = signs.T  # (n, qjl_dim)
+        projections = residual @ self._S.T
+        signs = np.where(projections >= 0, 1, -1).astype(np.int8)
 
         return {
-            "codes": codes,
-            "qjl_signs": signs,
+            "codes": codes[0] if vector_input else codes,
+            "qjl_signs": signs[0] if vector_input else signs,
             "norms": norms,
+            "residual_norms": residual_norms,
             "dim": self.dim,
             "bits": self.bits,
+            "mse_bits": self._mse_bits(),
             "seed": self.seed,
             "qjl_dim": qjl_dim,
-            "n": x.shape[0],
+            "n": matrix.shape[0],
+            "method": "ip",
+            "vector_input": vector_input,
         }
 
     def dequantize_ip(self, payload: dict[str, Any]) -> np.ndarray:
@@ -194,31 +265,67 @@ class TurboQuantIP(TurboQuantMSE):
         The QJL dequantization provides an unbiased inner-product estimator:
             Q_jl^{-1}(z) = sqrt(pi/2) / dim * S^T * z
         """
-        codes = payload["codes"]
+        self._validate_payload_config(payload, method="ip")
+        codes = np.asarray(payload["codes"])
         norms = payload["norms"]
-        qjl_signs = payload["qjl_signs"]
+        qjl_signs = np.asarray(payload["qjl_signs"])
+        vector_input = codes.ndim == 1
+        if vector_input:
+            codes = codes.reshape(1, -1)
 
         # MSE stage reconstruction
         recon_mse = self.dequantize(codes, norms=norms)
 
         # QJL residual correction
-        qjl_dim = payload.get("qjl_dim", self.dim)
-        # Dequantize QJL signs to get unbiased residual estimate
-        # E[sign(S*r)] = 0, E[S^T * sign(S*r)] = sqrt(2/pi) * r
-        # So: r_hat = sqrt(pi/2) / dim * S^T * signs
-        scale = math.sqrt(math.pi / 2) / self.dim
+        qjl_dim = int(payload.get("qjl_dim", self.dim))
+        if qjl_dim != self._S.shape[0]:
+            raise ValueError(
+                f"payload qjl_dim is {qjl_dim}; expected {self._S.shape[0]}"
+            )
         if qjl_signs.ndim == 1:
             qjl_signs = qjl_signs.reshape(1, -1)
-        residual_hat = scale * (qjl_signs.astype(np.float32) @ self._S[:qjl_dim, :].T)
+        if qjl_signs.shape != (codes.shape[0], qjl_dim):
+            raise ValueError(
+                f"qjl_signs shape is {qjl_signs.shape}; "
+                f"expected {(codes.shape[0], qjl_dim)}"
+            )
+        if not np.all((qjl_signs == -1) | (qjl_signs == 1)):
+            raise ValueError("qjl_signs must contain only -1 or +1")
+        if "residual_norms" not in payload:
+            raise ValueError("IP payload is missing residual_norms")
+        residual_norms = np.asarray(
+            payload["residual_norms"], dtype=np.float32
+        ).reshape(-1)
+        if residual_norms.size != codes.shape[0]:
+            raise ValueError(
+                "residual norm count does not match the number of vectors"
+            )
+        if not np.all(np.isfinite(residual_norms)) or np.any(residual_norms < 0):
+            raise ValueError("residual_norms must be finite and non-negative")
 
-        return recon_mse + residual_hat
+        # Dequantize QJL signs to get unbiased residual estimate
+        # E[sign(S*r)] = 0, E[S^T * sign(S*r)] = sqrt(2/pi) * r
+        # So: r_hat = sqrt(pi/2) / m * ||r|| * S^T * signs.
+        scale = math.sqrt(math.pi / 2) / qjl_dim
+        residual_hat = (
+            scale
+            * residual_norms[:, np.newaxis]
+            * (qjl_signs.astype(np.float32) @ self._S)
+        )
+
+        result = recon_mse + residual_hat
+        return result[0] if vector_input else result
 
     def inner_product_error(self, x: np.ndarray, y: np.ndarray) -> float:
         """Measure inner-product estimation error between quantized and true IP."""
-        payload = self.quantize_ip(x)
+        x_values = np.asarray(x, dtype=np.float32)
+        y_values = np.asarray(y, dtype=np.float32)
+        if x_values.shape != (self.dim,) or y_values.shape != (self.dim,):
+            raise ValueError("x and y must both be one-dimensional vectors")
+        payload = self.quantize_ip(x_values)
         recon = self.dequantize_ip(payload)
-        true_ip = float(y @ x.T)
-        est_ip = float(y @ recon.T)
+        true_ip = float(np.dot(y_values, x_values))
+        est_ip = float(np.dot(y_values, recon))
         return abs(true_ip - est_ip)
 
 # ---------------------------------------------------------------------------
@@ -227,7 +334,7 @@ class TurboQuantIP(TurboQuantMSE):
 
 _TURBOVEC_AVAILABLE = False
 try:
-    from turbovec import TurboQuantIndex as _TurboQuantIndex  # type: ignore[import-untyped]
+    from turbovec import TurboQuantIndex as _TurboQuantIndex  # type: ignore[import-not-found]
     _TURBOVEC_AVAILABLE = True
 except ImportError:
     _TurboQuantIndex = None
@@ -238,7 +345,7 @@ def create_vector_index(
     bits: int = 4,
     *,
     use_turbovec: bool = True,
-) -> "TurboQuantMSE | object":
+) -> object:
     """Create a vector quantization index for agent memory / RAG.
 
     Uses TurboVec (Rust-accelerated) when available, falls back to
@@ -258,12 +365,12 @@ def create_vector_index(
 
 
 def compress_embeddings(
-    vectors: "np.ndarray",
+    vectors: np.ndarray,
     dim: int | None = None,
     bits: int = 4,
     *,
-    method: str = "mse",
-) -> dict:
+    method: Literal["mse", "ip"] = "mse",
+) -> dict[str, Any]:
     """Compress an embedding matrix for agent memory storage.
 
     Args:
@@ -275,18 +382,27 @@ def compress_embeddings(
     Returns:
         Compressed payload dict with codes, norms, and config.
     """
+    values = np.asarray(vectors)
+    if values.ndim not in (1, 2):
+        raise ValueError("vectors must be a 1D vector or 2D matrix")
     if dim is None:
-        dim = vectors.shape[1]
+        dim = values.shape[-1]
+    if dim != values.shape[-1]:
+        raise ValueError(
+            f"dim is {dim}, but vectors have dimension {values.shape[-1]}"
+        )
 
     if method == "ip":
-        tq = TurboQuantIP(dim=dim, bits=bits)
-        return tq.quantize_ip(vectors)
-    else:
-        tq = TurboQuantMSE(dim=dim, bits=bits)
-        return tq.compress(vectors)
+        return TurboQuantIP(dim=dim, bits=bits).quantize_ip(values)
+    if method == "mse":
+        return TurboQuantMSE(dim=dim, bits=bits).compress(values)
+    raise ValueError("method must be 'mse' or 'ip'")
 
 
-def decompress_embeddings(payload: dict, method: str = "mse") -> "np.ndarray":
+def decompress_embeddings(
+    payload: dict[str, Any],
+    method: Literal["mse", "ip"] | None = None,
+) -> np.ndarray:
     """Decompress a previously compressed embedding payload.
 
     Args:
@@ -296,13 +412,21 @@ def decompress_embeddings(payload: dict, method: str = "mse") -> "np.ndarray":
     Returns:
         Reconstructed float32 array of shape (n, dim).
     """
-    if method == "ip":
-        dim = payload.get("dim", 768)
-        bits = payload.get("bits", 4)
-        tq = TurboQuantIP(dim=dim, bits=bits)
-        return tq.dequantize_ip(payload)
-    else:
-        dim = payload.get("dim", 768)
-        bits = payload.get("bits", 4)
-        tq = TurboQuantMSE(dim=dim, bits=bits)
-        return tq.decompress(payload)
+    payload_method = str(payload.get("method", "mse"))
+    selected_method = method or payload_method
+    if selected_method not in {"mse", "ip"}:
+        raise ValueError("method must be 'mse' or 'ip'")
+    if "method" in payload and payload_method != selected_method:
+        raise ValueError(
+            f"payload method is {payload_method!r}; requested {selected_method!r}"
+        )
+
+    dim = int(payload.get("dim", 768))
+    bits = int(payload.get("bits", 4))
+    seed = int(payload.get("seed", 42))
+    if selected_method == "ip":
+        qjl_dim = int(payload.get("qjl_dim", dim))
+        return TurboQuantIP(
+            dim=dim, bits=bits, seed=seed, qjl_dim=qjl_dim
+        ).dequantize_ip(payload)
+    return TurboQuantMSE(dim=dim, bits=bits, seed=seed).decompress(payload)

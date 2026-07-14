@@ -9,6 +9,10 @@ Event schema (one JSON object per line, no embedded raw newlines):
     {"type":"session_start","model":...,"host":...,"cwd":...,"approval_mode":...,"version":...}
     {"type":"thinking","text":...}
     {"type":"content","text":...}
+    {"type":"model_round","round":... ,"phase":... ,"trigger":... ,
+                          "prompt_tokens":... ,"completion_tokens":... ,
+                          "context_build_ms":... ,"prompt_eval_ms":... ,
+                          "generation_ms":...}
     {"type":"tool_call","call_id":...,"name":...,"args":{...}}
     {"type":"tool_result","call_id":...,"name":...,"status":"ok|failed|denied|skipped",
                          "duration_ms":...,"summary":...,"truncated":...}
@@ -64,6 +68,19 @@ DANGEROUS_TOOLS: Set[str] = _RegistryApprovalSet()
 
 SUMMARY_LIMIT = 600
 
+ROUND_TRIGGERS = frozenset(
+    {
+        "initial_plan",
+        "tool_result_requires_interpretation",
+        "program_completed",
+        "verification_failed",
+        "conflicting_evidence",
+        "policy_or_approval",
+        "finalization",
+        "unexpected_retry",
+    }
+)
+
 
 def _summarize(text: str, limit: int = SUMMARY_LIMIT) -> tuple[str, bool]:
     s = str(text).strip()
@@ -97,6 +114,7 @@ class JsonEventSink:
         self._tool_calls_done = 0
         self._prompt_tokens = 0
         self._completion_tokens = 0
+        self._round_receipts: list[dict[str, Any]] = []
         self._errors: list[dict[str, str]] = []
         self._started_at = time.perf_counter()
 
@@ -120,6 +138,15 @@ class JsonEventSink:
 
     def done(self, *, status: str, status_reason: str, duration_ms: float) -> None:
         total_tokens = self._prompt_tokens + self._completion_tokens
+        prompt_counts = [
+            int(item.get("prompt_tokens") or 0) for item in self._round_receipts
+        ]
+        prompt_eval_ms = sum(
+            float(item.get("prompt_eval_ms") or 0.0) for item in self._round_receipts
+        )
+        generation_ms = sum(
+            float(item.get("generation_ms") or 0.0) for item in self._round_receipts
+        )
         self._write({
             "type": "done",
             "status": status,
@@ -130,6 +157,12 @@ class JsonEventSink:
                 "prompt_tokens": self._prompt_tokens,
                 "completion_tokens": self._completion_tokens,
                 "total_tokens": total_tokens,
+            },
+            "rounds": {
+                "count": len(self._round_receipts),
+                "max_prompt_tokens": max(prompt_counts, default=0),
+                "prompt_eval_ms": round(prompt_eval_ms, 2),
+                "generation_ms": round(generation_ms, 2),
             },
         })
 
@@ -156,6 +189,20 @@ class JsonEventSink:
         if prompt > 0 or completion > 0:
             self._prompt_tokens += max(0, prompt)
             self._completion_tokens += max(0, completion)
+
+    def model_round(self, **fields: Any) -> None:
+        """Emit one bounded, content-free receipt for a completed model request."""
+
+        trigger = str(fields.get("trigger") or "unexpected_retry")
+        if trigger not in ROUND_TRIGGERS:
+            trigger = "unexpected_retry"
+        receipt = {
+            "type": "model_round",
+            **fields,
+            "trigger": trigger,
+        }
+        self._round_receipts.append(receipt)
+        self._write(receipt)
 
     # --- tool dispatch ---
 

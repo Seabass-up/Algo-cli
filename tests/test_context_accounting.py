@@ -48,6 +48,25 @@ def test_request_estimate_accounts_for_visible_tool_schemas():
     assert with_tools - without_tools == estimate_tool_schema_tokens(selected)
 
 
+def test_oneshot_prompt_defers_interactive_capability_tutorials(monkeypatch):
+    cfg = Config(model="test-model")
+    monkeypatch.setattr(context_budget.identity, "build_identity_block", lambda **_kwargs: "")
+
+    monkeypatch.setattr(context_budget, "json_sink", lambda: None)
+    interactive = context_budget.build_system_prompt(cfg, user_message="fix the tests")
+    monkeypatch.setattr(context_budget, "json_sink", lambda: object())
+    automated = context_budget.build_system_prompt(cfg, user_message="fix the tests")
+
+    assert "## One-shot Runtime Contract" in automated
+    assert "## Session Slash Commands" not in automated
+    assert "## Grok / xAI model compatibility" not in automated
+    assert "## PDF Handling" not in automated
+    assert "Prefer action_program" in automated
+    assert context_budget.estimate_text_tokens(automated) < (
+        context_budget.estimate_text_tokens(interactive) * 0.45
+    )
+
+
 def test_adaptive_window_feeds_accounting():
     cfg = Config()
     cfg.model_adaptive = True

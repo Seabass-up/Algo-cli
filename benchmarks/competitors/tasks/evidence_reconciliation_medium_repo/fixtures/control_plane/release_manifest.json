@@ -1,0 +1,8 @@
+{
+  "client": "Northstar Freight",
+  "release_id": "NSF-2026-09",
+  "region": "us-central-1",
+  "api_base": "https://api.northstar.example/v3",
+  "feature_flag": "predictive_dispatch_v2",
+  "rollout_window": "2026-08-14T02:00Z/04:00Z"
+}

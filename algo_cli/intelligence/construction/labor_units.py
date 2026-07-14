@@ -27,6 +27,7 @@ import hashlib
 import os
 import re
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -308,7 +309,7 @@ def _needs_rebuild(db_path: Path, csv_paths: list[Path]) -> bool:
 
 
 def build_database(
-    csv_paths: Path | str | list[Path | str] | None = None,
+    csv_paths: Path | str | Sequence[Path | str] | None = None,
     db_path: Path | str | None = None,
     force: bool = False,
 ) -> Path:
@@ -329,16 +330,17 @@ def build_database(
     """
     # Normalize csv_paths to a list
     if csv_paths is None:
-        csv_paths = [DEFAULT_NECA_CSV, DEFAULT_DURAND_CSV]
+        normalized_paths = [DEFAULT_NECA_CSV, DEFAULT_DURAND_CSV]
     elif isinstance(csv_paths, (str, Path)):
-        csv_paths = [csv_paths]
-    csv_paths = [Path(p) for p in csv_paths]
+        normalized_paths = [Path(csv_paths)]
+    else:
+        normalized_paths = [Path(p) for p in csv_paths]
 
     db_path = Path(db_path) if db_path else DEFAULT_DB_PATH
 
-    existing = [p for p in csv_paths if p.exists()]
+    existing = [p for p in normalized_paths if p.exists()]
     if not existing:
-        raise FileNotFoundError(f"No labor-unit CSVs found in: {csv_paths}")
+        raise FileNotFoundError(f"No labor-unit CSVs found in: {normalized_paths}")
 
     if not force and not _needs_rebuild(db_path, existing):
         return db_path
@@ -514,7 +516,7 @@ class LaborUnitDatabase:
     def __init__(
         self,
         db_path: Path | str | None = None,
-        csv_paths: Path | str | list[Path | str] | None = None,
+        csv_paths: Path | str | Sequence[Path | str] | None = None,
         auto_build: bool = True,
     ):
         self._db_path = Path(db_path) if db_path else DEFAULT_DB_PATH
