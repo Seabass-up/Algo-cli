@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from typing import Callable
 
 
 class InclusionReason(Enum):
@@ -71,7 +72,7 @@ class TokenBudgetCompiler:
         bom.total_tokens = used
         return bom
 
-    def jit_reference(self, name: str, loader: callable, current_tokens: int) -> str | None:
+    def jit_reference(self, name: str, loader: Callable[[], str], current_tokens: int) -> str | None:
         """Load a reference only if it fits in remaining budget."""
         remaining = self.budget - current_tokens
         if remaining <= 100:

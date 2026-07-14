@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from itertools import combinations
 from typing import Any, Iterable
 
-from .common import RiskLevel, SourceRef, decimalize, stable_exception_id, within_tolerance
+from .common import RiskLevel, SourceRef, dateize, decimalize, stable_exception_id, within_tolerance
 
 
 @dataclass(frozen=True)
 class ReconciliationAccount:
     account: str
-    balance: Decimal | int | str
+    balance: Decimal
     last_reconciled: date | None = None
     unreconciled_items: int = 0
     risk_level: RiskLevel = RiskLevel.MEDIUM
@@ -71,16 +71,15 @@ class ReconciliationTriage:
 @dataclass(frozen=True)
 class BankItem:
     id: str
-    amount: Decimal | int | str
-    date: date | str
+    amount: Decimal
+    date: date
     description: str = ""
     reference: str | None = None
     source_refs: list[SourceRef] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "amount", decimalize(self.amount))
-        if isinstance(self.date, str):
-            object.__setattr__(self, "date", datetime.fromisoformat(self.date[:10]).date())
+        object.__setattr__(self, "date", dateize(self.date, field_name="bank item date"))
 
 
 @dataclass(frozen=True)
@@ -215,7 +214,7 @@ def _coerce_item(item: BankItem | dict[str, Any]) -> BankItem:
     return BankItem(
         id=str(item["id"]),
         amount=item.get("amount", 0),
-        date=item.get("date"),
+        date=dateize(item.get("date"), field_name="bank item date"),
         description=str(item.get("description", "")),
         reference=item.get("reference"),
         source_refs=list(item.get("source_refs", [])),

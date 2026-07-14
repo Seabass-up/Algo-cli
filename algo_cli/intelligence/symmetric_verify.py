@@ -6,6 +6,7 @@ Mined from ST3GG dual-use design.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -16,7 +17,7 @@ class SymmetricPair:
     verifier_id: str
     creator_title: str = ""
     verifier_title: str = ""
-    metadata: dict[str, field] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, str]:
         return {

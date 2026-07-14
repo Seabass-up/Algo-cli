@@ -2,13 +2,24 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field as dataclass_field
 from datetime import date, datetime
 from decimal import Decimal
 from difflib import SequenceMatcher
 from typing import Any, Iterable
 
-from .common import ReviewGate, RiskLevel, SourceRef, decimalize, normalize_invoice_number, normalize_vendor_name, stable_exception_id, within_tolerance
+from .common import (
+    ReviewGate,
+    RiskLevel,
+    SourceRef,
+    dateize,
+    datetimeize,
+    decimalize,
+    normalize_invoice_number,
+    normalize_vendor_name,
+    stable_exception_id,
+    within_tolerance,
+)
 
 
 @dataclass(frozen=True)
@@ -16,30 +27,28 @@ class APInvoice:
     id: str
     vendor: str
     invoice_number: str
-    amount: Decimal | int | str
-    invoice_date: date | str
+    amount: Decimal
+    invoice_date: date
     po_id: str | None = None
-    source_refs: list[SourceRef] = field(default_factory=list)
+    source_refs: list[SourceRef] = dataclass_field(default_factory=list)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "amount", decimalize(self.amount))
-        if isinstance(self.invoice_date, str):
-            object.__setattr__(self, "invoice_date", datetime.fromisoformat(self.invoice_date[:10]).date())
+        object.__setattr__(self, "invoice_date", dateize(self.invoice_date, field_name="invoice date"))
 
 
 @dataclass(frozen=True)
 class APPayment:
     id: str
     vendor: str
-    amount: Decimal | int | str
-    payment_date: date | str
+    amount: Decimal
+    payment_date: date
     invoice_number: str | None = None
-    source_refs: list[SourceRef] = field(default_factory=list)
+    source_refs: list[SourceRef] = dataclass_field(default_factory=list)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "amount", decimalize(self.amount))
-        if isinstance(self.payment_date, str):
-            object.__setattr__(self, "payment_date", datetime.fromisoformat(self.payment_date[:10]).date())
+        object.__setattr__(self, "payment_date", dateize(self.payment_date, field_name="payment date"))
 
 
 @dataclass(frozen=True)
@@ -152,7 +161,7 @@ class Vendor:
     created_by: str | None = None
     approved_by: str | None = None
     active: bool = True
-    source_refs: list[SourceRef] = field(default_factory=list)
+    source_refs: list[SourceRef] = dataclass_field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -162,12 +171,11 @@ class VendorChangeEvent:
     field: str
     changed_by: str
     approved_by: str | None = None
-    changed_at: datetime | str | None = None
-    source_refs: list[SourceRef] = field(default_factory=list)
+    changed_at: datetime | None = None
+    source_refs: list[SourceRef] = dataclass_field(default_factory=list)
 
     def __post_init__(self) -> None:
-        if isinstance(self.changed_at, str):
-            object.__setattr__(self, "changed_at", datetime.fromisoformat(self.changed_at))
+        object.__setattr__(self, "changed_at", datetimeize(self.changed_at, field_name="changed at"))
 
 
 @dataclass(frozen=True)
@@ -241,19 +249,17 @@ class VendorRiskAnalyzer:
 class ARInvoice:
     id: str
     customer: str
-    amount: Decimal | int | str
-    invoice_date: date | str
-    due_date: date | str
+    amount: Decimal
+    invoice_date: date
+    due_date: date
     disputed: bool = False
     customer_risk: RiskLevel = RiskLevel.MEDIUM
-    source_refs: list[SourceRef] = field(default_factory=list)
+    source_refs: list[SourceRef] = dataclass_field(default_factory=list)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "amount", decimalize(self.amount))
-        if isinstance(self.invoice_date, str):
-            object.__setattr__(self, "invoice_date", datetime.fromisoformat(self.invoice_date[:10]).date())
-        if isinstance(self.due_date, str):
-            object.__setattr__(self, "due_date", datetime.fromisoformat(self.due_date[:10]).date())
+        object.__setattr__(self, "invoice_date", dateize(self.invoice_date, field_name="invoice date"))
+        object.__setattr__(self, "due_date", dateize(self.due_date, field_name="due date"))
 
 
 @dataclass(frozen=True)
@@ -317,13 +323,13 @@ class ARAgingPrioritizer:
 def _coerce_invoice(row: APInvoice | dict[str, Any]) -> APInvoice:
     if isinstance(row, APInvoice):
         return row
-    return APInvoice(str(row["id"]), str(row.get("vendor", "")), str(row.get("invoice_number", "")), row.get("amount", 0), row.get("invoice_date") or row.get("date"), row.get("po_id"), list(row.get("source_refs", [])))
+    return APInvoice(str(row["id"]), str(row.get("vendor", "")), str(row.get("invoice_number", "")), row.get("amount", 0), dateize(row.get("invoice_date") or row.get("date"), field_name="invoice date"), row.get("po_id"), list(row.get("source_refs", [])))
 
 
 def _coerce_payment(row: APPayment | dict[str, Any]) -> APPayment:
     if isinstance(row, APPayment):
         return row
-    return APPayment(str(row["id"]), str(row.get("vendor", "")), row.get("amount", 0), row.get("payment_date") or row.get("date"), row.get("invoice_number"), list(row.get("source_refs", [])))
+    return APPayment(str(row["id"]), str(row.get("vendor", "")), row.get("amount", 0), dateize(row.get("payment_date") or row.get("date"), field_name="payment date"), row.get("invoice_number"), list(row.get("source_refs", [])))
 
 
 def _similar(left: str, right: str) -> Decimal:
@@ -348,4 +354,4 @@ def _coerce_ar_invoice(row: ARInvoice | dict[str, Any]) -> ARInvoice:
     risk = row.get("customer_risk", RiskLevel.MEDIUM)
     if isinstance(risk, str):
         risk = RiskLevel[risk.upper()]
-    return ARInvoice(str(row["id"]), str(row.get("customer", "")), row.get("amount", 0), row.get("invoice_date") or row.get("date"), row.get("due_date"), bool(row.get("disputed", False)), risk, list(row.get("source_refs", [])))
+    return ARInvoice(str(row["id"]), str(row.get("customer", "")), row.get("amount", 0), dateize(row.get("invoice_date") or row.get("date"), field_name="invoice date"), dateize(row.get("due_date"), field_name="due date"), bool(row.get("disputed", False)), risk, list(row.get("source_refs", [])))

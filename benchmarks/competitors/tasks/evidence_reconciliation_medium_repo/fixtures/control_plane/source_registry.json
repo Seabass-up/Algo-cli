@@ -1,0 +1,8 @@
+{
+  "release_authority": "control_plane/release_manifest.json",
+  "authority_class": "live-control-plane",
+  "stale_sources": [
+    "snapshots/release_cache.json",
+    "docs/operator_handoff.md"
+  ]
+}

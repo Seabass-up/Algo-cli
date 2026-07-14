@@ -328,7 +328,7 @@ def compute_policy(
         if denied:
             reasons.append("research tasks deny writes")
 
-    approval_required = frozenset()
+    approval_required: frozenset[str] = frozenset()
     if route.risk == "medium" and not auto_mode:
         approval_required = allowed & MUTATING_TOOLS
         if approval_required:

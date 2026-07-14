@@ -14,6 +14,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from .retrieval_algorithms import BM25Index, lexical_tokens, stable_top_k
+from .tool_schema import estimate_tool_schema_tokens
 
 
 _DECLARATION_RE = re.compile(
@@ -70,7 +71,45 @@ CORE_TOOL_NAMES = frozenset(
 )
 DEFERRED_TOOL_NAMES = frozenset({"action_search", "action_program"})
 DEFAULT_TOOL_LIMIT = 12
+DEFAULT_SCHEMA_TOKEN_BUDGET = 2_150
 MAX_QUERY_TERMS = 64
+
+# A single incidental domain word must not pull an entire specialist surface
+# into the prompt.  These gates apply before BM25 ranking and still allow
+# action_search to discover a deferred capability later.
+_SPECIALIZED_INTENT_GATES: tuple[tuple[str, frozenset[str], frozenset[str]], ...] = (
+    (
+        "harness_",
+        frozenset({"harness"}),
+        frozenset({"compare", "index", "memory", "rating", "record", "refresh", "score", "search", "skill", "stats", "wiki"}),
+    ),
+    (
+        "screenshot_",
+        frozenset(),
+        frozenset({"image", "pixel", "screen", "screenshot", "visual"}),
+    ),
+    (
+        "url_scheme_",
+        frozenset(),
+        frozenset({"link", "scheme", "uri", "url"}),
+    ),
+    (
+        "small_context_",
+        frozenset({"context"}),
+        frozenset({"ledger", "preview", "small"}),
+    ),
+    ("plugins_", frozenset(), frozenset({"extension", "plugin"})),
+    ("x_account_", frozenset({"account"}), frozenset({"draft", "post", "reply", "social", "tweet", "twitter", "xcom"})),
+    ("x_search", frozenset(), frozenset({"social", "tweet", "twitter", "xcom"})),
+    ("query_knowledge_graph", frozenset(), frozenset({"graph", "knowledge"})),
+    ("reindex_knowledge_graph", frozenset(), frozenset({"graph", "knowledge"})),
+    ("write_knowledge_graph", frozenset(), frozenset({"graph", "knowledge"})),
+    ("web_", frozenset(), frozenset({"internet", "latest", "online", "research", "web"})),
+    ("version_manifest_", frozenset(), frozenset({"manifest", "version"})),
+    ("extensions_manifest_", frozenset(), frozenset({"extension", "manifest"})),
+    ("credential_", frozenset(), frozenset({"credential", "keychain", "secret"})),
+    ("google_", frozenset(), frozenset({"calendar", "docs", "drive", "gmail", "google", "sheets"})),
+)
 
 _QUERY_STOPWORDS = frozenset(
     {
@@ -197,8 +236,22 @@ def _tool_search_text(tool: Callable[..., Any], action_metadata: dict[str, str])
     return " ".join((readable_name, name, doc, action_metadata.get(name, "")))
 
 
+def _specialized_intent_allowed(name: str, query_terms: set[str]) -> bool:
+    for prefix, required, supporting in _SPECIALIZED_INTENT_GATES:
+        if not name.startswith(prefix):
+            continue
+        return required <= query_terms and bool(supporting & query_terms)
+    return True
+
+
 def _expanded_query_terms(prompt: str) -> tuple[str, ...]:
-    source_terms = lexical_tokens(prompt)
+    # Retrieval tokenizers may preserve trailing punctuation. Normalize here so
+    # intent gates and exact-name boosts see ``account`` rather than ``account.``.
+    source_terms = tuple(
+        normalized
+        for term in lexical_tokens(prompt)
+        if (normalized := _normalize_class(term))
+    )
     source_term_set = set(source_terms)
     terms: list[str] = []
     seen: set[str] = set()
@@ -242,7 +295,15 @@ def rank_tools_for_prompt(
             value += 2.0
         return value
 
-    positive = [index for index in range(len(tools)) if score(index) > 0.0]
+    positive = [
+        index
+        for index in range(len(tools))
+        if score(index) > 0.0
+        and _specialized_intent_allowed(
+            str(getattr(tools[index], "__name__", "") or ""),
+            query_term_set,
+        )
+    ]
     ranked_indices = stable_top_k(positive, len(positive), score=score)
     return [tools[index] for index in ranked_indices]
 
@@ -252,6 +313,7 @@ def select_tools_for_prompt(
     all_tools: Sequence[Callable[..., Any]],
     *,
     limit: int = DEFAULT_TOOL_LIMIT,
+    schema_token_budget: int = DEFAULT_SCHEMA_TOKEN_BUDGET,
 ) -> list[Callable[..., Any]]:
     """Select a bounded model-visible tool catalog for one user turn.
 
@@ -277,16 +339,32 @@ def select_tools_for_prompt(
         selected_names.add("available_actions")
 
     effective_limit = max(bounded_limit, len(selected_names))
+    effective_schema_budget = max(
+        int(schema_token_budget),
+        estimate_tool_schema_tokens(
+            [tool for tool in tools if getattr(tool, "__name__", "") in selected_names]
+        ),
+    )
     for tool in rank_tools_for_prompt(prompt, tools):
         if len(selected_names) >= effective_limit:
             break
-        selected_names.add(str(getattr(tool, "__name__", "") or ""))
+        name = str(getattr(tool, "__name__", "") or "")
+        if name in selected_names:
+            continue
+        candidate_names = {*selected_names, name}
+        candidate_tools = [
+            item for item in tools if getattr(item, "__name__", "") in candidate_names
+        ]
+        if estimate_tool_schema_tokens(candidate_tools) > effective_schema_budget:
+            continue
+        selected_names.add(name)
     return [tool for tool in tools if getattr(tool, "__name__", "") in selected_names]
 
 
 __all__ = [
     "CORE_TOOL_NAMES",
     "DEFAULT_TOOL_LIMIT",
+    "DEFAULT_SCHEMA_TOKEN_BUDGET",
     "DEFERRED_TOOL_NAMES",
     "declared_tool_classes",
     "rank_tools_for_prompt",

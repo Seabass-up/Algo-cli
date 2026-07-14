@@ -13,7 +13,7 @@ from .common import ReviewGate, SourceRef, decimalize, stable_exception_id
 class PerformanceObligation:
     id: str
     description: str
-    transaction_price: Decimal | int | str
+    transaction_price: Decimal
     satisfied: bool = False
     measure: str | None = None
     source_refs: list[SourceRef] = field(default_factory=list)

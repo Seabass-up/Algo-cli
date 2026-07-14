@@ -125,7 +125,11 @@ class CodeGraph:
 
         return None
 
-    def _process_calls(self, source_id: str, func_node: ast.FunctionDef) -> None:
+    def _process_calls(
+        self,
+        source_id: str,
+        func_node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> None:
         for node in ast.walk(func_node):
             if isinstance(node, ast.Call):
                 if isinstance(node.func, ast.Name):
@@ -143,7 +147,7 @@ class CodeGraph:
                 target = f"{module}.{alias.name}" if module else alias.name
                 self._edges.append(CodeEdge(source=module_id, target=target, kind=EdgeKind.IMPORTS))
 
-    def _signature(self, node: ast.FunctionDef) -> str:
+    def _signature(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
         args = [a.arg for a in node.args.args]
         return f"({', '.join(args)})"
 

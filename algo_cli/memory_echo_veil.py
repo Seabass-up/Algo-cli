@@ -22,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import importlib
 import logging
 import os
 import stat
@@ -30,22 +31,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from .config import CONFIG_DIR, _atomic_write_text
+
+Oracle: Any = None
+WorkspaceConfig: Any = None
+AesGcmCryptoShield: Any = None
+
 try:
-    import echo_veil as _echo_veil_package
-    from echo_veil import Oracle, WorkspaceConfig, AesGcmCryptoShield
+    _echo_veil_package = importlib.import_module("echo_veil")
+    Oracle = getattr(_echo_veil_package, "Oracle")
+    WorkspaceConfig = getattr(_echo_veil_package, "WorkspaceConfig")
+    AesGcmCryptoShield = getattr(_echo_veil_package, "AesGcmCryptoShield")
     ECHO_VEIL_AVAILABLE = True
     ECHO_VEIL_IMPORT_ERROR = ""
     ECHO_VEIL_MODULE_ORIGIN = str(getattr(_echo_veil_package, "__file__", "") or "")
-except ImportError as exc:
+except (ImportError, AttributeError) as exc:
     ECHO_VEIL_AVAILABLE = False
     ECHO_VEIL_IMPORT_ERROR = type(exc).__name__
     ECHO_VEIL_MODULE_ORIGIN = ""
-    Oracle = None  # type: ignore
-    WorkspaceConfig = None  # type: ignore
-    AesGcmCryptoShield = None  # type: ignore
-
-from .config import CONFIG_DIR, _atomic_write_text
-
 logger = logging.getLogger(__name__)
 
 
@@ -162,7 +165,8 @@ class EchoVeilMemoryLayer:
             self.shield = AesGcmCryptoShield(crypto_key)
         else:
             # Development uses null shield (no encryption)
-            from echo_veil.crypto_shield import NullCryptoShield
+            crypto_shield = importlib.import_module("echo_veil.crypto_shield")
+            NullCryptoShield = getattr(crypto_shield, "NullCryptoShield")
             self.shield = NullCryptoShield()
         
         # Initialize Oracle with workspace config

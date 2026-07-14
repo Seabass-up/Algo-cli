@@ -80,3 +80,18 @@ def test_flush_failure_is_nonfatal_and_keeps_only_bounded_suffix(monkeypatch: An
 
     assert perf_telemetry.flush_perf_records() is False
     assert [item["sequence"] for item in perf_telemetry.PERF_BUFFER] == [3, 4, 5]
+
+
+def test_model_round_receipts_buffer_instead_of_flushing_per_round(monkeypatch: Any) -> None:
+    flushed: list[bool] = []
+    monkeypatch.setattr(perf_telemetry, "PERF_BUFFER", [])
+    monkeypatch.setattr(
+        perf_telemetry,
+        "flush_perf_records",
+        lambda: flushed.append(True) or True,
+    )
+
+    perf_telemetry.append_perf_record({"event": "model_round", "round": 1})
+
+    assert perf_telemetry.PERF_BUFFER == [{"event": "model_round", "round": 1}]
+    assert flushed == []

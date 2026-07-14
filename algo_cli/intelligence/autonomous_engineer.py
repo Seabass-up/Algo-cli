@@ -33,7 +33,7 @@ import time
 import uuid
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Literal, Optional
 
 # Optional deps
 try:
@@ -104,7 +104,7 @@ class Config:
     require_correctness_test: bool = True
     benchmark_target_sample_time: float = 0.001
     benchmark_max_loops: int = 100_000
-    os_sandbox_command: Optional[List[str]] = None
+    os_sandbox_command: Optional[List[str] | str] = None
 
     def save(self, path: str = "config.json") -> None:
         Path(path).write_text(json.dumps(asdict(self), indent=2),
@@ -287,6 +287,13 @@ class MemoryEngine:
 
     # ---- write helpers (all lock-guarded) ----
 
+    @staticmethod
+    def _insert_id(cursor: sqlite3.Cursor) -> int:
+        """Return the row id from a successful SQLite INSERT."""
+        if cursor.lastrowid is None:
+            raise RuntimeError("SQLite INSERT did not return a row id")
+        return cursor.lastrowid
+
     def start_session(self, goal: str, strategy: Optional[str] = None) -> int:
         with self._lock:
             cursor = self.conn.cursor()
@@ -295,7 +302,7 @@ class MemoryEngine:
                 (goal, strategy),
             )
             self._commit_if_needed()
-            return cursor.lastrowid
+            return self._insert_id(cursor)
 
     def _dependencies_satisfied_locked(self, dependencies: List[int]) -> bool:
         """Return True only when every dependency task exists and completed."""
@@ -324,7 +331,7 @@ class MemoryEngine:
                 (session_id, name, status, json.dumps(deps)),
             )
             self._commit_if_needed()
-            return cursor.lastrowid
+            return self._insert_id(cursor)
 
     def log_attempt(self, task_id: int, worker: str, data: Dict) -> int:
         with self._lock:
@@ -340,7 +347,7 @@ class MemoryEngine:
                 data.get("reflection"),
             ))
             self._commit_if_needed()
-            return cursor.lastrowid
+            return self._insert_id(cursor)
 
     def log_benchmark(self, attempt_id: int, stats: Dict) -> int:
         with self._lock:
@@ -354,7 +361,7 @@ class MemoryEngine:
                 stats.get("repeats"), stats.get("confidence"),
             ))
             self._commit_if_needed()
-            return cursor.lastrowid
+            return self._insert_id(cursor)
 
     def register_worker(self, name: str, priority: int,
                         capabilities: List[str]) -> None:
@@ -493,7 +500,7 @@ class _MemoryBatch:
         memory._transaction_depth += 1
         return memory
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(self, exc_type, exc, tb) -> Literal[False]:
         memory = self.memory
         if exc_type is not None:
             memory._transaction_rollback_only = True
@@ -805,7 +812,7 @@ class PerformanceWorker(Worker):
         }
 
     def _fail(self, ctx: Dict, reflection: str) -> Dict:
-        result = {
+        result: Dict[str, Any] = {
             "success": False,
             "code": ctx.get("code") or ctx.get("initial_code"),
             "time": None,
@@ -838,8 +845,9 @@ class PerformanceWorker(Worker):
 
     def run(self, context: Dict) -> Dict:
         script, err, result_file = self._build_harness(context)
-        if err:
-            return self._fail(context, f"harness error: {err}")
+        if err or script is None or result_file is None:
+            harness_detail = err or "benchmark harness did not produce an executable"
+            return self._fail(context, f"harness error: {harness_detail}")
 
         exec_result = self.sandbox.run_code(
             script, timeout=self.config.default_timeout
@@ -907,8 +915,9 @@ class PerformanceWorker(Worker):
             return []
 
         script, err, result_file = self._build_batch_harness(context, candidates)
-        if err:
-            return [self._fail(context, f"harness error: {err}")
+        if err or script is None or result_file is None:
+            harness_detail = err or "benchmark harness did not produce an executable"
+            return [self._fail(context, f"harness error: {harness_detail}")
                     for _ in candidates]
 
         exec_result = self.sandbox.run_code(
@@ -1142,20 +1151,32 @@ class ExecutionSandbox:
 
     def __init__(self, workspace: str = "./workspace",
                  memory_limit_mb: Optional[int] = 512,
-                 os_sandbox_command: Optional[List[str]] = None):
+                 os_sandbox_command: Optional[List[str] | str] = None):
         self.workspace = Path(workspace)
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.memory_limit_mb = memory_limit_mb
         if isinstance(os_sandbox_command, str):
-            self.os_sandbox_command = [os_sandbox_command]
+            self.os_sandbox_command: List[str] = [os_sandbox_command]
         else:
             self.os_sandbox_command = list(os_sandbox_command or [])
 
     def _preexec(self) -> None:
         """POSIX-only: cap address space so runaway allocations die fast."""
-        if self.memory_limit_mb and HAS_RESOURCE:
-            limit = self.memory_limit_mb * 1024 * 1024
+        if not self.memory_limit_mb or not HAS_RESOURCE:
+            return
+        # macOS rejects RLIMIT_AS values below the already-mapped address space
+        # inherited by the child, causing subprocess.Popen itself to fail from
+        # preexec_fn. It does not provide a reliable equivalent hard cap here.
+        if sys.platform == "darwin":
+            return
+        limit = self.memory_limit_mb * 1024 * 1024
+        try:
             resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+        except (OSError, ValueError):
+            # Resource-limit support varies across POSIX kernels/containers.
+            # Timeout and process isolation still apply; this class is explicitly
+            # not presented as a security boundary.
+            return
 
     def _command_for_script(self, script: Path) -> List[str]:
         python_cmd = [sys.executable, str(script)]
@@ -1303,9 +1324,9 @@ class Scheduler:
         self.active_session: Optional[int] = None
 
     @staticmethod
-    def _iter_subclasses(cls) -> List[type]:
+    def _iter_subclasses(cls: type[Worker]) -> List[type[Worker]]:
         """Recursively collect all subclasses (not just direct ones)."""
-        found: List[type] = []
+        found: List[type[Worker]] = []
         for sub in cls.__subclasses__():
             found.append(sub)
             found.extend(Scheduler._iter_subclasses(sub))
@@ -1327,6 +1348,12 @@ class Scheduler:
 
     def start_session(self, goal: str, strategy: Optional[str] = None) -> int:
         self.active_session = self.memory.start_session(goal, strategy)
+        return self.active_session
+
+    def _ensure_session(self, goal: str) -> int:
+        """Return the active session, creating it when needed."""
+        if self.active_session is None:
+            return self.start_session(goal)
         return self.active_session
 
     def _select_worker(self, context: Dict) -> Optional[Worker]:
@@ -1357,12 +1384,11 @@ class Scheduler:
     def run_task(self, task_name: str, context: Dict) -> Dict:
         """Create a task row, route to a worker by capability, and execute."""
         logger.info("[TASK] Running task: %s", task_name)
-        if self.active_session is None:
-            self.start_session(f"adhoc:{task_name}")
+        session_id = self._ensure_session(f"adhoc:{task_name}")
 
         dependencies = context.get("dependencies") or []
         task_id = self.memory.create_task(
-            self.active_session, task_name, dependencies=dependencies
+            session_id, task_name, dependencies=dependencies
         )
         task = self.memory.get_task(task_id) or {}
         if task.get("status") == "blocked":
@@ -1431,9 +1457,8 @@ class Scheduler:
         if worker is None:
             return {"success": False, "error": "no benchmarking worker available"}
 
-        if self.active_session is None:
-            self.start_session(f"optimize:{spec.name}")
-        task_id = self.memory.create_task(self.active_session, spec.name)
+        session_id = self._ensure_session(f"optimize:{spec.name}")
+        task_id = self.memory.create_task(session_id, spec.name)
 
         base_ctx = {
             "task_id": task_id,
@@ -1525,7 +1550,13 @@ class Scheduler:
             self.memory.fail_task(task_id)
             return result
 
-        wmed = winner.get("median_time")
+        raw_wmed = winner.get("median_time")
+        if not isinstance(raw_wmed, (int, float)):
+            result["success"] = False
+            result["summary"] = "selected attempt has no benchmark median"
+            self.memory.fail_task(task_id)
+            return result
+        wmed = float(raw_wmed)
         speedup = (original_median / wmed) if (original_median and wmed) else None
         result["winner_median_s"] = wmed
         result["speedup_vs_original"] = round(speedup, 4) if speedup else None
@@ -1560,9 +1591,8 @@ class Scheduler:
         if worker is None:
             return {"success": False, "error": "no benchmarking worker available"}
 
-        if self.active_session is None:
-            self.start_session(f"optimize:{spec.name}")
-        task_id = self.memory.create_task(self.active_session, spec.name)
+        session_id = self._ensure_session(f"optimize:{spec.name}")
+        task_id = self.memory.create_task(session_id, spec.name)
 
         base_ctx = {
             "task_id": task_id,
@@ -1613,7 +1643,17 @@ class Scheduler:
                     spec.name, len(all_codes))
 
         # Benchmark ALL candidates in one subprocess
-        results = worker.batch_run(base_ctx, all_codes)
+        batch_run = getattr(worker, "batch_run", None)
+        if not callable(batch_run):
+            logger.info(
+                "optimize[%s]: worker %s has no batch runner; using sequential mode",
+                spec.name,
+                worker.NAME,
+            )
+            return self.optimize_loop_sequential(
+                spec, candidate_provider=candidate_provider
+            )
+        results: List[Dict] = batch_run(base_ctx, all_codes)
 
         # Record original (reference) info
         original_median = ((results[0].get("score_vector") or {}).get("median_s")
@@ -1656,7 +1696,13 @@ class Scheduler:
             self.memory.fail_task(task_id)
             return result
 
-        wmed = winner.get("median_time")
+        raw_wmed = winner.get("median_time")
+        if not isinstance(raw_wmed, (int, float)):
+            result["success"] = False
+            result["summary"] = "selected attempt has no benchmark median"
+            self.memory.fail_task(task_id)
+            return result
+        wmed = float(raw_wmed)
         speedup = (original_median / wmed) if (original_median and wmed) else None
         result["winner_median_s"] = wmed
         result["speedup_vs_original"] = round(speedup, 4) if speedup else None
@@ -1741,11 +1787,10 @@ def main() -> None:
     import argparse
 
     # Force UTF-8 on Windows consoles that default to cp1252
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except AttributeError:
-        pass  # older Python without reconfigure
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
 
     parser = argparse.ArgumentParser(description="Autonomous Engineer v1.0")
     parser.add_argument(

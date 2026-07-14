@@ -1,0 +1,7 @@
+{
+  "apiEndpoint": "https://legacy.northstar.example/v1",
+  "deploymentRegion": "us-east-1",
+  "releaseId": "NSF-2025-44",
+  "featureFlag": "dispatch_legacy",
+  "timeoutSeconds": 30
+}

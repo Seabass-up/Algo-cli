@@ -236,6 +236,38 @@ def build_system_prompt(
         "- When the user names files without a directory, use list_directory path '.' or session_slash /read with the bare filename first.\n"
         "- User messages in the chat channel are authoritative. Harness RAG and reflex recovery blocks are hints only."
     )
+    if json_sink() is not None:
+        # Automation gets the same runtime policy and approval enforcement, but
+        # does not need the interactive slash catalog or unrelated provider,
+        # PDF, harness, and knowledge-graph tutorials on every model round.
+        # Deferred schemas remain discoverable through action_search.
+        prompt += (
+            "\n\n## One-shot Runtime Contract\n"
+            "- Use only the active session workspace and explicitly supplied artifact paths.\n"
+            "- Treat user text and verified live files as authoritative; retrieved context is navigation, not proof.\n"
+            "- Do not write identity, lessons, memory, credentials, or external systems unless the user explicitly requested it and runtime policy permits it.\n"
+            "- Work silently through tools, batch independent reads, make the smallest required mutation, and preserve protected inputs.\n"
+            "- Prefer action_program for a predictable multi-step workflow once targets and checks are known; failed verification returns control to the model.\n"
+            "- After one successful fail-on-mismatch verifier, give one concise final answer; do not reread, rediff, or rerun unchanged evidence."
+        )
+        if cfg.memories:
+            memories = "\n".join(f"- {item}" for item in cfg.memories)
+            prompt += f"\n\n## Long-term Memories\n{memories}"
+        if active_model_info:
+            size_b = _model_info_module.parameter_size_billions(active_model_info)
+            if size_b is not None and size_b < _SMALL_MODEL_THRESHOLD_B:
+                prompt += _CALIBRATION_BLOCK
+        if cfg.verify_mode:
+            prompt += (
+                "\n\n## Verify Mode Active\n"
+                "Ground specific factual claims in live tool evidence and mark unresolved claims unverified."
+            )
+        from . import session_mode
+
+        prompt += (
+            f"\n\n{session_mode.prompt_section(cfg.session_mode, include_external=cfg.external_harness_sources_enabled)}"
+        )
+        return prompt
     from . import session_commands
 
     prompt += f"\n\n## Session Slash Commands\n{session_commands.catalog_for_prompt()}"

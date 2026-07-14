@@ -153,8 +153,8 @@ def run_loopback_capture(
     empty dict on timeout/bind failure. Port selection happens before the auth
     URL is built so the browser redirect URI and token exchange stay aligned.
     """
-    received: dict[str, str] = {}
-    Handler = type("_LoopbackCallbackHandler", (_CallbackHandler,), {"received": received})
+    class Handler(_CallbackHandler):
+        received: dict[str, str] = {}
 
     try:
         server = http.server.HTTPServer((XAI_REDIRECT_HOST, redirect_port), Handler)
@@ -333,7 +333,7 @@ def select_redirect_port() -> int | None:
     return None
 
 
-def begin_login(*, no_browser: bool = False, redirect_port: int = XAI_REDIRECT_PORT) -> dict[str, str]:
+def begin_login(*, no_browser: bool = False, redirect_port: int = XAI_REDIRECT_PORT) -> dict[str, Any]:
     # Resolve before generating state, opening a browser, or starting a
     # callback listener so an unconfigured install fails closed and cleanly.
     require_client_id()

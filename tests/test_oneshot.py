@@ -56,6 +56,45 @@ def test_json_event_sink_accumulates_chat_usage():
     assert usage == {"prompt_tokens": 240, "completion_tokens": 30, "total_tokens": 270}
 
 
+def test_json_event_sink_emits_bounded_round_receipts_and_summary():
+    buf = io.StringIO()
+    sink = oneshot.JsonEventSink(stream=buf)
+    sink.model_round(
+        round=1,
+        phase="execution",
+        trigger="initial_plan",
+        prompt_tokens=120,
+        completion_tokens=20,
+        prompt_eval_ms=30.5,
+        generation_ms=12.25,
+        context_build_ms=1.5,
+        context_sources={"tool_schemas": 40},
+    )
+    sink.model_round(
+        round=2,
+        phase="response",
+        trigger="free-form-is-not-allowed",
+        prompt_tokens=180,
+        completion_tokens=10,
+        prompt_eval_ms=40.0,
+        generation_ms=8.0,
+        context_build_ms=1.0,
+        context_sources={"tool_schemas": 40},
+    )
+    sink.done(status="complete", status_reason="", duration_ms=100)
+
+    events = _drain(buf)
+    assert events[0]["type"] == "model_round"
+    assert events[0]["trigger"] == "initial_plan"
+    assert events[1]["trigger"] == "unexpected_retry"
+    assert events[-1]["rounds"] == {
+        "count": 2,
+        "max_prompt_tokens": 180,
+        "prompt_eval_ms": 70.5,
+        "generation_ms": 20.25,
+    }
+
+
 def test_json_event_sink_tool_call_then_result(monkeypatch):
     buf = io.StringIO()
     sink = oneshot.JsonEventSink(stream=buf)

@@ -380,6 +380,59 @@ def test_mutation_keeps_per_action_approval_and_immutable_compact_receipt(monkey
     assert result.receipts[0].mutates_state is True
     assert compact["mutation_receipts"][0]["operation"] == "write_file"
     assert compact["mutation_receipts"][0]["receipt_hash"] == result.receipts[0].receipt_hash
+    assert compact["verification_receipts"] == []
+    assert verify_receipt_chain(result.receipts) is True
+
+
+def test_program_verifier_receipt_repairs_missing_nested_ledger_event(
+    monkeypatch, tmp_path
+) -> None:
+    from algo_cli import execution_guardrails, program_runtime
+
+    def successful_unrecorded_verifier(*_args, **_kwargs):
+        result = "post-refresh verification passed\n[exit code: 0]"
+        return {"role": "tool", "content": result}, result
+
+    monkeypatch.setattr(
+        program_runtime,
+        "execute_tool_call_for_pipeline",
+        successful_unrecorded_verifier,
+    )
+    scope = execution_guardrails.begin_execution_scope(tmp_path)
+    execution_guardrails.record_workspace_mutation(success=True)
+    plan = {
+        "version": 1,
+        "steps": [
+            {
+                "id": "verify",
+                "kind": "action",
+                "action": "run_shell",
+                "args": {
+                    "command": "python3 -c \"assert True; print('post-refresh verification passed')\""
+                },
+            }
+        ],
+        "outputs": [{"$ref": "verify"}],
+    }
+
+    try:
+        result = execute_program(
+            plan,
+            Config(cwd=str(tmp_path)),
+            authorization=_authorization("run_shell"),
+            store=ProgramArtifactStore(tmp_path / "program-store"),
+        )
+        decision = execution_guardrails.completion_decision()
+    finally:
+        execution_guardrails.end_execution_scope(scope)
+
+    assert result.worked is True
+    assert result.receipts[0].verification_kind == "test"
+    assert result.to_dict(compact=True)["verification_receipts"][0][
+        "verification_kind"
+    ] == "test"
+    assert decision.allowed is True
+    assert decision.verifier_kind == "test"
     assert verify_receipt_chain(result.receipts) is True
 
 
@@ -413,6 +466,7 @@ def test_compact_result_keeps_chain_and_mutation_receipts_without_verbose_steps(
     assert "receipts" not in compact
     assert compact["receipt_count"] == 1
     assert compact["mutation_receipts"] == []
+    assert compact["verification_receipts"] == []
     assert compact["receipt_chain_hash"] == result.receipt_chain_hash
 
 

@@ -140,6 +140,40 @@ def test_failures_mutations_and_verification_evidence_are_never_superseded() -> 
     assert messages == before
 
 
+def test_long_successful_verifier_collapses_to_hash_and_final_excerpt() -> None:
+    raw = ("test_module.py::test_case PASSED\n" * 100) + "100 passed\n[exit code: 0]"
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "verify-long",
+                    "function": {
+                        "name": "run_shell",
+                        "arguments": {"command": "pytest -q"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "run_shell",
+            "tool_call_id": "verify-long",
+            "content": raw,
+        },
+    ]
+
+    stats = context_supersession.supersede_tool_results(messages, cwd="/workspace")
+
+    receipt = messages[1]["content"]
+    assert stats.superseded == 1
+    assert stats.saved_tokens > 0
+    assert context_supersession.is_verification_receipt(receipt)
+    assert hashlib.sha256(raw.encode()).hexdigest() in receipt
+    assert "100 passed" in receipt
+    assert "[exit code: 0]" in receipt
+
+
 def test_mutation_epoch_preserves_pre_mutation_snapshot() -> None:
     baseline = "baseline\n" * 2_000
     changed_once = "changed once\n" * 2_000

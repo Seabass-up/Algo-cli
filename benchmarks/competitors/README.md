@@ -39,11 +39,18 @@ sharing.
 
 ## Tasks
 
-The v2 draft corpus currently covers:
+The v3 draft corpus currently covers:
 
 1. a minimal Python code repair;
 2. recovery from misleading documentation and a decoy configuration file;
-3. a stale-memory/RAG conflict where live files must win.
+3. a stale-memory/RAG conflict where live files must win;
+4. a medium-repository evidence-reconciliation rollout with three differently
+   shaped service configs, an authoritative registry, protected live inputs,
+   stale decoys, and an artifact receipt.
+
+Every summary records `task_suite_sha256`, a digest of the selected prompts and
+fixtures. Freeze and publish that digest before interpreting a new task's
+results so the corpus cannot be tuned after scores are known.
 
 These tasks are useful release regressions, but they are not yet a representative
 sample of software engineering. Add multi-file implementation, refactoring,
@@ -64,12 +71,24 @@ python3 benchmarks/competitors/runner.py \
 # Release-candidate minimum: three repetitions per cell
 python3 benchmarks/competitors/runner.py \
   --harness algo_cli,codex_cli,claude_code,opencode,pi \
-  --repetitions 3
+  --repetitions 3 \
+  --warmup-model
 ```
+
+`--warmup-model` performs one short direct Ollama generation before any scored
+harness process starts and keeps the model loaded for two hours by default.
+The warm-up duration is excluded from every harness score, and its result,
+duration, keep-alive setting, and output digests are recorded in
+`warmup_receipt.json` and the summary protocol. A failed warm-up aborts the
+benchmark before the first scored cell.
 
 Results default to `benchmark-results/`, which is ignored by Git. Each run keeps
 raw stdout/stderr, the rendered prompt, checker receipts, file-scope evidence,
-and normalized metrics. Review and sanitize raw artifacts before publishing.
+and normalized metrics. Algo CLI's one-shot stream additionally reports one
+content-free `model_round` receipt per request, including trigger, provider
+timings, prompt/completion tokens, schema count, context-source estimates, and
+supersession savings. These diagnostics are not ranking inputs. Review and
+sanitize raw artifacts before publishing.
 
 ## Competitor classification
 

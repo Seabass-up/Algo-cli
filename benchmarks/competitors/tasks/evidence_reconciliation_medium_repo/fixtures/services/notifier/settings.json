@@ -1,0 +1,7 @@
+{
+  "baseUrl": "https://legacy.northstar.example/v1",
+  "zone": "us-east-1",
+  "release": "NSF-2025-44",
+  "featureFlag": "dispatch_legacy",
+  "channel": "ops"
+}

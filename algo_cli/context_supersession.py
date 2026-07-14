@@ -22,6 +22,9 @@ from .chat_protocol import normalize_tool_call
 
 
 RECEIPT_PREFIX = "[Algo superseded result receipt v1"
+VERIFICATION_RECEIPT_PREFIX = "[Algo verification result receipt v1"
+VERIFICATION_COMPACT_MIN_CHARS = 1_200
+VERIFICATION_EXCERPT_CHARS = 600
 
 # Keep this list deliberately narrow.  A tool is eligible only when a newer
 # successful call with the same normalized arguments represents the same live
@@ -91,6 +94,12 @@ def is_supersession_receipt(content: Any) -> bool:
     """Return whether *content* is a receipt produced by this module."""
 
     return str(content or "").startswith(RECEIPT_PREFIX)
+
+
+def is_verification_receipt(content: Any) -> bool:
+    """Return whether *content* is an immutable successful-verifier receipt."""
+
+    return str(content or "").startswith(VERIFICATION_RECEIPT_PREFIX)
 
 
 def is_supersedable_tool(name: str) -> bool:
@@ -311,6 +320,51 @@ def _receipt(content: str, *, newer_call_id: str | None, newer_index: int) -> st
     return f"{RECEIPT_PREFIX} sha256={digest} bytes={len(encoded)} newer={newer}]"
 
 
+def _verification_receipt(content: str) -> str:
+    encoded = content.encode("utf-8", errors="replace")
+    digest = hashlib.sha256(encoded).hexdigest()
+    excerpt = content[-VERIFICATION_EXCERPT_CHARS:].strip()
+    return (
+        f"{VERIFICATION_RECEIPT_PREFIX} sha256={digest} bytes={len(encoded)} "
+        "status=passed exit_code=0]\n"
+        f"Final verifier excerpt:\n{excerpt}"
+    )
+
+
+def _compact_successful_verifications(
+    messages: list[dict[str, Any]],
+    exchanges: list[_ToolExchange],
+) -> tuple[int, int]:
+    """Collapse only long, successful, recognized shell-verifier output."""
+
+    from .execution_guardrails import classify_verification_command
+
+    candidates = 0
+    compacted = 0
+    for exchange in exchanges:
+        if exchange.name != "run_shell":
+            continue
+        content = str(messages[exchange.result_index].get("content") or "")
+        if (
+            len(content) < VERIFICATION_COMPACT_MIN_CHARS
+            or is_verification_receipt(content)
+            or "[exit code: 0]" not in content.casefold()
+        ):
+            continue
+        command = str(exchange.args.get("command") or "")
+        if not classify_verification_command(command).qualifies:
+            continue
+        candidates += 1
+        receipt = _verification_receipt(content)
+        if _estimate_text_tokens(receipt) >= _estimate_text_tokens(content):
+            continue
+        replacement = dict(messages[exchange.result_index])
+        replacement["content"] = receipt
+        messages[exchange.result_index] = replacement
+        compacted += 1
+    return candidates, compacted
+
+
 def supersede_tool_results(
     messages: list[dict[str, Any]],
     *,
@@ -324,9 +378,10 @@ def supersede_tool_results(
     """
 
     before_tokens = _estimate_messages_tokens(messages)
+    all_exchanges = _pair_tool_exchanges(messages)
     exchanges = [
         exchange
-        for exchange in _pair_tool_exchanges(messages)
+        for exchange in all_exchanges
         if is_supersedable_tool(exchange.name)
         and _valid_snapshot_args(exchange)
         and _successful_snapshot(messages[exchange.result_index].get("content"))
@@ -358,11 +413,17 @@ def supersede_tool_results(
         messages[older.result_index] = replacement
         superseded += 1
 
+    verification_candidates, verification_compacted = _compact_successful_verifications(
+        messages,
+        all_exchanges,
+    )
+    superseded += verification_compacted
+
     after_tokens = _estimate_messages_tokens(messages)
     saved_tokens = max(0, before_tokens - after_tokens)
     reduction_pct = round((saved_tokens / before_tokens) * 100.0, 2) if before_tokens else 0.0
     return SupersessionStats(
-        candidates=len(candidates),
+        candidates=len(candidates) + verification_candidates,
         superseded=superseded,
         before_tokens=before_tokens,
         after_tokens=after_tokens,
@@ -373,9 +434,11 @@ def supersede_tool_results(
 
 __all__ = [
     "RECEIPT_PREFIX",
+    "VERIFICATION_RECEIPT_PREFIX",
     "SUPERSEDABLE_TOOLS",
     "SupersessionStats",
     "is_supersedable_tool",
     "is_supersession_receipt",
+    "is_verification_receipt",
     "supersede_tool_results",
 ]

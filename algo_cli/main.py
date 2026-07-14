@@ -2617,6 +2617,7 @@ def ensure_lessons_index(cfg: Config) -> bool:
 
 
 def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
+    agent_loop_started = time.perf_counter()
     if json_sink() is None:
         console.rule(style="border")
     persisted_user_message = user_message
@@ -2776,6 +2777,63 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
     small_context_ledger: small_context.SmallContextLedger | None = None
     small_context_notified = False
     completion_nudged = False
+    next_round_trigger = "initial_plan"
+    tool_ms_since_previous_round = 0.0
+
+    def _round_context_sources(
+        request_messages: list[dict[str, Any]],
+        system_prompt: str,
+        included_contexts: list[str],
+    ) -> dict[str, Any]:
+        """Return content-free token estimates grouped by request source."""
+
+        conversation_tokens = 0
+        tool_result_tokens = 0
+        verification_tokens = 0
+        artifact_referenced_chars = 0
+        verification_tools = {"git_diff", "run_shell", "run_tests"}
+        for message in request_messages[1:]:
+            tokens = estimate_message_tokens(message)
+            if message.get("role") == "tool":
+                tool_result_tokens += tokens
+                tool_name = str(message.get("tool_name") or message.get("name") or "")
+                if tool_name in verification_tools:
+                    verification_tokens += tokens
+                content = str(message.get("content") or "")
+                if "artifact://sha256/" in content or "receipt://sha256/" in content:
+                    artifact_referenced_chars += len(content)
+            else:
+                conversation_tokens += tokens
+        optional_tokens = {
+            block.name: estimate_text_tokens(block.body)
+            for block in optional_context_blocks
+            if block.name in included_contexts
+        }
+        identity_tokens = estimate_text_tokens(
+            identity.build_identity_block(retrieved_lessons=retrieved_lessons)
+        )
+        memory_tokens = estimate_text_tokens(
+            "\n".join(str(item) for item in cfg.memories)
+        )
+        system_tokens = estimate_text_tokens(system_prompt)
+        return {
+            "identity": identity_tokens,
+            "policy_and_runtime": max(0, system_tokens - identity_tokens - memory_tokens),
+            "repository_instructions": optional_tokens.get("code", 0),
+            "tool_schemas": active_schema_tokens,
+            "harness_rag": optional_tokens.get("harness", 0),
+            "memory": memory_tokens,
+            "knowledge_graph": optional_tokens.get("index-compute-lab", 0),
+            "conversation": conversation_tokens,
+            "tool_results": tool_result_tokens,
+            "verification_receipts": verification_tokens,
+            "other_optional": sum(
+                value
+                for name, value in optional_tokens.items()
+                if name not in {"code", "harness", "index-compute-lab"}
+            ),
+            "artifact_referenced_chars": artifact_referenced_chars,
+        }
 
     def _fit_request_user_message(system_prompt: str) -> tuple[str, int, list[str], list[str]]:
         nonlocal small_context_ledger, small_context_notified
@@ -2847,6 +2905,9 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
         # verified state. This prevents a correct run from being reported as
         # partial solely because its verifier consumed the last work turn.
         for _ in range(max_iterations + 1):
+            context_build_started = (
+                agent_loop_started if iterations_used == 0 else time.perf_counter()
+            )
             finalization_turn = _ == max_iterations
             if finalization_turn:
                 completion = execution_guardrails.completion_decision()
@@ -2869,7 +2930,14 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                     }
                 )
             iterations_used += 1
+            chars_before_prune = sum(
+                len(str(message.get("content") or "")) for message in cfg.messages
+            )
             prune_stale_tool_messages(cfg)
+            chars_after_prune = sum(
+                len(str(message.get("content") or "")) for message in cfg.messages
+            )
+            superseded_chars = max(0, chars_before_prune - chars_after_prune)
             last_user = persisted_user_message
             for msg in reversed(cfg.messages):
                 if msg.get("role") == "user":
@@ -2955,6 +3023,9 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 status.start()
             stream_started = False
             stream_error: Exception | None = None
+            provider_metrics: dict[str, Any] = {}
+            context_build_ms = (time.perf_counter() - context_build_started) * 1000
+            model_started = time.perf_counter()
             try:
                 stream = client.chat(
                     model=cfg.model,
@@ -2971,6 +3042,18 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                         status.stop()
                         status = None
                     record_chat_metrics(cfg, chunk)
+                    for metric_name in (
+                        "total_duration",
+                        "load_duration",
+                        "prompt_eval_count",
+                        "prompt_eval_duration",
+                        "eval_count",
+                        "eval_duration",
+                        "queue_duration",
+                    ):
+                        metric_value = get_attr(chunk, metric_name, None)
+                        if metric_value is not None:
+                            provider_metrics[metric_name] = metric_value
                     event_sink = json_sink()
                     record_usage = getattr(event_sink, "chat_usage", None)
                     if callable(record_usage):
@@ -3010,6 +3093,54 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                     status.stop()
                 finish_thinking_block()
                 finish_streaming_response()
+
+            model_elapsed_ms = (time.perf_counter() - model_started) * 1000
+            event_sink = json_sink()
+            emit_round = getattr(event_sink, "model_round", None)
+            if callable(emit_round):
+                def _duration_ms(name: str) -> float | None:
+                    try:
+                        value = provider_metrics.get(name)
+                        return round(float(value) / 1_000_000.0, 2) if value is not None else None
+                    except (TypeError, ValueError):
+                        return None
+
+                context_sources = _round_context_sources(
+                    request_messages,
+                    system_prompt,
+                    included_contexts,
+                )
+                round_phase = (
+                    "finalization"
+                    if finalization_turn
+                    else "execution"
+                    if tool_calls
+                    else "response"
+                )
+                round_receipt = {
+                    "round": iterations_used,
+                    "phase": round_phase,
+                    "trigger": "finalization" if finalization_turn else next_round_trigger,
+                    "prompt_tokens": provider_metrics.get("prompt_eval_count"),
+                    "completion_tokens": provider_metrics.get("eval_count"),
+                    "context_build_ms": round(context_build_ms, 2),
+                    "queue_ms": _duration_ms("queue_duration"),
+                    "model_load_ms": _duration_ms("load_duration"),
+                    "prompt_eval_ms": _duration_ms("prompt_eval_duration"),
+                    "generation_ms": _duration_ms("eval_duration"),
+                    "model_elapsed_ms": round(model_elapsed_ms, 2),
+                    "tool_ms_since_previous_round": round(tool_ms_since_previous_round, 2),
+                    "message_count": len(request_messages),
+                    "tool_schema_count": 0 if finalization_turn else len(active_tools),
+                    "superseded_chars": superseded_chars,
+                    "artifact_referenced_chars": context_sources.pop(
+                        "artifact_referenced_chars"
+                    ),
+                    "context_sources": context_sources,
+                }
+                emit_round(**round_receipt)
+                record_perf_event("model_round", model=cfg.model, **round_receipt)
+            tool_ms_since_previous_round = 0.0
 
             if json_sink() is None:
                 console.print()
@@ -3063,6 +3194,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                         )
                         break
                     completion_nudged = True
+                    next_round_trigger = "program_completed"
                     final_content = ""
                     optional_context_blocks.clear()
                     show_info(
@@ -3093,6 +3225,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
 
             # Normalize all calls once; reused by both the parallel check and _batch build.
             _nc = [normalize_tool_call(c) for c in tool_calls]
+            next_round_trigger = "tool_result_requires_interpretation"
 
             def _exec_one(item: tuple[tuple[str, dict[str, Any]], str | None]) -> tuple[str, dict[str, Any], str | None, str, float]:
                 (n, a), tid = item
@@ -3168,6 +3301,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                     if row is None:
                         continue
                     name, args, tool_call_id, result, duration_ms = row
+                    tool_ms_since_previous_round += duration_ms
                     tool_status = classify_tool_status(result)
                     result = augment_tool_result_with_reflex(
                         cfg, name, preflight.signature_args, result, tool_status
@@ -3258,6 +3392,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                         ):
                             result = run_tool(name, args, cfg)
                     duration_ms = round((time.perf_counter() - started) * 1000, 2)
+                    tool_ms_since_previous_round += duration_ms
                     tool_status = classify_tool_status(result)
                     result = augment_tool_result_with_reflex(
                         cfg, name, signature_args, result, tool_status

@@ -118,6 +118,32 @@ def test_google_authorize_url_does_not_request_previously_granted_scopes(monkeyp
     assert "include_granted_scopes" not in query
 
 
+def test_google_loopback_capture_uses_fresh_handler_state(monkeypatch):
+    handlers: list[type] = []
+
+    class _Server:
+        def __init__(self, _address, handler) -> None:
+            self.handler = handler
+            handlers.append(handler)
+
+        def handle_request(self) -> None:
+            self.handler.query_params = {"code": "code-1", "state": "state-1"}
+            self.handler.done = True
+
+        def server_close(self) -> None:
+            return
+
+    monkeypatch.setattr(google_workspace_auth.http.server, "HTTPServer", _Server)
+
+    first = google_workspace_auth.run_loopback_capture(redirect_port=56251, timeout=1)
+    second = google_workspace_auth.run_loopback_capture(redirect_port=56252, timeout=1)
+
+    assert first == {"code": "code-1", "state": "state-1"}
+    assert second == first
+    assert len(handlers) == 2
+    assert handlers[0] is not handlers[1]
+
+
 def test_google_callback_clipboard_completes_pending_login(monkeypatch):
     infos, errors, _console = _patch_google_runtime(monkeypatch)
     completed: list[tuple[str, str, dict[str, str]]] = []

@@ -112,7 +112,7 @@ class Process:
 
     def resume_from(self, step_name: str) -> dict[str, Any]:
         """Resume execution from a specific step."""
-        current = step_name
+        current: str | None = step_name
         while current:
             step = self.steps.get(current)
             if not step:

@@ -4,6 +4,26 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-07-14
+
+### Added
+
+- Content-free per-round model telemetry records token counts, timing, context sources, schema cost, and compaction decisions without retaining prompt or completion text.
+- A frozen medium-repository evidence-reconciliation benchmark includes a recorded fixture digest, explicit model warmup, keepalive support, and warmup-excluded timing receipts.
+- Regression coverage now exercises the optional autonomous-engineering, finance-intelligence, intelligence-helper, and quantization paths.
+
+### Changed
+
+- One-shot requests use a smaller execution contract, tool selection applies specialized intent gates and schema token budgets, and successful verifier output is replaced by immutable compact receipts.
+- Typed programs reconcile nested verifier evidence into the outer execution ledger so successful checks remain provable without carrying their full output through later model rounds.
+- Quantization uses a NumPy-only symmetric Lloyd-Max implementation and corrected TurboQuant-IP transform, residual, payload, and matrix-shape handling.
+
+### Fixed
+
+- Optional finance modules consistently normalize decimal and date boundaries, and optional intelligence helpers now handle structural identifiers, plugin paths, search state, process sequences, and generated React imports correctly.
+- Autonomous-engineering sessions now preserve SQLite identifiers and artifacts, tolerate empty batches, use stable timing statistics, and avoid unsupported macOS subprocess memory limits.
+- Google OAuth callback state is isolated per run, and optional integrations fail cleanly when their dependencies are unavailable.
+
 ## [0.15.1] - 2026-07-13
 
 ### Changed

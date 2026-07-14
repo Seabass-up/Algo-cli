@@ -10,7 +10,7 @@ from .config import CONFIG_DIR, _atomic_write_text
 from .tool_policy import TOOL_GROUP_MAP, expand_tool_groups
 
 try:
-    import tomllib
+    import tomllib  # type: ignore[import-not-found]
 except ImportError:  # Python 3.10: fall back to the tomli backport.
     try:
         import tomli as tomllib  # type: ignore[no-redef]

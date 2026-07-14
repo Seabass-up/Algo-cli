@@ -147,8 +147,9 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
 
 
 def run_loopback_capture(*, timeout: float = _CALLBACK_TIMEOUT_SECONDS, redirect_port: int = CHATGPT_REDIRECT_PORT) -> dict[str, str]:
-    received: dict[str, str] = {}
-    Handler = type("_ChatGptLoopbackCallbackHandler", (_CallbackHandler,), {"received": received})
+    class Handler(_CallbackHandler):
+        received: dict[str, str] = {}
+
     try:
         server = http.server.HTTPServer((CHATGPT_REDIRECT_HOST, redirect_port), Handler)
     except OSError:
@@ -475,7 +476,7 @@ def select_redirect_port() -> int | None:
     return None
 
 
-def begin_login(*, no_browser: bool = False, redirect_port: int = CHATGPT_REDIRECT_PORT) -> dict[str, str]:
+def begin_login(*, no_browser: bool = False, redirect_port: int = CHATGPT_REDIRECT_PORT) -> dict[str, Any]:
     state = secrets.token_urlsafe(32)
     verifier, challenge = generate_pkce_pair()
     redirect_uri = redirect_uri_for_port(redirect_port)

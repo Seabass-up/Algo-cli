@@ -87,6 +87,8 @@ class MCTSReasoner:
     def _select(self) -> MCTSNode:
         """Selection: traverse tree following UCB1 to find a node to expand."""
         node = self.root
+        if node is None:
+            raise RuntimeError("MCTS root must be initialized before selection")
         while node and node.children and not node.terminal:
             if not node.fully_expanded:
                 return node

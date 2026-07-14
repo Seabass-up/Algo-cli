@@ -26,7 +26,7 @@ TASK_ROOT = HERE / "tasks"
 DEFAULT_MODEL = "qwen3.6:35b-mlx"
 DEFAULT_TIMEOUT = 360
 SCHEMA_VERSION = 1
-PROTOCOL = "algo-cli-cross-harness-v2-draft"
+PROTOCOL = "algo-cli-cross-harness-v3-draft"
 
 
 @dataclass(frozen=True)
@@ -61,6 +61,25 @@ TASKS = {
         "memory_rag_conflict_live_files",
         frozenset({"app/settings.json"}),
         frozenset({"live/project_manifest.json", "retrieved_context/memory_snapshot.md"}),
+    ),
+    "evidence_reconciliation_medium_repo": TaskSpec(
+        "evidence_reconciliation_medium_repo",
+        frozenset(
+            {
+                "services/gateway/settings.json",
+                "services/notifier/settings.json",
+                "services/worker/settings.json",
+            }
+        ),
+        frozenset(
+            {
+                "control_plane/release_manifest.json",
+                "control_plane/source_registry.json",
+                "docs/operator_handoff.md",
+                "snapshots/release_cache.json",
+                "verify_rollout.py",
+            }
+        ),
     ),
 }
 
@@ -178,6 +197,18 @@ def tree_digest(path: Path) -> str:
     snapshot = tree_snapshot(path)
     payload = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
     return sha256_bytes(payload)
+
+
+def task_suite_digest(task_ids: Iterable[str]) -> str:
+    """Hash the frozen prompts and fixtures selected for a benchmark run."""
+
+    payload = {
+        task_id: tree_digest(TASK_ROOT / task_id)
+        for task_id in sorted(set(task_ids))
+    }
+    return sha256_bytes(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    )
 
 
 def changed_paths(before: dict[str, str], after: dict[str, str]) -> list[str]:
@@ -299,6 +330,64 @@ def product_availability(product_id: str) -> dict[str, Any]:
 
 def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def warm_model(output_root: Path, model: str, timeout: int, keepalive: str) -> dict[str, Any]:
+    """Load the shared Ollama model before any scored harness process starts."""
+    executable = resolve_executable(("ollama",))
+    if executable is None:
+        raise RuntimeError("ollama executable is unavailable for the requested model warm-up")
+    command = [
+        executable,
+        "run",
+        model,
+        "Reply exactly WARM.",
+        "--keepalive",
+        keepalive,
+        "--think",
+        "false",
+    ]
+    started = time.perf_counter()
+    try:
+        completed = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+        timed_out = False
+        return_code = completed.returncode
+        stdout = completed.stdout
+        stderr = completed.stderr
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        return_code = 124
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+    duration = round(time.perf_counter() - started, 6)
+    (output_root / "warmup_stdout.txt").write_text(stdout, encoding="utf-8")
+    (output_root / "warmup_stderr.txt").write_text(stderr, encoding="utf-8")
+    receipt = {
+        "performed": True,
+        "included_in_scored_duration": False,
+        "model": model,
+        "provider": "local Ollama",
+        "keepalive": keepalive,
+        "duration_seconds": duration,
+        "return_code": return_code,
+        "timed_out": timed_out,
+        "success": return_code == 0 and not timed_out,
+        "stdout_sha256": hashlib.sha256(stdout.encode()).hexdigest(),
+        "stderr_sha256": hashlib.sha256(stderr.encode()).hexdigest(),
+    }
+    write_json(output_root / "warmup_receipt.json", receipt)
+    if not receipt["success"]:
+        raise RuntimeError(
+            f"model warm-up failed (exit={return_code}, timed_out={timed_out}); "
+            f"see {output_root / 'warmup_stderr.txt'}"
+        )
+    return receipt
 
 
 def base_environment(state: Path) -> dict[str, str]:
@@ -763,7 +852,7 @@ def run_task_checker(task_id: str, workspace: Path, artifacts: Path) -> tuple[bo
         output = completed.stdout + completed.stderr
         if completed.returncode:
             errors.append(f"healthcheck exited {completed.returncode}")
-    else:
+    elif task_id == "memory_rag_conflict_live_files":
         settings_data: dict[str, Any]
         try:
             parsed_settings = json.loads((workspace / "app/settings.json").read_text(encoding="utf-8"))
@@ -773,12 +862,12 @@ def run_task_checker(task_id: str, workspace: Path, artifacts: Path) -> tuple[bo
         except Exception as exc:
             settings_data = {}
             errors.append(f"settings JSON is invalid: {type(exc).__name__}")
-        expected = {
+        expected_memory = {
             "approval_ticket": "RTA-2026-118",
             "status_endpoint": "/api/v2/status",
             "feature_flag": "fare_sync_enabled",
         }
-        for key, value in expected.items():
+        for key, value in expected_memory.items():
             if settings_data.get(key) != value:
                 errors.append(f"settings {key} does not match live manifest")
         summary_path = artifacts / "live_fact_summary.md"
@@ -798,6 +887,79 @@ def run_task_checker(task_id: str, workspace: Path, artifacts: Path) -> tuple[bo
             for value in required:
                 if value.casefold() not in summary.casefold():
                     errors.append(f"summary missing required value: {value}")
+    else:
+        expected_rollout = {
+            "release_id": "NSF-2026-09",
+            "region": "us-central-1",
+            "api_base": "https://api.northstar.example/v3",
+            "feature_flag": "predictive_dispatch_v2",
+        }
+        service_expectations: dict[str, dict[str, Any]] = {
+            "services/gateway/settings.json": {
+                "apiEndpoint": expected_rollout["api_base"],
+                "deploymentRegion": expected_rollout["region"],
+                "releaseId": expected_rollout["release_id"],
+                "featureFlag": expected_rollout["feature_flag"],
+                "timeoutSeconds": 30,
+            },
+            "services/worker/settings.json": {
+                "upstreamUrl": expected_rollout["api_base"],
+                "region": expected_rollout["region"],
+                "rollout": expected_rollout["release_id"],
+                "featureFlag": expected_rollout["feature_flag"],
+                "maxJobs": 8,
+            },
+            "services/notifier/settings.json": {
+                "baseUrl": expected_rollout["api_base"],
+                "zone": expected_rollout["region"],
+                "release": expected_rollout["release_id"],
+                "featureFlag": expected_rollout["feature_flag"],
+                "channel": "ops",
+            },
+        }
+        for relative, wanted in service_expectations.items():
+            try:
+                value = json.loads((workspace / relative).read_text(encoding="utf-8"))
+            except Exception as exc:
+                errors.append(f"{relative} is invalid JSON: {type(exc).__name__}")
+                continue
+            if not isinstance(value, dict):
+                errors.append(f"{relative} must contain an object")
+                continue
+            for key, expected_value in wanted.items():
+                if value.get(key) != expected_value:
+                    errors.append(f"{relative} has incorrect {key}")
+        completed = subprocess.run(
+            [sys.executable, "verify_rollout.py"],
+            cwd=workspace,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        output = completed.stdout + completed.stderr
+        if completed.returncode:
+            errors.append(f"verify_rollout.py exited {completed.returncode}")
+        receipt_path = artifacts / "rollout_receipt.md"
+        if not receipt_path.is_file():
+            errors.append("missing artifacts/rollout_receipt.md")
+        else:
+            receipt_text = receipt_path.read_text(encoding="utf-8", errors="replace")
+            required_medium = (
+                "Northstar Freight",
+                expected_rollout["release_id"],
+                expected_rollout["region"],
+                expected_rollout["api_base"],
+                expected_rollout["feature_flag"],
+                "2026-08-14T02:00Z/04:00Z",
+            )
+            for value in required_medium:
+                if value not in receipt_text:
+                    errors.append(f"rollout receipt missing {value}")
+            lowered = receipt_text.casefold()
+            if "stale" not in lowered or not any(
+                word in lowered for word in ("ignored", "overridden", "rejected")
+            ):
+                errors.append("rollout receipt does not explain stale-source rejection")
     receipt = output.rstrip()
     if errors:
         receipt += ("\n" if receipt else "") + "FAIL\n- " + "\n- ".join(errors)
@@ -835,8 +997,11 @@ def event_metrics(harness: str, events: list[dict[str, Any]], state: Path) -> di
     final_text = ""
     token_total: int | None = None
     token_sum = 0
+    round_receipts: list[dict[str, Any]] = []
     for event in events:
         event_type = event.get("type")
+        if event_type == "model_round":
+            round_receipts.append(event)
         if event_type == "tool_call":
             tool_ids.add(str(event.get("id") or event.get("call_id") or len(tool_ids)))
         if event_type == "tool_execution_start":
@@ -930,7 +1095,28 @@ def event_metrics(harness: str, events: list[dict[str, Any]], state: Path) -> di
                 final_text = "\n".join(
                     str(item.get("text", "")) for item in payloads if isinstance(item, dict)
                 )
-    return {"tool_calls": len(tool_ids), "tokens": token_total, "final_text": final_text.strip()}
+    prompt_counts = [
+        int(item["prompt_tokens"])
+        for item in round_receipts
+        if isinstance(item.get("prompt_tokens"), int)
+    ]
+    return {
+        "tool_calls": len(tool_ids),
+        "tokens": token_total,
+        "final_text": final_text.strip(),
+        "model_rounds": len(round_receipts) if round_receipts else None,
+        "cumulative_prompt_tokens": sum(prompt_counts) if prompt_counts else None,
+        "max_prompt_tokens": max(prompt_counts) if prompt_counts else None,
+        "prompt_eval_ms": round(
+            sum(float(item.get("prompt_eval_ms") or 0.0) for item in round_receipts), 2
+        ) if round_receipts else None,
+        "generation_ms": round(
+            sum(float(item.get("generation_ms") or 0.0) for item in round_receipts), 2
+        ) if round_receipts else None,
+        "context_build_ms": round(
+            sum(float(item.get("context_build_ms") or 0.0) for item in round_receipts), 2
+        ) if round_receipts else None,
+    }
 
 
 def prepare_run(output_root: Path, task_id: str, harness: str, sequence: int, model: str) -> dict[str, Any]:
@@ -1054,6 +1240,12 @@ def execute_run(
         "event_count": len(events),
         "tool_calls": parsed["tool_calls"],
         "tokens": parsed["tokens"],
+        "model_rounds": parsed["model_rounds"],
+        "cumulative_prompt_tokens": parsed["cumulative_prompt_tokens"],
+        "max_prompt_tokens": parsed["max_prompt_tokens"],
+        "prompt_eval_ms": parsed["prompt_eval_ms"],
+        "generation_ms": parsed["generation_ms"],
+        "context_build_ms": parsed["context_build_ms"],
         "clean_process": clean_process,
         "stderr_tail": process["stderr"][-4000:],
         "result_path": str(result),
@@ -1076,6 +1268,17 @@ def aggregate(runs: list[dict[str, Any]], harnesses: list[str], task_ids: list[s
         selected = [run for run in runs if run["harness"] == harness]
         durations = [float(run["duration_seconds"]) for run in selected]
         token_values = [int(run["tokens"]) for run in selected if isinstance(run.get("tokens"), int)]
+        round_values = [int(run["model_rounds"]) for run in selected if isinstance(run.get("model_rounds"), int)]
+        cumulative_prompt_values = [
+            int(run["cumulative_prompt_tokens"])
+            for run in selected
+            if isinstance(run.get("cumulative_prompt_tokens"), int)
+        ]
+        max_prompt_values = [
+            int(run["max_prompt_tokens"])
+            for run in selected
+            if isinstance(run.get("max_prompt_tokens"), int)
+        ]
         per_task = {}
         for task_id in task_ids:
             cell = [run for run in selected if run["task"] == task_id]
@@ -1103,6 +1306,14 @@ def aggregate(runs: list[dict[str, Any]], harnesses: list[str], task_ids: list[s
                 "p95_duration_seconds": round(nearest_rank(durations, 0.95), 6),
                 "median_tool_calls": statistics.median(int(run["tool_calls"]) for run in selected),
                 "median_reported_tokens": statistics.median(token_values) if token_values else None,
+                "median_model_rounds": statistics.median(round_values) if round_values else None,
+                "median_cumulative_prompt_tokens": (
+                    statistics.median(cumulative_prompt_values)
+                    if cumulative_prompt_values else None
+                ),
+                "median_max_prompt_tokens": (
+                    statistics.median(max_prompt_values) if max_prompt_values else None
+                ),
                 "per_task": per_task,
             }
         )
@@ -1150,6 +1361,26 @@ def render_report(summary: dict[str, Any]) -> str:
             f"{row['median_duration_seconds']:.3f} | {row['mean_duration_seconds']:.3f} | "
             f"{row['p95_duration_seconds']:.3f} | {row['median_tool_calls']} | {tokens} |"
         )
+    diagnostic_rows = [
+        row for row in summary["aggregate"] if row.get("median_model_rounds") is not None
+    ]
+    if diagnostic_rows:
+        lines.extend(
+            [
+                "",
+                "## Model-loop diagnostics",
+                "",
+                "These provider-reported values are diagnostic only and are not used for ranking.",
+                "",
+                "| Harness | Median rounds | Median cumulative prompt tokens | Median max prompt tokens |",
+                "|---|---:|---:|---:|",
+            ]
+        )
+        for row in diagnostic_rows:
+            lines.append(
+                f"| {row['harness']} | {row['median_model_rounds']} | "
+                f"{row['median_cumulative_prompt_tokens']} | {row['median_max_prompt_tokens']} |"
+            )
     lines.extend(["", "## Blocked or non-comparable products", "", "| Product | Status | Reason |", "|---|---|---|"])
     for item in summary["product_matrix"]:
         if item["status"] != "runnable" or item["product"] not in protocol["harnesses"]:
@@ -1178,6 +1409,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    parser.add_argument(
+        "--warmup-model",
+        action="store_true",
+        help="Warm the shared Ollama model outside scored time before the first run.",
+    )
+    parser.add_argument(
+        "--warmup-keepalive",
+        default="2h",
+        help="Ollama keep-alive duration used by --warmup-model (default: 2h).",
+    )
     parser.add_argument("--output", type=Path)
     return parser
 
@@ -1203,6 +1444,20 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"selected harnesses are blocked: {reasons}")
     output_root = (args.output or (REPO_ROOT / "benchmark-results" / f"{utc_stamp()}-{args.model.replace('/', '-')}")).resolve()
     output_root.mkdir(parents=True, exist_ok=False)
+    warmup_receipt: dict[str, Any] | None = None
+    if args.warmup_model:
+        print(f"WARMUP model={args.model} keepalive={args.warmup_keepalive}", flush=True)
+        warmup_receipt = warm_model(
+            output_root,
+            args.model,
+            min(args.timeout, DEFAULT_TIMEOUT),
+            args.warmup_keepalive,
+        )
+        print(
+            f"WARMUP_RESULT success={warmup_receipt['success']} "
+            f"seconds={warmup_receipt['duration_seconds']}",
+            flush=True,
+        )
     order = rotating_order(harnesses, task_ids, args.repetitions)
     runs: list[dict[str, Any]] = []
     for sequence, (repetition, task_id, harness) in enumerate(order, start=1):
@@ -1244,8 +1499,13 @@ def main(argv: list[str] | None = None) -> int:
             "same_model": True,
             "same_machine": True,
             "same_task_fixtures": True,
+            "task_suite_sha256": task_suite_digest(task_ids),
             "timeout_seconds": args.timeout,
             "order_policy": "deterministic cyclic rotation",
+            "model_warmup": warmup_receipt or {
+                "performed": False,
+                "included_in_scored_duration": False,
+            },
         },
         "environment": {
             "platform": platform.platform(),

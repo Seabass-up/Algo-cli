@@ -42,10 +42,13 @@ def _exclusive_index_lock(index_path: str, *, timeout_seconds: float = 30.0) -> 
     with open(lock_path, "a+b") as lock_file:
         if os.name == "nt":
             import msvcrt
+            locking = getattr(msvcrt, "locking")
+            lock_nonblocking = getattr(msvcrt, "LK_NBLCK")
+            lock_unlock = getattr(msvcrt, "LK_UNLCK")
             while True:
                 try:
                     lock_file.seek(0)
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    locking(lock_file.fileno(), lock_nonblocking, 1)
                     break
                 except OSError:
                     if time.monotonic() >= deadline:
@@ -55,7 +58,7 @@ def _exclusive_index_lock(index_path: str, *, timeout_seconds: float = 30.0) -> 
                 yield
             finally:
                 lock_file.seek(0)
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                locking(lock_file.fileno(), lock_unlock, 1)
         else:
             import fcntl
             while True:

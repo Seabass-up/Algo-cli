@@ -461,13 +461,13 @@ class XaiClient:
         **_ignored: Any,
     ) -> Any:
         if is_multi_agent_model(model):
-            payload: dict[str, Any] = {
+            responses_payload: dict[str, Any] = {
                 "model": model,
                 "input": _build_responses_input(messages),
             }
             if options and "temperature" in options:
-                payload["temperature"] = options["temperature"]
-            body = _post_responses(payload, timeout=3600.0)
+                responses_payload["temperature"] = options["temperature"]
+            body = _post_responses(responses_payload, timeout=3600.0)
             chunk = _responses_to_chunk(body)
             if stream:
                 return iter([chunk])

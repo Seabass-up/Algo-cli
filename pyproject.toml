@@ -49,7 +49,6 @@ pdf = [
     "PyMuPDF>=1.24",
 ]
 quantization = [
-    "scipy>=1.10",
     "turbovec>=0.7",
 ]
 

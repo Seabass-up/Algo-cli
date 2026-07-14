@@ -33,8 +33,8 @@ class ToolSchema:
 def kernel_function(description: str = "") -> Callable:
     """Decorator that marks a method as a kernel-callable tool."""
     def decorator(fn: Callable) -> Callable:
-        fn._kernel_description = description or fn.__doc__ or ""
-        fn._kernel_function = True
+        setattr(fn, "_kernel_description", description or fn.__doc__ or "")
+        setattr(fn, "_kernel_function", True)
         return fn
     return decorator
 

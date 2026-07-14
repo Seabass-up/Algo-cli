@@ -288,7 +288,7 @@ def clear_tokens(*, revoke: bool = True) -> bool:
         return False
 
 
-def save_pending_login(prep: dict[str, str]) -> None:
+def save_pending_login(prep: dict[str, Any]) -> None:
     PENDING_AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "state": prep.get("state", ""),
@@ -416,8 +416,8 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"Not found")
             return
         params = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
-        type(_CallbackHandler).query_params = params
-        type(_CallbackHandler).done = True
+        type(self).query_params = params
+        type(self).done = True
         body = (
             b"<!doctype html><html><body><h2>Algo CLI: Google Workspace login complete.</h2>"
             b"<p>You can close this tab and return to Algo CLI.</p></body></html>"
@@ -431,23 +431,25 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
 
 def run_loopback_capture(*, redirect_port: int, timeout: float = _CALLBACK_TIMEOUT_SECONDS) -> dict[str, str]:
     """Block until a callback arrives, then return the query parameters."""
-    type(_CallbackHandler).query_params = {}
-    type(_CallbackHandler).done = False
+    class Handler(_CallbackHandler):
+        query_params: dict[str, str] = {}
+        done = False
+
     server = http.server.HTTPServer(
-        (GOOGLE_REDIRECT_HOST, redirect_port), _CallbackHandler
+        (GOOGLE_REDIRECT_HOST, redirect_port), Handler
     )
     server.timeout = 1.0
     deadline = time.time() + max(1.0, float(timeout))
     try:
-        while time.time() < deadline and not _CallbackHandler.done:
+        while time.time() < deadline and not Handler.done:
             server.handle_request()
     finally:
         server.server_close()
-    if not _CallbackHandler.done:
+    if not Handler.done:
         raise RuntimeError(
             f"Timed out after {int(timeout)}s waiting for Google OAuth callback."
         )
-    return dict(_CallbackHandler.query_params)
+    return dict(Handler.query_params)
 
 
 def wait_for_callback(*, redirect_port: int, timeout: float = _CALLBACK_TIMEOUT_SECONDS) -> dict[str, str]:
@@ -460,7 +462,7 @@ def wait_for_callback(*, redirect_port: int, timeout: float = _CALLBACK_TIMEOUT_
 # ---------------------------------------------------------------------------
 
 
-def begin_login(*, no_browser: bool = False, redirect_port: int = GOOGLE_REDIRECT_PORT) -> dict[str, str]:
+def begin_login(*, no_browser: bool = False, redirect_port: int = GOOGLE_REDIRECT_PORT) -> dict[str, Any]:
     state = secrets.token_urlsafe(32)
     verifier, challenge = generate_pkce_pair()
     redirect_uri = redirect_uri_for_port(redirect_port)
@@ -469,7 +471,7 @@ def begin_login(*, no_browser: bool = False, redirect_port: int = GOOGLE_REDIREC
         opened = webbrowser.open(url)
         if not opened:
             no_browser = True
-    prep = {
+    prep: dict[str, Any] = {
         "state": state,
         "code_verifier": verifier,
         "auth_url": url,

@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from ..chat_protocol import get_attr
+from ..chat_protocol import get_attr, normalize_tool_call
 
 
 @dataclass
@@ -185,7 +185,6 @@ def run_react_loop(
 
         # If the model used structured tool calls, execute them
         if tool_calls:
-            from ..tool_runtime import normalize_tool_call
             for call in tool_calls:
                 name, args = normalize_tool_call(call)
                 thought = f"(model called tool: {name})"

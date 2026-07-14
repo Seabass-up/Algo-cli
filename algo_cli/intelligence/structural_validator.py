@@ -107,7 +107,7 @@ class StructuralValidator:
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 if isinstance(node.func, ast.Name):
-                    self._referenced_names.add(node.func.name)
+                    self._referenced_names.add(node.func.id)
 
         # Check for broken callers
         for ref in self._referenced_names:
