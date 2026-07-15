@@ -62,6 +62,13 @@ _REASONING_EFFORT_ALIASES = {
 _REASONING_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 
+def reset_model_request_scope_cache() -> None:
+    """Retry the native Codex route after credentials are replaced."""
+
+    global _MODEL_REQUEST_SCOPE_MISSING
+    _MODEL_REQUEST_SCOPE_MISSING = False
+
+
 def is_codex_subscription_model(model: str) -> bool:
     return normalize_codex_model(model) in CODEX_SUBSCRIPTION_MODELS
 
@@ -109,15 +116,22 @@ def get_codex_models(*, timeout: float = 20.0) -> list[dict[str, Any]]:
     """
     token = chatgpt_auth.get_valid_token()
     if not token:
-        raise ChatGptOAuthAccessError("Not authenticated with ChatGPT/Codex OAuth. Run /chatgpt-login first.")
+        raise ChatGptOAuthAccessError(
+            "Not authenticated with ChatGPT/Codex OAuth. Run `algo-cli config auth chatgpt login` first."
+        )
     account_id = chatgpt_auth.get_chatgpt_account_id()
     if not account_id:
         raise ChatGptOAuthAccessError(
-            "ChatGPT/Codex OAuth token does not include a ChatGPT account id. Run /chatgpt-login again."
+            "ChatGPT/Codex OAuth token does not include a ChatGPT account id. "
+            "Run `algo-cli config auth chatgpt login` again."
         )
+    base_url = chatgpt_auth.validate_credential_endpoint(
+        CODEX_RESPONSES_BASE_URL,
+        "OpenAI Codex Responses endpoint",
+    )
     query = urllib.parse.urlencode({"client_version": CODEX_MODELS_CLIENT_VERSION})
     req = urllib.request.Request(
-        f"{CODEX_RESPONSES_BASE_URL}/codex/models?{query}",
+        f"{base_url}/codex/models?{query}",
         headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
@@ -182,9 +196,14 @@ def _run_codex_exec(
 ) -> str:
     codex_bin = chatgpt_auth.resolve_codex_bin()
     if not codex_bin:
-        raise ChatGptOAuthAccessError("Codex CLI is not installed or not discoverable. Run /chatgpt-login again after installing Codex.")
+        raise ChatGptOAuthAccessError(
+            "Codex CLI is not installed or not discoverable. Install Codex, then run "
+            "`algo-cli config auth chatgpt login` again."
+        )
     if not chatgpt_auth.get_valid_token():
-        raise ChatGptOAuthAccessError("Not authenticated with ChatGPT/Codex OAuth. Run /chatgpt-login first.")
+        raise ChatGptOAuthAccessError(
+            "Not authenticated with ChatGPT/Codex OAuth. Run `algo-cli config auth chatgpt login` first."
+        )
     codex_home = chatgpt_auth.CODEX_AUTH_HOME
     if not (codex_home / "auth.json").is_file():
         inherited_home = Path(os.environ.get("CODEX_HOME", "")).expanduser() if os.environ.get("CODEX_HOME") else None
@@ -195,7 +214,8 @@ def _run_codex_exec(
             codex_home = default_home
         else:
             raise ChatGptOAuthAccessError(
-                "Codex CLI fallback needs a Codex auth file. Run /chatgpt-login --device-code."
+                "Codex CLI fallback needs a Codex auth file. Run "
+                "`algo-cli config auth chatgpt login --device-code`."
             )
     prompt = _messages_to_codex_prompt(messages)
     env = os.environ.copy()
@@ -233,7 +253,10 @@ def _run_codex_exec(
         except subprocess.TimeoutExpired as exc:
             raise ChatGptOAuthAccessError(f"Codex CLI timed out after {timeout:.0f}s for model {model}.") from exc
         except FileNotFoundError as exc:
-            raise ChatGptOAuthAccessError("Codex CLI is not installed or not discoverable. Run /chatgpt-login again.") from exc
+            raise ChatGptOAuthAccessError(
+                "Codex CLI is not installed or not discoverable. Run "
+                "`algo-cli config auth chatgpt login` again."
+            ) from exc
         if getattr(result, "returncode", 0) != 0:
             stderr = str(getattr(result, "stderr", "") or "").strip()
             stdout = str(getattr(result, "stdout", "") or "").strip()
@@ -245,7 +268,7 @@ def _run_codex_exec(
                 return text
         stdout = str(getattr(result, "stdout", "") or "").strip()
         if stdout:
-            return stdout.splitlines()[-1].strip()
+            return stdout
     raise ChatGptOAuthAccessError(f"Codex CLI completed for {model} but produced no response.")
 
 
@@ -420,10 +443,13 @@ def _build_responses_input(messages: list[dict[str, Any]]) -> list[dict[str, Any
 def _post_chat(payload: dict[str, Any], *, stream: bool, timeout: float = 120.0) -> Any:
     token = chatgpt_auth.get_valid_token()
     if not token:
-        raise ChatGptOAuthAccessError("Not authenticated with ChatGPT OAuth. Run /chatgpt-login first.")
+        raise ChatGptOAuthAccessError(
+            "Not authenticated with ChatGPT OAuth. Run `algo-cli config auth chatgpt login` first."
+        )
+    base_url = chatgpt_auth.validate_credential_endpoint(chatgpt_auth.CHATGPT_API_BASE, "OpenAI API endpoint")
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        f"{chatgpt_auth.CHATGPT_API_BASE}/chat/completions",
+        f"{base_url}/chat/completions",
         data=body,
         headers={
             "Authorization": f"Bearer {token}",
@@ -444,7 +470,10 @@ def _post_chat(payload: dict[str, Any], *, stream: bool, timeout: float = 120.0)
 
 
 def _codex_responses_url() -> str:
-    base = CODEX_RESPONSES_BASE_URL
+    base = chatgpt_auth.validate_credential_endpoint(
+        CODEX_RESPONSES_BASE_URL,
+        "OpenAI Codex Responses endpoint",
+    )
     if base.endswith("/codex/responses"):
         return base
     return f"{base}/codex/responses"
@@ -483,11 +512,14 @@ def _build_codex_responses_request(payload: dict[str, Any], *, token: str, accou
 def _post_codex_responses(payload: dict[str, Any], *, timeout: float = 120.0, _retried: bool = False) -> Any:
     token = chatgpt_auth.get_valid_token()
     if not token:
-        raise ChatGptOAuthAccessError("Not authenticated with ChatGPT/Codex OAuth. Run /chatgpt-login first.")
+        raise ChatGptOAuthAccessError(
+            "Not authenticated with ChatGPT/Codex OAuth. Run `algo-cli config auth chatgpt login` first."
+        )
     account_id = chatgpt_auth.get_chatgpt_account_id()
     if not account_id:
         raise ChatGptOAuthAccessError(
-            "ChatGPT/Codex OAuth token does not include a ChatGPT account id. Run /chatgpt-login again."
+            "ChatGPT/Codex OAuth token does not include a ChatGPT account id. "
+            "Run `algo-cli config auth chatgpt login` again."
         )
     req = _build_codex_responses_request(payload, token=token, account_id=account_id)
     try:
@@ -539,7 +571,10 @@ def _stream_iter(resp: Any) -> Iterator[dict[str, Any]]:
         if delta.get("content"):
             yield {"message": {"content": delta["content"]}}
         for tc_delta in delta.get("tool_calls") or []:
-            idx = int(tc_delta.get("index", 0))
+            try:
+                idx = int(tc_delta.get("index", 0))
+            except (TypeError, ValueError, OverflowError):
+                idx = max(pending_calls, default=-1) + 1
             slot = pending_calls.setdefault(idx, {"function": {"name": "", "arguments": ""}})
             if tc_delta.get("id"):
                 slot["id"] = tc_delta["id"]
@@ -730,12 +765,14 @@ class ChatGptClient:
                 note = (
                     "Note: ChatGPT OAuth lacks the model.request scope, so this response used "
                     "Codex CLI fallback without Algo CLI tool calls. For full file edits, shell, "
-                    "approval gates, and tool ledger, reauthenticate with /chatgpt-login --device-code.\n\n"
+                    "approval gates, and tool ledger, reauthenticate with "
+                    "`algo-cli config auth chatgpt login --device-code`.\n\n"
                 )
                 chunk["message"]["content"] = note + str(chunk["message"].get("content", ""))
                 if stream:
                     return iter([chunk])
                 return chunk
+            _MODEL_REQUEST_SCOPE_MISSING = False
             if stream:
                 return _stream_codex_responses_iter(resp)
             return _codex_responses_to_chunk(resp)

@@ -37,7 +37,7 @@ def catalog_for_prompt() -> str:
         "  - /harness refresh: refresh indexed skills/wiki/memory after local harness files changed.",
         "  - /intel query TERM: inspect the local repository intelligence graph before code/navigation decisions.",
         "    Use /intel status to check availability; /intel reindex requires approval because it writes the graph index.",
-        "  - Google Workspace commands are read-only and auth-gated; call available_actions(topic='google') before using /google-login, /google-callback, /google-status, or /google subcommands.",
+        "  - Google Workspace commands are auth-gated; configure them outside the REPL with `algo-cli config setup google`, then call available_actions(topic='google') before using /google subcommands.",
         "  - /route TASK: preview the recommended Agent Blocks route before a complex task.",
         "  - /agent [--pipeline NAME] TASK: run a traceable multi-block pipeline for larger implementation/research/review work.",
         "  - /agent team [--roles ROLE,ROLE[,ROLE,ROLE]] TASK: delegate independent analysis to 2-4 read-only child threads, then integrate once with normal write and verification gates.",

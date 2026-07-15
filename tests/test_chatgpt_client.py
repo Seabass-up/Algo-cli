@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -43,7 +44,7 @@ def _reset_missing_scope_cache(monkeypatch):
 
 def test_requires_chatgpt_oauth_token(monkeypatch):
     monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_valid_token", lambda: None)
-    with pytest.raises(chatgpt_client.ChatGptOAuthAccessError, match="/chatgpt-login"):
+    with pytest.raises(chatgpt_client.ChatGptOAuthAccessError, match="algo-cli config auth chatgpt login"):
         chatgpt_client._post_chat({"model": "gpt-5.1"}, stream=False)
 
 
@@ -89,6 +90,52 @@ def test_codex_subscription_model_passes_reasoning_effort_to_exec(monkeypatch):
     )
 
     assert captured["reasoning_effort"] == "high"
+
+
+def test_codex_exec_preserves_multiline_stdout_when_output_file_is_missing(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "resolve_codex_bin", lambda: "codex")
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_valid_token", lambda: "token")
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "CODEX_AUTH_HOME", codex_home)
+
+    result = chatgpt_client._run_codex_exec(
+        "gpt-5.5",
+        [{"role": "user", "content": "hi"}],
+        runner=lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="first line\nsecond line",
+            stderr="",
+        ),
+    )
+
+    assert result == "first line\nsecond line"
+
+
+def test_chat_completion_stream_tolerates_invalid_tool_call_index():
+    events = [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": None,
+                                "id": "call_1",
+                                "function": {"name": "read_file", "arguments": "{}"},
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+    ]
+
+    chunks = list(chatgpt_client._stream_iter(_FakeStreamResponse(events)))
+
+    assert chunks[-1]["message"]["tool_calls"][0]["id"] == "call_1"
 
 
 def test_gpt_56_aliases_and_reasoning_levels():

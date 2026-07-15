@@ -516,7 +516,7 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         "google_workspace.read", "provider", "Google Workspace access (read/write Drive/Docs/Sheets/Calendar plus Gmail read/draft creation) via OAuth.",
         "provider",
         ("google-workspace", "oauth", "read-write", "network"),
-        "Provides Google Workspace access behind the /google-login OAuth flow; Gmail writes are limited to draft creation for user review.",
+        "Provides Google Workspace access behind the `algo-cli config setup google` OAuth flow; Gmail writes are limited to draft creation for user review.",
         "medium", False, False, True,
         requires_network=True,
         requires_provider="google-workspace",
@@ -530,19 +530,35 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         "/google-login", "slash", "Authenticate with Google Workspace (OAuth2 + PKCE).",
         "provider",
         ("google-workspace", "oauth", "auth"),
-        "Detects missing GOOGLE_OAUTH_CLIENT_ID before starting the loopback flow.", "medium", True, True, True,
+        "Compatibility route for existing sessions; new setup lives under `algo-cli config`.", "medium", True, True, True,
+        archived=True,
+        archived_reason="Provider setup moved out of the normal slash palette.",
+        replacement="Use `algo-cli config auth google login`.",
     ),
     _spec(
         "/google-logout", "slash", "Revoke Google Workspace tokens locally.",
         "provider",
         ("google-workspace", "auth", "logout"),
-        "Clears local Google Workspace tokens and best-effort revokes at Google.", "medium", True, True, True,
+        "Compatibility route for existing sessions; new setup lives under `algo-cli config`.", "medium", True, True, True,
+        archived=True,
+        archived_reason="Provider setup moved out of the normal slash palette.",
+        replacement="Use `algo-cli config auth google logout`.",
     ),
     _spec(
         "/google-status", "slash", "Show Google Workspace auth state.",
         "provider",
         ("google-workspace", "auth", "status"),
-        "Surfaces whether the user is authenticated and which scopes were granted.", "low", False, False, True,
+        "Compatibility route for existing sessions; new setup lives under `algo-cli config`.", "low", False, False, True,
+        archived=True,
+        archived_reason="Provider setup moved out of the normal slash palette.",
+        replacement="Use `algo-cli config auth google status`.",
+    ),
+    _spec(
+        "/config", "slash", "Configure or inspect connected providers outside the normal slash palette.",
+        "provider",
+        ("provider", "configuration", "credentials", "oauth"),
+        "`/config status` is read-only; setup and login paths can write local credential state or open a browser.",
+        "medium", True, True, False,
     ),
     _spec(
         "/google", "slash", "Run Google Workspace commands (Drive/Docs/Sheets/Calendar read/write plus Gmail read/drafts).",
@@ -981,39 +997,39 @@ def build_doctor_report(cfg: Any) -> DoctorReport:
             "Set ALGO_CLI_ENV_FILE or ~/.algo_cli/env with OLLAMA_API_KEY, then rerun /doctor.",
         ))
 
-    # xAI subscription OAuth is an optional provider and deliberately ships
-    # without a third-party OAuth client identity. Its absence must not make a
-    # fresh local install look unhealthy.
+    # xAI API access is optional.  A missing key must not make a fresh local
+    # install look unhealthy, but the readiness report must not claim that an
+    # undocumented consumer OAuth lane is usable.
     try:
         from . import xai_auth
 
         xai_status = xai_auth.auth_status()
-        if not xai_status.get("client_configured"):
+        if not xai_status.get("api_key_configured"):
             findings.append(DoctorFinding(
                 "ready",
-                "xai-oauth",
-                "optional xAI subscription OAuth is not configured (no bundled client id)",
-                "Set XAI_CLIENT_ID in ~/.algo_cli/env only if you want to enable this provider.",
-            ))
-        elif xai_status.get("authenticated"):
-            findings.append(DoctorFinding(
-                "ready",
-                "xai-oauth",
-                f"optional xAI OAuth authenticated (expires in {int(xai_status.get('expires_in', 0))}s)",
+                "xai-api",
+                "optional xAI API key is not configured",
+                "Run `algo-cli config setup xai` only if you want to enable Grok API models or x_search.",
             ))
         else:
             findings.append(DoctorFinding(
                 "ready",
-                "xai-oauth",
-                "optional xAI OAuth client configured; no active session",
-                "Run /xai-login if you want to use xAI models.",
+                "xai-api",
+                "optional xAI API key configured (value redacted)",
+            ))
+        if xai_status.get("legacy_oauth_detected"):
+            findings.append(DoctorFinding(
+                "degraded",
+                "xai-legacy-oauth",
+                "obsolete xAI OAuth state detected and ignored",
+                "Remove it with `algo-cli config auth xai logout` or reconfigure with `algo-cli config setup xai`.",
             ))
     except Exception as exc:  # pragma: no cover - best-effort diagnostic
         findings.append(DoctorFinding(
             "degraded",
-            "xai-oauth",
+            "xai-api",
             f"xai_auth import failed: {exc}",
-            "Reinstall Algo CLI; the module is required for optional /xai-* commands.",
+            "Reinstall Algo CLI; the module is required for optional xAI API commands.",
         ))
 
     from . import index_compute_lab
@@ -1069,7 +1085,7 @@ def build_doctor_report(cfg: Any) -> DoctorReport:
             findings.append(DoctorFinding(
                 "degraded", "google-workspace",
                 "GOOGLE_OAUTH_CLIENT_ID not set",
-                "Create an OAuth client at https://console.cloud.google.com and export the id before /google-login.",
+                "Create a Desktop app OAuth client, then run `algo-cli config setup google` before logging in.",
             ))
         elif status.get("authenticated"):
             findings.append(DoctorFinding(
@@ -1080,7 +1096,7 @@ def build_doctor_report(cfg: Any) -> DoctorReport:
             findings.append(DoctorFinding(
                 "degraded", "google-workspace",
                 "Google OAuth client configured but no active session",
-                "Run /google-login to start the loopback flow.",
+                "Run `algo-cli config auth google login` to start the loopback flow.",
             ))
     except Exception as exc:  # pragma: no cover - best-effort diagnostic
         findings.append(DoctorFinding(

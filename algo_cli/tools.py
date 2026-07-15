@@ -9,10 +9,12 @@ import os
 import json
 import fnmatch
 import re
+import signal
 import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 import inspect
@@ -35,6 +37,8 @@ MAX_READ_CHARS = 50_000
 MAX_PDF_PAGES = 24
 MAX_RENDER_PDF_PAGES = 6
 MAX_TOOL_RESULT = 20_000
+WEB_FETCH_MAX_INFLIGHT = 2
+_WEB_FETCH_SLOTS = threading.BoundedSemaphore(WEB_FETCH_MAX_INFLIGHT)
 SESSION_COMMAND_OUTPUT_LIMIT = MAX_TOOL_RESULT
 SEARCH_FALLBACK_SKIP_DIRS = {
     ".git", "node_modules", ".venv", "venv", "dist", "build",
@@ -1121,6 +1125,36 @@ def _isolated_process_group_kwargs(platform_name: str | None = None) -> dict[str
     return {"start_new_session": True}
 
 
+def _terminate_process_tree(
+    proc: subprocess.Popen[str],
+    *,
+    platform_name: str | None = None,
+) -> None:
+    """Best-effort termination for the isolated shell process and descendants."""
+
+    if (platform_name or os.name) == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            return
+        except (OSError, subprocess.SubprocessError):
+            pass
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+            return
+        except (OSError, ProcessLookupError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
 def run_shell(command: str, cwd: str | None = None, timeout: float = 30, safe_mode: bool = False) -> str:
     """Run a shell command and return output.
 
@@ -1148,26 +1182,42 @@ def run_shell(command: str, cwd: str | None = None, timeout: float = 30, safe_mo
     # delivered to the CLI as a phantom KeyboardInterrupt mid-generation.
     popen_kwargs = _isolated_process_group_kwargs()
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             command,
             shell=True,
             cwd=workdir,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=actual_timeout,
             **popen_kwargs,
         )
+        try:
+            stdout, stderr = proc.communicate(timeout=actual_timeout)
+        except subprocess.TimeoutExpired:
+            _terminate_process_tree(proc)
+            try:
+                proc.communicate(timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            return f"Error: command timed out after {actual_timeout:g} seconds; child processes were terminated."
+        except KeyboardInterrupt:
+            _terminate_process_tree(proc)
+            try:
+                proc.communicate(timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            return "Error: command interrupted; child processes were terminated."
     except subprocess.TimeoutExpired:
-        return f"Error: command timed out after {actual_timeout:g} seconds."
+        return f"Error: command timed out after {actual_timeout:g} seconds; child processes were terminated."
     except Exception as exc:
         return f"Error running command: {exc}"
     output = ""
-    if proc.stdout:
-        output += proc.stdout.strip()
-    if proc.stderr:
-        output += ("\nSTDERR: " if output else "STDERR: ") + proc.stderr.strip()
+    if stdout:
+        output += stdout.strip()
+    if stderr:
+        output += ("\nSTDERR: " if output else "STDERR: ") + stderr.strip()
     if not output:
         output = "(command produced no output)"
     suffix = f"[exit code: {proc.returncode}]"
@@ -1266,7 +1316,13 @@ def web_fetch(url: str, timeout: float = 30) -> str:
     if preflight:
         return preflight
     import queue
-    import threading
+
+    actual_timeout = max(0.001, min(float(timeout), 120.0))
+    if not _WEB_FETCH_SLOTS.acquire(blocking=False):
+        return (
+            "Error fetching URL: too many previous fetches are still running after timeout; "
+            "wait for them to finish before retrying."
+        )
 
     def _fetch():
         try:
@@ -1275,30 +1331,35 @@ def web_fetch(url: str, timeout: float = 30) -> str:
             results.put(("ok", _cap(content)))
         except Exception as exc:
             results.put(("error", exc))
+        finally:
+            _WEB_FETCH_SLOTS.release()
 
-    actual_timeout = max(0.001, min(float(timeout), 120.0))
     results: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
     thread = threading.Thread(target=_fetch, name="algo-cli-web-fetch", daemon=True)
-    thread.start()
+    try:
+        thread.start()
+    except Exception as exc:
+        _WEB_FETCH_SLOTS.release()
+        return f"Error fetching URL: could not start worker: {exc}"
     try:
         status, payload = results.get(timeout=actual_timeout)
     except queue.Empty:
         return f"Error fetching URL: timed out after {actual_timeout:g} seconds."
     if status == "ok":
         return str(payload)
-    exc = payload
-    if isinstance(exc, Exception):
-        return f"Error fetching URL: {exc}. This usually requires ollama>=0.5 and OLLAMA_API_KEY."
-    return f"Error fetching URL: {exc}. This usually requires ollama>=0.5 and OLLAMA_API_KEY."
+    fetch_error = payload
+    if isinstance(fetch_error, Exception):
+        return f"Error fetching URL: {fetch_error}. This usually requires ollama>=0.5 and OLLAMA_API_KEY."
+    return f"Error fetching URL: {fetch_error}. This usually requires ollama>=0.5 and OLLAMA_API_KEY."
 
 
 def x_search(query: str, max_results: int = 10) -> str:
     """Search X.com (Twitter) in real time via Grok's native Live Search.
 
-    Requires xAI OAuth authentication (run /xai-login first). This CLI uses
-    the subscription OAuth path only and refuses API-key fallback. Results are
-    summarized by Grok and include citation URLs, then cached as a harness record so
-    future turns can retrieve them via RAG.
+    Requires a configured xAI API key (run ``algo-cli config setup xai``).
+    Results are summarized by Grok and include citation URLs, then cached as a
+    harness record so future turns can retrieve them via RAG. xAI requests may
+    consume paid API usage.
 
     Args:
         query: What to search X.com for.
@@ -1308,7 +1369,7 @@ def x_search(query: str, max_results: int = 10) -> str:
     from .config import _resolve_config_dir
 
     if not xai_auth.get_valid_token():
-        return "Error: not authenticated with xAI. Run /xai-login first."
+        return "Error: xAI API key is not configured. Run `algo-cli config setup xai` first."
     if not query or not query.strip():
         return "Error: query is empty."
 
@@ -1321,12 +1382,17 @@ def x_search(query: str, max_results: int = 10) -> str:
     except Exception as exc:
         return f"Error running x_search: {exc}"
 
-    content = result.get("content", "") or "(Grok returned no summary.)"
-    citations = result.get("citations") or []
+    content = str(result.get("content", "") or "(Grok returned no summary.)")
+    raw_citations = result.get("citations") or []
+    citations = (
+        [str(item).replace("\r", " ").replace("\n", " ")[:2048] for item in raw_citations]
+        if isinstance(raw_citations, (list, tuple))
+        else []
+    )
 
     cache_dir = _resolve_config_dir() / "x_search_cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
     # Use hash of full query to avoid collisions from truncation
+    clean_query = " ".join(query.strip().split())[:500]
     query_hash = hashlib.sha256(query.strip().encode("utf-8")).hexdigest()[:16]
     ts = time.strftime("%Y%m%dT%H%M%S") + f".{int(time.time() * 1000) % 1000:03d}"
     path = cache_dir / f"x_search_{query_hash}_{ts}.md"
@@ -1336,11 +1402,11 @@ def x_search(query: str, max_results: int = 10) -> str:
         f"id: algo-cli:x_search:{query_hash}_{ts}",
         "harness: algo-cli",
         "kind: x_search",
-        f"title: \"X.com search: {query.strip()}\"",
+        f"title: {json.dumps(f'X.com search: {clean_query}', ensure_ascii=False)}",
         "tags: [x_search, xai, realtime]",
         f"fetched_at: {ts}",
         "---",
-        f"# X.com search: {query.strip()}",
+        f"# X.com search: {clean_query}",
         "",
         content,
     ]
@@ -1349,8 +1415,11 @@ def x_search(query: str, max_results: int = 10) -> str:
         body_lines.append("## Citations")
         for url in citations:
             body_lines.append(f"- {url}")
+    cached = False
     try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
         _atomic_write_text(path, "\n".join(body_lines))
+        cached = True
     except OSError as exc:
         logger.debug("x_search cache write failed for %s: %s", path, exc)
 
@@ -1359,15 +1428,16 @@ def x_search(query: str, max_results: int = 10) -> str:
         out_parts.append("")
         out_parts.append("Sources:")
         out_parts.extend(f"- {url}" for url in citations[:max_results])
-    out_parts.append("")
-    out_parts.append(f"(cached to {path.name})")
+    if cached:
+        out_parts.append("")
+        out_parts.append(f"(cached to {path.name})")
     return _cap("\n".join(out_parts))
 
 
 def x_account_status() -> str:
     """Check X account CLI auth status through xurl without reading token files.
 
-    This uses the separate X account OAuth lane (api.x.com), not xAI Grok OAuth.
+    This uses the separate X account OAuth lane (api.x.com), not the xAI Grok API key.
     It never reads or prints ~/.xurl directly.
     """
     from . import x_account
@@ -1689,11 +1759,10 @@ def available_actions(topic: str | None = None) -> str:
             "/ship all [--ready] MESSAGE",
         ],
         "reasoning": ["/reason status", "/reason guide", "/reason react", "/reason reflexion", "/reason tot", "/reason got", "/reason mcts", "/reason qcr", "/reason neuro_symbolic", "/reason depth N", "/reason branches N", "/reason auto-reflexion on|off", "/reason auto-verify on|off"],
-        "xai": ["/xai-login", "/xai-status", "/xai-test", "/x-account status"],
+        "xai": ["algo-cli config setup xai", "algo-cli config auth xai verify", "/model-check MODEL", "/x-account status"],
         "google": [
-            "/google-login",
-            "/google-callback --clipboard",
-            "/google-status",
+            "algo-cli config setup google",
+            "algo-cli config auth google login",
             "/google drive-list [query] [--max N]",
             "/google drive-search NAME [--max N] [--mime MIME]",
             "/google drive-get FILE_ID [--download | --export MIME]",
@@ -1703,7 +1772,7 @@ def available_actions(topic: str | None = None) -> str:
             "/google gmail-list [query] [--max N] [--label LABEL]",
             "/google gmail-get MESSAGE_ID",
         ],
-        "chatgpt": ["/chatgpt-login", "/chatgpt-status", "/chatgpt-logout"],
+        "chatgpt": ["algo-cli config setup chatgpt", "algo-cli config auth chatgpt status", "algo-cli config auth chatgpt logout"],
         "multimodal": [
             "/embed [--model MODEL] [--file PATH] TEXT",
             "/vision [--model MODEL] [--prompt TEXT] IMAGE [QUESTION]",
@@ -1827,7 +1896,7 @@ def available_actions(topic: str | None = None) -> str:
         "For Algo algorithm/pattern catalog guidance, read and update docs/ALGO.md.",
         "For harness maintenance, use harness_stats or /harness status to inspect quality, harness_scorecard or /harness score to grade readiness, harness_refresh or /harness refresh after source edits, and /harness embed to fill pending embeddings.",
         "Use web_search/web_fetch only when OLLAMA_API_KEY enables Ollama Cloud web access.",
-        "Use x_search for real-time X.com content; requires /xai-login (SuperGrok OAuth).",
+        "Use x_search for real-time X.com content only after the user configured XAI_API_KEY with `algo-cli config setup xai`; xAI API calls may consume paid usage.",
         "Use x_account_* for X account actions through xurl; writes require explicit confirmation and separate X API OAuth.",
         "Treat memory/wiki as navigation; verify consequential facts against live files or endpoints.",
     ]
@@ -2000,6 +2069,8 @@ def _session_command_captures_output(command_line: str) -> bool:
         return normalized_arg.startswith("ask ")
     if root == "/x-account":
         return normalized_arg == "status"
+    if root == "/config":
+        return normalized_arg in {"", "?", "help", "show", "status"}
     if root == "/plugins":
         subcommand = normalized_arg.split(maxsplit=1)[0] if normalized_arg else "list"
         return subcommand in {"?", "help", "list", "status"}
@@ -2768,7 +2839,7 @@ def harness_scorecard() -> str:
         google_actions = json.loads(available_actions("google"))
         google_commands = set(google_actions.get("commands", {}).get("google", []))
         required_google_fragments = (
-            "/google-login", "/google-callback", "/google-status", "/google drive-list",
+            "algo-cli config setup google", "algo-cli config auth google login", "/google drive-list",
             "/google gmail-list", "/google docs-get", "/google sheets-values", "/google calendar-list",
         )
         missing_google = [

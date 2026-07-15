@@ -1408,7 +1408,7 @@ def show_help() -> None:
             return "Workspace"
         if command in {"/embed", "/vision", "/pdf"}:
             return "Media"
-        if command in {"/plugins", "/credentials", "/url-scheme"}:
+        if command in {"/config", "/plugins", "/credentials", "/url-scheme"}:
             return "Integrations"
         return "Other"
 

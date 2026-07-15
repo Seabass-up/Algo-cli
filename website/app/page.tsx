@@ -27,7 +27,7 @@ export default function Home() {
             <Link className="button secondary" href="/docs">Read the docs <b>→</b></Link>
           </div>
           <div className="hero-meta">
-            <Pill tone="lime">v0.16.0 stable</Pill>
+            <Pill tone="lime">v0.17.0 stable</Pill>
             <span>Python 3.10+</span>
             <span>MIT licensed</span>
           </div>

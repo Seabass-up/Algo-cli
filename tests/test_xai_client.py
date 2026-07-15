@@ -279,6 +279,34 @@ class TestStreamParsing:
         assert calls[0]["function"]["name"] == "read_file"
         assert calls[0]["function"]["arguments"] == '{"path": "/a"}'
 
+    def test_invalid_tool_call_index_does_not_abort_stream(self, monkeypatch):
+        events = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": None,
+                                    "id": "call_1",
+                                    "function": {"name": "read_file", "arguments": "{}"},
+                                }
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            }
+        ]
+        monkeypatch.setattr(
+            xai_client, "_post_chat", lambda payload, **kw: _FakeStreamResponse(events)
+        )
+
+        chunks = list(xai_client.XaiClient().chat(model="g", messages=[], stream=True))
+
+        tool_chunks = [chunk for chunk in chunks if chunk["message"].get("tool_calls")]
+        assert tool_chunks[0]["message"]["tool_calls"][0]["id"] == "call_1"
+
     def test_pending_tool_call_emits_when_stream_ends_without_finish_reason(self, monkeypatch):
         events = [
             {
@@ -557,34 +585,34 @@ class TestSearchHelper:
 class TestUnauthenticatedError:
     def test_post_chat_raises_when_no_token(self, monkeypatch):
         monkeypatch.setattr(xai_client.xai_auth, "get_valid_token", lambda: None)
-        with pytest.raises(RuntimeError, match="Not authenticated"):
+        with pytest.raises(RuntimeError, match="API key is not configured"):
             xai_client._post_chat({}, stream=False)
 
-    def test_billing_or_api_key_errors_fail_closed(self):
-        err = xai_client._oauth_only_error(
+    def test_billing_or_api_key_errors_explain_the_documented_credential(self):
+        err = xai_client._api_access_error(
             402,
             "https://api.x.ai/v1/responses",
             "insufficient credits; configure an API key",
         )
 
-        assert isinstance(err, xai_client.XaiOAuthAccessError)
-        assert "will not use XAI_API_KEY" in str(err)
-        assert "pay-per-token" in str(err)
+        assert isinstance(err, xai_client.XaiApiAccessError)
+        assert "configured XAI_API_KEY" in str(err)
+        assert "credits or permissions" in str(err)
 
-    def test_provider_error_redacts_configured_client_id(self, monkeypatch):
-        client_id = "configured-client-id-not-for-error-output"
-        monkeypatch.setenv("XAI_CLIENT_ID", client_id)
+    def test_provider_error_redacts_configured_api_key(self, monkeypatch):
+        api_key = "configured-api-key-not-for-error-output"
+        monkeypatch.setenv("XAI_API_KEY", api_key)
 
-        err = xai_client._oauth_only_error(
+        err = xai_client._api_access_error(
             400,
             "https://api.x.ai/v1/models",
-            f"unknown client_id {client_id}",
+            f"unknown api_key {api_key}",
         )
 
-        assert client_id not in str(err)
-        assert "[redacted-client-id]" in str(err)
+        assert api_key not in str(err)
+        assert "[redacted-api-key]" in str(err)
 
-    def test_http_403_from_chat_raises_oauth_access_error(self, monkeypatch):
+    def test_http_403_from_chat_raises_api_access_error(self, monkeypatch):
         def fake_urlopen(*args, **kwargs):
             raise urllib.error.HTTPError(
                 url="https://api.x.ai/v1/chat/completions",
@@ -594,10 +622,10 @@ class TestUnauthenticatedError:
                 fp=io.BytesIO(b"subscription tier not enabled"),
             )
 
-        monkeypatch.setattr(xai_client.xai_auth, "get_valid_token", lambda: "oauth-token")
+        monkeypatch.setattr(xai_client.xai_auth, "get_valid_token", lambda: "api-key")
         monkeypatch.setattr(xai_client.urllib.request, "urlopen", fake_urlopen)
 
-        with pytest.raises(xai_client.XaiOAuthAccessError, match="will not use XAI_API_KEY"):
+        with pytest.raises(xai_client.XaiApiAccessError, match="configured XAI_API_KEY"):
             xai_client._post_chat({"model": "grok-4.3"}, stream=False)
 
 

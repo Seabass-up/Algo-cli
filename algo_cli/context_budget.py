@@ -202,7 +202,7 @@ def build_system_prompt(
     prompt = (identity_block + "\n\n" if identity_block else "") + cfg.system
     load_runtime_env(override=True)
     if _model_info_module.is_xai_model(cfg.model):
-        provider = "xAI Grok OAuth"
+        provider = "xAI Grok API"
     elif cfg.cloud and os.environ.get("OLLAMA_API_KEY", "").strip():
         provider = "Ollama Cloud direct API"
     elif _model_info_module.is_cloud_model_name(cfg.model):
@@ -307,8 +307,8 @@ def build_system_prompt(
         "tell them to run /model-check NAME (or run it yourself via session slash if available), "
         "and search the currently enabled harness for Algo CLI xAI/X-account guidance; do not assume external record IDs exist. "
         "Multi-agent grok models use xAI /v1/responses; other Grok models use /v1/chat/completions. "
-        "Auth is optional subscription OAuth only: the user must provide XAI_CLIENT_ID, and tokens live in "
-        "~/.algo_cli/xai_auth.json. Algo CLI bundles no xAI client identity."
+        "Auth uses the documented XAI_API_KEY flow. Tell users to run `algo-cli config setup xai`; do not request, "
+        "display, or persist key material in conversation. xAI API calls may consume paid usage."
         "\n\n## Capability Awareness\n"
         "When the user asks what you can do, what actions are available, what internal stats exist, or what tools/skills/memory/wiki you can access, call available_actions first."
         "\n\n## PDF Handling\n"

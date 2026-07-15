@@ -2,12 +2,12 @@
 
 Read/write access to Drive, Docs, Sheets, and Calendar plus Gmail read/draft
 access over a local-loopback Authorization Code + PKCE flow. Gmail draft
-creation is allowed; direct send is intentionally not exposed. Public client —
-no client secret is required (matches the xai_auth / chatgpt_auth pattern).
+creation is allowed; direct send is intentionally not exposed. Public Desktop
+client — no client secret is normally required.
 
 Configuration via environment variables:
 
-- GOOGLE_OAUTH_CLIENT_ID (required for /google-login)
+- GOOGLE_OAUTH_CLIENT_ID (required; configure with ``algo-cli config setup google``)
 - GOOGLE_OAUTH_CLIENT_SECRET (optional; needed only for confidential Web-app
   credentials; public Desktop-app credentials can omit it)
 - GOOGLE_OAUTH_REDIRECT_PORT (optional, default 56251)
@@ -26,6 +26,7 @@ import hashlib
 import http.server
 import json
 import os
+import re
 import secrets
 import socket
 import time
@@ -34,7 +35,7 @@ import urllib.request
 import webbrowser
 from typing import Any
 
-from .config import CONFIG_DIR, _atomic_write_text
+from .config import CONFIG_DIR, _atomic_write_text, _exclusive_state_lock
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -46,8 +47,18 @@ GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 
 GOOGLE_REDIRECT_HOST = "127.0.0.1"
-GOOGLE_REDIRECT_PORT = int(os.environ.get("GOOGLE_OAUTH_REDIRECT_PORT", "56251"))
-GOOGLE_REDIRECT_PORT_RANGE = range(GOOGLE_REDIRECT_PORT, GOOGLE_REDIRECT_PORT + 20)
+
+
+def _configured_redirect_port() -> int:
+    try:
+        port = int(os.environ.get("GOOGLE_OAUTH_REDIRECT_PORT", "56251"))
+    except (TypeError, ValueError, OverflowError):
+        return 56251
+    return port if 1024 <= port <= 65535 else 56251
+
+
+GOOGLE_REDIRECT_PORT = _configured_redirect_port()
+GOOGLE_REDIRECT_PORT_RANGE = range(GOOGLE_REDIRECT_PORT, min(65536, GOOGLE_REDIRECT_PORT + 20))
 GOOGLE_REDIRECT_URI = f"http://{GOOGLE_REDIRECT_HOST}:{GOOGLE_REDIRECT_PORT}/callback"
 
 # Full read/write scopes for Drive/Docs/Sheets/Calendar. Gmail includes read +
@@ -70,6 +81,13 @@ _CALLBACK_TIMEOUT_SECONDS = 300.0
 _PENDING_LOGIN_TTL_SECONDS = 900
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 # ---------------------------------------------------------------------------
 # Client id / secret lookup
 # ---------------------------------------------------------------------------
@@ -81,6 +99,61 @@ def _client_id() -> str:
 
 def _client_secret() -> str:
     return os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+
+
+def safe_error_message(error: BaseException | str) -> str:
+    """Return an actionable Google OAuth error without credential material.
+
+    The common failures are configuration mistakes rather than protocol bugs;
+    turn them into the next safe action instead of echoing a token-endpoint
+    payload that may contain a client identifier or callback code.
+    """
+
+    message = str(error)
+    for value, label in (
+        (_client_id(), "[redacted-client-id]"),
+        (_client_secret(), "[redacted-client-secret]"),
+    ):
+        if value:
+            message = message.replace(value, label)
+    message = re.sub(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+", r"\1[redacted]", message)
+    message = re.sub(
+        r"(?i)((?:code|access_token|refresh_token|client_secret)=)[^&\s,]+",
+        r"\1[redacted]",
+        message,
+    )
+    message = re.sub(
+        r"(?i)(['\"]?(?:access_token|refresh_token|id_token|client_secret)['\"]?\s*:\s*['\"]?)[^'\"\s,}&]+",
+        r"\1[redacted]",
+        message,
+    )
+    message = re.sub(
+        r"(?i)((?:['\"]code['\"]|(?:[{,]\s*)code)\s*:\s*['\"]?)[^'\"\s,}&]+",
+        r"\1[redacted]",
+        message,
+    )
+    lowered = message.lower()
+    if "redirect_uri_mismatch" in lowered:
+        return (
+            "Google rejected the callback URI. Create/select a Google OAuth client of type Desktop app, "
+            "then rerun `algo-cli config setup google`; do not use a Web application client for this loopback flow."
+        )
+    if "invalid_client" in lowered:
+        return (
+            "Google rejected this OAuth client. Check the client ID, use the matching client secret only when required, "
+            "and rerun `algo-cli config setup google`."
+        )
+    if "access blocked" in lowered or "app blocked" in lowered or "access_denied" in lowered:
+        return (
+            "Google denied this OAuth request. Check the consent-screen publishing state, configured test users, "
+            "and the Workspace administrator's app-access policy."
+        )
+    if "invalid_grant" in lowered:
+        return (
+            "Google rejected the authorization code or refresh token. Start a fresh login with "
+            "`algo-cli config auth google login`."
+        )
+    return message
 
 
 # ---------------------------------------------------------------------------
@@ -160,14 +233,14 @@ def _post_form(url: str, data: dict[str, str]) -> dict[str, Any]:
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(
-            f"Google OAuth token endpoint returned HTTP {exc.code}: {detail}"
+            f"Google OAuth token endpoint returned HTTP {exc.code}: {safe_error_message(detail)}"
         ) from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Google OAuth token request failed: {exc.reason}") from exc
     try:
         return json.loads(payload)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Google OAuth returned non-JSON body: {payload!r}") from exc
+        raise RuntimeError("Google OAuth returned a non-JSON response.") from exc
 
 
 def exchange_code(code: str, code_verifier: str, *, redirect_uri: str) -> dict[str, Any]:
@@ -210,8 +283,8 @@ def _normalize_token_response(
         )
     access_token = payload.get("access_token")
     if not access_token:
-        raise RuntimeError(f"Google OAuth response missing access_token: {payload!r}")
-    expires_in = int(payload.get("expires_in", 3600))
+        raise RuntimeError("Google OAuth response missing access_token.")
+    expires_in = max(0, _safe_int(payload.get("expires_in"), 3600))
     tokens: dict[str, Any] = {
         "access_token": access_token,
         "expires_at": int(time.time()) + expires_in,
@@ -254,7 +327,7 @@ def revoke_token(token: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def save_tokens(tokens: dict[str, Any]) -> None:
+def _write_tokens_unlocked(tokens: dict[str, Any]) -> None:
     AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_text(AUTH_FILE, json.dumps(tokens, indent=2))
     try:
@@ -263,28 +336,35 @@ def save_tokens(tokens: dict[str, Any]) -> None:
         pass
 
 
+def save_tokens(tokens: dict[str, Any]) -> None:
+    with _exclusive_state_lock(AUTH_FILE, timeout_seconds=60.0):
+        _write_tokens_unlocked(tokens)
+
+
 def load_tokens() -> dict[str, Any] | None:
     if not AUTH_FILE.exists():
         return None
     try:
-        return json.loads(AUTH_FILE.read_text(encoding="utf-8"))
+        payload = json.loads(AUTH_FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    return payload if isinstance(payload, dict) else None
 
 
 def clear_tokens(*, revoke: bool = True) -> bool:
-    tokens = load_tokens() if revoke else None
-    if tokens:
-        for key in ("refresh_token", "access_token"):
-            value = tokens.get(key)
-            if value:
-                revoke_token(value)
-    if not AUTH_FILE.exists():
-        return False
     try:
-        AUTH_FILE.unlink()
-        return True
-    except OSError:
+        with _exclusive_state_lock(AUTH_FILE, timeout_seconds=60.0):
+            tokens = load_tokens() if revoke else None
+            if tokens:
+                for key in ("refresh_token", "access_token"):
+                    value = tokens.get(key)
+                    if value:
+                        revoke_token(value)
+            if not AUTH_FILE.exists():
+                return False
+            AUTH_FILE.unlink()
+            return True
+    except (OSError, TimeoutError):
         return False
 
 
@@ -313,7 +393,10 @@ def load_pending_login(*, max_age_seconds: int = _PENDING_LOGIN_TTL_SECONDS) -> 
         return None
     if not isinstance(payload, dict):
         return None
-    created_at = int(payload.get("created_at", 0) or 0)
+    created_raw = payload.get("created_at", 0)
+    created_at = _safe_int(created_raw, -1)
+    if created_at < 0:
+        return None
     if created_at and int(time.time()) - created_at > max_age_seconds:
         clear_pending_login()
         return None
@@ -334,24 +417,33 @@ def clear_pending_login() -> bool:
 
 
 def is_token_expired(tokens: dict[str, Any], *, window: int = _REFRESH_WINDOW_SECONDS) -> bool:
-    return int(tokens.get("expires_at", 0)) - window <= int(time.time())
+    return _safe_int(tokens.get("expires_at"), 0) - window <= int(time.time())
 
 
 def get_valid_token() -> str | None:
-    tokens = load_tokens()
-    if not tokens:
-        return None
-    if not is_token_expired(tokens):
-        return tokens.get("access_token")
-    refresh = tokens.get("refresh_token")
-    if not refresh:
+    # A stored access token without its client identity cannot be refreshed and
+    # is often left behind by a partial setup.  Fail closed instead of claiming
+    # a provider is connected until config and token state agree.
+    if not _client_id():
         return None
     try:
-        new_tokens = refresh_access_token(refresh)
-    except Exception:
+        with _exclusive_state_lock(AUTH_FILE, timeout_seconds=60.0):
+            tokens = load_tokens()
+            if not tokens:
+                return None
+            if not is_token_expired(tokens):
+                return tokens.get("access_token")
+            refresh = tokens.get("refresh_token")
+            if not refresh:
+                return None
+            try:
+                new_tokens = refresh_access_token(refresh)
+            except Exception:
+                return None
+            _write_tokens_unlocked(new_tokens)
+            return new_tokens.get("access_token")
+    except (OSError, TimeoutError):
         return None
-    save_tokens(new_tokens)
-    return new_tokens.get("access_token")
 
 
 def auth_status() -> dict[str, Any]:
@@ -362,14 +454,19 @@ def auth_status() -> dict[str, Any]:
             "authenticated": False,
             "client_configured": client_configured,
             "client_secret_configured": bool(_client_secret()),
+            "token_present": False,
         }
-    expires_at = int(tokens.get("expires_at", 0))
+    expires_at = _safe_int(tokens.get("expires_at"), 0)
+    token_valid = bool(tokens.get("access_token")) and not is_token_expired(tokens)
+    refreshable = bool(tokens.get("refresh_token")) and client_configured
     return {
-        "authenticated": True,
+        "authenticated": client_configured and (token_valid or refreshable),
         "client_configured": client_configured,
         "client_secret_configured": bool(_client_secret()),
+        "token_present": True,
         "expires_at": expires_at,
         "expires_in": max(0, expires_at - int(time.time())),
+        "token_valid": token_valid,
         "scope": tokens.get("scope", ""),
         "has_refresh_token": bool(tokens.get("refresh_token")),
         "token_type": tokens.get("token_type", "Bearer"),

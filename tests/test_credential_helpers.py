@@ -136,14 +136,35 @@ class TestXAIOAuthCredentialHelper:
         assert set(helper.list_keys()) == {"k1", "k2"}
 
 
+class TestXAIAPICredentialHelper:
+    def test_name(self):
+        helper = ch.XAIAPICredentialHelper()
+        assert helper.name == "xai-api"
+
+    def test_store_and_erase_runtime_key(self, tmp_path: Path, monkeypatch):
+        from algo_cli import config
+
+        env_path = tmp_path / "env"
+        monkeypatch.setattr(config, "DEFAULT_RUNTIME_ENV_FILE", env_path)
+        monkeypatch.setattr(config, "DOTENV_RUNTIME_ENV_FILE", tmp_path / ".env")
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        helper = ch.XAIAPICredentialHelper()
+
+        helper.store("XAI_API_KEY", "xai-secret")
+        assert helper.get("XAI_API_KEY") == "xai-secret"
+        assert "xai-secret" in env_path.read_text(encoding="utf-8")
+
+        helper.erase("XAI_API_KEY")
+        assert helper.get("XAI_API_KEY") is None
+
+
 class TestGoogleWorkspaceCredentialHelper:
     def test_name(self):
         helper = ch.GoogleWorkspaceCredentialHelper()
         assert helper.name == "google-workspace"
 
     def test_store_and_get(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(ch, "CONFIG_DIR", tmp_path)
-        helper = ch.GoogleWorkspaceCredentialHelper()
+        helper = ch.GoogleWorkspaceCredentialHelper(tmp_path / "google_workspace_auth.json")
         helper.store("access_token", "goog_tok")
         assert helper.get("access_token") == "goog_tok"
 
@@ -153,6 +174,7 @@ class TestRegistry:
         names = ch.list_helpers()
         assert "env" in names
         assert "ollama-cloud" in names
+        assert "xai-api" in names
         assert "xai-oauth" in names
         assert "google-workspace" in names
         assert "github-token" in names

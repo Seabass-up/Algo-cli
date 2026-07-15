@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import parse_qs, urlparse
 
 from algo_cli import google_workspace_auth
@@ -47,8 +49,9 @@ def test_google_help_and_action_discovery_cover_all_readonly_apis(monkeypatch):
     assert "docs-get" in slash
     assert "sheets-values" in slash
     assert "calendar-list" in slash
-    assert "/google-callback --clipboard" in actions
-    assert "/google-callback" in dict(slash_dispatch.SLASH_COMMANDS)
+    assert "algo-cli config setup google" in actions
+    assert "algo-cli config auth google login" in actions
+    assert "/config" in dict(slash_dispatch.SLASH_COMMANDS)
 
 
 def test_google_actions_are_visible_from_agent_prompt_catalog():
@@ -118,6 +121,17 @@ def test_google_authorize_url_does_not_request_previously_granted_scopes(monkeyp
     assert "include_granted_scopes" not in query
 
 
+def test_google_redirect_port_configuration_fails_safe(monkeypatch):
+    monkeypatch.setenv("GOOGLE_OAUTH_REDIRECT_PORT", "not-a-port")
+    assert google_workspace_auth._configured_redirect_port() == 56251
+
+    monkeypatch.setenv("GOOGLE_OAUTH_REDIRECT_PORT", "70000")
+    assert google_workspace_auth._configured_redirect_port() == 56251
+
+    monkeypatch.setenv("GOOGLE_OAUTH_REDIRECT_PORT", "60000")
+    assert google_workspace_auth._configured_redirect_port() == 60000
+
+
 def test_google_loopback_capture_uses_fresh_handler_state(monkeypatch):
     handlers: list[type] = []
 
@@ -142,6 +156,106 @@ def test_google_loopback_capture_uses_fresh_handler_state(monkeypatch):
     assert second == first
     assert len(handlers) == 2
     assert handlers[0] is not handlers[1]
+
+
+def test_google_token_without_client_configuration_is_not_usable(monkeypatch):
+    monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_ID", raising=False)
+    google_workspace_auth.save_tokens(
+        {
+            "access_token": "old-token",
+            "refresh_token": "old-refresh",
+            "expires_at": int(time.time()) + 3600,
+        }
+    )
+
+    status = google_workspace_auth.auth_status()
+
+    assert status["token_present"] is True
+    assert status["authenticated"] is False
+    assert google_workspace_auth.get_valid_token() is None
+
+
+def test_google_safe_error_explains_desktop_redirect_mismatch(monkeypatch):
+    client_id = "google-client-id-not-for-output"
+    secret = "google-secret-not-for-output"
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", client_id)
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", secret)
+
+    rendered = google_workspace_auth.safe_error_message(
+        f"redirect_uri_mismatch client={client_id} secret={secret}"
+    )
+
+    assert "Desktop app" in rendered
+    assert client_id not in rendered
+    assert secret not in rendered
+
+
+def test_google_safe_error_redacts_oauth_code_but_preserves_http_status_code():
+    rendered = google_workspace_auth.safe_error_message(
+        "request failed with status code: 404; callback={'code': 'oauth-secret'}"
+    )
+
+    assert "status code: 404" in rendered
+    assert "oauth-secret" not in rendered
+
+
+def test_google_auth_state_handles_malformed_timestamps(monkeypatch):
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "desktop.apps.googleusercontent.com")
+    google_workspace_auth.save_tokens(
+        {"access_token": "old-token", "expires_at": "not-a-timestamp"}
+    )
+
+    status = google_workspace_auth.auth_status()
+
+    assert status["authenticated"] is False
+    assert status["token_valid"] is False
+    assert status["expires_at"] == 0
+
+
+def test_google_concurrent_token_refresh_is_serialized(monkeypatch):
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "desktop.apps.googleusercontent.com")
+    google_workspace_auth.save_tokens(
+        {"access_token": "OLD", "refresh_token": "RT", "expires_at": int(time.time()) - 10}
+    )
+    refreshes: list[str] = []
+
+    def fake_refresh(refresh_token: str) -> dict[str, object]:
+        refreshes.append(refresh_token)
+        time.sleep(0.05)
+        return {
+            "access_token": "NEW",
+            "refresh_token": "NRT",
+            "expires_at": int(time.time()) + 3600,
+        }
+
+    monkeypatch.setattr(google_workspace_auth, "refresh_access_token", fake_refresh)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: google_workspace_auth.get_valid_token(), range(2)))
+
+    assert results == ["NEW", "NEW"]
+    assert refreshes == ["RT"]
+
+
+def test_google_pending_login_rejects_malformed_created_at():
+    google_workspace_auth.PENDING_AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+    google_workspace_auth.PENDING_AUTH_FILE.write_text(
+        '{"state":"s","code_verifier":"v","redirect_uri":"http://localhost/callback","created_at":"bad"}',
+        encoding="utf-8",
+    )
+
+    assert google_workspace_auth.load_pending_login() is None
+
+
+def test_google_missing_access_token_error_does_not_echo_secrets():
+    secret = "refresh-secret-not-for-terminal"
+
+    try:
+        google_workspace_auth._normalize_token_response({"refresh_token": secret})
+    except RuntimeError as exc:
+        assert secret not in str(exc)
+    else:
+        raise AssertionError("missing access token should fail")
 
 
 def test_google_callback_clipboard_completes_pending_login(monkeypatch):

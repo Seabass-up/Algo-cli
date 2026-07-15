@@ -52,7 +52,8 @@ algo-cli --model qwen3:235b-cloud
 export OLLAMA_API_KEY="..."
 algo-cli --cloud --model qwen3
 
-# ChatGPT/Codex subscription (authenticate once with /chatgpt-login)
+# ChatGPT/Codex subscription (authenticate once outside the chat REPL)
+algo-cli config setup chatgpt
 algo-cli --model gpt-5.6-sol
 # Short aliases also work: sol, terra, luna
 algo-cli --model terra
@@ -67,19 +68,29 @@ Signed-in local Ollama can run `:cloud` models without `OLLAMA_API_KEY`. `OLLAMA
 
 `--oneshot --json` emits one JSON object per line to stdout (NDJSON), suitable for subprocess consumption. `--approval-mode never` (default) denies approval-required tools and emits a `tool_denied` event; pass `--approval-mode auto` to grant them. Skill crystallization is disabled in one-shot mode. Event types: `session_start`, `thinking`, `content`, `tool_call`, `tool_result`, `tool_denied`, `error`, `done`. The bridge can rely on `session_start` first and `done` last as framing.
 
-Runtime environment values can be stored in `~/.algo_cli/env` — the CLI loads them automatically. Point to a different file with `ALGO_CLI_ENV_FILE`. Legacy `~/.ollama_cli` locations are supported as migration aliases.
+Runtime environment values can be stored in `~/.algo_cli/env` — the CLI loads them automatically. `algo-cli config` shows safe provider status, and `algo-cli config setup PROVIDER` writes only the selected setting with private file permissions. Point to a different file with `ALGO_CLI_ENV_FILE`. Legacy `~/.ollama_cli` locations are supported as migration aliases.
 
-### Optional xAI OAuth setup
+### Provider setup
 
-xAI subscription OAuth is optional and is not configured out of the box. Algo CLI does not bundle or reuse a third-party OAuth client identity. To enable the provider, supply an OAuth client ID that you are authorized to use and configure it for the loopback redirect `http://127.0.0.1:56121/callback`:
+Keep account setup outside the interactive slash palette:
 
 ```bash
-export XAI_CLIENT_ID=your-authorized-client-id
-algo-cli
-# then run /xai-login
+# Safe, redacted readiness summary
+algo-cli config status
+
+# xAI API: prompts for XAI_API_KEY without echoing it
+algo-cli config setup xai
+algo-cli config auth xai verify
+
+# Google Workspace: prompts for a Google Desktop-app OAuth client ID,
+# then opens the PKCE loopback login flow
+algo-cli config setup google
+
+# ChatGPT/Codex browser or device OAuth
+algo-cli config setup chatgpt
 ```
 
-For persistent configuration, place `XAI_CLIENT_ID=your-authorized-client-id` in `~/.algo_cli/env`, or use `ALGO_CLI_ENV_FILE` when you keep runtime settings elsewhere. `/xai-status` and `/doctor` report the provider as optional and unconfigured until `XAI_CLIENT_ID` is present. The client ID value is sent only in the standard OAuth authorization, code-exchange, and refresh requests; status output reports only whether it is configured. Algo CLI never falls back to the removed third-party identity or to `XAI_API_KEY`.
+xAI's public API uses `XAI_API_KEY`; API calls can consume paid usage, so setup never makes a request until you explicitly verify or use a Grok model/tool. Google Workspace uses OAuth 2.0 + PKCE with a local loopback callback. Create a **Desktop app** OAuth client, enable only the Workspace APIs you intend to use, and keep its consent screen/test-user policy aligned with your account. The normal Google operations remain under `/google ...`; only credentials and login moved to `algo-cli config`.
 
 ### Privacy-safe context defaults
 
@@ -104,8 +115,10 @@ Common credential forms are redacted and connector/MCP JSON is metadata-only, bu
 | `/models` | List local models |
 | `/host URL` | Set local Ollama host |
 | `/cloud [on\|off\|status]` | Set/toggle direct Ollama Cloud API mode; local Ollama login can run `:cloud` models with `/cloud off` |
-| `/xai-login` / `/xai-status` | Manage optional xAI Grok OAuth; requires your `XAI_CLIENT_ID`, and API-key fallback is disabled |
-| `/chatgpt-login` / `/chatgpt-status` | Manage ChatGPT/Codex OAuth; `--device-code` uses Codex CLI token import |
+| `/config [status\|setup PROVIDER\|auth PROVIDER ACTION]` | Focused provider setup from the REPL; prefer `algo-cli config ...` in a normal terminal |
+| `algo-cli config setup xai` | Store a redacted xAI API key; API calls may consume paid usage |
+| `algo-cli config setup google` | Configure Google Desktop-app OAuth and launch the PKCE login flow |
+| `algo-cli config setup chatgpt` | Authenticate ChatGPT/Codex outside the normal slash palette |
 | `/x-account status` | Check separate X account OAuth status through `xurl` |
 | `/x-account draft-post` / `draft-reply` | Create browser drafts for X posts/replies without publishing |
 | `/auto [on\|off\|status]` | Set/toggle auto-approve for tool calls |
@@ -203,7 +216,7 @@ The model can call these tools during a conversation:
 
 **Web:** `web_search`, `web_fetch` (requires Ollama Cloud + API key)
 
-**X:** `x_search` uses optional xAI Grok OAuth for read/search and requires your `XAI_CLIENT_ID`. `x_account_status`, `x_account_draft_post`, `x_account_draft_reply`, `x_account_post`, `x_account_reply`, and `x_account_post_action` use the separate X API OAuth lane through `xurl`; write actions require explicit confirmation.
+**X:** `x_search` uses optional xAI API-key access for read/search; configure it with `algo-cli config setup xai`. xAI API calls may consume paid usage. `x_account_status`, `x_account_draft_post`, `x_account_draft_reply`, `x_account_post`, `x_account_reply`, and `x_account_post_action` use the separate X API OAuth lane through `xurl`; write actions require explicit confirmation.
 
 `/x-account` requires the official X API CLI, `xurl`, to be installed and authenticated separately. The CLI only runs `xurl auth status` for status checks and never reads `~/.xurl` directly.
 
@@ -299,7 +312,9 @@ Config is stored in `~/.algo_cli/` by default (data from `~/.ollama_cli` is auto
 | `ALGO_CLI_HARNESS_INDEXER` | Optional Rust harness indexer binary |
 | `OPENAI_OAUTH_CLIENT_ID` | Optional override for the bundled ChatGPT/Codex browser OAuth client |
 | `OPENAI_CODEX_CLIENT_ID` | Optional override for the bundled Codex OAuth client |
-| `XAI_CLIENT_ID` | Your authorized OAuth client ID for optional xAI subscription login; Algo CLI does not bundle one |
+| `XAI_API_KEY` | Optional xAI API key for Grok models and `x_search`; configure with `algo-cli config setup xai` |
+| `GOOGLE_OAUTH_CLIENT_ID` | Google Desktop-app OAuth client ID for Workspace access; configure with `algo-cli config setup google` |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | Optional Google client secret for a client type that requires it; Desktop apps normally omit it |
 | `OLLAMA_HOST` | Local Ollama host |
 | `OLLAMA_API_KEY` | Direct Ollama Cloud API/web tools key; not required for signed-in local `:cloud` models |
 

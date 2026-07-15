@@ -4,7 +4,7 @@ OpenAI's public OAuth configuration can vary by application. Algo CLI defaults
 to the Codex browser OAuth client used by the subscription runtime, while still
 allowing provider configuration through environment variables:
 
-- OPENAI_OAUTH_CLIENT_ID (optional override for /chatgpt-login)
+- OPENAI_OAUTH_CLIENT_ID (optional override for ``algo-cli config setup chatgpt``)
 - OPENAI_CODEX_CLIENT_ID (optional override for the bundled Codex client)
 - OPENAI_OAUTH_AUTHORIZE_URL (optional)
 - OPENAI_OAUTH_TOKEN_URL (optional)
@@ -20,6 +20,7 @@ import hashlib
 import http.server
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -30,7 +31,7 @@ import urllib.request
 import webbrowser
 from typing import Any
 
-from .config import CONFIG_DIR, _atomic_write_text
+from .config import CONFIG_DIR, _atomic_write_text, _exclusive_state_lock
 
 CHATGPT_CLIENT_ID = os.environ.get("OPENAI_OAUTH_CLIENT_ID", "").strip()
 CHATGPT_AUTHORIZE_URL = os.environ.get("OPENAI_OAUTH_AUTHORIZE_URL", "https://auth.openai.com/oauth/authorize")
@@ -50,8 +51,59 @@ _REFRESH_WINDOW_SECONDS = 60
 _CALLBACK_TIMEOUT_SECONDS = 300.0
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def safe_error_message(error: BaseException | str) -> str:
+    """Redact OAuth credential fields before an error reaches the terminal."""
+
+    message = str(error)
+    message = re.sub(
+        r"(?i)(['\"]?(?:access_token|refresh_token|id_token|client_secret)['\"]?\s*[:=]\s*['\"]?)[^'\"\s,}&]+",
+        r"\1[redacted]",
+        message,
+    )
+    message = re.sub(r"(?i)(\bcode\s*=\s*['\"]?)[^'\"&\s,}]+", r"\1[redacted]", message)
+    message = re.sub(
+        r"(?i)((?:['\"]code['\"]|(?:[{,]\s*)code)\s*:\s*['\"]?)[^'\"\s,}&]+",
+        r"\1[redacted]",
+        message,
+    )
+    message = re.sub(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+", r"\1[redacted]", message)
+    return message
+
+
 def _client_id() -> str:
     return (CHATGPT_CLIENT_ID or os.environ.get("OPENAI_OAUTH_CLIENT_ID", "") or CHATGPT_CODEX_CLIENT_ID).strip()
+
+
+def validate_credential_endpoint(url: str, label: str) -> str:
+    """Reject endpoint overrides that could disclose OAuth credentials.
+
+    HTTPS is mandatory for remote hosts. Plain HTTP remains available only for
+    explicit loopback development endpoints, where traffic cannot leave the
+    machine. Embedded URL credentials are never accepted.
+    """
+
+    value = str(url or "").strip().rstrip("/")
+    try:
+        parsed = urllib.parse.urlparse(value)
+        hostname = (parsed.hostname or "").lower()
+    except ValueError as exc:
+        raise RuntimeError(f"{label} is not a valid URL.") from exc
+    loopback = hostname in {"localhost", "127.0.0.1", "::1"}
+    if (
+        not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or (parsed.scheme != "https" and not (parsed.scheme == "http" and loopback))
+    ):
+        raise RuntimeError(f"{label} must use HTTPS (HTTP is allowed only for loopback hosts).")
+    return value
 
 
 def resolve_codex_bin() -> str | None:
@@ -118,7 +170,8 @@ def build_authorize_url(
         "codex_cli_simplified_flow": "true",
         "originator": os.environ.get("OPENAI_CODEX_ORIGINATOR", "pi").strip() or "pi",
     }
-    return f"{CHATGPT_AUTHORIZE_URL}?{urllib.parse.urlencode(params)}"
+    authorize_url = validate_credential_endpoint(CHATGPT_AUTHORIZE_URL, "OpenAI OAuth authorization endpoint")
+    return f"{authorize_url}?{urllib.parse.urlencode(params)}"
 
 
 class _CallbackHandler(http.server.BaseHTTPRequestHandler):
@@ -166,8 +219,9 @@ def run_loopback_capture(*, timeout: float = _CALLBACK_TIMEOUT_SECONDS, redirect
 
 def _post_token_endpoint(form: dict[str, str]) -> dict[str, Any]:
     data = urllib.parse.urlencode(form).encode("ascii")
+    token_url = validate_credential_endpoint(CHATGPT_TOKEN_URL, "OpenAI OAuth token endpoint")
     req = urllib.request.Request(
-        CHATGPT_TOKEN_URL,
+        token_url,
         data=data,
         headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
         method="POST",
@@ -177,8 +231,8 @@ def _post_token_endpoint(form: dict[str, str]) -> dict[str, Any]:
 
 
 def _normalize_token_response(payload: dict[str, Any], *, fallback_refresh: str | None = None) -> dict[str, Any]:
-    if "access_token" not in payload:
-        raise RuntimeError(f"Token endpoint returned no access_token: {payload}")
+    if not payload.get("access_token"):
+        raise RuntimeError("Token endpoint returned no access_token.")
     now = int(time.time())
     try:
         expires_in = int(payload.get("expires_in", 3600))
@@ -195,7 +249,7 @@ def _normalize_token_response(payload: dict[str, Any], *, fallback_refresh: str 
         "token_type": payload.get("token_type", "Bearer"),
         "expires_at": expires_at_int,
         "scope": payload.get("scope", ""),
-        "obtained_at": int(payload.get("obtained_at", now) or now),
+        "obtained_at": _safe_int(payload.get("obtained_at", now) or now, now),
     }
     account_id = (
         payload.get("account_id")
@@ -357,7 +411,7 @@ def refresh_codex_access_token(refresh_token: str) -> dict[str, Any]:
     return tokens
 
 
-def save_tokens(tokens: dict[str, Any]) -> None:
+def _write_tokens_unlocked(tokens: dict[str, Any]) -> None:
     AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_text(AUTH_FILE, json.dumps(tokens, indent=2))
     try:
@@ -366,91 +420,115 @@ def save_tokens(tokens: dict[str, Any]) -> None:
         pass
 
 
+def save_tokens(tokens: dict[str, Any]) -> None:
+    with _exclusive_state_lock(AUTH_FILE, timeout_seconds=60.0):
+        _write_tokens_unlocked(tokens)
+
+
 def load_tokens() -> dict[str, Any] | None:
     if not AUTH_FILE.exists():
         return None
     try:
-        return json.loads(AUTH_FILE.read_text(encoding="utf-8"))
+        payload = json.loads(AUTH_FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    return payload if isinstance(payload, dict) else None
 
 
 def clear_tokens() -> bool:
-    if not AUTH_FILE.exists():
-        return False
     try:
-        AUTH_FILE.unlink()
-        return True
-    except OSError:
+        with _exclusive_state_lock(AUTH_FILE, timeout_seconds=60.0):
+            if not AUTH_FILE.exists():
+                return False
+            AUTH_FILE.unlink()
+            return True
+    except (OSError, TimeoutError):
         return False
 
 
 def is_token_expired(tokens: dict[str, Any], *, window: int = _REFRESH_WINDOW_SECONDS) -> bool:
-    return int(tokens.get("expires_at", 0)) - window <= int(time.time())
+    return _safe_int(tokens.get("expires_at"), 0) - window <= int(time.time())
 
 
 def get_valid_token() -> str | None:
-    tokens = load_tokens()
-    if not tokens:
-        return None
-    if not is_token_expired(tokens):
-        return tokens.get("access_token")
-    refresh = tokens.get("refresh_token")
-    if not refresh:
-        return None
     try:
-        if tokens.get("provider") == "chatgpt-codex":
-            new_tokens = refresh_codex_access_token(refresh)
-        else:
-            new_tokens = refresh_access_token(refresh)
-    except Exception:
+        with _exclusive_state_lock(AUTH_FILE, timeout_seconds=60.0):
+            tokens = load_tokens()
+            if not tokens:
+                return None
+            if not is_token_expired(tokens):
+                return tokens.get("access_token")
+            refresh = tokens.get("refresh_token")
+            if not refresh:
+                return None
+            try:
+                if tokens.get("provider") == "chatgpt-codex":
+                    new_tokens = refresh_codex_access_token(refresh)
+                else:
+                    new_tokens = refresh_access_token(refresh)
+            except Exception:
+                return None
+            _write_tokens_unlocked(new_tokens)
+            return new_tokens.get("access_token")
+    except (OSError, TimeoutError):
         return None
-    save_tokens(new_tokens)
-    return new_tokens.get("access_token")
 
 
 def force_refresh_token() -> str | None:
-    tokens = load_tokens()
-    if not tokens or not tokens.get("refresh_token"):
-        return None
     try:
-        if tokens.get("provider") == "chatgpt-codex":
-            new_tokens = refresh_codex_access_token(str(tokens["refresh_token"]))
-        else:
-            new_tokens = refresh_access_token(str(tokens["refresh_token"]))
-    except Exception:
+        with _exclusive_state_lock(AUTH_FILE, timeout_seconds=60.0):
+            tokens = load_tokens()
+            if not tokens or not tokens.get("refresh_token"):
+                return None
+            try:
+                if tokens.get("provider") == "chatgpt-codex":
+                    new_tokens = refresh_codex_access_token(str(tokens["refresh_token"]))
+                else:
+                    new_tokens = refresh_access_token(str(tokens["refresh_token"]))
+            except Exception:
+                return None
+            _write_tokens_unlocked(new_tokens)
+            return new_tokens.get("access_token")
+    except (OSError, TimeoutError):
         return None
-    save_tokens(new_tokens)
-    return new_tokens.get("access_token")
 
 
 def get_chatgpt_account_id() -> str | None:
-    tokens = load_tokens()
-    if not tokens:
+    try:
+        with _exclusive_state_lock(AUTH_FILE, timeout_seconds=60.0):
+            tokens = load_tokens()
+            if not tokens:
+                return None
+            account_id = tokens.get("account_id") or tokens.get("accountId") or tokens.get("chatgpt_account_id")
+            if account_id:
+                return str(account_id)
+            access_token = tokens.get("access_token")
+            if not access_token:
+                return None
+            account_id = _extract_chatgpt_account_id(str(access_token))
+            if account_id:
+                tokens["account_id"] = account_id
+                _write_tokens_unlocked(tokens)
+            return account_id
+    except (OSError, TimeoutError):
         return None
-    account_id = tokens.get("account_id") or tokens.get("accountId") or tokens.get("chatgpt_account_id")
-    if account_id:
-        return str(account_id)
-    access_token = tokens.get("access_token")
-    if not access_token:
-        return None
-    account_id = _extract_chatgpt_account_id(str(access_token))
-    if account_id:
-        tokens["account_id"] = account_id
-        save_tokens(tokens)
-    return account_id
 
 
 def auth_status() -> dict[str, Any]:
     tokens = load_tokens()
     if not tokens:
         return {"authenticated": False, "client_configured": bool(_client_id())}
-    expires_at = int(tokens.get("expires_at", 0))
+    expires_at = _safe_int(tokens.get("expires_at"), 0)
+    has_access_token = bool(tokens.get("access_token"))
+    token_valid = has_access_token and not is_token_expired(tokens)
+    refreshable = bool(tokens.get("refresh_token")) and bool(_client_id())
     return {
-        "authenticated": True,
+        "authenticated": token_valid or refreshable,
         "client_configured": bool(_client_id()),
+        "token_present": has_access_token or bool(tokens.get("refresh_token")),
         "expires_at": expires_at,
         "expires_in": max(0, expires_at - int(time.time())),
+        "token_valid": token_valid,
         "scope": tokens.get("scope", ""),
         "has_refresh_token": bool(tokens.get("refresh_token")),
         "token_type": tokens.get("token_type", "Bearer"),

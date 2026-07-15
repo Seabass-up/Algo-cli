@@ -249,6 +249,27 @@ def test_corrupt_memory_file_is_preserved_and_not_silently_deleted():
     assert config.MEMORY_FILE.with_suffix(config.MEMORY_FILE.suffix + ".corrupt").exists()
 
 
+def test_json_loader_handles_invalid_utf8_and_unreadable_paths(tmp_path):
+    invalid = tmp_path / "invalid.json"
+    invalid.write_bytes(b"{\xff}")
+    directory = tmp_path / "directory.json"
+    directory.mkdir()
+
+    assert config._load_json_file(invalid, {"safe": True}) == {"safe": True}
+    assert invalid.with_suffix(".json.corrupt").is_file()
+    assert config._load_json_file(directory, []) == []
+
+
+def test_state_lock_file_does_not_grow_per_acquisition(tmp_path):
+    target = tmp_path / "state.json"
+
+    for _ in range(50):
+        with config._exclusive_state_lock(target):
+            pass
+
+    assert target.with_suffix(".json.lock").read_bytes() == b"x"
+
+
 def test_default_system_points_algo_pattern_updates_to_reviewed_doc():
     assert "docs/ALGO.md" in config.DEFAULT_SYSTEM
     assert "update" in config.DEFAULT_SYSTEM
@@ -344,6 +365,19 @@ def test_load_runtime_env_does_not_strip_single_quote_character(tmp_path):
     assert loaded["ODD"] == '"'
 
 
+def test_load_runtime_env_skips_invalid_keys_and_nul_values(tmp_path, monkeypatch):
+    env_file = tmp_path / "env"
+    env_file.write_bytes(b"VALID_RUNTIME_KEY=ok\nBAD-KEY=no\nNUL_VALUE=bad\x00value\n")
+    monkeypatch.delenv("VALID_RUNTIME_KEY", raising=False)
+    monkeypatch.delenv("NUL_VALUE", raising=False)
+
+    loaded = load_runtime_env(env_file, override=True)
+
+    assert loaded == {"VALID_RUNTIME_KEY": "ok"}
+    assert os.environ["VALID_RUNTIME_KEY"] == "ok"
+    assert "NUL_VALUE" not in os.environ
+
+
 def test_load_runtime_env_falls_back_to_dotenv(monkeypatch, tmp_path):
     env_file = tmp_path / "env"
     dotenv_file = tmp_path / ".env"
@@ -399,3 +433,31 @@ def test_has_legacy_data_and_migration_helpers(tmp_path, monkeypatch):
     # In this test we don't actually call perform_legacy_migration (it would write to real home)
     # We just verify the helper functions exist and the logic doesn't explode
     assert ".ollama_cli.backup" in str(backup)
+
+
+def test_sidecar_migration_includes_provider_credentials(tmp_path, monkeypatch):
+    legacy = tmp_path / ".ollama_cli"
+    current = tmp_path / ".algo_cli"
+    legacy.mkdir()
+    for name in (
+        "chatgpt_auth.json",
+        "google_workspace_auth.json",
+        "google_workspace_pending_login.json",
+        "env",
+    ):
+        (legacy / name).write_text("{}", encoding="utf-8")
+    (legacy / "codex-chatgpt").mkdir()
+    (legacy / "codex-chatgpt" / "auth.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(config, "LEGACY_CONFIG_DIR", legacy)
+    monkeypatch.setattr(config, "CONFIG_DIR", current)
+
+    moved = config.migrate_legacy_sidecar_files()
+
+    assert set(moved) == {
+        "chatgpt_auth.json",
+        "google_workspace_auth.json",
+        "google_workspace_pending_login.json",
+        "env",
+        "codex-chatgpt",
+    }
+    assert (current / "codex-chatgpt" / "auth.json").is_file()

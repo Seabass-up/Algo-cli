@@ -17,7 +17,7 @@ export function Footer() {
     <footer className="site-footer">
       <div><span className="brand-mark small">&gt;_</span><strong>Algo CLI</strong><p>Verified work. Local control.</p></div>
       <div className="footer-links"><Link href="/docs">Docs</Link><Link href="/install">Install</Link><Link href="/benchmarks">Benchmarks</Link><Link href="/security">Security</Link><a href="/llms.txt">llms.txt</a></div>
-      <div className="footer-status"><span className="status-dot" /> STABLE · v0.16.0<br /><small>MIT · Python 3.10+</small></div>
+      <div className="footer-status"><span className="status-dot" /> STABLE · v0.17.0<br /><small>MIT · Python 3.10+</small></div>
     </footer>
   );
 }
