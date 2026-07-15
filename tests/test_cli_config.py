@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import stat
 from types import SimpleNamespace
 
@@ -45,7 +46,8 @@ def test_config_setup_xai_writes_private_env_file(tmp_path, monkeypatch) -> None
     assert result == 0
     assert "xai-test-secret" not in captured.get()
     assert "XAI_API_KEY=xai-test-secret" in env_path.read_text(encoding="utf-8")
-    assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
 
 
 def test_runtime_env_update_preserves_other_settings_and_round_trips_quoted_values(tmp_path, monkeypatch) -> None:
@@ -68,7 +70,8 @@ def test_runtime_env_update_preserves_other_settings_and_round_trips_quoted_valu
     assert "# keep this comment" in rendered
     assert "OTHER_SETTING=unchanged" in rendered
     assert rendered.count("XAI_API_KEY=") == 1
-    assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
 
     loaded = config.load_runtime_env(env_path, override=True)
     assert loaded["XAI_API_KEY"] == 'xai value with # and "quotes"'

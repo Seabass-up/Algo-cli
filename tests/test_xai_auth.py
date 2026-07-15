@@ -74,7 +74,8 @@ def test_runtime_env_updates_load_without_exposing_key(tmp_path, monkeypatch) ->
     os.environ.pop(xai_auth.XAI_API_KEY_ENV, None)
 
     assert xai_auth.get_valid_token() == "xai-from-file"
-    assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
 
 
 def test_unsupported_oauth_helpers_are_not_part_of_runtime_surface() -> None:
