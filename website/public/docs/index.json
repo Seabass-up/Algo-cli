@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "product": "algo-cli",
-  "version": "0.14.0",
-  "channel": "release-candidate",
+  "version": "0.16.0",
+  "channel": "stable",
   "documents": [
     { "id": "home", "title": "Algo CLI overview", "url": "https://algo-cli.com/", "format": "html" },
     { "id": "install", "title": "Installation and providers", "url": "https://algo-cli.com/install", "format": "html" },
