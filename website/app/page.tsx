@@ -1,4 +1,6 @@
 import Link from "next/link";
+import benchmark from "../public/benchmarks/summary.json";
+import tokenEfficiency from "../public/benchmarks/token-efficiency.json";
 import { CopyInstall } from "./copy-install";
 import { Footer, Header, Pill, SectionHeading } from "./site-chrome";
 
@@ -8,6 +10,11 @@ const pillars = [
   { index: "03", name: "Route", accent: "violet", text: "Keep ordinary work direct. Send larger tasks through bounded agent pipelines." },
   { index: "04", name: "Verify", accent: "cyan", text: "Ground completion in tests, file evidence, Git state, and fail-closed policies." },
 ];
+
+const algoBenchmark = benchmark.results.find((row) => row.id === "algo-cli");
+if (!algoBenchmark) throw new Error("benchmark data is missing Algo CLI");
+const codingReductions = tokenEfficiency.coding_scenarios.map((scenario) => scenario.schema_reduction_pct);
+const codingReductionRange = `${Math.min(...codingReductions).toFixed(1)}–${Math.max(...codingReductions).toFixed(1)}%`;
 
 export default function Home() {
   return (
@@ -61,10 +68,10 @@ export default function Home() {
       <section className="proof-rail" aria-label="Algo CLI evidence">
         <div className="proof-wide">
           <span className="data-label">Reported same-model benchmark</span>
-          <div className="benchmark-line"><strong><em>9/9</em> objective passes</strong><div className="mini-bars">{Array.from({ length: 9 }, (_, i) => <i key={i} />)}</div></div>
-          <small>Three tasks × three repetitions · 11 measured harnesses</small>
+          <div className="benchmark-line"><strong><em>{algoBenchmark.clean_runs}/{algoBenchmark.runs}</em> verified runs</strong><div className="mini-bars">{Array.from({ length: algoBenchmark.runs }, (_, i) => <i key={i} />)}</div></div>
+          <small>Rank #{algoBenchmark.rank} · four-task, same-model local draft</small>
         </div>
-        <div><span className="data-label">Coding tool context</span><strong>73–75% less</strong><small>full catalog vs task-selected schemas</small></div>
+        <div><span className="data-label">Coding tool context</span><strong>{codingReductionRange} less</strong><small>full catalog vs task-selected schemas</small></div>
         <div><span className="data-label">Core posture</span><strong>Local first</strong><small>Remote services optional</small></div>
       </section>
 
@@ -107,7 +114,7 @@ export default function Home() {
 
       <section className="claim-strip">
         <div><span className="status-dot" /> EVIDENCE, NOT HYPE</div>
-        <p>Algo CLI tied the top reliability group at 9/9 clean runs. A separate deterministic benchmark measured 73–75% fewer tool-schema tokens on two coding scenarios with every required tool recalled.</p>
+        <p>Algo CLI ranked #1 with 12/12 verified runs in a 132-run, four-task, same-model local draft benchmark. Five harnesses achieved 12/12; median latency broke the tie. A separate deterministic benchmark measured {codingReductionRange} fewer tool-schema tokens in two coding scenarios with every required tool recalled.</p>
         <Link href="/benchmarks">Inspect the methodology →</Link>
       </section>
 

@@ -90,6 +90,21 @@ timings, prompt/completion tokens, schema count, context-source estimates, and
 supersession savings. These diagnostics are not ranking inputs. Review and
 sanitize raw artifacts before publishing.
 
+After a complete release cell, publish only validated aggregate data:
+
+```bash
+python3 benchmarks/competitors/publish_website.py \
+  benchmark-results/<cell>/summary.json \
+  --source-revision "$(git rev-parse HEAD)" \
+  --hardware-description "Apple M5 Max (18-core CPU, 48 GB unified memory)" \
+  --os-description "macOS 27.0"
+```
+
+The publisher requires the full warmed 11-harness, four-task, three-repetition
+v3 cell and rechecks baseline failures, protected-input receipts, cell completeness,
+and the task digest. It writes the website summary and CSV without exporting
+raw prompts, model output, executable paths, or local workspace metadata.
+
 ## Competitor classification
 
 `runner.py --list` includes the entire requested comparison set. Terminal tools

@@ -1,23 +1,24 @@
 {
   "schema_version": 1,
-  "status": "reported-local-release-candidate-result",
-  "created_at": "2026-07-13",
+  "status": "reported-local-result",
+  "created_at": "2026-07-15",
   "benchmark": "algo-tool-context-efficiency-v1",
-  "source_tag": "v0.15.0",
+  "source_tag": "v0.17.0",
+  "source_revision": "ee9abeb185081538bbe3b3a38545444f252cdeda",
   "command": "python -m algo_cli.evals.tool_context_efficiency",
   "repeats": 7,
   "catalog_tool_count": 56,
   "serialized_catalog_tool_count": 56,
-  "full_schema_tokens": 7557,
+  "full_schema_tokens": 7571,
   "coding_scenarios": [
     {
       "id": "code_repair",
       "label": "Code repair",
       "prompt": "Fix the failing parser and run tests, then verify the diff.",
       "required_tools": ["edit_file", "run_shell", "git_diff"],
-      "selected_schema_tokens": 1901,
-      "schema_tokens_saved": 5656,
-      "schema_reduction_pct": 74.845,
+      "selected_schema_tokens": 2029,
+      "schema_tokens_saved": 5542,
+      "schema_reduction_pct": 73.2,
       "missing_required_tools": [],
       "stable_across_repeats": true
     },
@@ -26,18 +27,18 @@
       "label": "Safe configuration update",
       "prompt": "Update the existing configuration file safely and verify it.",
       "required_tools": ["read_file", "edit_file", "run_shell", "git_diff"],
-      "selected_schema_tokens": 2037,
-      "schema_tokens_saved": 5520,
-      "schema_reduction_pct": 73.045,
+      "selected_schema_tokens": 1946,
+      "schema_tokens_saved": 5625,
+      "schema_reduction_pct": 74.297,
       "missing_required_tools": [],
       "stable_across_repeats": true
     }
   ],
   "all_scenarios": {
     "count": 9,
-    "median_selected_schema_tokens": 1489,
-    "median_schema_reduction_pct": 80.296,
-    "minimum_schema_reduction_pct": 73.045,
+    "median_selected_schema_tokens": 1544,
+    "median_schema_reduction_pct": 79.606,
+    "minimum_schema_reduction_pct": 73.2,
     "required_tools_recalled": 19,
     "required_tools_total": 19
   },
@@ -53,9 +54,9 @@
   },
   "typed_program": {
     "raw_intermediate_tokens": 7063,
-    "compact_result_tokens": 189,
-    "tokens_saved": 6874,
-    "reduction_pct": 97.324,
+    "compact_result_tokens": 196,
+    "tokens_saved": 6867,
+    "reduction_pct": 97.225,
     "correct_result": true,
     "artifact_backed": true,
     "receipt_chains_valid": true
@@ -68,7 +69,7 @@
     "minimum_typed_program_reduction_pct": 70.0,
     "required_tool_recall": 1.0
   },
-  "report_sha256": "9693833e1f7fa8a1c206a2a67ce3d1525ed20047f2b299e5f114fccb6c0942bc",
-  "claim": "In two deterministic coding scenarios, Algo CLI used 73.0% to 74.8% fewer tool-schema tokens than exposing the full 56-tool catalog while recalling every required tool.",
+  "report_sha256": "00e5428d2f6ba08faac6dc6021a4950da8168b1c08f8c2efd90ff971f6c3dd25",
+  "claim": "In two deterministic coding scenarios, Algo CLI used 73.2% to 74.3% fewer tool-schema tokens than exposing the full 56-tool catalog while recalling every required tool.",
   "limitations": "This deterministic, model-free harness benchmark measures estimated tool-schema and intermediate-result context. It does not measure model output tokens, end-to-end coding quality, provider billing, or superiority over another harness. Token estimates use a documented characters-divided-by-four approximation and results have not been independently reproduced."
 }
