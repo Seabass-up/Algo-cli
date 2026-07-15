@@ -4,6 +4,29 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-07-15
+
+### Added
+
+- A terminal-first `algo-cli config` workflow provides redacted provider status, guided setup, authentication, verification, and cleanup without crowding the interactive slash-command palette.
+- Google Workspace setup now guides Desktop-app OAuth configuration and launches the PKCE loopback login flow from the normal terminal.
+
+### Changed
+
+- xAI model and X-search access now use the documented `XAI_API_KEY` route; legacy local xAI OAuth state is detected for migration but is no longer used by the runtime.
+- ChatGPT/Codex, Google, and xAI setup guidance is consistent across startup diagnostics, provider routing, slash commands, README documentation, and the website install page.
+
+### Security
+
+- OAuth token persistence and refresh are process-serialized to prevent concurrent refresh-token rotation races, and remote credential-bearing endpoint overrides require HTTPS.
+- Shell timeouts terminate descendant process groups, timed-out web fetches have a bounded concurrency budget, and X-search cache metadata is normalized against multiline injection.
+- Runtime state loading tolerates corrupt or unreadable JSON, rejects invalid environment keys safely, preserves private file modes, and avoids unbounded lock-file growth.
+
+### Fixed
+
+- `algo-cli config setup google` now executes the requested setup instead of falling through into the interactive agent runtime.
+- Invalid Google redirect-port settings fall back safely, cache-write failures no longer discard valid X-search results, and OAuth error redaction preserves useful HTTP status codes while removing credentials and callback codes.
+
 ## [0.16.0] - 2026-07-14
 
 ### Added

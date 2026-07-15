@@ -27,7 +27,7 @@ test("server-renders the Algo CLI product home", async () => {
   assert.match(html, /73–75% less/);
   assert.match(html, /Public knowledge plane/i);
   assert.match(html, /pipx install algo-cli-runtime/i);
-  assert.match(html, /v0\.16\.0 stable/i);
+  assert.match(html, /v0\.17\.0 stable/i);
   assert.match(html, /\/api\/v1\/releases\/stable\.json/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
@@ -70,10 +70,10 @@ test("ships truthful machine-readable release and benchmark contracts", async ()
   assert.equal(release.package.available, true);
   assert.equal(release.package.name, "algo-cli-runtime");
   assert.equal(release.package.index, "https://pypi.org/project/algo-cli-runtime/");
-  assert.equal(release.version, "0.16.0");
-  assert.equal(release.tag, "v0.16.0");
+  assert.equal(release.version, "0.17.0");
+  assert.equal(release.tag, "v0.17.0");
   assert.equal(release.source_revision, "5c65cbe35c058fb70d9ce4fc9bd4f2b5c0abad1d");
-  assert.equal(release.source.release_url, "https://github.com/Seabass-up/Algo-cli/releases/tag/v0.16.0");
+  assert.equal(release.source.release_url, "https://github.com/Seabass-up/Algo-cli/releases/tag/v0.17.0");
   assert.equal(release.source.available, true);
   assert.equal(release.security_advisory.active, true);
   assert.equal(benchmark.schema_version, 2);
@@ -92,7 +92,7 @@ test("ships truthful machine-readable release and benchmark contracts", async ()
   assert.equal(tokenEfficiency.coding_scenarios.length, 2);
   assert.equal(tokenEfficiency.required_tool_recall, 1);
   assert.match(tokenEfficiency.limitations, /does not measure model output tokens/i);
-  assert.equal(docs.version, "0.16.0");
+  assert.equal(docs.version, "0.17.0");
   assert.equal(docs.channel, "stable");
   assert.equal(discovery.schema_version, 1);
   assert.equal(discovery.canonical_origin, "https://algo-cli.com");

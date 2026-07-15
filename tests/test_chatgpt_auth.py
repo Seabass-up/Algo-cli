@@ -7,6 +7,7 @@ import json
 import subprocess
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,33 @@ def test_build_authorize_url_uses_pkce_and_openai_scope(monkeypatch):
     assert qs["originator"] == ["pi"]
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://example.com/token",
+        "file:///tmp/token",
+        "https://user:password@example.com/token",
+        "not a url",
+    ],
+)
+def test_validate_credential_endpoint_rejects_unsafe_urls(url):
+    with pytest.raises(RuntimeError, match="endpoint"):
+        chatgpt_auth.validate_credential_endpoint(url, "test endpoint")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/token/",
+        "http://localhost:8080/token",
+        "http://127.0.0.1:8080/token",
+        "http://[::1]:8080/token",
+    ],
+)
+def test_validate_credential_endpoint_accepts_https_and_loopback(url):
+    assert chatgpt_auth.validate_credential_endpoint(url, "test endpoint") == url.rstrip("/")
+
+
 def test_save_load_clear_tokens(config_dir: Path):
     tokens = {
         "access_token": "AT",
@@ -66,6 +94,46 @@ def test_save_load_clear_tokens(config_dir: Path):
     assert chatgpt_auth.load_tokens() == tokens
     assert chatgpt_auth.clear_tokens() is True
     assert chatgpt_auth.load_tokens() is None
+
+
+def test_auth_status_fails_closed_for_expired_or_malformed_token_state(config_dir: Path):
+    chatgpt_auth.save_tokens({"access_token": "AT", "expires_at": "not-a-timestamp"})
+
+    status = chatgpt_auth.auth_status()
+
+    assert status["authenticated"] is False
+    assert status["token_present"] is True
+    assert status["token_valid"] is False
+    assert status["expires_at"] == 0
+
+
+def test_token_normalization_error_does_not_echo_secrets():
+    secret = "refresh-secret-not-for-terminal"
+
+    with pytest.raises(RuntimeError) as exc:
+        chatgpt_auth._normalize_token_response({"refresh_token": secret})
+
+    assert secret not in str(exc.value)
+
+
+def test_safe_error_message_redacts_json_token_fields():
+    secret = "access-secret-not-for-terminal"
+
+    rendered = chatgpt_auth.safe_error_message(
+        f'provider failed: {{"access_token": "{secret}"}}'
+    )
+
+    assert secret not in rendered
+    assert "[redacted]" in rendered
+
+
+def test_safe_error_message_redacts_oauth_code_but_preserves_http_status_code():
+    rendered = chatgpt_auth.safe_error_message(
+        'request failed with status code: 404; callback={"code": "oauth-secret"}'
+    )
+
+    assert "status code: 404" in rendered
+    assert "oauth-secret" not in rendered
 
 
 def test_complete_login_rejects_state_mismatch():
@@ -198,6 +266,31 @@ def test_get_valid_token_refreshes_expired_token(config_dir: Path, monkeypatch):
     monkeypatch.setattr(chatgpt_auth, "_post_token_endpoint", fake_post)
     assert chatgpt_auth.get_valid_token() == "NEW"
     assert chatgpt_auth.load_tokens()["refresh_token"] == "RT"
+
+
+def test_concurrent_token_refresh_is_serialized(config_dir: Path, monkeypatch):
+    monkeypatch.setattr(chatgpt_auth, "CHATGPT_CLIENT_ID", "client-123")
+    chatgpt_auth.save_tokens(
+        {"access_token": "OLD", "refresh_token": "RT", "expires_at": int(time.time()) - 10}
+    )
+    refreshes: list[str] = []
+
+    def fake_refresh(refresh_token: str, **_kwargs: Any) -> dict[str, Any]:
+        refreshes.append(refresh_token)
+        time.sleep(0.05)
+        return {
+            "access_token": "NEW",
+            "refresh_token": "NRT",
+            "expires_at": int(time.time()) + 3600,
+        }
+
+    monkeypatch.setattr(chatgpt_auth, "refresh_access_token", fake_refresh)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: chatgpt_auth.get_valid_token(), range(2)))
+
+    assert results == ["NEW", "NEW"]
+    assert refreshes == ["RT"]
 
 
 def test_codex_token_refresh_uses_codex_client_without_scope(config_dir: Path, monkeypatch):

@@ -158,6 +158,8 @@ def session_command_requires_approval(command_line: str) -> bool:
         return False
     if command == "/x-account" and arg == "status":
         return False
+    if command == "/config" and arg in {"", "status", "show", "?", "help"}:
+        return False
     return True
 
 

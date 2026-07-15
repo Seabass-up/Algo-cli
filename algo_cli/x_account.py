@@ -1,8 +1,8 @@
 """X account integration through the official xurl CLI.
 
-This module is intentionally separate from xai_auth/xai_client. xAI OAuth
-tokens are for Grok on api.x.ai; account actions use X API OAuth through xurl
-on api.x.com.
+This module is intentionally separate from xai_auth/xai_client. xAI API keys
+are for Grok on api.x.ai; account actions use X API OAuth through xurl on
+api.x.com.
 """
 
 from __future__ import annotations

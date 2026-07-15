@@ -34,20 +34,9 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/models", "Browse available local and authenticated provider models"),
     ("/host", "Set local Ollama host"),
     ("/cloud", "Set/toggle direct Ollama Cloud API mode: /cloud [on|off|status]"),
-    ("/login", "Run Ollama signin"),
     ("/cloudauto", "Set/toggle cloud auto-connect: /cloudauto [on|off|status]"),
-    ("/xai-login", "Optional xAI OAuth; requires your XAI_CLIENT_ID. Flags: --no-browser, --manual"),
-    ("/xai-logout", "Revoke local xAI tokens"),
-    ("/xai-status", "Show optional xAI OAuth setup and auth state"),
-    ("/xai-test", "List xAI models the current token can access"),
-    ("/google-login", "Authenticate with Google Workspace (OAuth2 loopback). Flags: --no-browser, --manual"),
-    ("/google-callback", "Complete Google Workspace OAuth from callback URL. Flags: --clipboard, --file PATH"),
-    ("/google-logout", "Revoke local Google Workspace tokens"),
-    ("/google-status", "Show Google Workspace auth state"),
     ("/google", "Run a Google Workspace command: drive-list, drive-search, drive-get, docs-get, sheets-values, calendar-list, gmail-list, gmail-get, help"),
-    ("/chatgpt-login", "Authenticate with ChatGPT/Codex OAuth. Flags: --no-browser, --manual, --device-code"),
-    ("/chatgpt-logout", "Revoke local ChatGPT tokens"),
-    ("/chatgpt-status", "Show ChatGPT auth state"),
+    ("/config", "Provider setup/status: /config [status|setup PROVIDER|auth PROVIDER ACTION]"),
     ("/model-check", "Report Algo CLI support for a Grok/xAI model name"),
     ("/x-account", "Manage X account via xurl: status, draft-post, draft-reply, post --confirm, reply --confirm"),
     ("/system", "Show or set system prompt"),
@@ -292,6 +281,38 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         if arg:
             if m.chatgpt_client.is_codex_subscription_model(arg):
                 arg = m.chatgpt_client.normalize_codex_model(arg)
+            if m._model_info_module.is_chatgpt_model(arg):
+                names, authenticated = m.chatgpt_model_names()
+                if not authenticated:
+                    m.show_error(
+                        "ChatGPT/Codex is not authenticated. Run `algo-cli config setup chatgpt`."
+                    )
+                    return True, client
+                if not names:
+                    m.show_error(
+                        "Could not verify the ChatGPT/Codex model catalog; the current model was left unchanged."
+                    )
+                    return True, client
+                if arg not in names:
+                    m.show_error(
+                        f"Model {arg!r} is not enabled for this ChatGPT/Codex account. Use /models to choose a verified model."
+                    )
+                    return True, client
+            elif m._model_info_module.is_xai_model(arg):
+                names, authenticated = m.xai_model_names()
+                if not authenticated:
+                    m.show_error("xAI is not configured. Run `algo-cli config setup xai`.")
+                    return True, client
+                if not names:
+                    m.show_error(
+                        "Could not verify the xAI model catalog; the current model was left unchanged."
+                    )
+                    return True, client
+                if arg not in names:
+                    m.show_error(
+                        f"Model {arg!r} is not enabled for this xAI account. Use /models to choose a verified model."
+                    )
+                    return True, client
             cfg.model = arg
             # Direct model selection must not inherit a stale provider route.
             # A cloud-suffixed Ollama model selects direct cloud; xAI and
@@ -372,6 +393,8 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             cfg.auto_cloud_connect = new_value
             cfg.save()
         m.show_info(f"Cloud auto-connect prompt: {'ON' if cfg.auto_cloud_connect else 'OFF'}")
+    elif command == "/config":
+        m.run_config_command(arg)
     elif command == "/login":
         m.run_ollama_login()
         m.load_runtime_env(override=True)

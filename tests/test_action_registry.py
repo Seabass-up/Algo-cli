@@ -50,7 +50,7 @@ def test_effective_action_specs_cover_runtime_tool_and_slash_surface() -> None:
     assert tool_specs["write_file"].requires_approval is True
     assert tool_specs["read_file"].requires_approval is False
     assert slash_specs["/help"].requires_approval is False
-    assert slash_specs["/google-login"].requires_approval is True
+    assert slash_specs["/config"].requires_approval is True
     assert slash_specs["/code-rag"].requires_approval is True
     assert "privacy" in slash_specs["/code-rag"].tags
     assert "generated" in slash_specs["/help"].tags
@@ -103,29 +103,30 @@ def test_doctor_reports_web_tools_ready_with_cloud_key(monkeypatch, tmp_path) ->
     assert "READY    web-tools: web_search/web_fetch configured via OLLAMA_API_KEY" in rendered
 
 
-def test_doctor_reports_unconfigured_xai_oauth_as_optional(monkeypatch, tmp_path) -> None:
+def test_doctor_reports_unconfigured_xai_api_as_optional(monkeypatch, tmp_path) -> None:
     from algo_cli.action_registry import build_doctor_report, render_doctor
 
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.delenv("XAI_CLIENT_ID", raising=False)
     monkeypatch.setenv("ALGO_CLI_INDEX_COMPUTE_LAB_ROOT", str(tmp_path / "missing-icl"))
 
     rendered = render_doctor(build_doctor_report(_cfg()))
 
-    assert "READY    xai-oauth: optional xAI subscription OAuth is not configured" in rendered
-    assert "no bundled client id" in rendered
+    assert "READY    xai-api: optional xAI API key is not configured" in rendered
+    assert "algo-cli config setup xai" in rendered
 
 
-def test_doctor_reports_configured_xai_without_exposing_client_id(monkeypatch, tmp_path) -> None:
+def test_doctor_reports_configured_xai_without_exposing_api_key(monkeypatch, tmp_path) -> None:
     from algo_cli.action_registry import build_doctor_report, render_doctor
 
-    client_id = "configured-xai-client-id-not-for-output"
-    monkeypatch.setenv("XAI_CLIENT_ID", client_id)
+    api_key = "configured-xai-api-key-not-for-output"
+    monkeypatch.setenv("XAI_API_KEY", api_key)
     monkeypatch.setenv("ALGO_CLI_INDEX_COMPUTE_LAB_ROOT", str(tmp_path / "missing-icl"))
 
     rendered = render_doctor(build_doctor_report(_cfg()))
 
-    assert "READY    xai-oauth: optional xAI OAuth client configured; no active session" in rendered
-    assert client_id not in rendered
+    assert "READY    xai-api: optional xAI API key configured" in rendered
+    assert api_key not in rendered
 
 
 def test_doctor_reports_icl_ranked_map_ready(monkeypatch, tmp_path) -> None:

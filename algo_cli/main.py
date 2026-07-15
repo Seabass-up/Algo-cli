@@ -229,9 +229,8 @@ CLOUD_MODEL_CHOICES = [
     "qwen3-vl:235b-cloud",
     "deepseek-v3.1:671b-cloud",
 ]
-# xAI Grok models routed via subscription OAuth only. See xai_client.py.
-# These are fallback names after OAuth is present but /v1/models is unavailable.
-# Never add API-key fallback behavior here.
+# xAI Grok models route through xAI's documented API-key authentication.  These
+# are fallback names when an explicitly requested model-list check is unavailable.
 XAI_MODEL_CHOICES = [
     "grok-4.3",
     "grok-4.20-0309-reasoning",
@@ -775,147 +774,84 @@ def handle_pdf_command(arg: str, cfg: Config) -> None:
     )
 
 
-def run_ollama_login() -> None:
+def run_ollama_login() -> bool:
     show_info("Starting `ollama signin`. Follow the browser/terminal prompts if they appear.")
     try:
         result = subprocess.run(["ollama", "signin"], check=False)
     except FileNotFoundError:
         show_error("Could not find `ollama` on PATH. Install Ollama before signing in.")
-        return
+        return False
     except KeyboardInterrupt:
         show_info("Ollama sign-in interrupted.")
-        return
+        return False
     if result.returncode == 0:
         show_info("Ollama sign-in finished.")
+        return True
     else:
         show_error(f"`ollama signin` exited with code {result.returncode}.")
+        return False
 
 
 def run_xai_login(arg: str = "") -> None:
-    load_runtime_env(override=True)
-    if not xai_auth.client_id_configured():
-        show_error(
-            "xAI subscription OAuth is optional and not configured. "
-            "Set XAI_CLIENT_ID in ~/.algo_cli/env (or ALGO_CLI_ENV_FILE) to a client id "
-            "you are authorized to use, then retry /xai-login. Algo CLI does not bundle one."
-        )
-        return
-    tokens_split = (arg or "").split()
-    no_browser = "--no-browser" in tokens_split
-    manual_only = "--manual" in tokens_split
-    redirect_port = xai_auth.XAI_REDIRECT_PORT if manual_only else xai_auth.select_redirect_port()
-    if redirect_port is None:
-        show_error(
-            "No xAI loopback redirect ports are available on 127.0.0.1. "
-            "Close another login listener or retry with /xai-login --manual."
-        )
-        return
-    try:
-        prep = xai_auth.begin_login(no_browser=no_browser or manual_only, redirect_port=redirect_port)
-    except Exception as exc:
-        show_error(f"Could not start xAI login: {xai_auth.safe_error_message(exc)}")
-        return
-    if no_browser or manual_only:
-        show_info("Open this URL on any browser you're signed into xAI with:")
-        console.print(prep["auth_url"])
-        if no_browser and not manual_only:
-            show_info("If you're SSHed in, forward the callback port first:")
-            console.print(f"  {prep['ssh_tunnel_cmd']}")
-    elif prep.get("browser_opened"):
-        # The full authorization URL contains the configured client id. Avoid
-        # echoing it into routine terminal transcripts when the browser opened.
-        show_info("Opened xAI authorization in your browser.")
-    else:
-        show_info("The browser did not open. Open this authorization URL manually:")
-        console.print(prep["auth_url"])
+    """Compatibility entrypoint for the retired xAI consumer-OAuth command."""
 
-    callback: dict[str, str] = {}
-    if not manual_only:
-        show_info(f"Listening on {prep['redirect_uri']} (waiting up to 5 minutes)…")
-        show_info("If the browser shows 'Could not establish connection' with a code, paste it here when prompted.")
-        try:
-            callback = xai_auth.run_loopback_capture(redirect_port=redirect_port)
-        except KeyboardInterrupt:
-            show_info("Loopback listener cancelled — falling back to manual paste.")
-        except Exception as exc:
-            show_error(f"Loopback listener failed: {exc} — falling back to manual paste.")
-
-    if not callback:
-        if not manual_only:
-            show_info("Loopback redirect did not arrive. If xAI showed you a code, paste it now.")
-        try:
-            pasted = input("xAI callback URL (or blank to cancel): ").strip()
-        except (EOFError, KeyboardInterrupt):
-            show_info("xAI login cancelled.")
-            return
-        if not pasted:
-            show_info("xAI login cancelled.")
-            return
-        parsed = urlparse(pasted)
-        if parsed.query:
-            qs = parse_qs(parsed.query)
-            callback = {key: values[0] for key, values in qs.items() if values}
-        else:
-            show_error("Manual xAI login requires the full callback URL so the OAuth state can be verified.")
-            return
-        callback["redirect_uri"] = prep["redirect_uri"]
-
-    try:
-        if callback:
-            callback.setdefault("redirect_uri", prep["redirect_uri"])
-        tokens = xai_auth.complete_login(prep["code_verifier"], prep["state"], callback)
-    except Exception as exc:
-        show_error(xai_auth.safe_error_message(exc))
-        return
-    expires_in = max(0, int(tokens.get("expires_at", 0)) - int(time.time()))
-    show_info(f"xAI authentication successful (token valid for {expires_in}s).")
+    del arg
+    show_info(
+        "xAI's public API uses an API key rather than a consumer OAuth browser flow. "
+        "Run `algo-cli config setup xai` to save XAI_API_KEY securely (value redacted)."
+    )
 
 
 def run_xai_logout() -> None:
-    if xai_auth.clear_tokens():
-        show_info("xAI tokens cleared.")
-    else:
-        show_info("No stored xAI tokens to clear.")
+    from .config import update_runtime_env
+
+    try:
+        update_runtime_env({xai_auth.XAI_API_KEY_ENV: None})
+    except (RuntimeError, ValueError) as exc:
+        show_error(f"Could not remove saved xAI API key: {exc}")
+        return
+    legacy = xai_auth.clear_legacy_oauth_state()
+    show_info("Saved xAI API key removed." + (" Obsolete OAuth state cleared." if legacy else ""))
 
 
 def run_xai_status() -> None:
     load_runtime_env(override=True)
     status = xai_auth.auth_status()
-    if not status.get("client_configured"):
-        if status.get("token_present"):
-            show_info(
-                "xAI subscription OAuth: a local token exists, but XAI_CLIENT_ID is not configured; "
-                "refresh and new login are unavailable. Set your authorized client id in ~/.algo_cli/env."
-            )
-        else:
-            show_info(
-                "xAI subscription OAuth: optional, not configured. Algo CLI bundles no client id. "
-                "Set XAI_CLIENT_ID in ~/.algo_cli/env only if you want to enable this provider."
-            )
-        return
-    if not status.get("authenticated"):
-        show_info("xAI subscription OAuth: client configured, not authenticated. Run /xai-login to continue.")
-        return
-    show_info(
-        f"xAI: authenticated. Token expires in {status['expires_in']}s "
-        f"(refresh token: {'yes' if status['has_refresh_token'] else 'no'}, "
-        f"scope: {status.get('scope') or '?'})."
-    )
+    if status.get("api_key_configured"):
+        show_info("xAI API: configured with XAI_API_KEY (value redacted).")
+    else:
+        show_info("xAI API: not configured. Run `algo-cli config setup xai` to add an API key.")
+    if status.get("legacy_oauth_detected"):
+        show_info("Legacy xAI OAuth settings were found but are not used for API calls; reconfigure with `algo-cli config setup xai`.")
 
 
-def run_google_login(arg: str = "") -> None:
+def run_config_command(arg: str = "") -> None:
+    """Run the focused provider configuration surface from the interactive REPL."""
+
+    from . import cli_config
+
+    try:
+        argv = shlex.split(arg or "")
+    except ValueError as exc:
+        show_error(f"Invalid /config arguments: {exc}")
+        return
+    cli_config.run(argv)
+
+
+def run_google_login(arg: str = "") -> bool:
+    load_runtime_env(override=True)
     tokens_split = (arg or "").split()
     no_browser = "--no-browser" in tokens_split
     manual_only = "--manual" in tokens_split
     redirect_port = google_workspace_auth.GOOGLE_REDIRECT_PORT if manual_only else google_workspace_auth.select_redirect_port()
     if redirect_port is None:
         show_error("No Google Workspace loopback port is free. Close anything bound to 56251-56270 or use --manual.")
-        return
+        return False
     try:
         prep = google_workspace_auth.begin_login(no_browser=no_browser or manual_only, redirect_port=redirect_port)
     except Exception as exc:
-        show_error(f"Could not start Google login: {exc}")
-        return
+        show_error(f"Could not start Google login: {google_workspace_auth.safe_error_message(exc)}")
+        return False
     if no_browser or manual_only:
         show_info("Open this URL in a browser where you are signed into Google with the target Workspace account:")
         console.print(prep["auth_url"])
@@ -935,46 +871,46 @@ def run_google_login(arg: str = "") -> None:
                 timeout=float(prep.get("timeout", 300.0)),
             )
         except Exception as exc:
-            show_info(f"Google loopback did not arrive automatically: {exc}")
+            show_info(f"Google loopback did not arrive automatically: {google_workspace_auth.safe_error_message(exc)}")
         if not callback:
             show_info(
-                "Loopback redirect did not arrive. Copy the callback URL and run "
-                "/google-callback --clipboard, or paste the full callback URL now."
+                "Loopback redirect did not arrive. Copy the callback URL and paste it now."
             )
             try:
                 pasted = input("Google callback URL (or blank to cancel): ").strip()
             except (EOFError, KeyboardInterrupt):
                 show_info("Google login cancelled.")
-                return
+                return False
             if not pasted:
                 show_info("Google login cancelled.")
-                return
+                return False
             callback = google_workspace_auth.parse_callback_value(pasted)
             if not callback:
                 show_error("Manual Google login requires the full callback URL so the OAuth state can be verified.")
-                return
+                return False
     else:
         try:
             pasted = input("Google callback URL (or blank to cancel): ").strip()
         except (EOFError, KeyboardInterrupt):
             show_info("Google login cancelled.")
-            return
+            return False
         if not pasted:
             show_info("Google login cancelled.")
-            return
+            return False
         callback = google_workspace_auth.parse_callback_value(pasted)
         if not callback:
             show_error("Manual Google login requires the full callback URL so the OAuth state can be verified.")
-            return
+            return False
 
     try:
         callback.setdefault("redirect_uri", prep["redirect_uri"])
         tokens = google_workspace_auth.complete_login(prep["code_verifier"], prep["state"], callback)
     except Exception as exc:
-        show_error(str(exc))
-        return
+        show_error(google_workspace_auth.safe_error_message(exc))
+        return False
     expires_in = max(0, int(tokens.get("expires_at", 0)) - int(time.time()))
     show_info(f"Google Workspace authentication successful (token valid for {expires_in}s).")
+    return True
 
 
 def read_clipboard_text() -> str:
@@ -996,7 +932,7 @@ def read_clipboard_text() -> str:
 def run_google_callback(arg: str = "") -> None:
     pending = google_workspace_auth.load_pending_login()
     if not pending:
-        show_error("No pending Google login. Run /google-login first, then approve access.")
+        show_error("No pending Google login. Run `algo-cli config auth google login` first, then approve access.")
         return
 
     tokens_split = shlex.split(arg or "")
@@ -1020,7 +956,7 @@ def run_google_callback(arg: str = "") -> None:
     else:
         callback_text = (arg or "").strip()
         if not callback_text:
-            show_info("Paste the Google callback URL, or use /google-callback --clipboard.")
+            show_info("Paste the Google callback URL from the login flow.")
             try:
                 callback_text = input("Google callback URL (or blank to cancel): ").strip()
             except (EOFError, KeyboardInterrupt):
@@ -1032,32 +968,40 @@ def run_google_callback(arg: str = "") -> None:
 
     callback = google_workspace_auth.parse_callback_value(callback_text)
     if not callback:
-        show_error("Could not parse Google callback URL. Copy the full callback URL and retry /google-callback --clipboard.")
+        show_error("Could not parse Google callback URL. Start a fresh login with `algo-cli config auth google login`.")
         return
     callback.setdefault("redirect_uri", pending["redirect_uri"])
     try:
         tokens = google_workspace_auth.complete_login(pending["code_verifier"], pending["state"], callback)
     except Exception as exc:
-        show_error(str(exc))
+        show_error(google_workspace_auth.safe_error_message(exc))
         return
     expires_in = max(0, int(tokens.get("expires_at", 0)) - int(time.time()))
     show_info(f"Google Workspace authentication successful (token valid for {expires_in}s).")
 
 
-def run_google_logout() -> None:
+def run_google_logout() -> bool:
+    had_tokens = google_workspace_auth.load_tokens() is not None
     if google_workspace_auth.clear_tokens():
         show_info("Google Workspace tokens cleared.")
-    else:
-        show_info("No stored Google Workspace tokens to clear.")
+        return True
+    if had_tokens:
+        show_error("Could not clear stored Google Workspace tokens.")
+        return False
+    show_info("No stored Google Workspace tokens to clear.")
+    return True
 
 
 def run_google_status() -> None:
+    load_runtime_env(override=True)
     status = google_workspace_auth.auth_status()
     if not status.get("client_configured"):
-        show_error("GOOGLE_OAUTH_CLIENT_ID is not set. Export it (and GOOGLE_OAUTH_CLIENT_SECRET) before /google-login.")
+        show_error(
+            "Google Workspace is not configured. Run `algo-cli config setup google` and use a Google Desktop app OAuth client."
+        )
         return
     if not status.get("authenticated"):
-        show_info("Google Workspace: not authenticated. Run /google-login to start the OAuth flow.")
+        show_info("Google Workspace: not authenticated. Run `algo-cli config auth google login` to start OAuth.")
         return
     show_info(
         f"Google Workspace: authenticated. Token expires in {status['expires_in']}s "
@@ -1147,7 +1091,7 @@ def run_google(arg: str = "") -> None:
         show_info(_google_usage_text())
         return
     if not google_workspace_auth.get_valid_token():
-        show_error("Not authenticated with Google Workspace. Run /google-login first.")
+        show_error("Not authenticated with Google Workspace. Run `algo-cli config auth google login` first.")
         return
     sub = tokens_split[0]
     rest = tokens_split[1:]
@@ -1265,7 +1209,7 @@ def run_google(arg: str = "") -> None:
         show_error(f"Google Workspace call failed: {exc}")
 
 
-def run_chatgpt_login(arg: str = "") -> None:
+def run_chatgpt_login(arg: str = "") -> bool:
     tokens_split = (arg or "").split()
     no_browser = "--no-browser" in tokens_split
     manual_only = "--manual" in tokens_split
@@ -1275,22 +1219,29 @@ def run_chatgpt_login(arg: str = "") -> None:
         show_info(f"When Codex prints a one-time code, open {chatgpt_auth.CODEX_DEVICE_VERIFY_URL} and approve it.")
         try:
             tokens = chatgpt_auth.run_codex_device_login()
+        except KeyboardInterrupt:
+            show_info("ChatGPT login cancelled.")
+            return False
         except Exception as exc:
-            show_error(str(exc))
-            return
+            show_error(chatgpt_auth.safe_error_message(exc))
+            return False
+        chatgpt_client.reset_model_request_scope_cache()
         expires_in = max(0, int(tokens.get("expires_at", 0)) - int(time.time()))
         show_info(f"ChatGPT authentication successful (token valid for {expires_in}s).")
         _show_chatgpt_models_after_login()
-        return
+        return True
     redirect_port = chatgpt_auth.CHATGPT_REDIRECT_PORT if manual_only else chatgpt_auth.select_redirect_port()
     if redirect_port is None:
-        show_error("ChatGPT loopback redirect port 1455 is not available. Retry with /chatgpt-login --manual.")
-        return
+        show_error(
+            "ChatGPT loopback redirect port 1455 is not available. Retry with "
+            "`algo-cli config setup chatgpt --manual`."
+        )
+        return False
     try:
         prep = chatgpt_auth.begin_login(no_browser=no_browser or manual_only, redirect_port=redirect_port)
     except Exception as exc:
-        show_error(f"Could not start ChatGPT login: {exc}")
-        return
+        show_error(f"Could not start ChatGPT login: {chatgpt_auth.safe_error_message(exc)}")
+        return False
     if no_browser or manual_only:
         show_info("Open this URL on any browser you're signed into ChatGPT/OpenAI with:")
         console.print(prep["auth_url"])
@@ -1319,28 +1270,30 @@ def run_chatgpt_login(arg: str = "") -> None:
             pasted = input("ChatGPT callback URL (or blank to cancel): ").strip()
         except (EOFError, KeyboardInterrupt):
             show_info("ChatGPT login cancelled.")
-            return
+            return False
         if not pasted:
             show_info("ChatGPT login cancelled.")
-            return
+            return False
         parsed = urlparse(pasted)
         if parsed.query:
             qs = parse_qs(parsed.query)
             callback = {key: values[0] for key, values in qs.items() if values}
         else:
             show_error("Manual ChatGPT login requires the full callback URL so the OAuth state can be verified.")
-            return
+            return False
         callback["redirect_uri"] = prep["redirect_uri"]
 
     try:
         callback.setdefault("redirect_uri", prep["redirect_uri"])
         tokens = chatgpt_auth.complete_login(prep["code_verifier"], prep["state"], callback)
     except Exception as exc:
-        show_error(str(exc))
-        return
+        show_error(chatgpt_auth.safe_error_message(exc))
+        return False
+    chatgpt_client.reset_model_request_scope_cache()
     expires_in = max(0, int(tokens.get("expires_at", 0)) - int(time.time()))
     show_info(f"ChatGPT authentication successful (token valid for {expires_in}s).")
     _show_chatgpt_models_after_login()
+    return True
 
 
 def _show_chatgpt_models_after_login() -> None:
@@ -1351,18 +1304,28 @@ def _show_chatgpt_models_after_login() -> None:
             show_info("GPT-5.6 reasoning is configurable per model with /thinking effort [MODEL] LEVEL.")
 
 
-def run_chatgpt_logout() -> None:
+def run_chatgpt_logout() -> bool:
+    had_tokens = chatgpt_auth.load_tokens() is not None
     if chatgpt_auth.clear_tokens():
+        chatgpt_client.reset_model_request_scope_cache()
         show_info("ChatGPT tokens cleared.")
-    else:
-        show_info("No stored ChatGPT tokens to clear.")
+        return True
+    if had_tokens:
+        show_error("Could not clear stored ChatGPT tokens.")
+        return False
+    chatgpt_client.reset_model_request_scope_cache()
+    show_info("No stored ChatGPT tokens to clear.")
+    return True
 
 
 def run_chatgpt_status() -> None:
     status = chatgpt_auth.auth_status()
     if not status.get("authenticated"):
-        show_info("ChatGPT: not authenticated. Run /chatgpt-login to start Codex browser OAuth.")
-        show_info(f"Device-code fallback: /chatgpt-login --device-code ({chatgpt_auth.CODEX_DEVICE_VERIFY_URL})")
+        show_info("ChatGPT: not authenticated. Run `algo-cli config setup chatgpt` to start Codex browser OAuth.")
+        show_info(
+            "Device-code fallback: `algo-cli config setup chatgpt --device-code` "
+            f"({chatgpt_auth.CODEX_DEVICE_VERIFY_URL})"
+        )
         return
     show_info(
         f"ChatGPT: authenticated. Token expires in {status['expires_in']}s "
@@ -1390,14 +1353,12 @@ def run_model_check(arg: str = "", *, active_model: str = "") -> None:
         for line in lines:
             console.print(line)
         return
-    lines.append("Family: Grok/xAI (optional subscription OAuth)")
+    lines.append("Family: Grok/xAI (documented API-key authentication)")
     auth = xai_auth.auth_status()
-    lines.append(f"OAuth client configured: {'yes' if auth.get('client_configured') else 'no — set XAI_CLIENT_ID'}")
-    if auth.get("client_configured"):
-        auth_label = "yes" if auth.get("authenticated") else "no — run /xai-login"
-    else:
-        auth_label = "no — optional provider is not configured"
-    lines.append(f"OAuth authenticated: {auth_label}")
+    lines.append(
+        "API key configured: "
+        + ("yes (redacted)" if auth.get("api_key_configured") else "no — run `algo-cli config setup xai`")
+    )
     in_fallback = bare in XAI_MODEL_CHOICES
     lines.append(f"In XAI_MODEL_CHOICES fallback list: {'yes' if in_fallback else 'no (may still work if /v1/models lists it)'}")
     if is_multi_agent_model(name):
@@ -1406,35 +1367,29 @@ def run_model_check(arg: str = "", *, active_model: str = "") -> None:
         lines.append("Timeout: up to 3600s per request in xai_client.chat().")
     else:
         lines.append("API route: POST https://api.x.ai/v1/chat/completions (OpenAI-compatible)")
-    lines.append("Billing: optional subscription OAuth only — XAI_API_KEY fallback is disabled.")
+    lines.append("Billing: xAI API calls may consume paid API usage; the key is used only after you select a Grok model or call xAI tools.")
     lines.append("Sources: algo_cli/main.py (XAI_MODEL_CHOICES), xai_client.py, tests/test_xai_client.py")
     for line in lines:
         console.print(line)
 
 
-def run_xai_test() -> None:
+def run_xai_test() -> bool:
     from . import xai_client
 
     status = xai_auth.auth_status()
-    if not status.get("client_configured"):
-        show_error("Optional xAI OAuth is not configured. Set your authorized XAI_CLIENT_ID before /xai-login.")
-        return
-    if not xai_auth.get_valid_token():
-        show_error("Not authenticated with xAI. Run /xai-login first.")
-        return
+    if not status.get("api_key_configured"):
+        show_error("xAI API key is not configured. Run `algo-cli config setup xai` first.")
+        return False
     try:
         result = xai_client.get_models()
     except Exception as exc:
         show_error(f"xAI /v1/models failed: {xai_auth.safe_error_message(exc)}")
-        show_info(
-            "If you see 403/insufficient_scope, the OAuth scope likely does not grant API access "
-            "on this account. Some xAI account tiers do not include /v1 access via OAuth."
-        )
-        return
+        show_info("Check XAI_API_KEY and xAI API credits/permissions, then retry the explicit verification.")
+        return False
     items = result.get("data") or result.get("models") or []
     if not items:
         show_info(f"xAI returned no models. Raw payload: {result}")
-        return
+        return False
     show_info(f"xAI returned {len(items)} accessible models:")
     for item in items:
         if isinstance(item, dict):
@@ -1443,6 +1398,7 @@ def run_xai_test() -> None:
             console.print(f"  - {name}" + (f"  [muted]({owned})[/]" if owned else ""))
         else:
             console.print(f"  - {item}")
+    return True
 
 
 def run_x_account(arg: str = "") -> None:
@@ -1452,7 +1408,7 @@ def run_x_account(arg: str = "") -> None:
         show_error(f"Could not parse /x-account args: {exc}")
         return
     if not parts or parts[0] in {"help", "-h", "--help"}:
-        show_info("X account commands use xurl and separate X API OAuth, not xAI Grok OAuth.")
+        show_info("X account commands use xurl and separate X API OAuth, not the xAI Grok API key.")
         console.print("  /x-account status")
         console.print('  /x-account draft-post "text"')
         console.print('  /x-account draft-reply POST_ID_OR_URL "text"')
@@ -1570,14 +1526,15 @@ def chatgpt_model_names() -> tuple[list[str], bool]:
         return [], False
     try:
         models = chatgpt_client.get_codex_models()
-    except Exception:
-        return list(CHATGPT_MODEL_CHOICES), True
+    except Exception as exc:
+        logger.debug("ChatGPT model discovery failed: %s", exc)
+        return [], True
     names = [str(item["slug"]) for item in models if item.get("slug")]
-    return (names or list(CHATGPT_MODEL_CHOICES)), True
+    return names, True
 
 
 def xai_model_names() -> tuple[list[str], bool]:
-    """Return (model_names, authenticated) for subscription OAuth only."""
+    """Return (model_names, authenticated) for configured xAI API-key access."""
     try:
         from . import xai_auth
     except Exception:
@@ -1587,8 +1544,9 @@ def xai_model_names() -> tuple[list[str], bool]:
     try:
         from . import xai_client
         response = xai_client.get_models()
-    except Exception:
-        return list(XAI_MODEL_CHOICES), True
+    except Exception as exc:
+        logger.debug("xAI model discovery failed: %s", exc)
+        return [], True
     items = response.get("data") if isinstance(response, dict) else None
     names: list[str] = []
     for item in items or []:
@@ -1602,7 +1560,7 @@ def xai_model_names() -> tuple[list[str], bool]:
         if any(skip in bare for skip in ("embed", "image", "video", "tts", "asr", "imagine")):
             continue
         names.append(str(name))
-    return (sorted(set(names)) or list(XAI_MODEL_CHOICES)), True
+    return sorted(set(names)), True
 
 
 def collect_dashboard_state(client: Client, cfg: Config) -> tuple[list[dict[str, str]], list[dict[str, str]], list[str]]:
@@ -1698,7 +1656,7 @@ def model_picker(cfg: Config, *, first_run: bool = False) -> bool:
         }.get(name, "Codex")
         choices.append((name, f"OpenAI {family} · reasoning {effort} · subscription quota"))
     xai_names, xai_authed = xai_model_names()
-    xai_suffix = "xAI Grok OAuth (subscription quota)"
+    xai_suffix = "xAI Grok API key (may use API credits)"
     for name in xai_names:
         choices.append((name, xai_suffix))
 
@@ -1724,15 +1682,9 @@ def model_picker(cfg: Config, *, first_run: bool = False) -> bool:
         effort = chatgpt_client.reasoning_effort_for_model(cfg.model, cfg.chatgpt_reasoning_efforts)
         show_info(f"Reasoning effort for {cfg.model}: {effort} (/thinking effort LEVEL).")
     if mode.startswith("OpenAI") and not chatgpt_authed:
-        show_info("ChatGPT/Codex OAuth is not authenticated. Run /chatgpt-login.")
+        show_info("ChatGPT/Codex OAuth is not authenticated. Run `algo-cli config setup chatgpt`.")
     elif mode.startswith("xAI") and not xai_authed:
-        if xai_auth.client_id_configured():
-            show_info("xAI OAuth is not authenticated. Run /xai-login; API-key fallback is disabled.")
-        else:
-            show_info(
-                "Optional xAI OAuth is not configured. Set your authorized XAI_CLIENT_ID before /xai-login; "
-                "API-key fallback is disabled."
-            )
+        show_info("xAI API key is not configured. Run `algo-cli config setup xai` before using a Grok model.")
     elif cfg.cloud and cfg.auto_cloud_connect:
         maybe_prompt_cloud_login()
     elif cfg.cloud:
@@ -2748,7 +2700,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
         if plan_block:
             optional_context_blocks.append(OptionalContextBlock("reasoning", "", plan_block))
     cfg.messages.append({"role": "user", "content": persisted_user_message})
-    max_iterations = max(8, int(cfg.max_tool_iterations))
+    max_iterations = max(1, min(128, int(cfg.max_tool_iterations)))
     # Model-aware params: adapt num_ctx/temperature/reflection cadence to the
     # active model's size + provider, honoring any explicit user overrides.
     if getattr(cfg, "model_adaptive", True):
@@ -3431,7 +3383,11 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 pass
         else:
             setattr(cfg, "_algo_program_authorization", _previous_program_authorization)
-        cfg.save()
+        try:
+            cfg.save()
+        except Exception as exc:
+            logger.error("Could not persist session state: %s", exc)
+            show_error(f"Session completed, but its local state could not be saved: {exc}")
         flush_perf_records()
 
     # Tier-3: claim-grounding verify pass when verify_mode is active.
@@ -3859,21 +3815,9 @@ def main() -> None:
     _force_utf8_console()
     if Path(sys.argv[0]).name.lower().startswith("ollama-cli"):
         console.print("[warning]`ollama-cli` is deprecated; use `algo-cli` instead.[/]")
-    load_runtime_env(override=True)
-    args = parse_args()
-    if args.version:
-        from .version_manifest import build_manifest, format_version_string
-        console.print(format_version_string(build_manifest()))
-        return
-    if (args.prompt or "").strip().casefold() == "update" and not args.oneshot:
-        raise SystemExit(_run_update_entry())
-    if args.oneshot:
-        _exit = _run_oneshot_entry(args)
-        sys.exit(_exit)
-    # Migration to new default location (~/.algo_cli) must happen before any
-    # first-run scaffolding writes into CONFIG_DIR; otherwise the migration
-    # helper will correctly refuse to overwrite the newly-created directory and
-    # legacy memories/config are stranded in ~/.ollama_cli.
+
+    # Migration must precede every command surface. In particular, a first
+    # invocation of ``algo-cli config`` must see legacy credentials/settings.
     already_migrated = (CONFIG_DIR / ".migrated_from_legacy").exists()
     migrated = False
     if has_legacy_data() and not already_migrated:
@@ -3885,6 +3829,22 @@ def main() -> None:
             f"Imported legacy config file(s) into {CONFIG_DIR}: {', '.join(sidecar)}"
         )
 
+    load_runtime_env(override=True)
+    raw_argv = sys.argv[1:]
+    if raw_argv and raw_argv[0].strip().lower() == "config":
+        from . import cli_config
+
+        raise SystemExit(cli_config.run(raw_argv[1:]))
+    args = parse_args()
+    if args.version:
+        from .version_manifest import build_manifest, format_version_string
+        console.print(format_version_string(build_manifest()))
+        return
+    if (args.prompt or "").strip().casefold() == "update" and not args.oneshot:
+        raise SystemExit(_run_update_entry())
+    if args.oneshot:
+        _exit = _run_oneshot_entry(args)
+        sys.exit(_exit)
     cfg = Config.load()
     harness.configure_context_sources(
         external=cfg.external_harness_sources_enabled,

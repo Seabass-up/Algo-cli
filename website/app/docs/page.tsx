@@ -9,7 +9,7 @@ const groups = [
 ];
 
 export default function DocsPage() {
-  return <PageFrame eyebrow="DOCS / v0.16.0" title="Operate the runtime deliberately." intro="A compact field guide to the controls that matter most. Every feature is designed to reveal its scope, authority, and verification state.">
+  return <PageFrame eyebrow="DOCS / v0.17.0" title="Operate the runtime deliberately." intro="A compact field guide to the controls that matter most. Every feature is designed to reveal its scope, authority, and verification state.">
     <section className="content-wrap docs-layout">
       <aside className="docs-index"><span>ON THIS PAGE</span><a href="#commands">Command field guide</a><a href="#agents">Agent ethos</a><a href="#privacy">Context and privacy</a><a href="#machine-readable">Machine interfaces</a></aside>
       <div className="docs-main">

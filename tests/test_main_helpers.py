@@ -119,78 +119,42 @@ def test_doctor_and_context_load_runtime_env_file(monkeypatch, tmp_path):
     assert "Provider route: Ollama Cloud direct API" in prompt
 
 
-def test_xai_login_without_client_id_stops_before_auth_launch(monkeypatch):
-    errors: list[str] = []
-    monkeypatch.delenv("XAI_CLIENT_ID", raising=False)
-    monkeypatch.setattr(main, "show_error", errors.append)
-    monkeypatch.setattr(
-        main.xai_auth,
-        "select_redirect_port",
-        lambda: pytest.fail("port selection must not run without XAI_CLIENT_ID"),
-    )
-    monkeypatch.setattr(
-        main.xai_auth,
-        "begin_login",
-        lambda **_kwargs: pytest.fail("OAuth launch must not run without XAI_CLIENT_ID"),
-    )
+def test_legacy_xai_login_guides_user_to_config_setup(monkeypatch):
+    infos: list[str] = []
+    monkeypatch.setattr(main, "show_info", infos.append)
 
     main.run_xai_login()
 
-    assert len(errors) == 1
-    assert "optional and not configured" in errors[0]
-    assert "XAI_CLIENT_ID" in errors[0]
+    assert len(infos) == 1
+    assert "API key" in infos[0]
+    assert "algo-cli config setup xai" in infos[0]
 
 
-def test_xai_status_describes_missing_client_as_optional(monkeypatch):
+def test_xai_status_describes_missing_api_key(monkeypatch):
     infos: list[str] = []
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.delenv("XAI_CLIENT_ID", raising=False)
+    main.xai_auth.LEGACY_AUTH_FILE.unlink(missing_ok=True)
     monkeypatch.setattr(main, "show_info", infos.append)
 
     main.run_xai_status()
 
     assert len(infos) == 1
-    assert "optional, not configured" in infos[0]
-    assert "bundles no client id" in infos[0]
+    assert "not configured" in infos[0]
+    assert "algo-cli config setup xai" in infos[0]
 
 
-def test_configured_xai_browser_login_does_not_echo_client_id(monkeypatch):
-    client_id = "configured-xai-client-id-not-for-terminal-log"
+def test_xai_status_never_echoes_api_key(monkeypatch):
+    key = "xai-secret-not-for-terminal-log"
     infos: list[str] = []
-    printed: list[str] = []
-    monkeypatch.setenv("XAI_CLIENT_ID", client_id)
+    monkeypatch.setenv("XAI_API_KEY", key)
     monkeypatch.setattr(main, "show_info", infos.append)
-    monkeypatch.setattr(main, "show_error", lambda message: pytest.fail(message))
-    monkeypatch.setattr(main.console, "print", lambda value: printed.append(str(value)))
-    monkeypatch.setattr(main.xai_auth, "select_redirect_port", lambda: 56121)
-    monkeypatch.setattr(
-        main.xai_auth,
-        "begin_login",
-        lambda **_kwargs: {
-            "auth_url": f"https://auth.x.ai/oauth2/authorize?client_id={client_id}",
-            "browser_opened": True,
-            "redirect_port": "56121",
-            "redirect_uri": "http://127.0.0.1:56121/callback",
-            "ssh_tunnel_cmd": "unused",
-            "code_verifier": "verifier",
-            "state": "state",
-        },
-    )
-    monkeypatch.setattr(
-        main.xai_auth,
-        "run_loopback_capture",
-        lambda **_kwargs: {"code": "code", "state": "state"},
-    )
-    monkeypatch.setattr(
-        main.xai_auth,
-        "complete_login",
-        lambda *_args, **_kwargs: {"expires_at": int(time.time()) + 3600},
-    )
 
-    main.run_xai_login()
+    main.run_xai_status()
 
-    output = "\n".join([*infos, *printed])
-    assert client_id not in output
-    assert "Opened xAI authorization" in output
+    output = "\n".join(infos)
+    assert key not in output
+    assert "configured" in output
 
 
 def test_system_prompt_does_not_disclose_absolute_workspace_or_identity_paths(tmp_path):
@@ -211,12 +175,14 @@ def test_chatgpt_login_device_code_flag_uses_codex_device_flow(monkeypatch):
     monkeypatch.setattr(main, "show_error", errors.append)
     monkeypatch.setattr(main.chatgpt_auth, "run_codex_device_login", lambda: {"access_token": "AT", "expires_at": int(time.time()) + 3600})
     monkeypatch.setattr(main, "_show_chatgpt_models_after_login", lambda: None)
+    monkeypatch.setattr(main.chatgpt_client, "_MODEL_REQUEST_SCOPE_MISSING", True)
 
-    main.run_chatgpt_login("--device-code")
+    assert main.run_chatgpt_login("--device-code") is True
 
     assert not errors
     assert any("https://auth.openai.com/codex/device" in message for message in infos)
     assert any("ChatGPT authentication successful" in message for message in infos)
+    assert main.chatgpt_client._MODEL_REQUEST_SCOPE_MISSING is False
 
 
 def test_chatgpt_login_defaults_to_codex_browser_oauth(monkeypatch):
@@ -246,7 +212,7 @@ def test_chatgpt_login_defaults_to_codex_browser_oauth(monkeypatch):
         lambda verifier, state, callback: {"access_token": "AT", "expires_at": int(time.time()) + 3600},
     )
 
-    main.run_chatgpt_login("")
+    assert main.run_chatgpt_login("") is True
 
     assert not errors
     assert any("Opening ChatGPT/OpenAI auth" in message for message in infos)
@@ -816,6 +782,31 @@ def test_agent_loop_auto_memory_runs_only_at_normal_completion(monkeypatch):
     assert infos == ["Saved 1 durable memory automatically; review it with /memories."]
 
 
+def test_agent_loop_reports_session_save_failure_without_masking_completion(monkeypatch):
+    class ScriptedClient:
+        def chat(self, **_kwargs):
+            return iter([{"message": {"content": "Done."}}])
+
+    _patch_agent_loop_for_tool_policy_test(monkeypatch)
+    errors: list[str] = []
+    monkeypatch.setattr(main, "show_error", errors.append)
+    monkeypatch.setattr(
+        main.memory_runtime,
+        "capture_completed_user_turn",
+        lambda *_args, **_kwargs: {"status": "skipped"},
+    )
+    cfg = Config(model="test-model", skill_crystallize_enabled=False)
+    monkeypatch.setattr(
+        cfg,
+        "save",
+        lambda: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    main.agent_loop(ScriptedClient(), cfg, "finish")  # type: ignore[arg-type]
+
+    assert errors == ["Session completed, but its local state could not be saved: disk full"]
+
+
 def test_normal_chat_serial_policy_matches_pipeline_and_blocks_unsafe_shell(monkeypatch):
     from algo_cli import tool_runtime
 
@@ -971,14 +962,15 @@ def test_agent_loop_withholds_unverified_final_and_requires_later_verifier(
     )
 
 
-def test_agent_loop_reserves_tool_free_finalization_after_iteration_cap(monkeypatch):
+@pytest.mark.parametrize("iteration_cap", [1, 8])
+def test_agent_loop_reserves_tool_free_finalization_after_iteration_cap(monkeypatch, iteration_cap):
     class ScriptedClient:
         def __init__(self):
             self.calls: list[dict] = []
 
         def chat(self, **kwargs):
             self.calls.append(json.loads(json.dumps(kwargs, default=str)))
-            if len(self.calls) <= 8:
+            if len(self.calls) <= iteration_cap:
                 return iter(
                     [
                         {
@@ -1011,12 +1003,12 @@ def test_agent_loop_reserves_tool_free_finalization_after_iteration_cap(monkeypa
         "capture_completed_user_turn",
         lambda *_args, **_kwargs: {"status": "skipped"},
     )
-    cfg = Config(model="test-model", max_tool_iterations=8, skill_crystallize_enabled=False)
+    cfg = Config(model="test-model", max_tool_iterations=iteration_cap, skill_crystallize_enabled=False)
     client = ScriptedClient()
 
     main.agent_loop(client, cfg, "inspect the project")  # type: ignore[arg-type]
 
-    assert len(client.calls) == 9
+    assert len(client.calls) == iteration_cap + 1
     assert client.calls[-1]["tools"] == []
     assert any(
         "[Internal finalization turn]" in str(message.get("content") or "")
@@ -1105,7 +1097,7 @@ def test_system_prompt_includes_authoritative_runtime_model():
 
     assert "## Runtime Model Status" in prompt
     assert "- Active model: grok-4.3" in prompt
-    assert "- Provider route: xAI Grok OAuth" in prompt
+    assert "- Provider route: xAI Grok API" in prompt
     assert prompt.index("## Runtime Model Status") < prompt.index("## Conversation Summary")
     assert "treat this runtime block as authoritative" in prompt
 
@@ -1190,6 +1182,26 @@ def test_chatgpt_models_visible_after_codex_oauth(monkeypatch):
     assert "gpt-5.6-luna" in names
 
 
+def test_provider_model_discovery_failure_does_not_advertise_static_models(monkeypatch):
+    monkeypatch.setattr(main.chatgpt_auth, "get_valid_token", lambda: "token")
+    monkeypatch.setattr(
+        main.chatgpt_client,
+        "get_codex_models",
+        lambda: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+    monkeypatch.setattr(main.xai_auth, "get_valid_token", lambda: "key")
+    from algo_cli import xai_client
+
+    monkeypatch.setattr(
+        xai_client,
+        "get_models",
+        lambda: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+
+    assert main.chatgpt_model_names() == ([], True)
+    assert main.xai_model_names() == ([], True)
+
+
 def test_model_picker_includes_authenticated_chatgpt_models(monkeypatch, tmp_path):
     cfg = Config(cwd=str(tmp_path))
     captured: list[tuple[str, str]] = []
@@ -1201,6 +1213,25 @@ def test_model_picker_includes_authenticated_chatgpt_models(monkeypatch, tmp_pat
 
     assert main.model_picker(cfg) is False
     assert ("gpt-5.5", "OpenAI Codex · reasoning medium · subscription quota") in captured
+
+
+def test_direct_provider_model_selection_requires_verified_catalog(monkeypatch):
+    cfg = Config(model="existing-model")
+    old_client = object()
+    errors: list[str] = []
+    monkeypatch.setattr(main, "show_error", errors.append)
+    monkeypatch.setattr(
+        main,
+        "chatgpt_model_names",
+        lambda: (["gpt-5.6-sol"], True),
+    )
+
+    handled, returned = main.handle_command("/model terra", cfg, old_client)  # type: ignore[arg-type]
+
+    assert handled is True
+    assert returned is old_client
+    assert cfg.model == "existing-model"
+    assert "not enabled" in errors[0]
 
 
 def test_onboarding_remains_pending_when_model_selection_fails(monkeypatch):
@@ -1428,6 +1459,8 @@ def test_direct_model_command_reconciles_provider_route(
     monkeypatch.setattr(main, "create_client", lambda _cfg: replacement_client)
     monkeypatch.setattr(main, "refresh_runtime_status", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(main, "invalidate_prompt_toolbar", lambda _session: None)
+    monkeypatch.setattr(main, "chatgpt_model_names", lambda: ([model], True))
+    monkeypatch.setattr(main, "xai_model_names", lambda: ([model], True))
 
     handled, returned_client = main.handle_command(
         f"/model {model}", cfg, object()
@@ -1455,6 +1488,7 @@ def test_direct_model_command_canonicalizes_codex_alias(monkeypatch, alias, cano
     monkeypatch.setattr(main, "create_client", lambda _cfg: replacement_client)
     monkeypatch.setattr(main, "refresh_runtime_status", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(main, "invalidate_prompt_toolbar", lambda _session: None)
+    monkeypatch.setattr(main, "chatgpt_model_names", lambda: ([canonical], True))
 
     handled, returned = main.handle_command(f"/model {alias}", cfg, object())  # type: ignore[arg-type]
 

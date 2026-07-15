@@ -132,7 +132,7 @@ def test_agent_block_xai_falls_back_when_not_authenticated(monkeypatch):
     cfg = Config(model="qwen3:latest")
 
     assert runtime_services.client_for_model("grok-4-latest", cfg, active) is active
-    assert any("xAI OAuth" in msg for msg in messages)
+    assert any("XAI_API_KEY" in msg for msg in messages)
 
 
 def test_agent_block_chatgpt_falls_back_when_not_authenticated(monkeypatch):

@@ -66,7 +66,10 @@ def client_for_model(model: str, cfg: Config, active_client: Any) -> Any:
     load_runtime_env(override=True)
     if _model_info_module.is_xai_model(model):
         if not xai_auth.get_valid_token():
-            show_info(f"Agent block model {model} needs xAI OAuth; falling back to {cfg.model}.")
+            show_info(
+                f"Agent block model {model} needs XAI_API_KEY; falling back to {cfg.model}. "
+                "Run `algo-cli config setup xai` to configure it."
+            )
             return active_client
         from . import xai_client
 

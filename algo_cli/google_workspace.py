@@ -74,7 +74,7 @@ class GoogleWorkspaceClient:
         if not token:
             raise GoogleWorkspaceError(
                 401,
-                "Not authenticated. Run /google-login to start the OAuth flow.",
+                "Not authenticated. Run `algo-cli config auth google login` to start the OAuth flow.",
             )
         req_headers: dict[str, str] = {
             "Authorization": f"Bearer {token}",

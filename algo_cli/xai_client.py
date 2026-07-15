@@ -2,7 +2,7 @@
 
 Wraps api.x.ai/v1 with an interface compatible with ollama.Client.chat()
 so the agent_loop does not need a separate code path for Grok. Auth is
-provided by xai_auth.get_valid_token() (silent refresh).
+provided by the user's configured XAI_API_KEY via xai_auth.get_valid_token().
 
 Streaming: parses OpenAI Server-Sent Events and emits ollama-shaped chunks
 of the form {"message": {"content": ..., "tool_calls": [...], "thinking": ...}}.
@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover
     convert_function_to_tool = None  # type: ignore[assignment]
 
 
-XAI_OAUTH_PROVIDER_LABEL = "optional xAI Grok subscription OAuth"
+XAI_API_PROVIDER_LABEL = "xAI API key"
 _BILLING_OR_API_KEY_MARKERS = (
     "api key",
     "api_key",
@@ -45,25 +45,34 @@ _BILLING_OR_API_KEY_MARKERS = (
 )
 
 
-class XaiOAuthAccessError(RuntimeError):
-    """Raised when OAuth access is unavailable without falling back to API spend."""
+class XaiApiAccessError(RuntimeError):
+    """Raised when the configured xAI API credential cannot access a route."""
 
 
-def _oauth_only_error(status: int | None, endpoint: str, detail: str) -> RuntimeError:
+# Kept as an import-compatible alias for integrations that caught the old
+# exception name.  New messages and all runtime behavior describe API-key auth.
+XaiOAuthAccessError = XaiApiAccessError
+
+
+def _api_access_error(status: int | None, endpoint: str, detail: str) -> RuntimeError:
     lower = detail.lower()
     safe_detail = xai_auth.safe_error_message(detail)
     gated = status in {402, 403} or any(marker in lower for marker in _BILLING_OR_API_KEY_MARKERS)
     if gated:
-        return XaiOAuthAccessError(
-            f"xAI OAuth access was rejected for {endpoint}. "
-            "This CLI is configured for subscription OAuth only and will not use "
-            "XAI_API_KEY or any pay-per-token API-key fallback. "
+        return XaiApiAccessError(
+            f"xAI API access was rejected for {endpoint}. "
+            "Check the configured XAI_API_KEY and the xAI account's API credits or permissions. "
             f"Upstream response: {safe_detail or '(no body)'}"
         )
-    prefix = f"xAI OAuth request failed for {endpoint}"
+    prefix = f"xAI API request failed for {endpoint}"
     if status is not None:
         prefix += f" ({status})"
     return RuntimeError(f"{prefix} :: {safe_detail or '(no body)'}")
+
+
+# Private compatibility alias for downstream tests/extensions written against
+# the old name.  It now returns the documented API-key error shape.
+_oauth_only_error = _api_access_error
 
 
 def _build_openai_tools(tools: list[Callable[..., Any]] | None) -> list[dict[str, Any]] | None:
@@ -196,7 +205,7 @@ def _build_responses_input(messages: list[dict[str, Any]]) -> list[dict[str, Any
 def _post_chat(payload: dict[str, Any], *, stream: bool, timeout: float = 120.0) -> Any:
     token = xai_auth.get_valid_token()
     if not token:
-        raise XaiOAuthAccessError("Not authenticated with xAI OAuth. Run /xai-login first.")
+        raise XaiApiAccessError("xAI API key is not configured. Run `algo-cli config setup xai` first.")
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         f"{xai_auth.XAI_API_BASE}/chat/completions",
@@ -216,7 +225,7 @@ def _post_chat(payload: dict[str, Any], *, stream: bool, timeout: float = 120.0)
             detail = exc.read().decode("utf-8", errors="replace")[:1500].strip()
         except Exception:
             pass
-        raise _oauth_only_error(exc.code, req.full_url, detail) from exc
+        raise _api_access_error(exc.code, req.full_url, detail) from exc
 
 
 def _post_responses(payload: dict[str, Any], *, timeout: float = 60.0) -> dict[str, Any]:
@@ -227,7 +236,7 @@ def _post_responses(payload: dict[str, Any], *, timeout: float = 60.0) -> dict[s
     """
     token = xai_auth.get_valid_token()
     if not token:
-        raise XaiOAuthAccessError("Not authenticated with xAI OAuth. Run /xai-login first.")
+        raise XaiApiAccessError("xAI API key is not configured. Run `algo-cli config setup xai` first.")
     body = json.dumps(payload).encode("utf-8")
     url = f"{xai_auth.XAI_API_BASE}/responses"
     req = urllib.request.Request(
@@ -249,14 +258,14 @@ def _post_responses(payload: dict[str, Any], *, timeout: float = 60.0) -> dict[s
             detail = exc.read().decode("utf-8", errors="replace")[:1500].strip()
         except Exception:
             pass
-        raise _oauth_only_error(exc.code, url, detail) from exc
+        raise _api_access_error(exc.code, url, detail) from exc
 
 
 def get_models() -> dict[str, Any]:
-    """GET /v1/models with the current OAuth token. Useful as a token sanity check."""
+    """GET /v1/models with the configured API key. Useful as an explicit sanity check."""
     token = xai_auth.get_valid_token()
     if not token:
-        raise XaiOAuthAccessError("Not authenticated with xAI OAuth. Run /xai-login first.")
+        raise XaiApiAccessError("xAI API key is not configured. Run `algo-cli config setup xai` first.")
     req = urllib.request.Request(
         f"{xai_auth.XAI_API_BASE}/models",
         headers={
@@ -274,7 +283,7 @@ def get_models() -> dict[str, Any]:
             detail = exc.read().decode("utf-8", errors="replace")[:1500].strip()
         except Exception:
             pass
-        raise _oauth_only_error(exc.code, f"{xai_auth.XAI_API_BASE}/models", detail) from exc
+        raise _api_access_error(exc.code, f"{xai_auth.XAI_API_BASE}/models", detail) from exc
 
 
 def _parse_sse_events(resp: Any) -> Iterator[dict[str, Any]]:
@@ -354,7 +363,10 @@ def _stream_iter(resp: Any) -> Iterator[dict[str, Any]]:
                 yield {"message": {"thinking": delta["reasoning_content"]}}
 
             for tc_delta in delta.get("tool_calls") or []:
-                idx = int(tc_delta.get("index", 0))
+                try:
+                    idx = int(tc_delta.get("index", 0))
+                except (TypeError, ValueError, OverflowError):
+                    idx = max(pending_calls, default=-1) + 1
                 slot = pending_calls.setdefault(
                     idx, {"function": {"name": "", "arguments": ""}}
                 )

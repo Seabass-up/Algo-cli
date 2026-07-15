@@ -11,7 +11,8 @@ Each credential helper is a Python class that implements:
 
 Built-in helpers:
   - ollama-cloud    (OLLAMA_API_KEY)
-  - xai-oauth       (xAI OAuth tokens)
+  - xai-api         (XAI_API_KEY)
+  - xai-oauth       (legacy xAI OAuth tokens; not used by the runtime)
   - google-workspace (Google Workspace OAuth tokens)
   - github-token    (GitHub API token)
   - env             (fallback: read from environment variables)
@@ -117,6 +118,10 @@ class FileCredentialHelper(CredentialHelper):
     def _save(self, data: dict[str, str]) -> None:
         self._base_dir.mkdir(parents=True, exist_ok=True)
         _atomic_write_text(self._file, json.dumps(data, indent=2))
+        try:
+            os.chmod(self._file, 0o600)
+        except (OSError, NotImplementedError):
+            pass
 
     def get(self, key: str) -> str | None:
         return self._load().get(key)
@@ -178,11 +183,48 @@ class OllamaCloudCredentialHelper(CredentialHelper):
         return self._file_helper.list_keys()
 
 
-class XAIOAuthCredentialHelper(CredentialHelper):
-    """Credential helper for xAI OAuth tokens.
+class XAIAPICredentialHelper(CredentialHelper):
+    """Credential helper for the documented XAI_API_KEY runtime setting."""
 
-    Delegates to the existing xai_auth.json file, providing a standard
-    interface while keeping backward compatibility.
+    @property
+    def name(self) -> str:
+        return "xai-api"
+
+    def get(self, key: str) -> str | None:
+        if key != "XAI_API_KEY":
+            return None
+        try:
+            from .config import load_runtime_env
+
+            load_runtime_env(override=True)
+        except Exception:
+            pass
+        return os.environ.get(key, "").strip() or None
+
+    def store(self, key: str, value: str) -> None:
+        if key != "XAI_API_KEY":
+            raise ValueError("xai-api only manages XAI_API_KEY")
+        from .config import update_runtime_env
+
+        update_runtime_env({key: value})
+
+    def erase(self, key: str) -> None:
+        if key != "XAI_API_KEY":
+            return
+        from .config import update_runtime_env
+
+        update_runtime_env({key: None})
+
+    def list_keys(self) -> list[str]:
+        return ["XAI_API_KEY"] if self.get("XAI_API_KEY") else []
+
+
+class XAIOAuthCredentialHelper(CredentialHelper):
+    """Legacy helper for xAI OAuth tokens retained only for migration.
+
+    The xAI API runtime no longer reads this file.  Keeping it inspectable lets
+    users remove old state without silently treating a browser token as an API
+    credential.
     """
 
     def __init__(self):
@@ -224,16 +266,27 @@ class GoogleWorkspaceCredentialHelper(CredentialHelper):
     Delegates to the existing google_workspace token file.
     """
 
-    def __init__(self):
-        self._auth_file = CONFIG_DIR / "google_workspace_tokens.json"
+    def __init__(self, auth_file: Path | None = None):
+        self._auth_file = auth_file
 
     @property
     def name(self) -> str:
         return "google-workspace"
 
+    @property
+    def _path(self) -> Path:
+        if self._auth_file is not None:
+            return self._auth_file
+        # Keep the helper and the active OAuth client on one file.  The old
+        # google_workspace_tokens.json path was disconnected from the runtime,
+        # so helper writes never affected Google authentication.
+        from . import google_workspace_auth
+
+        return google_workspace_auth.AUTH_FILE
+
     def _load(self) -> dict[str, Any]:
         try:
-            return json.loads(self._auth_file.read_text(encoding="utf-8"))
+            return json.loads(self._path.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
             return {}
 
@@ -243,14 +296,24 @@ class GoogleWorkspaceCredentialHelper(CredentialHelper):
     def store(self, key: str, value: str) -> None:
         data = self._load()
         data[key] = value
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        _atomic_write_text(self._auth_file, json.dumps(data, indent=2))
+        path = self._path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(path, json.dumps(data, indent=2))
+        try:
+            os.chmod(path, 0o600)
+        except (OSError, NotImplementedError):
+            pass
 
     def erase(self, key: str) -> None:
         data = self._load()
         data.pop(key, None)
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        _atomic_write_text(self._auth_file, json.dumps(data, indent=2))
+        path = self._path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(path, json.dumps(data, indent=2))
+        try:
+            os.chmod(path, 0o600)
+        except (OSError, NotImplementedError):
+            pass
 
     def list_keys(self) -> list[str]:
         return list(self._load().keys())
@@ -307,6 +370,7 @@ def _init_default_helpers() -> None:
     register_helper(EnvCredentialHelper())
     register_helper(FileCredentialHelper("github-token"))
     register_helper(OllamaCloudCredentialHelper())
+    register_helper(XAIAPICredentialHelper())
     register_helper(XAIOAuthCredentialHelper())
     register_helper(GoogleWorkspaceCredentialHelper())
 

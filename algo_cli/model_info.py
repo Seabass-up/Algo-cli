@@ -27,7 +27,7 @@ _SIZE_RE = re.compile(r"([\d.]+)\s*([BbMmTtKk])", re.ASCII)
 # which the current Ollama Python SDK does not expose. Match these by name so the
 # agent loop can disable thinking before sending tool-call sequences.
 _GEMINI_NAME_RE = re.compile(r"^gemini[-_]", re.IGNORECASE)
-# Grok models routed through xAI (api.x.ai/v1) use OAuth auth and the
+# Grok models route through xAI's documented API-key auth and the
 # OpenAI-compatible chat surface — see xai_client.py.
 _GROK_NAME_RE = re.compile(r"^grok[-_]", re.IGNORECASE)
 # ChatGPT/OpenAI models routed through ChatGPT OAuth. Do not catch gpt-oss,
@@ -488,8 +488,8 @@ def is_gemini_model(model: str) -> bool:
 def is_xai_model(model: str) -> bool:
     """Detect Grok models routed through xAI (e.g. 'grok-4-latest', 'grok-3').
 
-    Grok models use OAuth auth (xai_auth) against api.x.ai/v1 instead of the
-    local Ollama daemon. The agent loop branches on this to swap clients.
+    Grok models use xAI API-key auth against api.x.ai/v1 instead of the local
+    Ollama daemon. The agent loop branches on this to swap clients.
     """
     if not model or not isinstance(model, str):
         return False

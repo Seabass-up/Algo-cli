@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 from .model_aliases import normalize_codex_model
 
@@ -159,12 +160,14 @@ def _load_json_file(path: Path, default: Any) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return default
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         backup = path.with_suffix(path.suffix + ".corrupt")
         try:
             _atomic_write_text(backup, path.read_text(encoding="utf-8", errors="replace"))
         except OSError:
             pass
+        return default
+    except OSError:
         return default
 
 
@@ -185,8 +188,14 @@ def _exclusive_state_lock(path: Path, *, timeout_seconds: float = 30.0) -> Itera
     while lock_file is None:
         try:
             lock_file = open(lock_path, "a+b")
-            lock_file.write(b"x")
-            lock_file.flush()
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"x")
+                lock_file.flush()
+            try:
+                os.chmod(lock_path, 0o600)
+            except (OSError, NotImplementedError):
+                pass
         except PermissionError:
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"Timed out waiting for state lock: {lock_path}")
@@ -237,15 +246,28 @@ def _exclusive_state_lock(path: Path, *, timeout_seconds: float = 30.0) -> Itera
         # split the lock, allowing concurrent read-modify-write transactions.
 
 
-def load_runtime_env(path: Path | str | None = None, *, override: bool = False) -> dict[str, str]:
-    # Dual-support: ALGO_CLI_ENV_FILE preferred, fall back to OLLAMA_CLI_ENV_FILE
-    configured_path = path or os.environ.get(f"{NEW_ENV_PREFIX}ENV_FILE") or os.environ.get(f"{OLD_ENV_PREFIX}ENV_FILE")
+def runtime_env_path(path: Path | str | None = None) -> Path:
+    """Return the active runtime-env path without creating or reading it.
+
+    The same precedence is used for reads and writes.  In particular, a new
+    ``algo-cli config`` setup writes to ``~/.algo_cli/env`` when neither an
+    explicit env-file path nor a legacy ``.env`` file already exists.
+    """
+
+    configured_path = (
+        path
+        or os.environ.get(f"{NEW_ENV_PREFIX}ENV_FILE")
+        or os.environ.get(f"{OLD_ENV_PREFIX}ENV_FILE")
+    )
     if configured_path is not None:
-        env_path = Path(configured_path)
-    elif DEFAULT_RUNTIME_ENV_FILE.exists():
-        env_path = DEFAULT_RUNTIME_ENV_FILE
-    else:
-        env_path = DOTENV_RUNTIME_ENV_FILE
+        return Path(configured_path).expanduser()
+    if DEFAULT_RUNTIME_ENV_FILE.exists() or not DOTENV_RUNTIME_ENV_FILE.exists():
+        return DEFAULT_RUNTIME_ENV_FILE
+    return DOTENV_RUNTIME_ENV_FILE
+
+
+def load_runtime_env(path: Path | str | None = None, *, override: bool = False) -> dict[str, str]:
+    env_path = runtime_env_path(path)
     loaded: dict[str, str] = {}
     if not env_path.exists():
         return loaded
@@ -266,18 +288,135 @@ def load_runtime_env(path: Path | str | None = None, *, override: bool = False) 
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip()
-        if not key:
+        if not _RUNTIME_ENV_KEY_RE.fullmatch(key):
             continue
-        if len(value) >= 2 and (
-            (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'"))
-        ):
+        if len(value) >= 2 and value.startswith('"') and value.endswith('"'):
+            # Values written by update_runtime_env use JSON quoting so spaces,
+            # quotes, and Windows paths round-trip exactly.  Keep accepting
+            # legacy shell-style values when they are not valid JSON strings.
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                value = value[1:-1]
+            else:
+                value = decoded if isinstance(decoded, str) else value[1:-1]
+        elif len(value) >= 2 and value.startswith("'") and value.endswith("'"):
             value = value[1:-1]
-        if key in os.environ and not override:
-            loaded[key] = os.environ[key]
+        try:
+            if key in os.environ and not override:
+                loaded[key] = os.environ[key]
+                continue
+            os.environ[key] = value
+            loaded[key] = value
+        except (OSError, ValueError):
+            # A corrupted env file must not make every CLI command fail during
+            # startup (for example, a value containing a NUL byte).
             continue
-        os.environ[key] = value
-        loaded[key] = value
     return loaded
+
+
+_RUNTIME_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _runtime_env_assignment_key(raw_line: str) -> str | None:
+    """Return an env key from a line without interpreting its secret value."""
+
+    line = raw_line.strip()
+    if not line or line.startswith("#"):
+        return None
+    if line.startswith("export "):
+        line = line[len("export ") :].strip()
+    if "=" not in line:
+        return None
+    key = line.split("=", 1)[0].strip()
+    return key if _RUNTIME_ENV_KEY_RE.fullmatch(key) else None
+
+
+def _format_runtime_env_value(value: str) -> str:
+    """Encode an env value without allowing comments or newlines to escape."""
+
+    if not value:
+        return ""
+    if all(not char.isspace() and char not in {"#", "'", '"', "\\"} for char in value):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def update_runtime_env(
+    values: Mapping[str, str | None],
+    path: Path | str | None = None,
+) -> Path:
+    """Atomically update selected runtime-env values with private file mode.
+
+    ``None`` removes a value.  Existing comments and unrelated settings remain
+    byte-for-byte intact apart from normalizing the final newline.  Values are
+    applied to the current process as well, so a guided setup can start an
+    OAuth flow immediately after saving its client configuration.
+    """
+
+    normalized: dict[str, str | None] = {}
+    for raw_key, raw_value in values.items():
+        key = str(raw_key).strip()
+        if not _RUNTIME_ENV_KEY_RE.fullmatch(key):
+            raise ValueError(f"Invalid runtime environment key: {raw_key!r}")
+        if raw_value is not None:
+            value = str(raw_value)
+            if "\n" in value or "\r" in value:
+                raise ValueError(f"Runtime environment value for {key} must not contain a newline.")
+            normalized[key] = value
+        else:
+            normalized[key] = None
+
+    env_path = runtime_env_path(path)
+    # This is a read-modify-write update, so atomic replacement alone is not
+    # sufficient: two concurrent provider setup commands could otherwise each
+    # read the old file and discard the other's setting.  Reuse the state lock
+    # used by the rest of the config layer for a single serialized transaction.
+    with _exclusive_state_lock(env_path):
+        try:
+            original_lines = env_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except FileNotFoundError:
+            original_lines = []
+        except OSError as exc:
+            raise RuntimeError(f"Could not read runtime environment file: {exc}") from exc
+
+        output_lines: list[str] = []
+        handled: set[str] = set()
+        for raw_line in original_lines:
+            assignment_key = _runtime_env_assignment_key(raw_line)
+            if assignment_key is None or assignment_key not in normalized:
+                output_lines.append(raw_line)
+                continue
+            if assignment_key in handled:
+                # Drop duplicate definitions for an updated key.  Leaving both
+                # in place makes future setup runs dependent on line order.
+                continue
+            handled.add(assignment_key)
+            configured_value = normalized[assignment_key]
+            if configured_value is not None:
+                output_lines.append(
+                    f"{assignment_key}={_format_runtime_env_value(configured_value)}"
+                )
+
+        for env_key, configured_value in normalized.items():
+            if env_key not in handled and configured_value is not None:
+                output_lines.append(f"{env_key}={_format_runtime_env_value(configured_value)}")
+
+        text = "\n".join(output_lines)
+        if text:
+            text += "\n"
+        _atomic_write_text(env_path, text)
+        try:
+            os.chmod(env_path, 0o600)
+        except (OSError, NotImplementedError):
+            pass
+
+    for env_key, configured_value in normalized.items():
+        if configured_value is None:
+            os.environ.pop(env_key, None)
+        else:
+            os.environ[env_key] = configured_value
+    return env_path
 
 
 _INVALID_CONFIG_VALUE = object()
@@ -637,14 +776,17 @@ def migrate_legacy_sidecar_files() -> list[str]:
     """Copy small auth/env files left behind when full migration was skipped.
 
     Full ``perform_legacy_migration`` only runs when ~/.algo_cli is empty. If the
-    new directory was populated first (e.g. identity scaffold), xai_auth.json and
-    .env can remain only under ~/.ollama_cli and xAI models disappear from /models.
+    new directory was populated first, provider credentials and environment
+    files can remain only under ~/.ollama_cli.
     """
     import shutil
 
     moved: list[str] = []
     pairs = [
         (LEGACY_CONFIG_DIR / "xai_auth.json", CONFIG_DIR / "xai_auth.json"),
+        (LEGACY_CONFIG_DIR / "google_workspace_auth.json", CONFIG_DIR / "google_workspace_auth.json"),
+        (LEGACY_CONFIG_DIR / "google_workspace_pending_login.json", CONFIG_DIR / "google_workspace_pending_login.json"),
+        (LEGACY_CONFIG_DIR / "chatgpt_auth.json", CONFIG_DIR / "chatgpt_auth.json"),
         (LEGACY_CONFIG_DIR / ".env", CONFIG_DIR / ".env"),
         (LEGACY_CONFIG_DIR / "env", CONFIG_DIR / "env"),
     ]
@@ -657,4 +799,13 @@ def migrate_legacy_sidecar_files() -> list[str]:
             moved.append(src.name)
         except Exception:
             continue
+    old_codex_home = LEGACY_CONFIG_DIR / "codex-chatgpt"
+    new_codex_home = CONFIG_DIR / "codex-chatgpt"
+    if old_codex_home.is_dir() and not new_codex_home.exists():
+        try:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(old_codex_home, new_codex_home)
+            moved.append(old_codex_home.name)
+        except Exception:
+            pass
     return moved
