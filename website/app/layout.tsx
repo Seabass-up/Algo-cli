@@ -15,11 +15,11 @@ export const metadata: Metadata = {
     type: "website",
     siteName: "Algo CLI",
     title: "Algo CLI — Verified work. Local control.",
-    description: "Verified coding with bounded tool context: 73–75% fewer schema tokens in two deterministic coding scenarios.",
+    description: "Verified coding with bounded tool context: 73.2–74.3% fewer schema tokens in two deterministic coding scenarios.",
     url: "https://algo-cli.com",
-    images: [{ url: "/og.png", width: 1683, height: 935, alt: "Algo CLI coding benchmark: 73–75% less tool context." }],
+    images: [{ url: "/og-v2.png", width: 1683, height: 935, alt: "Algo CLI coding benchmark evidence." }],
   },
-  twitter: { card: "summary_large_image", title: "Algo CLI — Verified work. Local control.", description: "73–75% fewer tool-schema tokens in two deterministic coding scenarios.", images: ["/og.png"] },
+  twitter: { card: "summary_large_image", title: "Algo CLI — Verified work. Local control.", description: "73.2–74.3% fewer tool-schema tokens in two deterministic coding scenarios.", images: ["/og-v2.png"] },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

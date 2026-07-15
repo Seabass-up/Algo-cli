@@ -16,6 +16,15 @@ runner = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = runner
 SPEC.loader.exec_module(runner)
 
+PUBLISHER_PATH = ROOT / "benchmarks/competitors/publish_website.py"
+PUBLISHER_SPEC = importlib.util.spec_from_file_location(
+    "competitor_benchmark_publisher", PUBLISHER_PATH
+)
+assert PUBLISHER_SPEC and PUBLISHER_SPEC.loader
+publisher = importlib.util.module_from_spec(PUBLISHER_SPEC)
+sys.modules[PUBLISHER_SPEC.name] = publisher
+PUBLISHER_SPEC.loader.exec_module(publisher)
+
 
 def fixture_copy(tmp_path: Path, task_id: str) -> tuple[Path, Path]:
     workspace = tmp_path / "workspace"
@@ -248,3 +257,133 @@ def test_tool_trap_checker_fails_closed_when_live_settings_are_deleted(tmp_path:
 
     assert passed is False
     assert "live settings file is unavailable" in receipt
+
+
+def publication_fixture() -> dict:
+    harnesses = [
+        "algo_cli", "codex_cli", "claude_code", "opencode", "pi", "copilot_cli",
+        "droid", "goose", "oh_my_pi", "hermes_agent", "openclaw",
+    ]
+    task_ids = list(publisher.TASKS)
+    runs = []
+    for harness in harnesses:
+        for task_id in task_ids:
+            for repetition in range(1, 4):
+                runs.append(
+                    {
+                        "run_id": f"{harness}-{task_id}-{repetition}",
+                        "harness": harness,
+                        "task": task_id,
+                        "model": "qwen3.6:35b-mlx",
+                        "duration_seconds": float(harnesses.index(harness) + 1),
+                        "checker_pass": True,
+                        "clean_process": True,
+                        "workspace_scope_pass": True,
+                        "baseline_checker_failed_as_expected": True,
+                        "protected_inputs_unchanged": True,
+                    }
+                )
+    aggregate = [
+        {
+            "harness": harness,
+            "objective_rank": rank,
+            "checker_passes": 12,
+            "checker_pass_rate": 1.0,
+            "clean_processes": 12,
+            "clean_process_rate": 1.0,
+            "scope_pass_rate": 1.0,
+            "runs": 12,
+            "median_duration_seconds": float(rank),
+            "p95_duration_seconds": float(rank),
+            "per_task": {
+                task_id: {
+                    "checker_passes": 3,
+                    "clean_processes": 3,
+                    "runs": 3,
+                    "median_duration_seconds": float(rank),
+                }
+                for task_id in task_ids
+            },
+        }
+        for rank, harness in enumerate(harnesses, start=1)
+    ]
+    return {
+        "schema_version": 1,
+        "created_at": "2026-07-15T00:00:00+00:00",
+        "protocol": {
+            "id": "algo-cli-cross-harness-v3-draft",
+            "harnesses": harnesses,
+            "tasks": task_ids,
+            "repetitions": 3,
+            "runs_per_harness": 12,
+            "total_runs": 132,
+            "model": "qwen3.6:35b-mlx",
+            "provider": "local Ollama",
+            "same_model": True,
+            "same_machine": True,
+            "same_task_fixtures": True,
+            "task_suite_sha256": "a" * 64,
+            "timeout_seconds": 360,
+            "order_policy": "deterministic cyclic rotation",
+            "model_warmup": {
+                "performed": True,
+                "success": True,
+                "included_in_scored_duration": False,
+            },
+        },
+        "versions": {harness: "test-version" for harness in harnesses},
+        "aggregate": aggregate,
+        "product_matrix": [
+            {
+                "product": harness,
+                "label": harness.replace("_", " ").title(),
+                "status": "runnable",
+                "reason": "adapter is implemented",
+            }
+            for harness in harnesses
+        ] + [
+            {"product": "grok_build", "label": "Grok Build", "status": "blocked", "reason": "not authenticated"}
+        ],
+        "runs": runs,
+    }
+
+
+def test_website_publisher_validates_and_sanitizes_complete_cell() -> None:
+    raw = publication_fixture()
+    revision = "b" * 40
+
+    publisher._validate(raw, revision)
+    curated = publisher._curate(raw, revision, "c" * 64)
+
+    assert curated["protocol"]["total_runs"] == 132
+    assert curated["results"][0]["clean_runs"] == 12
+    assert curated["results"][0]["task_passes"]["evidence_reconciliation_medium_repo"] == 3
+    assert curated["blocked_or_non_comparable"] == [
+        {"product": "Grok Build", "reason": "not authenticated"}
+    ]
+    assert "executable" not in json.dumps(curated)
+
+
+def test_website_publisher_rejects_unwarmed_cell() -> None:
+    raw = publication_fixture()
+    raw["protocol"]["model_warmup"]["success"] = False
+
+    try:
+        publisher._validate(raw, "b" * 40)
+    except ValueError as error:
+        assert "warmup did not succeed" in str(error)
+    else:
+        raise AssertionError("unwarmed benchmark cell was accepted")
+
+
+def test_website_publisher_preserves_protected_input_failure_as_a_score() -> None:
+    raw = publication_fixture()
+    raw["runs"][-1]["protected_inputs_unchanged"] = False
+    raw["runs"][-1]["workspace_scope_pass"] = False
+    raw["aggregate"][-1]["scope_pass_rate"] = 11 / 12
+
+    publisher._validate(raw, "b" * 40)
+    curated = publisher._curate(raw, "b" * 40, "c" * 64)
+
+    assert curated["results"][-1]["clean_runs"] == 11
+    assert curated["results"][-1]["scope_passes"] == 11

@@ -1,12 +1,12 @@
-rank,harness,checker_passes,clean_runs,scope_passes,runs,median_seconds,p95_seconds,code_repair_passes,tool_trap_passes,memory_passes
-1,Pi,9,9,9,9,35.333872,53.313030,3,3,3
-2,OpenCode,9,9,9,9,54.373749,73.233417,3,3,3
-3,Algo CLI,9,9,9,9,66.795381,89.442585,3,3,3
-4,Goose,9,9,9,9,68.228616,185.367366,3,3,3
-5,OpenClaw,9,9,9,9,80.372175,132.473389,3,3,3
-6,Hermes Agent,9,9,9,9,85.991251,149.114012,3,3,3
-7,Codex CLI,8,8,8,9,36.636926,39.837425,3,2,3
-8,Claude Code,8,8,8,9,39.600229,71.285904,3,2,3
-9,Copilot CLI,8,8,8,9,98.823846,284.579931,3,2,3
-10,Oh My Pi,7,7,7,9,40.625812,48.116694,3,1,3
-11,Droid,6,5,7,9,159.140250,226.658741,3,2,1
+rank,harness,version,checker_passes,verified_runs,scope_passes,runs,median_seconds,p95_seconds,code_repair_small_repo_passes,tool_trap_misleading_state_passes,memory_rag_conflict_live_files_passes,evidence_reconciliation_medium_repo_passes
+1,Algo CLI,Algo CLI v0.17.0,12,12,12,12,32.011902,287.333959,3,3,3,3
+2,Oh My Pi,omp/16.4.5,12,12,12,12,38.508241,322.415488,3,3,3,3
+3,Pi,0.80.6,12,12,12,12,42.864510,209.311090,3,3,3,3
+4,Codex CLI,codex-cli 0.144.3,12,12,12,12,44.470344,308.245487,3,3,3,3
+5,Hermes Agent,Hermes Agent v0.18.2 (2026.7.7.2) · upstream da4a28ec · local 4281151a (+1 carried commit),12,12,12,12,70.259538,335.824068,3,3,3,3
+6,OpenClaw,OpenClaw 2026.7.1 (2d2ddc4),12,11,12,12,73.205699,360.010988,3,3,3,3
+7,OpenCode,1.17.18,10,10,12,12,59.692798,360.019254,3,3,3,1
+8,Claude Code,2.1.207 (Claude Code),10,10,12,12,63.690007,360.016213,3,3,3,1
+9,Copilot CLI,GitHub Copilot CLI 1.0.70.,10,10,10,12,88.284269,360.009342,3,2,3,2
+10,Droid,0.170.0,7,6,12,12,138.437917,360.061895,3,2,2,0
+11,Goose,1.41.0,7,7,10,12,73.570653,360.010168,3,0,3,1
