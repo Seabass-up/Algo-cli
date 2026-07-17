@@ -87,12 +87,16 @@ path = "algo_cli/__init__.py"
 
 [tool.hatch.build.targets.wheel.force-include]
 "docs/ALGO.md" = "algo_cli/resources/docs/ALGO.md"
+"docs/external-agent-store-operations.md" = "algo_cli/resources/docs/external-agent-store-operations.md"
 "docs/harness-extension-cleanup-recommendation.md" = "algo_cli/resources/docs/harness-extension-cleanup-recommendation.md"
 "docs/index-compute-lab-integration.md" = "algo_cli/resources/docs/index-compute-lab-integration.md"
 "docs/inference-harness-loop-blueprint-2026-06.md" = "algo_cli/resources/docs/inference-harness-loop-blueprint-2026-06.md"
 "docs/main-split-map.md" = "algo_cli/resources/docs/main-split-map.md"
+"docs/provider-auth-recovery.md" = "algo_cli/resources/docs/provider-auth-recovery.md"
 "docs/reflex-loop-v0.2.md" = "algo_cli/resources/docs/reflex-loop-v0.2.md"
 "docs/privacy-and-context.md" = "algo_cli/resources/docs/privacy-and-context.md"
+"docs/runtime-capability-catalog.md" = "algo_cli/resources/docs/runtime-capability-catalog.md"
+"docs/echo-veil-security-status.md" = "algo_cli/resources/docs/echo-veil-security-status.md"
 "docs/algo-cli-memory-lifecycle-contract.md" = "algo_cli/resources/docs/algo-cli-memory-lifecycle-contract.md"
 "docs/algo-cli-execution-verification-contract.md" = "algo_cli/resources/docs/algo-cli-execution-verification-contract.md"
 "docs/algo-cli-algorithm-evidence-contract.md" = "algo_cli/resources/docs/algo-cli-algorithm-evidence-contract.md"
@@ -114,12 +118,16 @@ include = [
     "/algo_cli",
     "/ollama_cli",
     "/docs/ALGO.md",
+    "/docs/external-agent-store-operations.md",
     "/docs/harness-extension-cleanup-recommendation.md",
     "/docs/index-compute-lab-integration.md",
     "/docs/inference-harness-loop-blueprint-2026-06.md",
     "/docs/main-split-map.md",
+    "/docs/provider-auth-recovery.md",
     "/docs/reflex-loop-v0.2.md",
     "/docs/privacy-and-context.md",
+    "/docs/runtime-capability-catalog.md",
+    "/docs/echo-veil-security-status.md",
     "/docs/algo-cli-memory-lifecycle-contract.md",
     "/docs/algo-cli-execution-verification-contract.md",
     "/docs/algo-cli-algorithm-evidence-contract.md",

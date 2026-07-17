@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import ipaddress
 import os
 import shutil
 import subprocess
@@ -13,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 from urllib.request import Request, urlopen
 
 from ollama import Client
@@ -28,9 +29,11 @@ from .model_routing import require_cloud_api_key, uses_ollama_cloud
 
 LOCAL_STARTUP_TIMEOUT_SECONDS = 12
 SERVER_READY_TTL_SECONDS = 5.0
+SERVER_NOT_READY_TTL_SECONDS = 0.25
 GATEWAY_READY_TTL_SECONDS = 5.0
 
 SERVER_READY_CACHE: dict[str, tuple[float, bool]] = {}
+_SERVER_READY_CACHE_LOCK = threading.Lock()
 GATEWAY_PROCESS: subprocess.Popen[Any] | None = None
 GATEWAY_READY_CACHE: dict[str, tuple[float, bool]] = {}
 _TOOL_ENV_KEYS = ("OLLAMA_HOST", "ALGO_CLI_GATEWAY_URL", "OLLAMA_CLI_GATEWAY_URL")
@@ -151,14 +154,38 @@ def scoped_tool_runtime_env(cfg: Config):
 
 
 def host_is_local(host: str) -> bool:
-    normalized = host.lower()
-    return "localhost" in normalized or "127.0.0.1" in normalized or "[::1]" in normalized
+    """Return whether *host* resolves syntactically to a loopback endpoint.
+
+    This intentionally avoids DNS resolution and substring checks. Remote
+    names such as ``localhost.example`` must never trigger local process
+    startup, while the full IPv4 loopback block remains valid.
+    """
+
+    value = str(host or "").strip()
+    if not value:
+        return False
+    try:
+        parsed = urlsplit(value if "://" in value else f"//{value}")
+        hostname = parsed.hostname
+    except ValueError:
+        return False
+    if not hostname:
+        return False
+    normalized = hostname.rstrip(".").casefold()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 
 
 def ollama_server_ready(host: str) -> bool:
-    cached = SERVER_READY_CACHE.get(host)
-    now = time.time()
-    if cached and now - cached[0] <= SERVER_READY_TTL_SECONDS:
+    now = time.monotonic()
+    with _SERVER_READY_CACHE_LOCK:
+        cached = SERVER_READY_CACHE.get(host)
+    cache_ttl = SERVER_READY_TTL_SECONDS if cached and cached[1] else SERVER_NOT_READY_TTL_SECONDS
+    if cached and now - cached[0] <= cache_ttl:
         return cached[1]
     try:
         request = Request(urljoin(host.rstrip("/") + "/", "api/version"), method="GET")
@@ -166,7 +193,8 @@ def ollama_server_ready(host: str) -> bool:
             ready = 200 <= response.status < 500
     except (OSError, URLError, ValueError):
         ready = False
-    SERVER_READY_CACHE[host] = (now, ready)
+    with _SERVER_READY_CACHE_LOCK:
+        SERVER_READY_CACHE[host] = (now, ready)
     return ready
 
 

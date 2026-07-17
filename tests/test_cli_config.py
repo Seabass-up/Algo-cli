@@ -131,6 +131,21 @@ def test_config_setup_requires_explicit_provider_when_noninteractive() -> None:
     assert "Choose a provider" in captured.get()
 
 
+@pytest.mark.parametrize(
+    ("argv", "suggestion"),
+    [
+        (["setup", "googl"], "Did you mean `google`?"),
+        (["auth", "chatgtp"], "Did you mean `chatgpt`?"),
+    ],
+)
+def test_config_provider_typos_get_actionable_suggestions(argv, suggestion) -> None:
+    with _capture() as captured:
+        result = cli_config.run(argv, interactive=False)
+
+    assert result == 2
+    assert suggestion in captured.get()
+
+
 def test_config_auth_xai_remove_deletes_saved_value(tmp_path, monkeypatch) -> None:
     env_path = tmp_path / "env"
     monkeypatch.setattr(config, "DEFAULT_RUNTIME_ENV_FILE", env_path)

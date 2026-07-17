@@ -96,12 +96,47 @@ def test_benchmark_passes_stable_canaries_and_reusable_bm25_gate() -> None:
     assert result["performance"]["warm_mad_ratio"] == 0.0
     assert result["performance"]["speedup"] == 3.0
     assert result["performance"]["sufficient_samples"] is True
+    assert result["quality"]["status"] == "pass"
+    assert result["quality"]["metrics"] == {
+        "case_count": 7,
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "citation_precision": 1.0,
+    }
     assert len(result["evidence"]["index_digest"]) == 64
     assert len(result["evidence"]["ranking_digest"]) == 64
     assert len(result["evidence"]["timing_digest"]) == 64
     assert result["evidence"]["benchmark_record_count"] == 5
     assert result["evidence"]["maximum_benchmark_records"] == 2_048
     json.dumps(result, allow_nan=False)
+
+
+def test_quality_workload_covers_multilingual_complex_and_supersession() -> None:
+    result = benchmark.run_retrieval_quality_benchmark()
+    categories = {case["category"] for case in result["cases"]}
+    temporal = next(case for case in result["cases"] if case["name"] == "temporal_supersession")
+
+    assert result["status"] == "pass"
+    assert categories == {"multilingual", "complex"}
+    assert "quality:auth:obsolete" not in temporal["ranked_ids"]
+    assert len(result["fixture_digest"]) == 64
+
+
+def test_quality_workload_fails_when_translated_alias_evidence_is_removed(monkeypatch) -> None:
+    records = tuple(
+        {**record, "search_text": "write file approval"}
+        if record["id"] == "quality:capability:write-file"
+        else record
+        for record in benchmark.QUALITY_RECORDS
+    )
+    monkeypatch.setattr(benchmark, "QUALITY_RECORDS", records)
+
+    result = benchmark.run_retrieval_quality_benchmark()
+
+    translated = next(case for case in result["cases"] if case["name"] == "translated_alias")
+    assert result["status"] == "fail"
+    assert translated["recall_at_k"] == 0.0
 
 
 def test_benchmark_uses_injected_search_for_three_stability_passes() -> None:

@@ -6,6 +6,8 @@ No network calls are made: clients/auth helpers are monkeypatched.
 """
 from __future__ import annotations
 
+from urllib.error import URLError
+
 import pytest
 
 from algo_cli import model_info, model_routing, runtime_services
@@ -122,6 +124,41 @@ def test_provider_models_do_not_start_local_ollama(monkeypatch):
     assert runtime_services.start_ollama_server(Config(model="grok-4-latest")) is True
     assert runtime_services.start_ollama_server(Config(model="gpt-5.1")) is True
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        ("http://localhost:11434", True),
+        ("LOCALHOST:11434", True),
+        ("http://127.0.0.2:11434", True),
+        ("http://[::1]:11434", True),
+        ("https://localhost.example", False),
+        ("https://notlocalhost.test", False),
+        ("https://ollama.com", False),
+        ("", False),
+    ],
+)
+def test_host_is_local_requires_an_exact_loopback_endpoint(host, expected):
+    assert runtime_services.host_is_local(host) is expected
+
+
+def test_failed_server_probe_uses_short_negative_cache(monkeypatch):
+    runtime_services.SERVER_READY_CACHE.clear()
+    probe_times = iter((10.0, 10.1, 10.3))
+    calls: list[object] = []
+
+    def fail_probe(request, timeout):
+        calls.append((request, timeout))
+        raise URLError("offline")
+
+    monkeypatch.setattr(runtime_services.time, "monotonic", lambda: next(probe_times))
+    monkeypatch.setattr(runtime_services, "urlopen", fail_probe)
+
+    assert runtime_services.ollama_server_ready("http://127.0.0.1:11434") is False
+    assert runtime_services.ollama_server_ready("http://127.0.0.1:11434") is False
+    assert runtime_services.ollama_server_ready("http://127.0.0.1:11434") is False
+    assert len(calls) == 2
 
 
 def test_agent_block_xai_falls_back_when_not_authenticated(monkeypatch):
