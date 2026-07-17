@@ -298,6 +298,149 @@ def test_embedding_priority_tiers_keep_capability_metadata_ahead_of_bulk():
     assert harness.embedding_priority({"harness": "index-compute-lab", "kind": "memory"}) == "curated_knowledge"
     assert harness.embedding_priority({"harness": "codex", "kind": "connector"}) == "runtime_capability"
     assert harness.embedding_priority({"harness": "codex", "kind": "agent"}) == "bulk_metadata"
+    assert harness.embedding_priority({"harness": "algo-cli", "kind": "runtime_capability"}) == "runtime_capability"
+
+
+def test_runtime_capability_records_are_searchable_and_preserve_embeddings(monkeypatch):
+    records = harness._runtime_capability_records()
+
+    assert records
+    assert len(records) == len(__import__("algo_cli.action_registry", fromlist=["ACTION_SPECS"]).ACTION_SPECS)
+    write_file = next(record for record in records if record["id"].endswith(":write_file"))
+    assert write_file["kind"] == "runtime_capability"
+    assert "approval required True" in write_file["index_text"]
+    assert write_file["capability"]["risk_level"] == "high"
+
+    write_file["embedding"] = [0.25, 0.75]
+    write_file["embedding_model"] = "test-model"
+    rebuilt = harness._runtime_capability_records({"records": [write_file]})
+    rebuilt_write = next(record for record in rebuilt if record["id"] == write_file["id"])
+    assert rebuilt_write["embedding"] == [0.25, 0.75]
+    assert rebuilt_write["embedding_model"] == "test-model"
+
+
+def test_runtime_capability_record_reads_bounded_registry_evidence(monkeypatch):
+    record = harness._runtime_capability_records()[0]
+    monkeypatch.setattr(harness, "load_index", lambda refresh=False: {"records": [record]})
+    harness._ID_LOOKUP = None
+
+    text = harness.read_record(record["id"])
+
+    assert "Kind: runtime_capability" in text
+    assert record["description"] in text
+    assert "class ActionSpec" not in text
+
+
+def test_extra_root_parser_keeps_valid_entries_and_reports_rejections(tmp_path):
+    roots, rejected = harness._parse_extra_source_roots_payload(
+        [
+            {
+                "harness": "demo",
+                "kind": "wiki",
+                "root": str(tmp_path),
+                "patterns": ["*.md"],
+                "max_files": 10,
+            },
+            {"harness": "broken", "root": str(tmp_path)},
+            "not-an-object",
+        ]
+    )
+
+    assert len(roots) == 1
+    assert roots[0].harness == "demo"
+    assert rejected == 2
+
+
+def test_extra_root_diagnostics_distinguish_malformed_and_unavailable(tmp_path, monkeypatch):
+    roots_path = tmp_path / "harness_roots.json"
+    monkeypatch.setattr(harness, "EXTRA_ROOTS_PATH", roots_path)
+    roots_path.write_text("{bad json", encoding="utf-8")
+    assert harness.extra_source_roots_diagnostics()["status"] == "malformed"
+
+    roots_path.write_text(
+        json.dumps(
+            [
+                {
+                    "harness": "demo",
+                    "kind": "wiki",
+                    "root": str(tmp_path / "missing"),
+                    "patterns": ["*.md"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    diagnostic = harness.extra_source_roots_diagnostics()
+    assert diagnostic["status"] == "degraded"
+    assert diagnostic["accepted"] == 1
+    assert diagnostic["unavailable"] == 1
+
+
+def test_source_root_diagnostics_report_adapter_contract_without_paths(tmp_path, monkeypatch):
+    core_dir = tmp_path / "core"
+    codex_dir = tmp_path / "codex"
+    core_dir.mkdir()
+    codex_dir.mkdir()
+    core = harness.SourceRoot("algo-cli", "wiki", core_dir, ("*.md",), 10)
+    codex = harness.SourceRoot("codex", "skill", codex_dir, ("SKILL.md",), 10)
+    missing = harness.SourceRoot("claude", "skill", tmp_path / "missing", ("SKILL.md",), 10)
+    monkeypatch.setattr(
+        harness,
+        "built_in_source_roots",
+        lambda include_external=False: (core, codex, missing) if include_external else (core,),
+    )
+    monkeypatch.setattr(
+        harness,
+        "extra_source_roots_diagnostics",
+        lambda: {"status": "absent", "accepted": 0, "rejected": 0, "available": 0},
+    )
+
+    result = harness.source_roots_diagnostics(
+        [{"id": "codex:skill:one", "harness": "codex", "kind": "skill"}]
+    )
+
+    assert result["built_in_adapter_roots"] == 2
+    assert result["available_adapter_roots"] == 1
+    assert result["unreadable_adapter_roots"] == 0
+    assert result["unavailable_adapter_roots"] == 1
+    assert result["indexed_records"] == 1
+    assert result["indexed_harnesses"] == ["codex"]
+    assert str(tmp_path) not in json.dumps(result)
+
+
+def test_source_root_diagnostics_distinguish_unreadable_adapter(tmp_path, monkeypatch):
+    core_dir = tmp_path / "core"
+    external_dir = tmp_path / "external"
+    core_dir.mkdir()
+    external_dir.mkdir()
+    core = harness.SourceRoot("algo-cli", "wiki", core_dir, ("*.md",), 10)
+    external = harness.SourceRoot("codex", "skill", external_dir, ("SKILL.md",), 10)
+    monkeypatch.setattr(
+        harness,
+        "built_in_source_roots",
+        lambda include_external=False: (core, external) if include_external else (core,),
+    )
+    real_access = os.access
+    monkeypatch.setattr(
+        harness.os,
+        "access",
+        lambda path, mode: False if Path(path) == external_dir else real_access(path, mode),
+    )
+    monkeypatch.setattr(
+        harness,
+        "extra_source_roots_diagnostics",
+        lambda: {"status": "absent", "accepted": 0, "rejected": 0, "available": 0},
+    )
+
+    result = harness.source_roots_diagnostics([])
+
+    assert result["available_adapter_roots"] == 0
+    assert result["unreadable_adapter_roots"] == 1
+    assert result["unavailable_adapter_roots"] == 0
+
+
+def test_superseded_records_are_excluded_from_automatic_retrieval():
+    assert harness.is_excluded_from_retrieval({"status": "superseded"}) is True
 
 
 def test_harness_stats_reports_truthful_echo_veil_readiness(monkeypatch):
@@ -512,7 +655,7 @@ def test_stats_surfaces_harness_quality_block():
     index = {
         "generated": "2026-05-14T09:00",
         "source_policy": harness._source_policy(),
-        "record_count": 3,
+        "record_count": 4,
         "roots": [],
         "records": [
             {
@@ -548,6 +691,17 @@ def test_stats_surfaces_harness_quality_block():
                 "embedding": [1.0],
                 "embedding_model": "fake-model",
             },
+            {
+                "id": "algo-cli:runtime_capability:read_file",
+                "harness": "algo-cli",
+                "kind": "runtime_capability",
+                "title": "read_file runtime capability",
+                "path": "__pytest__/action_registry.py",
+                "relative_path": "action-registry/read_file",
+                "summary": "Read a file.",
+                "embedding": [1.0],
+                "embedding_model": "fake-model",
+            },
         ],
     }
     index["embeddings"] = harness._embeddings_summary(index["records"], active_model="fake-model")
@@ -559,11 +713,12 @@ def test_stats_surfaces_harness_quality_block():
     quality = harness.stats()["quality"]
 
     assert quality["status"] == "ready"
-    assert quality["project_specific_records"] == 2
+    assert quality["project_specific_records"] == 3
     assert quality["extension_records"] == 1
     assert quality["memory_records"] == 1
     assert quality["wiki_records"] == 1
-    assert quality["extension_share"] == 0.333
+    assert quality["extension_share"] == 0.25
+    assert quality["runtime_capability_records"] == 1
     assert quality["embedding_complete"] is True
 
 
@@ -617,6 +772,19 @@ def test_quality_allows_low_project_share_when_structured_plugin_metadata_is_ind
             ]
         )
     )
+    records.append(
+        {
+            "id": "algo-cli:runtime_capability:read_file",
+            "harness": "algo-cli",
+            "kind": "runtime_capability",
+            "title": "read_file runtime capability",
+            "path": "__pytest__/action_registry.py",
+            "relative_path": "action-registry/read_file",
+            "summary": "Read a file.",
+            "embedding": [1.0],
+            "embedding_model": "fake-model",
+        }
+    )
     index = {
         "generated": "2026-05-14T09:00",
         "source_policy": harness._source_policy(),
@@ -632,7 +800,7 @@ def test_quality_allows_low_project_share_when_structured_plugin_metadata_is_ind
 
     quality = harness.stats()["quality"]
 
-    assert quality["project_specific_share"] < 0.25
+    assert quality["project_specific_share"] <= 0.25
     assert quality["extension_share"] < 0.7
     assert quality["status"] == "ready"
     assert not quality["recommendations"]

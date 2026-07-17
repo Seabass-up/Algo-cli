@@ -80,12 +80,16 @@ REVIEWED_ALGO_TAGS = (
     "wiki",
 )
 CURATED_PROJECT_WIKI_DOCS = (
+    "external-agent-store-operations.md",
     "harness-extension-cleanup-recommendation.md",
     "index-compute-lab-integration.md",
     "inference-harness-loop-blueprint-2026-06.md",
     "main-split-map.md",
+    "provider-auth-recovery.md",
     "reflex-loop-v0.2.md",
     "privacy-and-context.md",
+    "runtime-capability-catalog.md",
+    "echo-veil-security-status.md",
 )
 CURATED_PROJECT_MEMORY_DOCS = (
     "algo-cli-memory-lifecycle-contract.md",
@@ -380,6 +384,7 @@ def build_index_with_rust(previous: dict[str, Any] | None = None) -> dict[str, A
                     record["embedding"] = prior["embedding"]
                     record["embedding_model"] = prior.get("embedding_model")
             new_index["embeddings"] = _embeddings_summary(new_index.get("records", []))
+    new_index = _merge_runtime_capability_records(new_index, previous=previous)
     new_index["source_policy"] = _source_policy()
     return _normalize_index_records(new_index)
 
@@ -683,7 +688,7 @@ def is_excluded_from_retrieval(record: dict[str, Any]) -> bool:
     if str(record.get("kind", "")).lower() == "vendor-doc":
         return True
     status = str(record.get("status", "")).strip().lower()
-    if status in {"historical", "backlog"}:
+    if status in {"historical", "backlog", "superseded"}:
         return True
     return False
 
@@ -1043,6 +1048,198 @@ def make_record(root: SourceRoot, path: Path, *, stat_result: Any | None = None)
     return _normalize_reviewed_algo_record(record)
 
 
+def _runtime_capability_records(
+    previous: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Materialize ActionSpecs as stable, retrievable runtime knowledge."""
+    from . import action_registry
+
+    source_path = Path(action_registry.__file__).resolve()
+    try:
+        source_stat = source_path.stat()
+        file_size = int(source_stat.st_size)
+        file_mtime_ns = int(source_stat.st_mtime_ns)
+        updated = datetime.fromtimestamp(source_stat.st_mtime).isoformat(timespec="seconds")
+    except OSError:
+        file_size = file_mtime_ns = 0
+        updated = ""
+    prior_by_id = {
+        str(record.get("id")): record
+        for record in (previous or {}).get("records", [])
+        if isinstance(record, dict) and record.get("kind") == "runtime_capability"
+    }
+    records: list[dict[str, Any]] = []
+    for spec in action_registry.list_action_specs(include_archived=True):
+        record_id_value = f"algo-cli:runtime_capability:{spec.name}"
+        limitations = " ".join(spec.known_limitations) or "No registry limitation recorded."
+        prerequisites = " ".join(spec.prerequisites) or "No extra prerequisite recorded."
+        tags = list(
+            dict.fromkeys(
+                (
+                    "runtime-capability",
+                    spec.kind,
+                    spec.group,
+                    f"risk-{spec.risk_level}",
+                    "mutating" if spec.mutates_state else "read-only",
+                    "approval-required" if spec.requires_approval else "no-approval",
+                    "network-required" if spec.requires_network else "local-capable",
+                    *spec.tags,
+                )
+            )
+        )
+        status = "archived" if spec.archived else "ready"
+        index_text = (
+            f"Capability {spec.name}. {spec.description} Group {spec.group}. "
+            f"Threat and policy use: {spec.threat_detection_use} "
+            f"Risk {spec.risk_level}; mutates state {spec.mutates_state}; "
+            f"approval required {spec.requires_approval}; safe retry {spec.safe_retry}; "
+            f"network required {spec.requires_network}; provider {spec.requires_provider or 'none'}; "
+            f"binaries {' '.join(spec.requires_binary) or 'none'}; "
+            f"supported OS {' '.join(spec.supported_os)}. "
+            f"Prerequisites: {prerequisites} Limitations and failure modes: {limitations}"
+        )[:MAX_INDEX_TEXT]
+        search_text = " ".join(
+            (
+                record_id_value,
+                spec.name,
+                spec.kind,
+                spec.description,
+                spec.group,
+                " ".join(tags),
+                status,
+                index_text,
+            )
+        ).lower()
+        record: dict[str, Any] = {
+            "id": record_id_value,
+            "harness": "algo-cli",
+            "kind": "runtime_capability",
+            "title": f"{spec.name} runtime capability",
+            "path": str(source_path),
+            "relative_path": f"action-registry/{spec.name}",
+            "description": spec.description,
+            "tags": tags,
+            "status": status,
+            "updated": updated,
+            "file_size": file_size,
+            "file_mtime_ns": file_mtime_ns,
+            "links": [],
+            "summary": index_text[:SUMMARY_CHARS],
+            "index_text": index_text,
+            "heading_text": "",
+            "search_text": search_text,
+            "capability": spec.as_dict(),
+        }
+        prior = prior_by_id.get(record_id_value)
+        if (
+            prior
+            and prior.get("search_text") == search_text
+            and int(prior.get("file_size", -1)) == file_size
+            and int(prior.get("file_mtime_ns", -1)) == file_mtime_ns
+            and prior.get("embedding")
+        ):
+            record["embedding"] = prior["embedding"]
+            record["embedding_model"] = prior.get("embedding_model")
+        records.append(record)
+    return records
+
+
+def _merge_runtime_capability_records(
+    index: dict[str, Any],
+    *,
+    previous: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Replace generated capability rows while preserving all file records."""
+    raw_records = index.get("records", [])
+    records = (
+        [
+            record
+            for record in raw_records
+            if not isinstance(record, dict) or record.get("kind") != "runtime_capability"
+        ]
+        if isinstance(raw_records, list)
+        else []
+    )
+    records.extend(_runtime_capability_records(previous))
+    embedding_meta = index.get("embeddings")
+    active_model = (
+        str(embedding_meta.get("active_model") or DEFAULT_EMBED_MODEL)
+        if isinstance(embedding_meta, dict)
+        else DEFAULT_EMBED_MODEL
+    )
+    return {
+        **index,
+        "record_count": len(records),
+        "records": records,
+        "embeddings": _embeddings_summary(records, active_model=active_model),
+    }
+
+
+def _parse_extra_source_roots_payload(data: Any) -> tuple[list[SourceRoot], int]:
+    """Validate configured roots without letting one bad entry hide good ones."""
+    if not isinstance(data, list):
+        return [], 1
+    roots: list[SourceRoot] = []
+    rejected = 0
+    for item in data:
+        try:
+            if not isinstance(item, dict):
+                raise TypeError("root entry must be an object")
+            patterns = item.get("patterns", ["*.md"])
+            if not isinstance(patterns, list) or not patterns or not all(
+                isinstance(pattern, str) and pattern.strip() for pattern in patterns
+            ):
+                raise TypeError("patterns must be a non-empty string list")
+            harness_name = str(item["harness"]).strip()
+            kind = str(item["kind"]).strip()
+            root_value = str(item["root"]).strip()
+            max_files = int(item.get("max_files", 200))
+            if not harness_name or not kind or not root_value or max_files <= 0:
+                raise ValueError("root fields must be non-empty and max_files positive")
+            roots.append(
+                SourceRoot(
+                    harness=harness_name,
+                    kind=kind,
+                    root=Path(root_value).expanduser(),
+                    patterns=tuple(patterns),
+                    max_files=max_files,
+                )
+            )
+        except (KeyError, ValueError, TypeError):
+            rejected += 1
+    return roots, rejected
+
+
+def extra_source_roots_diagnostics() -> dict[str, Any]:
+    """Report extra-root configuration health without exposing local paths."""
+    if not EXTRA_ROOTS_PATH.exists():
+        return {"status": "absent", "accepted": 0, "rejected": 0, "available": 0}
+    try:
+        data = json.loads(EXTRA_ROOTS_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"status": "malformed", "accepted": 0, "rejected": 1, "available": 0}
+    except OSError as exc:
+        return {
+            "status": "unreadable",
+            "accepted": 0,
+            "rejected": 0,
+            "available": 0,
+            "error_type": type(exc).__name__,
+        }
+    roots, rejected = _parse_extra_source_roots_payload(data)
+    available = sum(1 for root in roots if _source_root_state(root) == "available")
+    unreadable = sum(1 for root in roots if _source_root_state(root) == "unreadable")
+    status = "ready" if not rejected and available == len(roots) else "degraded"
+    return {
+        "status": status,
+        "accepted": len(roots),
+        "rejected": rejected,
+        "available": available,
+        "unreadable": unreadable,
+        "unavailable": len(roots) - available - unreadable,
+    }
+
+
 def load_extra_source_roots() -> list[SourceRoot]:
     """Load user-defined extra harness roots from CONFIG_DIR/harness_roots.json (~/.algo_cli by default).
 
@@ -1064,18 +1261,7 @@ def load_extra_source_roots() -> list[SourceRoot]:
         data = json.loads(EXTRA_ROOTS_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return []
-    roots: list[SourceRoot] = []
-    for item in data if isinstance(data, list) else []:
-        try:
-            roots.append(SourceRoot(
-                harness=str(item["harness"]),
-                kind=str(item["kind"]),
-                root=Path(str(item["root"])).expanduser(),
-                patterns=tuple(item.get("patterns", ["*.md"])),
-                max_files=int(item.get("max_files", 200)),
-            ))
-        except (KeyError, ValueError, TypeError):
-            continue
+    roots, _rejected = _parse_extra_source_roots_payload(data)
     _extra_roots_cache = (mtime_ns, roots)
     return roots
 
@@ -1087,6 +1273,15 @@ def _source_root_identity(root: SourceRoot) -> tuple[str, str, str]:
     except OSError:
         resolved = str(root.root.expanduser())
     return (root.harness, root.kind, resolved)
+
+
+def _source_root_state(root: SourceRoot) -> str:
+    """Return available, unavailable, or unreadable for a directory root."""
+    if not root.root.exists() or not root.root.is_dir():
+        return "unavailable"
+    if not os.access(root.root, os.R_OK | os.X_OK):
+        return "unreadable"
+    return "available"
 
 
 def _dedupe_source_roots(roots: list[SourceRoot]) -> tuple[SourceRoot, ...]:
@@ -1120,6 +1315,49 @@ def all_source_roots() -> tuple[SourceRoot, ...]:
         except Exception:
             pass
     return _dedupe_source_roots([*SOURCE_ROOTS, *dynamic, *load_extra_source_roots()])
+
+
+def source_roots_diagnostics(records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Expose adapter availability, provenance, and conflict policy without paths."""
+    core = built_in_source_roots(include_external=False)
+    all_built_in = built_in_source_roots(include_external=True)
+    core_ids = {_source_root_identity(root) for root in core}
+    adapters = [root for root in all_built_in if _source_root_identity(root) not in core_ids]
+    available = [root for root in adapters if _source_root_state(root) == "available"]
+    unreadable = [root for root in adapters if _source_root_state(root) == "unreadable"]
+    indexed_records = records or []
+    external_harnesses = {root.harness for root in adapters}
+    indexed_external = [
+        record
+        for record in indexed_records
+        if str(record.get("harness") or "") in external_harnesses
+    ]
+    configured_by_harness: dict[str, int] = {}
+    available_by_harness: dict[str, int] = {}
+    for root in adapters:
+        configured_by_harness[root.harness] = configured_by_harness.get(root.harness, 0) + 1
+    for root in available:
+        available_by_harness[root.harness] = available_by_harness.get(root.harness, 0) + 1
+    return {
+        "enabled": _EXTERNAL_SOURCES_ENABLED,
+        "built_in_adapter_roots": len(adapters),
+        "available_adapter_roots": len(available),
+        "unreadable_adapter_roots": len(unreadable),
+        "unavailable_adapter_roots": len(adapters) - len(available) - len(unreadable),
+        "configured_by_harness": dict(sorted(configured_by_harness.items())),
+        "available_by_harness": dict(sorted(available_by_harness.items())),
+        "indexed_records": len(indexed_external),
+        "indexed_harnesses": sorted(
+            {str(record.get("harness")) for record in indexed_external if record.get("harness")}
+        ),
+        "extra_roots": extra_source_roots_diagnostics(),
+        "provenance_fields": ["id", "harness", "kind", "path", "relative_path", "updated"],
+        "conflict_policy": (
+            "preserve cross-harness conflicts with provenance; dedupe only identical "
+            "harness/kind/relative_path records in stable source order"
+        ),
+        "privacy_default": "disabled; explicit opt-in required",
+    }
 
 
 
@@ -1319,7 +1557,7 @@ def build_index(previous: dict[str, Any] | None = None) -> dict[str, Any]:
     existing = {
         str(record.get("id")): record
         for record in (previous or {}).get("records", [])
-        if record.get("id")
+        if record.get("id") and record.get("kind") != "runtime_capability"
     }
     reused_records = 0
     rebuilt_records = 0
@@ -1351,7 +1589,7 @@ def build_index(previous: dict[str, Any] | None = None) -> dict[str, Any]:
                 continue
             records.append(make_record(root, path, stat_result=stat_result))
             rebuilt_records += 1
-    return _normalize_index_records({
+    index = {
         "generated": datetime.now().isoformat(timespec="seconds"),
         "record_count": len(records),
         "roots": [
@@ -1367,7 +1605,10 @@ def build_index(previous: dict[str, Any] | None = None) -> dict[str, Any]:
         "indexer": "python",
         "source_policy": _source_policy(),
         "embeddings": _embeddings_summary(records),
-    })
+    }
+    if any(root.harness == "algo-cli" for root in all_roots):
+        index = _merge_runtime_capability_records(index, previous=previous)
+    return _normalize_index_records(index)
 
 
 def _set_index_cache(
@@ -1729,6 +1970,10 @@ def read_record(record_id: str, max_chars: int = MAX_READ_TEXT) -> str:
     record = get_record(record_id)
     if not record:
         return f"Error: no harness record found for id: {record_id}"
+    if str(record.get("kind") or "") == "runtime_capability":
+        title = record.get("title", "")
+        text = str(record.get("index_text") or record.get("summary") or "")[:max_chars]
+        return f"# {title}\n\nSource: algo-cli:action-registry\nHarness: algo-cli | Kind: runtime_capability\n\n{text}"
     path = Path(record["path"])
     if should_skip(path):
         return "Error: record points to a skipped/sensitive path."
@@ -1790,6 +2035,9 @@ def _index_quality_summary(records: list[dict[str, Any]], embeddings: dict[str, 
     ]
     memory_records = len(product_memory_records)
     wiki_records = sum(1 for record in records if str(record.get("kind", "")) == "wiki")
+    runtime_capability_records = sum(
+        1 for record in records if str(record.get("kind", "")) == "runtime_capability"
+    )
     extension_share = round(extension_records / total, 3) if total else 0.0
     project_share = round(project_specific / total, 3) if total else 0.0
     embedding_complete = bool(embeddings.get("complete"))
@@ -1810,6 +2058,9 @@ def _index_quality_summary(records: list[dict[str, Any]], embeddings: dict[str, 
             recommendations.append("Add curated Algo CLI project records so generic extension records do not dominate RAG.")
         if memory_records + wiki_records < 5:
             recommendations.append("Add more project-specific memory/wiki records for richer local context.")
+        if not runtime_capability_records:
+            status = "degraded"
+            recommendations.append("Refresh the index to add ActionSpec runtime capability records.")
     return {
         "status": status,
         "project_specific_records": project_specific,
@@ -1824,6 +2075,7 @@ def _index_quality_summary(records: list[dict[str, Any]], embeddings: dict[str, 
         "covered_product_memory_categories": covered_product_memory_categories,
         "missing_product_memory_categories": missing_product_memory_categories,
         "wiki_records": wiki_records,
+        "runtime_capability_records": runtime_capability_records,
         "embedding_complete": embedding_complete,
         "recommendations": recommendations,
     }
@@ -1875,6 +2127,7 @@ def stats() -> dict[str, Any]:
             "status": "error",
             "error_type": type(exc).__name__,
         }
+    source_diagnostics = source_roots_diagnostics(records)
     return {
         "index": "config:harness_index.json",
         "generated": index.get("generated", ""),
@@ -1890,6 +2143,7 @@ def stats() -> dict[str, Any]:
             "external_agent_stores": _EXTERNAL_SOURCES_ENABLED,
             "index_compute_lab": _INDEX_COMPUTE_LAB_SOURCE_ENABLED,
             "extra_roots": len(load_extra_source_roots()),
+            "diagnostics": source_diagnostics,
             "cloud_prompt_warning": (
                 "Retrieved local context becomes part of provider requests; enable optional sources only with consent."
             ),
@@ -1960,6 +2214,8 @@ def _embedding_priority_rank(record: dict[str, Any]) -> int:
     # harness search, but should not consume a capped embed pass first.
     if is_excluded_from_retrieval(record):
         return 3
+    if kind == "runtime_capability":
+        return 2
     if harness_name == "algo-cli" and kind in _PROJECT_CORE_EMBED_KINDS:
         return 0
     if harness_name == "codex" and kind in _CODEX_BULK_EMBED_KINDS:

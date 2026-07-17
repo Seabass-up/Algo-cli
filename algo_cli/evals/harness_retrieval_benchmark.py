@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import statistics
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -22,7 +23,7 @@ from ..retrieval_algorithms import (
     stable_top_k,
 )
 
-BENCHMARK_VERSION = "harness-retrieval-v1"
+BENCHMARK_VERSION = "harness-retrieval-v2"
 CANARY_QUERIES: tuple[str, ...] = (
     "rate your harness",
     "harness context",
@@ -40,6 +41,113 @@ MIN_REUSABLE_SPEEDUP = 1.5
 MAX_WARM_MAD_RATIO = 0.25
 MAX_BENCHMARK_RECORDS = 2_048
 MAX_BENCHMARK_TEXT_CHARS = 40_000
+QUALITY_LIMIT = 4
+MIN_QUALITY_RECALL = 0.95
+MIN_QUALITY_MRR = 0.90
+MIN_QUALITY_NDCG = 0.90
+MIN_CITATION_PRECISION = 0.80
+
+QUALITY_RECORDS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "quality:capability:write-file",
+        "harness": "algo-cli",
+        "kind": "runtime_capability",
+        "title": "Write file | Escribir archivo",
+        "relative_path": "action-registry/write_file",
+        "search_text": "write file escribir archivo guardar fichero escritura segura approval aprobación",
+        "status": "ready",
+    },
+    {
+        "id": "quality:verification:file",
+        "harness": "algo-cli",
+        "kind": "wiki",
+        "title": "File verification command | Comando de verificación",
+        "relative_path": "verification/file-write.md",
+        "search_text": "verify file write pytest test verificar archivo escritura comando comprobación",
+        "status": "ready",
+    },
+    {
+        "id": "quality:auth:current",
+        "harness": "algo-cli",
+        "kind": "wiki",
+        "title": "Recuperación OAuth actual | Current OAuth recovery",
+        "relative_path": "recovery/oauth-current.md",
+        "search_text": "current latest oauth token invalidated recover login recuperación autenticación actual vigente",
+        "status": "ready",
+    },
+    {
+        "id": "quality:auth:obsolete",
+        "harness": "algo-cli",
+        "kind": "wiki",
+        "title": "Obsolete OAuth recovery",
+        "relative_path": "recovery/oauth-old.md",
+        "search_text": "old obsolete oauth token recovery login antigua obsoleta",
+        "status": "superseded",
+    },
+    {
+        "id": "quality:external:codex",
+        "harness": "codex",
+        "kind": "skill",
+        "title": "Codex external store adapter",
+        "relative_path": "external/codex.md",
+        "search_text": "compare cross source codex external agent store adapter provenance",
+        "status": "ready",
+    },
+    {
+        "id": "quality:external:claude",
+        "harness": "claude",
+        "kind": "skill",
+        "title": "Claude external store adapter",
+        "relative_path": "external/claude.md",
+        "search_text": "compare cross source claude external agent store adapter provenance",
+        "status": "ready",
+    },
+)
+
+QUALITY_CASES: tuple[dict[str, Any], ...] = (
+    {
+        "name": "multilingual_query_english_record",
+        "category": "multilingual",
+        "query": "escribir archivo de forma segura con aprobación",
+        "relevant": ("quality:capability:write-file",),
+    },
+    {
+        "name": "english_query_non_english_record",
+        "category": "multilingual",
+        "query": "recover current invalidated oauth token",
+        "relevant": ("quality:auth:current",),
+    },
+    {
+        "name": "code_switching",
+        "category": "multilingual",
+        "query": "verificar file write con pytest",
+        "relevant": ("quality:verification:file",),
+    },
+    {
+        "name": "translated_alias",
+        "category": "multilingual",
+        "query": "guardar fichero",
+        "relevant": ("quality:capability:write-file",),
+    },
+    {
+        "name": "multi_hop_write_and_verify",
+        "category": "complex",
+        "query": "write file then verify with pytest",
+        "relevant": ("quality:capability:write-file", "quality:verification:file"),
+    },
+    {
+        "name": "cross_source_reconciliation",
+        "category": "complex",
+        "query": "compare codex and claude external agent store provenance",
+        "relevant": ("quality:external:codex", "quality:external:claude"),
+    },
+    {
+        "name": "temporal_supersession",
+        "category": "complex",
+        "query": "current oauth recovery not obsolete",
+        "relevant": ("quality:auth:current",),
+    },
+)
 
 SearchFn = Callable[[str, int], Sequence[Any]]
 ClockFn = Callable[[], int]
@@ -174,6 +282,89 @@ def _milliseconds(value_ns: float) -> float:
     return round(float(value_ns) / 1_000_000.0, 6)
 
 
+def _mean(values: Sequence[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def run_retrieval_quality_benchmark() -> dict[str, Any]:
+    """Run frozen multilingual and complex-query retrieval workloads offline."""
+    records = [dict(record) for record in QUALITY_RECORDS if not harness.is_excluded_from_retrieval(record)]
+    bm25 = BM25Index([_search_text(record) for record in records])
+    results: list[dict[str, Any]] = []
+    recalls: list[float] = []
+    reciprocal_ranks: list[float] = []
+    ndcgs: list[float] = []
+    citation_precisions: list[float] = []
+    for case in QUALITY_CASES:
+        relevant = {str(record_id) for record_id in case["relevant"]}
+        hits = _local_search(records, bm25, str(case["query"]), QUALITY_LIMIT)
+        ranked_ids = [_result_id(hit) for hit in hits]
+        matched = relevant.intersection(ranked_ids)
+        recall = len(matched) / len(relevant) if relevant else 1.0
+        first_rank = next(
+            (position for position, record_id in enumerate(ranked_ids, start=1) if record_id in relevant),
+            0,
+        )
+        reciprocal_rank = 1.0 / first_rank if first_rank else 0.0
+        dcg = sum(
+            1.0 / math.log2(position + 1)
+            for position, record_id in enumerate(ranked_ids[:QUALITY_LIMIT], start=1)
+            if record_id in relevant
+        )
+        ideal_count = min(len(relevant), QUALITY_LIMIT)
+        ideal_dcg = sum(1.0 / math.log2(position + 1) for position in range(1, ideal_count + 1))
+        ndcg = dcg / ideal_dcg if ideal_dcg else 1.0
+        citation_window = ranked_ids[:max(1, len(relevant))]
+        citation_precision = (
+            sum(1 for record_id in citation_window if record_id in relevant) / len(citation_window)
+            if citation_window
+            else 0.0
+        )
+        recalls.append(recall)
+        reciprocal_ranks.append(reciprocal_rank)
+        ndcgs.append(ndcg)
+        citation_precisions.append(citation_precision)
+        results.append(
+            {
+                "name": case["name"],
+                "category": case["category"],
+                "query": case["query"],
+                "relevant": sorted(relevant),
+                "ranked_ids": ranked_ids,
+                "recall_at_k": round(recall, 6),
+                "reciprocal_rank": round(reciprocal_rank, 6),
+                "ndcg_at_k": round(ndcg, 6),
+                "citation_precision": round(citation_precision, 6),
+            }
+        )
+    metrics = {
+        "case_count": len(results),
+        "recall_at_k": round(_mean(recalls), 6),
+        "mrr": round(_mean(reciprocal_ranks), 6),
+        "ndcg_at_k": round(_mean(ndcgs), 6),
+        "citation_precision": round(_mean(citation_precisions), 6),
+    }
+    passed = (
+        metrics["recall_at_k"] >= MIN_QUALITY_RECALL
+        and metrics["mrr"] >= MIN_QUALITY_MRR
+        and metrics["ndcg_at_k"] >= MIN_QUALITY_NDCG
+        and metrics["citation_precision"] >= MIN_CITATION_PRECISION
+    )
+    return {
+        "status": "pass" if passed else "fail",
+        "scope": "frozen offline retrieval; answer generation is not measured",
+        "metrics": metrics,
+        "thresholds": {
+            "recall_at_k": MIN_QUALITY_RECALL,
+            "mrr": MIN_QUALITY_MRR,
+            "ndcg_at_k": MIN_QUALITY_NDCG,
+            "citation_precision": MIN_CITATION_PRECISION,
+        },
+        "cases": results,
+        "fixture_digest": _digest({"records": QUALITY_RECORDS, "cases": QUALITY_CASES}),
+    }
+
+
 def run_harness_retrieval_benchmark(
     index: Mapping[str, Any] | None = None,
     search_fn: SearchFn | None = None,
@@ -240,6 +431,7 @@ def run_harness_retrieval_benchmark(
         for pass_rankings in ranking_passes
     )
     top_k_parity, top_k_digest = _stable_top_k_parity()
+    quality = run_retrieval_quality_benchmark()
 
     clock = clock_ns or time.perf_counter_ns
     query_terms = [lexical_tokens(query) for query in CANARY_QUERIES]
@@ -293,6 +485,8 @@ def run_harness_retrieval_benchmark(
         correctness_failures.append("canonical ALGO record was not top-1")
     if not top_k_parity:
         correctness_failures.append("stable_top_k diverged from a full stable sort")
+    if quality.get("status") != "pass":
+        correctness_failures.append("multilingual/complex retrieval quality gate failed")
     correctness_passed = not correctness_failures
 
     performance_warnings: list[str] = []
@@ -372,6 +566,7 @@ def run_harness_retrieval_benchmark(
             "minimum_speedup": MIN_REUSABLE_SPEEDUP,
             "maximum_warm_mad_ratio": MAX_WARM_MAD_RATIO,
         },
+        "quality": quality,
         "evidence": {
             "index_record_count": index_record_count,
             "eligible_record_count": len(eligible_records),
@@ -397,5 +592,8 @@ __all__ = [
     "CANARY_QUERIES",
     "CANONICAL_ALGO_ID",
     "MAX_BENCHMARK_RECORDS",
+    "QUALITY_CASES",
+    "QUALITY_RECORDS",
+    "run_retrieval_quality_benchmark",
     "run_harness_retrieval_benchmark",
 ]

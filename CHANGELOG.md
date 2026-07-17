@@ -4,6 +4,26 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-07-17
+
+### Added
+
+- ActionSpec tools, commands, providers, and kernels are materialized as retrievable `runtime_capability` records with policy, prerequisites, compatibility, and known limitations.
+- The harness retrieval benchmark now includes frozen multilingual, code-switching, translated-alias, multi-hop, cross-source, and temporal-supersession workloads with recall@k, MRR, nDCG, citation precision, and a fixture digest.
+- Harness status reports privacy-safe external-store adapter availability, indexed provenance, deterministic conflict policy, and malformed or unavailable extra-root diagnostics.
+- Operations guides cover external stores, provider authentication recovery, runtime capability indexing, and the truthful Echo Veil activation contract.
+
+### Changed
+
+- A 10/10 score now requires the versioned multilingual/complex retrieval-quality payload and its metric thresholds in addition to the existing stability and reusable-index performance evidence.
+- Superseded knowledge remains explicitly searchable but is excluded from automatic context injection.
+
+### Fixed
+
+- Invalidated ChatGPT/Codex OAuth sessions attempt one bounded refresh and otherwise clear unusable access state with actionable reauthentication guidance.
+- Runtime readiness uses exact loopback host parsing and a short synchronized negative cache; timed-out web fetches release only semaphore permits owned by their request.
+- Terminal configuration errors suggest the closest valid subcommand instead of falling through or failing ambiguously.
+
 ## [0.17.0] - 2026-07-15
 
 ### Added

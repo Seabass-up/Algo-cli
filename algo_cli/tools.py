@@ -1318,7 +1318,11 @@ def web_fetch(url: str, timeout: float = 30) -> str:
     import queue
 
     actual_timeout = max(0.001, min(float(timeout), 120.0))
-    if not _WEB_FETCH_SLOTS.acquire(blocking=False):
+    # Capture the exact lease owner. A timed-out daemon can finish after tests
+    # or runtime recovery replace the module-level limiter; releasing the new
+    # limiter would over-credit it and can raise from the background thread.
+    fetch_slots = _WEB_FETCH_SLOTS
+    if not fetch_slots.acquire(blocking=False):
         return (
             "Error fetching URL: too many previous fetches are still running after timeout; "
             "wait for them to finish before retrying."
@@ -1332,14 +1336,14 @@ def web_fetch(url: str, timeout: float = 30) -> str:
         except Exception as exc:
             results.put(("error", exc))
         finally:
-            _WEB_FETCH_SLOTS.release()
+            fetch_slots.release()
 
     results: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
     thread = threading.Thread(target=_fetch, name="algo-cli-web-fetch", daemon=True)
     try:
         thread.start()
     except Exception as exc:
-        _WEB_FETCH_SLOTS.release()
+        fetch_slots.release()
         return f"Error fetching URL: could not start worker: {exc}"
     try:
         status, payload = results.get(timeout=actual_timeout)
@@ -2399,6 +2403,10 @@ def harness_scorecard() -> str:
     )
     from .evals.harness_retrieval_benchmark import (
         BENCHMARK_VERSION,
+        MIN_CITATION_PRECISION,
+        MIN_QUALITY_MRR,
+        MIN_QUALITY_NDCG,
+        MIN_QUALITY_RECALL,
         MAX_WARM_MAD_RATIO,
         MIN_REUSABLE_SPEEDUP,
         run_harness_retrieval_benchmark,
@@ -2742,9 +2750,13 @@ def harness_scorecard() -> str:
         correctness_value = benchmark.get("correctness")
         performance_value = benchmark.get("performance")
         evidence_value = benchmark.get("evidence")
+        quality_value = benchmark.get("quality")
         correctness = correctness_value if isinstance(correctness_value, dict) else {}
         performance = performance_value if isinstance(performance_value, dict) else {}
         benchmark_evidence = evidence_value if isinstance(evidence_value, dict) else {}
+        quality = quality_value if isinstance(quality_value, dict) else {}
+        quality_metrics_value = quality.get("metrics")
+        quality_metrics = quality_metrics_value if isinstance(quality_metrics_value, dict) else {}
         try:
             measured_speedup = float(str(performance.get("speedup")))
             measured_mad_ratio = float(str(performance.get("warm_mad_ratio")))
@@ -2758,6 +2770,12 @@ def harness_scorecard() -> str:
             and measured_speedup >= MIN_REUSABLE_SPEEDUP
             and math.isfinite(measured_mad_ratio)
             and measured_mad_ratio <= MAX_WARM_MAD_RATIO
+            and quality.get("status") == "pass"
+            and float(quality_metrics.get("recall_at_k") or 0.0) >= MIN_QUALITY_RECALL
+            and float(quality_metrics.get("mrr") or 0.0) >= MIN_QUALITY_MRR
+            and float(quality_metrics.get("ndcg_at_k") or 0.0) >= MIN_QUALITY_NDCG
+            and float(quality_metrics.get("citation_precision") or 0.0) >= MIN_CITATION_PRECISION
+            and bool(quality.get("fixture_digest"))
             and bool(benchmark_evidence.get("index_digest"))
         )
         if status == "pass" and not benchmark_contract:

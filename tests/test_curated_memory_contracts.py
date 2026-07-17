@@ -18,12 +18,16 @@ EXPECTED_MEMORY_DOCS = (
     "algo-cli-algorithm-evidence-contract.md",
 )
 EXPECTED_WIKI_DOCS = (
+    "external-agent-store-operations.md",
     "harness-extension-cleanup-recommendation.md",
     "index-compute-lab-integration.md",
     "inference-harness-loop-blueprint-2026-06.md",
     "main-split-map.md",
+    "provider-auth-recovery.md",
     "reflex-loop-v0.2.md",
     "privacy-and-context.md",
+    "runtime-capability-catalog.md",
+    "echo-veil-security-status.md",
 )
 EXPECTED_CATEGORIES = (
     "memory-lifecycle",

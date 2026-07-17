@@ -368,6 +368,49 @@ def test_web_fetch_bounds_workers_left_running_after_timeout(monkeypatch):
     assert "too many previous fetches" in third
 
 
+def test_web_fetch_worker_releases_the_limiter_it_acquired(monkeypatch):
+    monkeypatch.setenv("OLLAMA_API_KEY", "token")
+    original_slots = threading.BoundedSemaphore(tools.WEB_FETCH_MAX_INFLIGHT)
+    monkeypatch.setattr(tools, "_WEB_FETCH_SLOTS", original_slots)
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingClient:
+        def web_fetch(self, _url):
+            entered.set()
+            release.wait(timeout=2)
+            return {"content": "finished"}
+
+    monkeypatch.setattr(tools, "active_ollama_client", lambda cloud=False: BlockingClient())
+
+    assert "timed out" in tools.web_fetch("https://example.test", timeout=0.01)
+    assert entered.wait(timeout=1)
+    replacement_slots = threading.BoundedSemaphore(tools.WEB_FETCH_MAX_INFLIGHT)
+    monkeypatch.setattr(tools, "_WEB_FETCH_SLOTS", replacement_slots)
+    release.set()
+
+    deadline = time.monotonic() + 1
+    lease_returned = False
+    while time.monotonic() < deadline:
+        first = original_slots.acquire(blocking=False)
+        second = first and original_slots.acquire(blocking=False)
+        if first and second:
+            lease_returned = True
+            original_slots.release()
+            original_slots.release()
+            break
+        if first:
+            original_slots.release()
+        time.sleep(0.01)
+    assert lease_returned
+
+    for limiter in (original_slots, replacement_slots):
+        acquired = [limiter.acquire(blocking=False) for _ in range(tools.WEB_FETCH_MAX_INFLIGHT + 1)]
+        assert acquired == [True, True, False]
+        for _ in range(tools.WEB_FETCH_MAX_INFLIGHT):
+            limiter.release()
+
+
 def test_failed_attempt_skip_is_not_self_perpetuating():
     cfg = Config()
     signature = tool_runtime.tool_attempt_signature("read_file", {"path": "missing.txt"})
@@ -862,11 +905,21 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
         harness_retrieval_benchmark,
         "run_harness_retrieval_benchmark",
         lambda: {
-            "benchmark_version": "harness-retrieval-v1",
+            "benchmark_version": "harness-retrieval-v2",
             "status": "pass",
             "reason": "canaries and reusable-index benchmark passed",
             "correctness": {"passed": True, "stable_rankings": True},
             "performance": {"speedup": 2.5, "warm_mad_ratio": 0.01},
+            "quality": {
+                "status": "pass",
+                "metrics": {
+                    "recall_at_k": 1.0,
+                    "mrr": 1.0,
+                    "ndcg_at_k": 1.0,
+                    "citation_precision": 1.0,
+                },
+                "fixture_digest": "quality123",
+            },
             "evidence": {"index_digest": "bench123"},
         },
     )

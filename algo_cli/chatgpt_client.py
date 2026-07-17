@@ -440,7 +440,27 @@ def _build_responses_input(messages: list[dict[str, Any]]) -> list[dict[str, Any
     return out
 
 
-def _post_chat(payload: dict[str, Any], *, stream: bool, timeout: float = 120.0) -> Any:
+def _invalidated_session_error() -> ChatGptOAuthAccessError:
+    """Clear a definitively rejected OAuth session and return recovery guidance."""
+
+    cleared = chatgpt_auth.clear_tokens()
+    cleanup = "The invalid saved session was cleared." if cleared else (
+        "Algo CLI could not clear the saved session automatically; run "
+        "`algo-cli config auth chatgpt logout` first."
+    )
+    return ChatGptOAuthAccessError(
+        "ChatGPT/Codex sign-in expired or was revoked. "
+        f"{cleanup} Run `algo-cli config setup chatgpt` to sign in again."
+    )
+
+
+def _post_chat(
+    payload: dict[str, Any],
+    *,
+    stream: bool,
+    timeout: float = 120.0,
+    _retried: bool = False,
+) -> Any:
     token = chatgpt_auth.get_valid_token()
     if not token:
         raise ChatGptOAuthAccessError(
@@ -466,6 +486,10 @@ def _post_chat(payload: dict[str, Any], *, stream: bool, timeout: float = 120.0)
             detail = exc.read().decode("utf-8", errors="replace")[:1500].strip()
         except Exception:
             pass
+        if exc.code == 401 and _is_token_invalidated_error(detail):
+            if not _retried and chatgpt_auth.force_refresh_token():
+                return _post_chat(payload, stream=stream, timeout=timeout, _retried=True)
+            raise _invalidated_session_error() from exc
         raise ChatGptOAuthAccessError(f"ChatGPT OAuth request failed ({exc.code}): {detail or '(no body)'}") from exc
 
 
@@ -530,10 +554,12 @@ def _post_codex_responses(payload: dict[str, Any], *, timeout: float = 120.0, _r
             detail = exc.read().decode("utf-8", errors="replace")[:1500].strip()
         except Exception:
             pass
-        if exc.code == 401 and not _retried and _is_token_invalidated_error(detail):
-            refreshed = chatgpt_auth.force_refresh_token()
-            if refreshed:
-                return _post_codex_responses(payload, timeout=timeout, _retried=True)
+        if exc.code == 401 and _is_token_invalidated_error(detail):
+            if not _retried:
+                refreshed = chatgpt_auth.force_refresh_token()
+                if refreshed:
+                    return _post_codex_responses(payload, timeout=timeout, _retried=True)
+            raise _invalidated_session_error() from exc
         raise ChatGptOAuthAccessError(f"ChatGPT Codex Responses request failed ({exc.code}): {detail or '(no body)'}") from exc
 
 

@@ -9,6 +9,7 @@ to log in or verify it.
 from __future__ import annotations
 
 import argparse
+from difflib import get_close_matches
 import getpass
 import os
 import sys
@@ -38,11 +39,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("status", help="Show safe provider readiness (credential values stay redacted).")
 
     setup = subparsers.add_parser("setup", help="Run the guided setup for one provider.")
-    setup.add_argument("provider", nargs="?", choices=_PROVIDERS)
+    setup.add_argument("provider", nargs="?")
     setup.add_argument("provider_args", nargs=argparse.REMAINDER)
 
     auth = subparsers.add_parser("auth", help="Log in, log out, verify, or inspect a configured provider.")
-    auth.add_argument("provider", choices=_PROVIDERS)
+    auth.add_argument("provider")
     auth.add_argument("action", nargs="?", default="status")
     auth.add_argument("provider_args", nargs=argparse.REMAINDER)
 
@@ -57,6 +58,17 @@ def _provider_main() -> Any:
     from . import main
 
     return main
+
+
+def _unknown_provider(provider: str) -> int:
+    normalized = str(provider or "").strip().lower()
+    matches = get_close_matches(normalized, _PROVIDERS, n=1, cutoff=0.55)
+    suggestion = f" Did you mean `{matches[0]}`?" if matches else ""
+    console.print(
+        f"[red]Unknown provider: {provider}.[/]"
+        f"{suggestion} Choose google, xai, chatgpt, or ollama."
+    )
+    return 2
 
 
 def _prompt(
@@ -265,6 +277,7 @@ def _run_setup(
         provider = _interactive_setup_choice(input_fn=input_fn, secret_input=secret_input)
         if provider is None:
             return 2
+    provider = provider.strip().lower()
     if provider == "xai":
         return _setup_xai(input_fn=input_fn, secret_input=secret_input)
     if provider == "google":
@@ -273,8 +286,7 @@ def _run_setup(
         return _setup_chatgpt(provider_args)
     if provider == "ollama":
         return _setup_ollama(input_fn=input_fn, secret_input=secret_input)
-    console.print(f"[red]Unknown provider: {provider}[/]")
-    return 2
+    return _unknown_provider(provider)
 
 
 def _remove_xai_key() -> int:
@@ -290,6 +302,9 @@ def _remove_xai_key() -> int:
 
 
 def _run_auth(provider: str, action: str, provider_args: Sequence[str], *, input_fn: Callable[[str], str], secret_input: Callable[[str], str], interactive: bool) -> int:
+    provider = provider.strip().lower()
+    if provider not in _PROVIDERS:
+        return _unknown_provider(provider)
     normalized = action.strip().lower() or "status"
     if normalized in {"setup", "configure"}:
         return _run_setup(

@@ -562,3 +562,87 @@ def test_post_codex_responses_refreshes_once_on_token_invalidated(monkeypatch):
 
     assert isinstance(chatgpt_client._post_codex_responses({"model": "gpt-5.5"}), _Response)
     assert calls == ["Bearer old-token", "Bearer new-token"]
+
+
+def test_post_codex_responses_clears_invalidated_session_when_refresh_fails(monkeypatch):
+    cleared: list[bool] = []
+
+    def reject(req: Any, timeout: float):
+        raise chatgpt_client.urllib.error.HTTPError(
+            req.full_url,
+            401,
+            "Unauthorized",
+            hdrs={},
+            fp=io.BytesIO(
+                b'{"error":{"code":"token_invalidated","message":"Your authentication token has been invalidated."}}'
+            ),
+        )
+
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_valid_token", lambda: "old-token")
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_chatgpt_account_id", lambda: "acct_123")
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "force_refresh_token", lambda: None)
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "clear_tokens", lambda: cleared.append(True) or True)
+    monkeypatch.setattr(chatgpt_client.urllib.request, "urlopen", reject)
+
+    with pytest.raises(chatgpt_client.ChatGptOAuthAccessError) as exc_info:
+        chatgpt_client._post_codex_responses({"model": "gpt-5.6-terra"})
+
+    message = str(exc_info.value)
+    assert "sign-in expired or was revoked" in message
+    assert "algo-cli config setup chatgpt" in message
+    assert "token_invalidated" not in message
+    assert cleared == [True]
+
+
+def test_post_codex_responses_clears_session_when_refreshed_token_is_rejected(monkeypatch):
+    calls: list[str] = []
+    cleared: list[bool] = []
+
+    def reject(req: Any, timeout: float):
+        calls.append(dict(req.header_items())["Authorization"])
+        raise chatgpt_client.urllib.error.HTTPError(
+            req.full_url,
+            401,
+            "Unauthorized",
+            hdrs={},
+            fp=io.BytesIO(b'{"error":{"code":"token_invalidated"}}'),
+        )
+
+    monkeypatch.setattr(
+        chatgpt_client.chatgpt_auth,
+        "get_valid_token",
+        lambda: "old-token" if not calls else "new-token",
+    )
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_chatgpt_account_id", lambda: "acct_123")
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "force_refresh_token", lambda: "new-token")
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "clear_tokens", lambda: cleared.append(True) or True)
+    monkeypatch.setattr(chatgpt_client.urllib.request, "urlopen", reject)
+
+    with pytest.raises(chatgpt_client.ChatGptOAuthAccessError, match="config setup chatgpt"):
+        chatgpt_client._post_codex_responses({"model": "gpt-5.6-sol"})
+
+    assert calls == ["Bearer old-token", "Bearer new-token"]
+    assert cleared == [True]
+
+
+def test_post_chat_clears_invalidated_session_after_failed_refresh(monkeypatch):
+    cleared: list[bool] = []
+
+    def reject(req: Any, timeout: float):
+        raise chatgpt_client.urllib.error.HTTPError(
+            req.full_url,
+            401,
+            "Unauthorized",
+            hdrs={},
+            fp=io.BytesIO(b'{"error":{"code":"token_invalidated"}}'),
+        )
+
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_valid_token", lambda: "old-token")
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "force_refresh_token", lambda: None)
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "clear_tokens", lambda: cleared.append(True) or True)
+    monkeypatch.setattr(chatgpt_client.urllib.request, "urlopen", reject)
+
+    with pytest.raises(chatgpt_client.ChatGptOAuthAccessError, match="config setup chatgpt"):
+        chatgpt_client._post_chat({"model": "gpt-5.4"}, stream=False)
+
+    assert cleared == [True]
