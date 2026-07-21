@@ -3,10 +3,17 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 
 import pytest
+
+
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Boron hosted qualification is bound to Linux container evidence",
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]

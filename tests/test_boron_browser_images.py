@@ -3,10 +3,17 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 
 import pytest
+
+
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Boron image evidence uses Linux container and POSIX pipe semantics",
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]

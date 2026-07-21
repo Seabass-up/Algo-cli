@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 import plistlib
 import re
@@ -8,6 +9,11 @@ import subprocess
 import sys
 
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Austin native-package audits target the macOS bundle boundary",
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 AUDIT_PATH = ROOT / "scripts" / "austin_native_package_audit.py"

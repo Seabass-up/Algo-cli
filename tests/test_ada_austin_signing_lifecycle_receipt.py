@@ -16,6 +16,12 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import pytest
 
 
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Austin lifecycle receipts verify POSIX ownership and descriptor identity",
+)
+
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "scripts" / "ada_austin_signing_lifecycle_receipt.py"
 SPEC = importlib.util.spec_from_file_location(

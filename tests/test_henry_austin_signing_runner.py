@@ -12,6 +12,12 @@ import time
 import pytest
 
 
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Austin signing-runner evidence is a macOS POSIX boundary",
+)
+
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "scripts" / "henry_austin_signing_runner.py"
 SPEC = importlib.util.spec_from_file_location(

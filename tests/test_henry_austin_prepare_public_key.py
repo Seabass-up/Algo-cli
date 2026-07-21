@@ -3,11 +3,18 @@ from __future__ import annotations
 import base64
 import hashlib
 import importlib.util
+import os
 from pathlib import Path
 import stat
 import sys
 
 import pytest
+
+
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Austin key preparation verifies POSIX file ownership and modes",
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]

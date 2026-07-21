@@ -9,6 +9,12 @@ import sys
 import pytest
 
 
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Ada crash qualification is a macOS process and filesystem boundary",
+)
+
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "scripts" / "henry_austin_ada_crash_qualification.py"
 SPEC = importlib.util.spec_from_file_location("henry_austin_ada_crash_qualification", SCRIPT_PATH)

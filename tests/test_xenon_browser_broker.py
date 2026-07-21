@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import os
 import socket
 import ssl
 import subprocess
@@ -28,6 +29,12 @@ from algo_cli.xenon_browser_broker import (
     parse_xenon_http_request,
     parse_xenon_http_response,
     verify_xenon_broker_permit,
+)
+
+
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Xenon broker TLS tests use POSIX socketpair semantics",
 )
 
 
@@ -192,9 +199,10 @@ def test_permit_rejects_non_public_url_and_duplicate_factory_ids() -> None:
 
 
 def test_ephemeral_ca_is_short_lived_scoped_and_can_complete_tls() -> None:
+    tls_now_ms = int(time.time() * 1000)
     ca = XenonEphemeralCertificateAuthority.create(
-        now_ms=NOW_MS,
-        expires_at_ms=NOW_MS + 60_000,
+        now_ms=tls_now_ms,
+        expires_at_ms=tls_now_ms + 60_000,
     )
     certificate = x509.load_pem_x509_certificate(ca.certificate_pem)
     constraints = certificate.extensions.get_extension_for_class(x509.BasicConstraints).value
@@ -203,7 +211,7 @@ def test_ephemeral_ca_is_short_lived_scoped_and_can_complete_tls() -> None:
     assert b"PRIVATE KEY" not in ca.certificate_pem
     assert "PRIVATE" not in repr(ca)
 
-    server_context = ca.server_context("example.com", now_ms=NOW_MS + 1)
+    server_context = ca.server_context("example.com", now_ms=tls_now_ms + 1)
     client_context = ssl.create_default_context(cadata=ca.certificate_pem.decode("ascii"))
     client_context.set_alpn_protocols(["http/1.1"])
     left, right = socket.socketpair()
@@ -223,7 +231,7 @@ def test_ephemeral_ca_is_short_lived_scoped_and_can_complete_tls() -> None:
     thread.join(timeout=5)
     assert seen == [b"ping"]
     with pytest.raises(XenonBrokerRejected, match="ca_expired"):
-        ca.server_context("example.com", now_ms=NOW_MS + 60_000)
+        ca.server_context("example.com", now_ms=tls_now_ms + 60_000)
 
 
 def test_connect_parser_accepts_only_exact_https_authority() -> None:
@@ -401,8 +409,13 @@ def _read_all(connection: ssl.SSLSocket) -> bytes:
 
 
 def _run_double_tls(response_bytes: bytes) -> tuple[bytes, XenonBrokerSession, list[BaseException]]:
-    session = _verified_session()
-    server_context = session.ca.server_context("example.com", now_ms=NOW_MS + 1)
+    tls_now_ms = int(time.time() * 1000)
+    permit = _permit(
+        issued_at_ms=tls_now_ms,
+        expires_at_ms=tls_now_ms + 120_000,
+    )
+    session = _verified_session(permit=permit, now_ms=tls_now_ms + 1)
+    server_context = session.ca.server_context("example.com", now_ms=tls_now_ms + 1)
     client_context = ssl.create_default_context(cadata=session.ca.certificate_pem.decode("ascii"))
     client_context.set_alpn_protocols(["http/1.1"])
 
@@ -485,9 +498,14 @@ def test_double_tls_broker_relays_valid_chunked_body() -> None:
 
 
 def test_double_tls_websocket_upgrade_is_blocked_and_never_forwarded() -> None:
-    session = _verified_session()
+    tls_now_ms = int(time.time() * 1000)
+    permit = _permit(
+        issued_at_ms=tls_now_ms,
+        expires_at_ms=tls_now_ms + 120_000,
+    )
+    session = _verified_session(permit=permit, now_ms=tls_now_ms + 1)
     browser_raw, broker_raw = socket.socketpair()
-    server_context = session.ca.server_context("example.com", now_ms=NOW_MS + 1)
+    server_context = session.ca.server_context("example.com", now_ms=tls_now_ms + 1)
     client_context = ssl.create_default_context(cadata=session.ca.certificate_pem.decode("ascii"))
 
     upstream_client_raw, upstream_server_raw = socket.socketpair()

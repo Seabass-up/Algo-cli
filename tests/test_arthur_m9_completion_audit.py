@@ -3,11 +3,18 @@ from __future__ import annotations
 from copy import deepcopy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any
 
 import pytest
+
+
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="M9 completion evidence validates POSIX private atomic writes",
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -175,11 +175,12 @@ def _atomic_public_write(path: Path, data: bytes) -> None:
         os.close(descriptor)
         descriptor = None
         os.replace(temporary, path)
-        directory = os.open(parent, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        if os.name == "posix":
+            directory = os.open(parent, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     except OSError:
         _fail("output_write")
     finally:

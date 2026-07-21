@@ -712,7 +712,10 @@ class ControlJournal:
                 isolation_level=None,
             )
             connection.row_factory = sqlite3.Row
-            connection.enable_load_extension(False)
+            # Some hardened Python builds omit extension loading entirely. In
+            # that safer configuration the disabling API is absent as well.
+            if hasattr(connection, "enable_load_extension"):
+                connection.enable_load_extension(False)
             if hasattr(connection, "setlimit"):
                 connection.setlimit(_SQLITE_LIMIT_LENGTH, 1_048_576)
                 connection.setlimit(_SQLITE_LIMIT_SQL_LENGTH, 100_000)

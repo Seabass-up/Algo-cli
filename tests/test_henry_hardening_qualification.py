@@ -24,6 +24,12 @@ from algo_cli.henry_hardening_qualification import (
 )
 
 
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="M8 qualification evidence is source-bound to POSIX execution",
+)
+
+
 ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE_PATH = ROOT / "hardening" / "grace-m8-local-qualification.json"
 SCRIPT_PATH = ROOT / "scripts" / "henry_m8_qualification.py"

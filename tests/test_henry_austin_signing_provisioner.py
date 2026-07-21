@@ -14,6 +14,12 @@ from typing import Any
 import pytest
 
 
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Austin signing provisioning requires macOS POSIX ownership semantics",
+)
+
+
 ROOT = Path(__file__).resolve().parents[1]
 
 

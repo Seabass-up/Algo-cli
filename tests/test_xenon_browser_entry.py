@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from io import BytesIO
 import json
+import os
 import threading
 import time
 from typing import Iterable
@@ -27,6 +28,12 @@ from algo_cli.xenon_browser_entry import (
     prepare_xenon_start,
     read_xenon_entry_frame,
     write_xenon_entry_frame,
+)
+
+
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Xenon entry serves the Linux POSIX browser-broker boundary",
 )
 
 
@@ -213,6 +220,12 @@ def test_main_emits_ready_after_server_bind_and_normalizes_thread_failure(monkey
             pass
 
     monkeypatch.setattr(entry_module, "XenonBrokerServer", FakeServer)
+    original_prepare = entry_module.prepare_xenon_start
+    monkeypatch.setattr(
+        entry_module,
+        "prepare_xenon_start",
+        lambda config: original_prepare(config, clock_ms=lambda: NOW_MS + 1),
+    )
     encoded = BytesIO()
     write_xenon_entry_frame(encoded, _row())
     output = BytesIO()
@@ -243,6 +256,12 @@ def test_main_emits_terminal_structural_evidence_after_clean_stop(monkeypatch) -
             pass
 
     monkeypatch.setattr(entry_module, "XenonBrokerServer", FakeServer)
+    original_prepare = entry_module.prepare_xenon_start
+    monkeypatch.setattr(
+        entry_module,
+        "prepare_xenon_start",
+        lambda config: original_prepare(config, clock_ms=lambda: NOW_MS + 1),
+    )
     encoded = BytesIO()
     write_xenon_entry_frame(encoded, _row())
     output = BytesIO()

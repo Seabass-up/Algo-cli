@@ -249,8 +249,9 @@ def _parallel_claim(
 def test_private_sqlite_configuration_and_closed_schema(tmp_path) -> None:
     journal = _journal(tmp_path)
     path = journal.path
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    if os.name == "posix":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
 
     connection = sqlite3.connect(path)
     try:
@@ -276,6 +277,9 @@ def test_private_sqlite_configuration_and_closed_schema(tmp_path) -> None:
 def test_path_symlink_hardlink_permission_and_relative_path_reject(tmp_path) -> None:
     with pytest.raises(ControlJournalError, match="journal_path"):
         ControlJournal(Path("relative.sqlite3"))
+
+    if os.name != "posix":
+        return
 
     real = tmp_path / "real.sqlite3"
     real.write_bytes(b"")

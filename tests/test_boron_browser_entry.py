@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from io import BytesIO
 import json
+import os
 import time
 
 from cryptography import x509
@@ -26,6 +27,12 @@ from algo_cli.boron_browser_wrapper import (
     BoronPipeRejected,
 )
 from algo_cli.xenon_browser_broker import XenonEphemeralCertificateAuthority
+
+
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Boron browser entry runs inside the Linux POSIX container boundary",
+)
 
 
 NOW_MS = int(time.time() * 1000)
