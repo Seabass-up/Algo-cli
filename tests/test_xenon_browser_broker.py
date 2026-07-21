@@ -90,7 +90,7 @@ def _verified_session(
         expected_fencing_token=7,
     )
     ca = XenonEphemeralCertificateAuthority.create(
-        now_ms=NOW_MS,
+        now_ms=canonical.issued_at_ms,
         expires_at_ms=canonical.expires_at_ms,
     )
     return XenonBrokerSession(canonical, egress, target, ca, clock_ms=lambda: now_ms)
