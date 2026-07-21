@@ -26,6 +26,7 @@ from . import harness
 from . import identity
 from . import index_compute_lab as _index_compute_lab
 from .config import CONFIG_DIR, Config, load_runtime_env, _atomic_write_text
+from .marcus_authority import CuratedToolRegistry
 from ollama import Client
 
 from .chat_protocol import get_attr
@@ -1472,44 +1473,41 @@ def x_account_draft_reply(post: str, text: str) -> str:
     return x_account.draft_reply(post, text).to_json()
 
 
-def x_account_post(text: str, confirm: bool = False) -> str:
-    """Publish an X post through xurl only after explicit user confirmation.
+def x_account_post(text: str) -> str:
+    """Request an X post; only the trusted dispatcher can publish it.
 
     Args:
         text: Exact post text to publish.
-        confirm: Must be true only when the user explicitly approved this exact text.
     """
     from . import x_account
 
-    return x_account.post(text, confirm=confirm).to_json()
+    return x_account.post(text, confirm=False).to_json()
 
 
-def x_account_reply(post: str, text: str, confirm: bool = False) -> str:
-    """Publish an X reply through xurl only after explicit user confirmation.
+def x_account_reply(post: str, text: str) -> str:
+    """Request an X reply; only the trusted dispatcher can publish it.
 
     Args:
         post: X post id or x.com status URL to reply to.
         text: Exact reply text to publish.
-        confirm: Must be true only when the user explicitly approved this exact reply.
     """
     from . import x_account
 
-    return x_account.reply(post, text, confirm=confirm).to_json()
+    return x_account.reply(post, text, confirm=False).to_json()
 
 
-def x_account_post_action(action: str, post: str, confirm: bool = False) -> str:
-    """Run a confirmed X post action through xurl.
+def x_account_post_action(action: str, post: str) -> str:
+    """Request an X post action; only the trusted dispatcher can execute it.
 
     Supported actions: delete, like, unlike, repost, unrepost, bookmark, unbookmark.
 
     Args:
         action: The action to run.
         post: X post id or x.com status URL.
-        confirm: Must be true only when the user explicitly approved this exact action.
     """
     from . import x_account
 
-    return x_account.post_action(action, post, confirm=confirm).to_json()
+    return x_account.post_action(action, post, confirm=False).to_json()
 
 
 def remember(fact: str, cfg: Config | None = None) -> str:
@@ -1525,7 +1523,12 @@ def remember(fact: str, cfg: Config | None = None) -> str:
         cfg: Optional Config instance for persistence (required for actual storage).
     """
     if cfg is not None:
-        added = cfg.remember_fact(fact)
+        from . import julia_memory_runtime as memory_runtime
+
+        try:
+            added = memory_runtime.remember_fact(cfg, fact)
+        except memory_runtime.MemorySystemError as exc:
+            return f"Error: {exc}"
         if added:
             from .main import capture_intuition_block
             capture_intuition_block(cfg, "memory", fact, source="tool:remember")
@@ -1783,6 +1786,9 @@ def available_actions(topic: str | None = None) -> str:
         ],
         "documents": ["/pdf [--pages N] [--chars N] PATH"],
         "memory": [
+            "/memory [home|search QUERY|show ID|doctor|benchmark|reindex]",
+            "/memory add [--tier curated|history] [--scope NAME] [--slot KEY] TEXT",
+            "/memory supersede ID TEXT | promote ID | demote ID | archive ID",
             "/memory-auto [on|off|status]",
             "/remember FACT",
             "/memories",
@@ -2058,6 +2064,9 @@ def _session_command_captures_output(command_line: str) -> bool:
             return False
         if normalized_arg in _SESSION_STATUS_ARGS:
             return True
+    if root == "/memory":
+        subcommand = normalized_arg.split(maxsplit=1)[0] if normalized_arg else "home"
+        return subcommand in {"?", "benchmark", "doctor", "help", "home", "search", "show", "show-home", "status"}
     if root == "/harness":
         subcommand = normalized_arg.split(maxsplit=1)[0] if normalized_arg else ""
         return subcommand in _READ_ONLY_HARNESS_SUBCOMMANDS
@@ -2180,6 +2189,8 @@ def session_command(command: str, cfg: Any = None) -> str:
     - /code-rag on|off|status — opt in/out of cwd source indexing and prompt retrieval
     - /harness status, /harness refresh, /harness embed, /harness score, /harness compare, /hsearch QUERY, /hread ID — harness index
     - /intelligence status|query TERM|reindex or /intel ... — repository intelligence project graph
+    - /memory home|search QUERY|show ID|doctor|benchmark — governed memory review, recall, and measured qualification
+    - /memory add|supersede|promote|demote|archive|reindex — governed memory mutations
     - /remember FACT, /memories, /forget ID, /lesson TEXT, /lessons reindex
     - /context status|rebuild|clear — context management
     - /save NAME, /load NAME — conversation persistence
@@ -2195,8 +2206,8 @@ def session_command(command: str, cfg: Any = None) -> str:
     if cfg is None:
         return "Error: session_command must be invoked by the algo CLI runtime (not called directly)."
     normalized = command.strip()
-    from .slash_dispatch import handle_command, unknown_command_message
-    from .runtime_services import create_client
+    from .oliver_slash_dispatch import handle_command, unknown_command_message
+    from .theodore_runtime_services import create_client
     if normalized.lower() == "/agent" or normalized.lower().startswith("/agent "):
         from .agent_pipeline import agent_execution_active, execute_agent_command
 
@@ -3342,23 +3353,41 @@ def _hide_cfg_param(fn):
 
 def plugins_discover() -> str:
     """Discover plugins from ~/.algo_cli/plugins/ and return a JSON summary."""
-    from .plugins import discover_plugins
+    from .william_plugins import discover_plugins
     return json.dumps([manifest.as_dict() for manifest in discover_plugins()], indent=2, sort_keys=True)
 
 
 def plugins_load(plugin_name: str) -> str:
-    """Explicitly import a discovered plugin and return its module load status.
+    """Return the blocked status for a manifest-only local plugin.
 
-    Dynamic action/tool registration is not yet part of the stable runtime API.
+    In-process Python plugin imports and callable contributions are disabled.
+    No local plugin execution route is enabled during hardening.
     """
-    from .plugins import discover_plugins, load_plugin
+    from .william_plugins import discover_plugins, load_plugin
 
+    requested = str(plugin_name or "").strip().casefold()
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", requested):
+        return json.dumps(
+            {
+                "loaded": False,
+                "error_code": "invalid_plugin_name",
+                "error": "Plugin name is invalid.",
+            },
+            sort_keys=True,
+        )
     manifest = next(
-        (item for item in discover_plugins() if item.name.lower() == plugin_name.strip().lower()),
+        (item for item in discover_plugins() if item.name == requested),
         None,
     )
     if manifest is None:
-        return json.dumps({"loaded": False, "error": f"Plugin not found: {plugin_name}"})
+        return json.dumps(
+            {
+                "loaded": False,
+                "error_code": "plugin_not_found",
+                "error": "Plugin was not found.",
+            },
+            sort_keys=True,
+        )
     result = load_plugin(manifest)
     return json.dumps(result.as_dict(), indent=2, sort_keys=True)
 
@@ -3372,14 +3401,14 @@ def version_manifest_build() -> str:
 
 def extensions_manifest_build() -> str:
     """Build an extension manifest with plugin/helper binary versions and status."""
-    from .extensions_manifest import build_extensions_manifest
+    from .argon_extensions_manifest import build_extensions_manifest
     m = build_extensions_manifest()
     return m.to_json()
 
 
 def runtime_qos_hint(tool_name: str, args_json: str = "{}") -> str:
     """Classify a tool call's runtime QoS and named log destination."""
-    from .runtime_qos import classify_tool_runtime
+    from .theodore_runtime_qos import classify_tool_runtime
     try:
         args = json.loads(args_json or "{}")
         if not isinstance(args, dict):
@@ -3399,7 +3428,7 @@ def screenshot_description_verify(description: str, expected_terms: str = "", fo
 
 def capability_mask_describe(tier: str = "", capabilities: str = "") -> str:
     """Describe a stable capability bit mask from a tier and/or comma-separated capability names."""
-    from .capability_mask import CapabilityMask, mask_from_names, tier_mask
+    from .marcus_authority import CapabilityMask, mask_from_names, tier_mask
     names = [name.strip() for name in (capabilities or "").split(",") if name.strip()]
     mask = CapabilityMask(tier_mask(tier) | mask_from_names(names).value)
     return json.dumps(mask.to_dict(), indent=2, sort_keys=True)
@@ -3507,10 +3536,15 @@ def action_program(plan: dict, cfg: Any = None) -> str:
     ``kind: action``, ``action``, and ``args``. A transform step has ``id``,
     ``kind: transform``, ``op``, ``input``, and optional ``args``. References
     use ``{"$ref": "earlier_step", "path": ["optional", "keys"]}``.
-    Supported deterministic transforms are returned by validation errors.
-    Large intermediates become content-addressed artifacts; every nested action
-    retains its normal policy, approval, guardrail, attempt-ledger, and telemetry
-    path. Session/meta calls and recursive programs are forbidden.
+    Action arguments are static in version 1: observations may feed deterministic
+    transforms and outputs, but may not become arguments to another action. All
+    action schemas, exact effects, targets, and transform contracts are frozen
+    before step one. At most one state-changing/code/external action is allowed;
+    it must be final and directly returned. Large or protected intermediates use
+    encrypted run-scoped artifacts. Every nested action retains its normal policy,
+    approval, guardrail, deadline, cancellation, attempt-ledger, and telemetry
+    path. Session/meta calls and recursive programs are forbidden. Receipts are
+    local hash-linked, tamper-evident records; they are not immutable or signed.
 
     Args:
         plan: Typed version-1 plan object with bounded ordered steps and outputs.
@@ -3518,7 +3552,7 @@ def action_program(plan: dict, cfg: Any = None) -> str:
 
     if cfg is None:
         return json.dumps({"status": "error", "error": "runtime config was not injected"})
-    from .program_runtime import ProgramAuthorization, execute_program
+    from .nathan_program_runtime import ProgramAuthorization, execute_program
 
     authorization = getattr(cfg, "_algo_program_authorization", None)
     if not isinstance(authorization, ProgramAuthorization):
@@ -3596,4 +3630,4 @@ ALL_TOOLS = [
     credential_helpers_store,
     url_scheme_parse,
 ]
-TOOL_MAP = {fn.__name__: fn for fn in ALL_TOOLS}
+TOOL_MAP = CuratedToolRegistry({fn.__name__: fn for fn in ALL_TOOLS})

@@ -1,0 +1,242 @@
+{
+  "fixture": {
+    "efficiency_repetitions": 5,
+    "postcondition_trials": 1000,
+    "privacy_trials": 1000,
+    "program_trials": 1000,
+    "protocol_frames": 100000,
+    "race_trials": 10000,
+    "schema_version": 1,
+    "seed": 310400406105,
+    "unknown_trials": 1000
+  },
+  "fixture_digest": "sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659",
+  "generated_at": "2026-07-21T20:40:02Z",
+  "limitations": [
+    "Zero observed failures in a finite local sample is not zero risk.",
+    "No production browser, selected-Chrome, Developer ID, notarization, Gatekeeper, or live TCC claim is made.",
+    "The active hardening freeze remains in force."
+  ],
+  "metrics": [
+    {
+      "denominator": 26,
+      "id": "privileged_policy",
+      "limitations": "Dynamic session wrappers are excluded because their resolved inner command is independently policy evaluated.",
+      "measurements": {
+        "generated_privileged_specs": 0,
+        "hostile_unknowns_rejected": 1000,
+        "runtime_tools": 56,
+        "unconfirmed_protected_actions": 0
+      },
+      "numerator": 26,
+      "rate": 1.0,
+      "scope": "Complete current runtime tool registry, curated policy table, effective ActionSpecs, and hostile unknown names.",
+      "status": "pass",
+      "threshold": "0 generated privileged specs and 0 protected actions without confirmation",
+      "wilson_95": [
+        0.871271,
+        1.0
+      ]
+    },
+    {
+      "denominator": 10000,
+      "id": "stale_target_race",
+      "limitations": "Finite local adapters and SQLite do not prove browser, XPC, power-loss, or hostile-filesystem behavior.",
+      "measurements": {
+        "dispatches": 0,
+        "mutations": 0,
+        "p50_ms": 4.906,
+        "p95_ms": 5.47,
+        "seed": 310400406105
+      },
+      "numerator": 10000,
+      "rate": 1.0,
+      "scope": "Deterministic claim-to-dispatch target-fence drift through the durable control runtime.",
+      "status": "pass",
+      "threshold": "0 mutations and 0 dispatches in at least 10000 race-injected actions",
+      "wilson_95": [
+        0.999616,
+        1.0
+      ]
+    },
+    {
+      "denominator": 1000,
+      "id": "unknown_outcome_no_retry",
+      "limitations": "Explicit recovery is a separate reconciliation operation and remains covered by focused crash tests.",
+      "measurements": {
+        "automatic_reconciliations": 0,
+        "dispatches": 1000,
+        "extra_dispatches": 0
+      },
+      "numerator": 1000,
+      "rate": 1.0,
+      "scope": "Deterministic uncertain adapter outcomes through the durable control runtime.",
+      "status": "pass",
+      "threshold": "0 automatic redispatches across at least 1000 unknown mutation outcomes",
+      "wilson_95": [
+        0.996173,
+        1.0
+      ]
+    },
+    {
+      "denominator": 1000,
+      "id": "arbitrary_program_rejection",
+      "limitations": "The corpus is deterministic and finite; the 100,000-frame protocol fuzzer covers byte-level parser faults separately.",
+      "measurements": {
+        "corpus_cases": 12,
+        "seed": 310400406105,
+        "unexpected_errors": 0
+      },
+      "numerator": 1000,
+      "rate": 1.0,
+      "scope": "Closed typed-program root, action, transform, reference, mutation-finality, and capability-ceiling schemas.",
+      "status": "pass",
+      "threshold": "0 arbitrary program accepts across at least 1000 randomized malformed plans",
+      "wilson_95": [
+        0.996173,
+        1.0
+      ]
+    },
+    {
+      "denominator": 1000,
+      "id": "privacy_canaries",
+      "limitations": "Focused tests cover logs, receipts, encrypted artifacts, and memory; live browser/native surfaces remain unavailable.",
+      "measurements": {
+        "projection_views": 2
+      },
+      "numerator": 1000,
+      "rate": 1.0,
+      "scope": "Nested credentials, content, URLs, selectors, and adversarially unique canaries.",
+      "status": "pass",
+      "threshold": "0 raw canaries in at least 1000 audit and telemetry projections",
+      "wilson_95": [
+        0.996173,
+        1.0
+      ]
+    },
+    {
+      "denominator": 100000,
+      "id": "malformed_protocol_frames",
+      "limitations": "In-process deterministic fuzzing is not a native-host, XPC, browser-process, or memory-sanitizer run.",
+      "measurements": {
+        "classification_digest": "sha256:15d9573259bfd3baf2e93b6bb0779e68610fbdc2c93ca064d756faa9f8f3b2ec",
+        "corpus_digest": "sha256:b6f6cfac73e23afe9c5436c9504b7621c79c55b117f79f2820e64fd77491d2b1",
+        "maximum_buffered_bytes": 2844,
+        "unexpected_accepts": 0,
+        "unexpected_crashes": 0
+      },
+      "numerator": 100000,
+      "rate": 1.0,
+      "scope": "Bounded fragmented David control frames across 25 mutation classes, including prompt-like extra fields.",
+      "status": "pass",
+      "threshold": "0 crashes, OOMs, or unexpected accepts in at least 100000 malformed frames",
+      "wilson_95": [
+        0.999962,
+        1.0
+      ]
+    },
+    {
+      "denominator": 1000,
+      "id": "fresh_postcondition",
+      "limitations": "Finite adapters do not establish that a future native or browser adapter observes a real external target correctly.",
+      "measurements": {
+        "mutations": 1000,
+        "p50_ms": 6.406,
+        "p95_ms": 6.846
+      },
+      "numerator": 1000,
+      "rate": 1.0,
+      "scope": "Deterministic mutation, reconciliation, evidence binding, journal transition, and signed receipt path.",
+      "status": "pass",
+      "threshold": "100% of at least 1000 successful mutations have a fresh bound postcondition",
+      "wilson_95": [
+        0.996173,
+        1.0
+      ]
+    },
+    {
+      "denominator": 5,
+      "id": "local_token_efficiency",
+      "limitations": "Synthetic local token estimates do not establish task completion, model quality, screenshot reduction, or cross-harness advantage.",
+      "measurements": {
+        "median_schema_reduction_pct": 78.948,
+        "typed_program_reduction_pct": 96.644
+      },
+      "numerator": 5,
+      "rate": 1.0,
+      "scope": "Model-free deferred-tool, semantic-supersession, and artifact-backed typed-program cells.",
+      "status": "pass",
+      "threshold": "at least 5 repetitions and at least 50% token reduction",
+      "wilson_95": [
+        0.565518,
+        1.0
+      ]
+    },
+    {
+      "denominator": 1,
+      "id": "focused_adversarial_suite",
+      "limitations": "Passing deterministic tests cannot substitute for live production browser, extension, native signing, or TCC evidence.",
+      "measurements": {},
+      "numerator": 1,
+      "rate": 1.0,
+      "scope": "Current Python import under the qualification environment and source-owned hardening tests.",
+      "status": "pass",
+      "threshold": "focused race, crash, policy, privacy, program, browser, and network contract suite passes",
+      "wilson_95": [
+        0.206549,
+        1.0
+      ]
+    },
+    {
+      "id": "managed_browser_completion",
+      "limitations": "A current image is locally attested, but no native-platform live broker session or repeated task matrix satisfies M5.",
+      "measurements": {},
+      "scope": "Production managed-browser task matrix with frozen fixtures and independent checkers.",
+      "status": "blocked",
+      "threshold": "at least 95% supported-task completion over at least five cold/warm rotated repetitions"
+    },
+    {
+      "id": "selected_chrome_completion",
+      "limitations": "The observe-only package is not installed, paired, connected, or live-granted.",
+      "measurements": {},
+      "scope": "Installed selected-tab Chrome extension/native-host task matrix.",
+      "status": "blocked",
+      "threshold": "at least 90% supported-task completion over at least five cold/warm rotated repetitions"
+    },
+    {
+      "id": "semantic_and_screenshot_efficiency",
+      "limitations": "No production browser or signed native task runner is available for a fair matched baseline.",
+      "measurements": {},
+      "scope": "Matched live task cells with action, screenshot, confirmation, token, and policy counts.",
+      "status": "blocked",
+      "threshold": "at least 90% semantic routes and at least 70% screenshot reduction versus screenshot-only"
+    },
+    {
+      "id": "browser_profile_network_boundary",
+      "limitations": "Contracts and a probe container pass, but the exact public-browser topology remains unproven.",
+      "measurements": {},
+      "scope": "Live production browser, broker, selected-tab, redirect, DNS, and peer-pin fault matrix.",
+      "status": "blocked",
+      "threshold": "0 default-profile, cookie, storage, password, incognito, internal-page, or private-network accesses"
+    },
+    {
+      "id": "browser_security_freshness",
+      "limitations": "The matching Linux image has local zero-lag evidence, but this report has no current hosted native-platform or registry-provenance result.",
+      "measurements": {},
+      "scope": "Exact pinned production version versus a current authoritative stable-release observation.",
+      "status": "blocked",
+      "threshold": "browser security update lag no more than 72 hours"
+    }
+  ],
+  "public_claim_eligible": false,
+  "qualification": "henry-m8-local-v1",
+  "schema_version": 1,
+  "source_digest": "sha256:aa05305524e4e533743ce98997e550e5723a5fbbbed6b18ebbeaac51cb275b03",
+  "status": "blocked",
+  "summary": {
+    "blocked": 5,
+    "fail": 0,
+    "not_verified": 0,
+    "pass": 9
+  }
+}

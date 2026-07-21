@@ -1,11 +1,12 @@
 use std::collections::HashSet;
 use std::env;
-use std::fs;
-use std::io;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_INDEX_TEXT: usize = 4_000;
+const MAX_SOURCE_BYTES: u64 = 65_536;
 
 struct SourceRoot {
     harness: &'static str,
@@ -58,7 +59,7 @@ fn run() -> io::Result<()> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(output, render_index(&roots, &records))?;
+    atomic_write(&output, render_index(&roots, &records).as_bytes())?;
     Ok(())
 }
 
@@ -97,19 +98,30 @@ fn resolve_config_dir(home: &Path) -> PathBuf {
     if new_dir.exists() {
         return new_dir;
     }
+    let legacy_dir = home.join(".ollama_cli");
+    if legacy_dir.exists() {
+        return legacy_dir;
+    }
     new_dir
 }
 
 /// Resolve algo-cli repo directory (mirrors Python _algo_cli_repo_dir).
 fn resolve_repo_dir(home: &Path) -> PathBuf {
-    let candidates = ["algo-cli", "ollama-cli"];
-    for name in &candidates {
-        let candidate = home.join(name);
-        if candidate.exists() {
-            return candidate;
+    if let Some(explicit) = env::var_os("ALGO_CLI_REPO_DIR") {
+        return PathBuf::from(explicit);
+    }
+    if let Ok(current) = env::current_dir() {
+        if is_repo_root(&current) {
+            return current;
         }
     }
-    home.join("algo-cli")
+    // Never guess ~/algo-cli or ~/ollama-cli. A similarly named checkout is
+    // outside the package privacy boundary unless the caller selects it.
+    home.join(".algo_cli/.no_repo_sources")
+}
+
+fn is_repo_root(candidate: &Path) -> bool {
+    candidate.join("pyproject.toml").is_file() && candidate.join("algo_cli").is_dir()
 }
 
 fn source_roots(home: &Path, config_dir: &Path, repo_dir: &Path) -> Vec<SourceRoot> {
@@ -379,11 +391,21 @@ fn walk(root: &SourceRoot, current: &Path, seen: &mut Vec<PathBuf>) -> io::Resul
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if path.is_dir() {
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+        // Never follow directory or file symlinks. A harness corpus may contain
+        // links to credentials or to trees outside the declared source root.
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             if !skip_part(&name) {
                 walk(root, &path, seen)?;
             }
-        } else if matches_patterns(root, &path, &name) && !should_skip(&path) {
+        } else if file_type.is_file() && matches_patterns(root, &path, &name) && !should_skip(&path)
+        {
             seen.push(path);
             if seen.len() >= root.max_files {
                 break;
@@ -412,8 +434,12 @@ fn glob_name(name: &str, pattern: &str) -> bool {
     if pattern == name {
         return true;
     }
-    if let Some(suffix) = pattern.strip_prefix("*.") {
-        return name.ends_with(&format!(".{suffix}"));
+    if let Some((prefix, suffix)) = pattern.split_once('*') {
+        if !suffix.contains('*') {
+            return name.len() >= prefix.len() + suffix.len()
+                && name.starts_with(prefix)
+                && name.ends_with(suffix);
+        }
     }
     false
 }
@@ -476,8 +502,14 @@ fn should_skip(path: &Path) -> bool {
 }
 
 fn make_record(root: &SourceRoot, path: &Path) -> io::Result<Record> {
-    let metadata = fs::metadata(path)?;
-    let text = read_text(path);
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "source must be a regular non-symlink file",
+        ));
+    }
+    let text = read_text(path)?;
     let title = frontmatter_value(&text, "title")
         .or_else(|| frontmatter_value(&text, "name"))
         .or_else(|| first_heading(&text))
@@ -529,13 +561,53 @@ fn make_record(root: &SourceRoot, path: &Path) -> io::Result<Record> {
     })
 }
 
-fn read_text(path: &Path) -> String {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(_) => return String::new(),
-    };
+fn read_text(path: &Path) -> io::Result<String> {
+    let file = File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "source must be a regular file",
+        ));
+    }
+    let mut bytes = Vec::with_capacity(MAX_SOURCE_BYTES as usize + 1);
+    file.take(MAX_SOURCE_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_SOURCE_BYTES as usize {
+        bytes.truncate(MAX_SOURCE_BYTES as usize);
+    }
     let text = String::from_utf8_lossy(&bytes);
-    text.chars().take(MAX_INDEX_TEXT).collect()
+    Ok(text.chars().take(MAX_INDEX_TEXT).collect())
+}
+
+fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("harness_index.json");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temporary = parent.join(format!(".{stem}.{}.{}.tmp", std::process::id(), nonce));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let result = (|| {
+        let mut file = options.open(&temporary)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 fn frontmatter_value(text: &str, key: &str) -> Option<String> {
@@ -726,4 +798,120 @@ fn json_escape(value: &str) -> String {
         }
     }
     escaped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temporary_directory(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = env::temp_dir().join(format!(
+            "algo-indexer-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn wildcard_patterns_cover_prefix_and_suffix_forms() {
+        assert!(glob_name("xai_client.py", "xai_*.py"));
+        assert!(glob_name("test_xai_live.py", "test_xai*.py"));
+        assert!(glob_name("SKILL.md", "*.md"));
+        assert!(!glob_name("xai_client.txt", "xai_*.py"));
+        assert!(!glob_name("xai_client.py.bak", "xai_*.py"));
+        assert!(!glob_name("xai_client.py", "xai_*.*"));
+    }
+
+    #[test]
+    fn repo_detection_requires_package_markers_and_never_name_guesses() {
+        let root = temporary_directory("repo-root");
+        fs::create_dir(root.join("algo_cli")).unwrap();
+        assert!(!is_repo_root(&root));
+        fs::write(root.join("pyproject.toml"), "[project]\nname='algo-cli'\n").unwrap();
+        assert!(is_repo_root(&root));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bounded_reader_never_loads_or_indexes_unbounded_content() {
+        let root = temporary_directory("bounded");
+        let path = root.join("large.md");
+        fs::write(&path, vec![b'a'; MAX_SOURCE_BYTES as usize + 32_768]).unwrap();
+        let text = read_text(&path).unwrap();
+        assert_eq!(text.chars().count(), MAX_INDEX_TEXT);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn secret_shaped_paths_and_skipped_directories_are_rejected() {
+        assert!(should_skip(Path::new("notes/access_token-backup.md")));
+        assert!(should_skip(Path::new("notes/private-key.txt")));
+        assert!(should_skip(Path::new("archive/ordinary.md")));
+        assert!(!should_skip(Path::new("notes/public-guide.md")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walker_never_follows_file_or_directory_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root_path = temporary_directory("symlink-root");
+        let outside = temporary_directory("symlink-outside");
+        fs::write(root_path.join("safe.md"), "# Safe").unwrap();
+        fs::write(outside.join("secret.md"), "outside secret").unwrap();
+        symlink(outside.join("secret.md"), root_path.join("linked.md")).unwrap();
+        symlink(&outside, root_path.join("linked-directory")).unwrap();
+        let source = root("fixture", "memory", root_path.clone(), vec!["*.md"], 20);
+        let files = iter_files(&source).unwrap();
+        assert_eq!(files, vec![root_path.join("safe.md")]);
+        fs::remove_dir_all(root_path).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn records_parse_frontmatter_links_and_escape_json() {
+        let root_path = temporary_directory("record");
+        let path = root_path.join("note.md");
+        fs::write(
+            &path,
+            "---\ntitle: \"A title\"\ndescription: test\ntags: [one, two]\n---\n# Ignored\nSee [[Alpha|label]] and [[Alpha]] and [[Beta#part]].\n",
+        )
+        .unwrap();
+        let source = root("fixture", "memory", root_path.clone(), vec!["*.md"], 20);
+        let record = make_record(&source, &path).unwrap();
+        assert_eq!(record.title, "A title");
+        assert_eq!(record.tags, vec!["one", "two"]);
+        assert_eq!(record.links, vec!["Alpha", "Beta"]);
+        assert_eq!(json_escape("a\n\"b\\c"), "a\\n\\\"b\\\\c");
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[test]
+    fn atomic_writer_replaces_complete_output_with_private_mode() {
+        let root = temporary_directory("atomic");
+        let output = root.join("index.json");
+        atomic_write(&output, b"first").unwrap();
+        atomic_write(&output, b"second").unwrap();
+        assert_eq!(fs::read(&output).unwrap(), b"second");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&output).unwrap().permissions().mode() & 0o077,
+                0
+            );
+        }
+        let leftovers = fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

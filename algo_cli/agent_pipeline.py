@@ -24,10 +24,10 @@ from . import git_evidence
 from . import execution_guardrails
 from . import harness
 from . import inference_harness
-from . import memory_runtime
+from . import julia_memory_runtime as memory_runtime
 from . import reflex
 from . import task_router
-from . import tool_policy
+from . import samuel_policy as tool_policy
 from . import worktree_runtime
 from . import model_info as _model_info_module
 from . import chatgpt_client
@@ -50,19 +50,34 @@ from .display import (
     show_info,
     show_recalled_context,
     show_thinking_text,
-    show_tool_result,
 )
-from .perf_telemetry import flush_perf_records, record_chat_metrics, record_perf_event
-from .runtime_services import client_for_model, create_client
-from .tool_runtime import (
+from .dorothy_perf_telemetry import flush_perf_records, record_chat_metrics
+from .theodore_runtime_services import client_for_model, create_client
+from .james_dispatch import batch_policy_ceiling_codes
+from .nathan_runtime import (
+    classify_tool_status,
     execute_tool_call_for_pipeline,
-    record_tool_attempt,
     summarize_tool_result,
-    tool_result_message,
 )
 
 TOOL_MAP = tools_module.TOOL_MAP
 logger = logging.getLogger(__name__)
+
+
+def _pipeline_outcome_status(execution: Any, result: str) -> str:
+    """Prefer the canonical typed outcome; parse text only for legacy adapters."""
+
+    outcome = getattr(execution, "outcome", None)
+    status = getattr(getattr(outcome, "status", None), "value", "")
+    if status:
+        return str(status)
+    lowered = str(result).strip().casefold()
+    if lowered.startswith(("blocked by runtime", "user denied")):
+        return "denied"
+    if lowered.startswith("skipped repeated"):
+        return "skipped"
+    legacy = classify_tool_status(result)
+    return "succeeded" if legacy == "worked" else legacy
 
 
 def _model_chat_options(model: str, cfg: Config) -> dict[str, Any]:
@@ -265,7 +280,7 @@ def run_agent_block(
         return
 
 
-    from .program_runtime import authorization_for_actions
+    from .nathan_program_runtime import authorization_for_actions
 
     _program_auth_missing = object()
     _previous_program_authorization = getattr(
@@ -361,45 +376,65 @@ def run_agent_block(
                     block.output = "(no output produced)"
                 break
 
-            policy_denied_batch = False
-            for call, serialized_call in zip(tool_calls, serialized_calls):
-                name, args = normalize_tool_call(call)
-                if policy_denied_batch or name not in runtime_tool_names:
-                    if name not in runtime_tool_names:
-                        result = f"Tool not allowed in {block.role} block: {name}"
-                        block.status_reason = f"Tool policy violation: {name} is not allowed in the {block.role} block."
-                    else:
-                        result = "Skipped because another tool call in this assistant message violated block policy."
-                    show_tool_result(name, result, approved=False)
-                    messages.append(tool_result_message(name, result, str(serialized_call.get("id") or "") or None))
-                    block.status = "failed"
-                    block.status_code = "policy_denied"
-                    if not block.output:
-                        block.output = result
-                    policy_denied_batch = True
-                    continue
-                block.tool_calls += 1
-                shell_decision = tool_policy.evaluate_shell_command(
+            normalized_batch = [normalize_tool_call(call) for call in tool_calls]
+            batch = [
+                (normalized, str(serialized.get("id") or "") or None)
+                for normalized, serialized in zip(normalized_batch, serialized_calls)
+            ]
+            protocol_ceilings = batch_policy_ceiling_codes(batch, cfg)
+            shell_decisions = [
+                tool_policy.evaluate_shell_command(
                     str(args.get("command", "")),
                     requires_change=(block.requires_change and name == "run_shell"),
                     safe_mode=cfg.safe_mode,
                 )
-                if shell_decision.blocked:
-                    result = (
-                        "Blocked by required-change policy in safe mode: "
-                        f"{shell_decision.reason}."
+                for name, args in normalized_batch
+            ]
+            has_disallowed_tool = any(
+                name not in runtime_tool_names for name, _args in normalized_batch
+            )
+            has_blocked_shell = any(decision.blocked for decision in shell_decisions)
+            batch_must_quarantine = (
+                any(protocol_ceilings) or has_disallowed_tool or has_blocked_shell
+            )
+
+            for index, ((name, args), tool_call_id) in enumerate(batch):
+                shell_decision = shell_decisions[index]
+                if batch_must_quarantine:
+                    if name not in runtime_tool_names:
+                        block.status_reason = f"Tool policy violation: {name} is not allowed in the {block.role} block."
+                        ceiling_code = "agent_tool_not_allowed"
+                    elif shell_decision.blocked:
+                        ceiling_code = "required_change_shell_blocked"
+                        block.mutation_denied = True
+                    elif protocol_ceilings[index]:
+                        ceiling_code = protocol_ceilings[index]
+                    else:
+                        ceiling_code = "agent_batch_quarantined"
+                    execution = execute_tool_call_for_pipeline(
+                        name,
+                        args,
+                        cfg,
+                        tool_call_id=tool_call_id,
+                        policy_ceiling_code=ceiling_code,
                     )
-                    show_tool_result(name, result, approved=False)
-                    record_tool_attempt(cfg, name=name, args=args, result=result, status="denied")
-                    record_perf_event("tool", tool=name, status="denied", duration_ms=0.0)
-                    messages.append(tool_result_message(name, result, str(serialized_call.get("id") or "") or None))
-                    block.mutation_denied = True
+                    tool_message, result = execution
+                    messages.append(tool_message)
+                    if has_disallowed_tool or any(protocol_ceilings):
+                        block.status = "failed"
+                        block.status_code = "policy_denied"
+                    if name not in runtime_tool_names or (
+                        protocol_ceilings[index]
+                        and protocol_ceilings[index] != "batch_quarantined"
+                    ):
+                        block.output = result
                     continue
-                tool_message, _result = execute_tool_call_for_pipeline(
+                block.tool_calls += 1
+                execution = execute_tool_call_for_pipeline(
                     name,
                     args,
                     cfg,
-                    tool_call_id=str(serialized_call.get("id") or "") or None,
+                    tool_call_id=tool_call_id,
                     force_approval=tool_policy.requires_explicit_approval(
                         name,
                         block_policy=policy,
@@ -407,11 +442,16 @@ def run_agent_block(
                         policy_enforced=cfg.algorithmic_tool_policy_enabled,
                     ),
                 )
+                tool_message, _result = execution
+                outcome_status = _pipeline_outcome_status(execution, _result)
                 mutation_action = tool_policy.describes_mutation_action(name, args)
                 mutation_succeeded = (
-                    (name == "write_file" and str(_result).lstrip().startswith("Wrote "))
-                    or (name == "edit_file" and str(_result).lstrip().startswith("Edited "))
-                    or (name == "batch_edit" and str(_result).lstrip().startswith("Batch-edited "))
+                    outcome_status == "succeeded"
+                    and (
+                        (name == "write_file" and str(_result).lstrip().startswith("Wrote "))
+                        or (name == "edit_file" and str(_result).lstrip().startswith("Edited "))
+                        or (name == "batch_edit" and str(_result).lstrip().startswith("Batch-edited "))
+                    )
                 )
                 if mutation_succeeded:
                     written_path = str(args.get("path", "")).strip()
@@ -420,15 +460,14 @@ def run_agent_block(
                     if mutation_action and mutation_action not in block.mutation_actions:
                         block.mutation_actions.append(mutation_action)
                 elif name in {"write_file", "edit_file", "batch_edit"}:
-                    lowered_result = str(_result).strip().lower()
-                    if lowered_result.startswith("user denied"):
+                    if outcome_status == "denied":
                         block.mutation_denied = True
-                    elif lowered_result.startswith(("error", "tool error", "tool argument error")):
+                    elif outcome_status != "succeeded":
                         block.failed_writes.append(summarize_tool_result(str(_result)))
                 elif (
                     name == "run_shell"
                     and mutation_action
-                    and not str(_result).startswith(("User denied", "Skipped repeated", "Blocked"))
+                    and outcome_status == "succeeded"
                     and mutation_action not in block.mutation_actions
                 ):
                     block.mutation_actions.append(mutation_action)
@@ -998,6 +1037,23 @@ def run_agent_pipeline(
             f"{prior_context.strip()[:24_000]}"
         )
     from . import main as _main
+
+    try:
+        memory_catalog = memory_runtime.MemoryCatalog()
+        memory_catalog.sync_legacy_facts(cfg.memories, authoritative=False)
+        memory_hits = memory_catalog.search(
+            task,
+            embed_fn=_main.intuition_embed_fn(cfg),
+            embedding_model=_main.harness.resolve_embed_model(cfg),
+            tiers={"curated", "history"},
+        )
+        memory_injection = memory_runtime.format_prompt_hits(memory_hits)
+        if memory_injection:
+            pipeline_task = (
+                f"{pipeline_task}\n\n## Relevant System Memory\n{memory_injection}"
+            )
+    except memory_runtime.MemorySystemError as exc:
+        logger.debug("Agent pipeline governed memory recall failed: %s", exc)
 
     engine = _main._intuition_engine
     if engine is not None and cfg.intuition_recall_enabled:

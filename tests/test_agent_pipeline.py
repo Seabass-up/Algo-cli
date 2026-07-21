@@ -57,7 +57,6 @@ def _quiet_display(monkeypatch):
         "finish_thinking_block",
         "show_recalled_context",
         "record_chat_metrics",
-        "record_perf_event",
         "flush_perf_records",
     ):
         monkeypatch.setattr(agent_pipeline, name, noop)
@@ -295,7 +294,6 @@ def test_run_agent_block_policy_denial_balances_sibling_tool_results(monkeypatch
         ]
     )
     _quiet_display(monkeypatch)
-    monkeypatch.setattr(agent_pipeline, "show_tool_result", lambda *args, **kwargs: None)
 
     main.run_agent_block(block, task="Review only", completed=[], cfg=cfg, client=client)
 
@@ -304,6 +302,48 @@ def test_run_agent_block_policy_denial_balances_sibling_tool_results(monkeypatch
     assert [msg.get("tool_call_id") for msg in tool_messages] == ["bad", "sibling"]
     assert "Tool not allowed" in tool_messages[0]["content"]
     assert "Skipped because another tool call" in tool_messages[1]["content"]
+
+
+def test_agent_batch_preflight_quarantines_safe_sibling_before_late_violation(monkeypatch):
+    cfg = Config()
+    block = agent_blocks.AgentBlock(
+        role="review",
+        prompt="p",
+        allowed_tools=frozenset({"read_file"}),
+    )
+    client = ScriptedClient(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "safe-first",
+                        "function": {"name": "read_file", "arguments": {"path": "x"}},
+                    },
+                    {
+                        "id": "bad-second",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": {"path": "x", "content": "y"},
+                        },
+                    },
+                ]
+            }
+        ]
+    )
+    _quiet_display(monkeypatch)
+    monkeypatch.setattr(
+        tool_runtime,
+        "run_tool",
+        lambda *_args, **_kwargs: pytest.fail("quarantined safe sibling executed"),
+    )
+
+    main.run_agent_block(block, task="Review only", completed=[], cfg=cfg, client=client)
+
+    tool_messages = [message for message in block.messages if message.get("role") == "tool"]
+    assert block.status == "failed"
+    assert len(tool_messages) == 2
+    assert "Skipped because another tool call" in tool_messages[0]["content"]
+    assert "Tool not allowed" in tool_messages[1]["content"]
 
 
 def test_run_agent_block_gemini_collapse_uses_block_model(monkeypatch):
@@ -492,14 +532,27 @@ def test_required_change_safe_mode_blocks_shell_mutation(monkeypatch):
         ]
     )
     _quiet_display(monkeypatch)
+    original_dispatch = agent_pipeline.execute_tool_call_for_pipeline
+    ceiling_codes: list[str] = []
+
+    def tracked_dispatch(*args, **kwargs):
+        ceiling_codes.append(str(kwargs.get("policy_ceiling_code") or ""))
+        return original_dispatch(*args, **kwargs)
+
     monkeypatch.setattr(
         agent_pipeline,
         "execute_tool_call_for_pipeline",
+        tracked_dispatch,
+    )
+    monkeypatch.setattr(
+        tool_runtime,
+        "run_tool",
         lambda *_args, **_kwargs: pytest.fail("blocked mutation must not execute"),
     )
 
     main.run_agent_block(block, task="Fix a bug", completed=[], cfg=cfg, client=client)
 
+    assert ceiling_codes == ["required_change_shell_blocked"]
     assert "Blocked by required-change policy" in block.messages[3]["content"]
 
 
@@ -826,6 +879,30 @@ def test_non_change_denied_shell_mutation_is_not_audited(monkeypatch):
     assert block.mutation_actions == []
 
 
+def test_failed_shell_mutation_is_not_audited_as_success(monkeypatch):
+    cfg = Config()
+    block = agent_blocks.AgentBlock(role="review", prompt="review", allowed_tools=agent_blocks.REVIEW_TOOLS)
+    client = ScriptedClient(
+        [
+            {"tool_calls": [{"function": {"name": "run_shell", "arguments": {"command": "git add main.py"}}}]},
+            {"content": "## Block Output\nReview complete."},
+        ]
+    )
+    _quiet_display(monkeypatch)
+    monkeypatch.setattr(
+        agent_pipeline,
+        "execute_tool_call_for_pipeline",
+        lambda *_args, **_kwargs: (
+            {"role": "tool", "content": "failed"},
+            "command failed\n[exit code: 1]",
+        ),
+    )
+
+    main.run_agent_block(block, task="Review it", completed=[], cfg=cfg, client=client)
+
+    assert block.mutation_actions == []
+
+
 def test_run_agent_block_synthesizes_partial_output_at_iteration_limit(monkeypatch):
     cfg = Config()
     block = agent_blocks.AgentBlock(
@@ -1028,7 +1105,7 @@ def test_parse_agent_invocation_reports_missing_pipeline_args():
 
 
 def test_agent_command_rejects_missing_pipeline_args(monkeypatch):
-    from algo_cli import slash_dispatch
+    from algo_cli import oliver_slash_dispatch as slash_dispatch
 
     cfg = Config()
     errors: list[str] = []
@@ -1046,7 +1123,7 @@ def test_agent_command_rejects_missing_pipeline_args(monkeypatch):
 
 
 def test_agent_help_shows_usage_without_starting_pipeline(monkeypatch):
-    from algo_cli import slash_dispatch
+    from algo_cli import oliver_slash_dispatch as slash_dispatch
 
     cfg = Config()
     infos: list[str] = []

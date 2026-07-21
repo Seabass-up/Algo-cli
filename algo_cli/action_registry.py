@@ -15,7 +15,20 @@ import textwrap
 from dataclasses import asdict, dataclass, field
 
 from .config import load_runtime_env
-from typing import Any, Literal
+from .marcus_authority import (
+    Capability,
+    ConfirmationMode,
+    DataClass,
+    EffectClass,
+    IdempotencyClass,
+    OutcomeModel,
+    RuntimeClass,
+    TargetScope,
+    VerificationRequirement,
+    capability_mask,
+    policy_for_action,
+)
+from typing import Any, Literal, cast
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -36,6 +49,22 @@ class ActionSpec:
     mutates_state: bool
     requires_approval: bool
     safe_retry: bool
+    effect_class: EffectClass = EffectClass.UNCLASSIFIED
+    confirmation_mode: ConfirmationMode = ConfirmationMode.HANDOFF_REQUIRED
+    data_classes: tuple[DataClass, ...] = (DataClass.SENSITIVE,)
+    target_scope: TargetScope = TargetScope.EXTERNAL_STATE
+    capabilities: tuple[Capability, ...] = (Capability.UNCLASSIFIED,)
+    capability_mask: int = Capability.UNCLASSIFIED.value
+    idempotency: IdempotencyClass = IdempotencyClass.NON_IDEMPOTENT
+    outcome_model: OutcomeModel = OutcomeModel.UNKNOWN_POSSIBLE
+    verification: VerificationRequirement = VerificationRequirement.INDEPENDENT_POSTCONDITION
+    fallback_group: str = ""
+    curated: bool = False
+    dynamic_resolution: bool = False
+    runtime_class: RuntimeClass = RuntimeClass.ADAPTIVE
+    estimated_cost: float = 2.0
+    log_suppression: bool = False
+    compensation_action: str = ""
     requires_network: bool = False
     requires_provider: str | None = None
     requires_binary: tuple[str, ...] = ()
@@ -47,7 +76,17 @@ class ActionSpec:
     replacement: str = ""
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        value["effect_class"] = self.effect_class.value
+        value["confirmation_mode"] = self.confirmation_mode.value
+        value["data_classes"] = [item.value for item in self.data_classes]
+        value["target_scope"] = self.target_scope.value
+        value["capabilities"] = [item.name.lower() for item in self.capabilities]
+        value["idempotency"] = self.idempotency.value
+        value["outcome_model"] = self.outcome_model.value
+        value["verification"] = self.verification.value
+        value["runtime_class"] = self.runtime_class.value
+        return value
 
 
 @dataclass(frozen=True)
@@ -89,6 +128,50 @@ def _spec(
     safe_retry: bool,
     **kwargs: Any,
 ) -> ActionSpec:
+    policy = policy_for_action(name) if kind == "tool" else None
+    if policy is not None:
+        risk_level = cast(RiskLevel, policy.maximum_risk)
+        mutates_state = policy.mutates_state
+        requires_approval = policy.requires_approval
+        safe_retry = policy.safe_retry
+        authority_fields: dict[str, Any] = {
+            "effect_class": policy.effect_class,
+            "confirmation_mode": policy.confirmation_mode,
+            "data_classes": policy.data_classes,
+            "target_scope": policy.target_scope,
+            "capabilities": policy.capabilities,
+            "capability_mask": policy.capability_mask.value,
+            "idempotency": policy.idempotency,
+            "outcome_model": policy.outcome_model,
+            "verification": policy.verification,
+            "fallback_group": policy.fallback_group,
+            "curated": policy.curated,
+            "dynamic_resolution": policy.dynamic_resolution,
+            "runtime_class": policy.runtime_class,
+            "estimated_cost": policy.estimated_cost,
+            "log_suppression": policy.suppress_logs,
+            "compensation_action": policy.compensation_action,
+        }
+    else:
+        legacy_capabilities = (Capability.READ, Capability.WRITE) if mutates_state else (Capability.READ,)
+        authority_fields = {
+            "effect_class": EffectClass.LOCAL_MUTATION if mutates_state else EffectClass.OBSERVE,
+            "confirmation_mode": ConfirmationMode.ACTION_TIME if requires_approval else ConfirmationMode.NONE,
+            "data_classes": (DataClass.LOCAL_CONTENT,),
+            "target_scope": TargetScope.RUNTIME,
+            "capabilities": legacy_capabilities,
+            "capability_mask": capability_mask(legacy_capabilities).value,
+            "idempotency": IdempotencyClass.IDEMPOTENT if safe_retry else IdempotencyClass.NON_IDEMPOTENT,
+            "outcome_model": OutcomeModel.DETERMINISTIC,
+            "verification": VerificationRequirement.STRUCTURED_RESULT,
+            "fallback_group": "",
+            "curated": True,
+            "dynamic_resolution": False,
+            "runtime_class": RuntimeClass.ADAPTIVE,
+            "estimated_cost": 1.0 if not mutates_state else 2.0,
+            "log_suppression": False,
+            "compensation_action": "",
+        }
     return ActionSpec(
         name=name,
         kind=kind,
@@ -100,6 +183,7 @@ def _spec(
         mutates_state=mutates_state,
         requires_approval=requires_approval,
         safe_retry=safe_retry,
+        **authority_fields,
         **kwargs,
     )
 
@@ -567,10 +651,10 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         "Dispatches to Google Workspace operations; Gmail direct send is not exposed.", "medium", False, False, True,
     ),
     _spec(
-        "/plugins", "slash", "Show discovered and loaded plugins.",
+        "/plugins", "slash", "Show validated manifest-only plugin metadata.",
         "plugins",
-        ("plugins", "discovery", "code-loading", "approval"),
-        "Lists plugin manifests; status mode imports plugin code and therefore remains approval-gated for model use.", "medium", True, True, False,
+        ("plugins", "discovery", "manifest-only", "read-only"),
+        "Lists strict manifests and rejections without importing plugin code.", "low", False, False, True,
     ),
     _spec(
         "/credentials", "slash", "List credential helpers or check a named helper key with values redacted.",
@@ -591,11 +675,14 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         "Discovers plugin manifests from the plugins directory.", "low", False, False, True,
     ),
     _spec(
-        "plugins_load", "tool", "Explicitly import a discovered experimental plugin.",
+        "plugins_load", "tool", "Report that in-process plugin code loading is blocked.",
         "plugins",
-        ("plugins", "loading", "mutation"),
-        "Imports plugin code after approval and reports module load status.", "medium", True, True, False,
-        known_limitations=("Dynamic action, slash-command, and tool registration is not wired into the stable runtime.",),
+        ("plugins", "loading", "blocked", "handoff"),
+        "Fails closed because importing Python is arbitrary in-process code execution.", "high", True, True, False,
+        known_limitations=("Callable plugin actions, commands, and tools are prohibited; no local plugin execution route is enabled.",),
+        archived=True,
+        archived_reason="In-process Python plugins are not a security boundary and remain disabled.",
+        replacement="No replacement is enabled during the hardening freeze.",
     ),
     _spec(
         "version_manifest_build", "tool", "Build a version manifest with CLI, Python, platform, harness, and plugin versions.",
@@ -678,29 +765,6 @@ def list_action_specs(*, include_archived: bool = False) -> tuple[ActionSpec, ..
     return tuple(spec for spec in ACTION_SPECS if not spec.archived)
 
 
-_MUTATING_TOOL_NAMES = frozenset({
-    "run_shell",
-    "write_file",
-    "edit_file",
-    "batch_edit",
-    "update_user_profile",
-    "model_delete",
-    "model_create",
-    "model_copy",
-    "model_pull",
-    "harness_refresh",
-    "reindex_knowledge_graph",
-    "write_knowledge_graph_note",
-    "remember",
-    "append_lesson",
-    "plugins_load",
-    "credential_helpers_store",
-    "x_account_post",
-    "x_account_reply",
-    "x_account_post_action",
-})
-
-
 def _first_doc_line(obj: Any, fallback: str) -> str:
     doc = inspect.getdoc(obj) or ""
     first = doc.strip().splitlines()[0].strip() if doc.strip() else ""
@@ -708,7 +772,7 @@ def _first_doc_line(obj: Any, fallback: str) -> str:
 
 
 def _generated_tool_spec(name: str, fn: Any) -> ActionSpec:
-    mutates = name in _MUTATING_TOOL_NAMES
+    policy = policy_for_action(name)
     network = name.startswith("web_") or name.startswith("x_") or name in {
         "model_pull",
         "model_create",
@@ -724,19 +788,23 @@ def _generated_tool_spec(name: str, fn: Any) -> ActionSpec:
         "tool",
         _first_doc_line(fn, f"Runtime callable tool: {name}."),
         "runtime",
-        ("generated", "runtime", "tool"),
-        "Generated runtime coverage spec; explicit ActionSpec can override risk metadata.",
-        "high" if mutates else "medium" if network else "low",
-        mutates,
-        mutates,
-        not mutates,
+        (("curated-runtime", "runtime", "tool") if policy.curated else ("unclassified", "runtime", "tool")),
+        (
+            "Curated runtime policy covers this callable even though it has no long-form registry entry."
+            if policy.curated
+            else "Unclassified runtime callable is denied until an explicit authority policy is added."
+        ),
+        "high",
+        True,
+        True,
+        False,
         requires_network=network,
         requires_provider=provider,
     )
 
 
 def _generated_slash_spec(command: str, description: str) -> ActionSpec:
-    from .tool_runtime import session_command_requires_approval
+    from .nathan_runtime import session_command_requires_approval
 
     requires_approval = session_command_requires_approval(command)
     return _spec(
@@ -755,7 +823,7 @@ def _generated_slash_spec(command: str, description: str) -> ActionSpec:
 
 def effective_action_specs(*, include_archived: bool = False) -> tuple[ActionSpec, ...]:
     """Explicit ActionSpecs plus generated coverage specs for runtime tools/slash commands."""
-    from .slash_dispatch import SLASH_COMMANDS
+    from .oliver_slash_dispatch import SLASH_COMMANDS
     from .tools import TOOL_MAP
 
     specs = list(list_action_specs(include_archived=include_archived))
@@ -780,18 +848,27 @@ def get_action_spec(name: str) -> ActionSpec:
 
 
 def action_requires_approval(name: str) -> bool:
-    """Resolve tool approval policy from curated specs, then generated mutation metadata."""
+    """Return the fail-closed confirmation requirement for a tool."""
 
-    for spec in list_action_specs(include_archived=False):
-        if spec.kind == "tool" and spec.name == name:
-            return spec.requires_approval
-    return name in _MUTATING_TOOL_NAMES
+    return policy_for_action(name).requires_approval
+
+
+def action_confirmation_mode(name: str) -> ConfirmationMode:
+    """Return the strongest static confirmation class for a tool."""
+
+    return policy_for_action(name).confirmation_mode
+
+
+def action_capability_mask(name: str) -> int:
+    """Return the curated capability mask, or UNCLASSIFIED for an unknown tool."""
+
+    return policy_for_action(name).capability_mask.value
 
 
 def _declared_dispatch_commands() -> set[str]:
     """Extract literal top-level command branches from handle_command for diagnostics."""
 
-    from .slash_dispatch import handle_command
+    from .oliver_slash_dispatch import handle_command
 
     try:
         tree = ast.parse(textwrap.dedent(inspect.getsource(handle_command)))
@@ -818,7 +895,7 @@ def _declared_dispatch_commands() -> set[str]:
 
 def audit_action_registry_runtime() -> DoctorReport:
     """Check that declared tool/slash actions resolve to runnable runtime entries."""
-    from .slash_dispatch import SLASH_COMMANDS, SLASH_COMMAND_ALIASES
+    from .oliver_slash_dispatch import SLASH_COMMANDS, SLASH_COMMAND_ALIASES
     from .tools import TOOL_MAP
 
     tool_names = set(TOOL_MAP)
@@ -829,7 +906,8 @@ def audit_action_registry_runtime() -> DoctorReport:
     covered_specs = effective_action_specs()
     covered_tool_specs = [spec for spec in covered_specs if spec.kind == "tool"]
     covered_slash_specs = [spec for spec in covered_specs if spec.kind == "slash"]
-    generated_tool_specs = [spec for spec in covered_tool_specs if "generated" in spec.tags]
+    curated_runtime_tool_specs = [spec for spec in covered_tool_specs if "curated-runtime" in spec.tags]
+    unclassified_tool_specs = [spec for spec in covered_tool_specs if not spec.curated]
     generated_slash_specs = [spec for spec in covered_slash_specs if "generated" in spec.tags]
     missing_tools: list[str] = []
     missing_slashes: list[str] = []
@@ -908,6 +986,14 @@ def audit_action_registry_runtime() -> DoctorReport:
             f"slash aliases have missing sources or dispatch targets: {', '.join(broken_aliases)}",
             "Register each alias source and point it at a dispatched canonical command.",
         ))
+    if unclassified_tool_specs:
+        findings.append(DoctorFinding(
+            "blocked",
+            "action-registry",
+            "runtime tools lack curated fail-closed authority policy: "
+            + ", ".join(sorted(spec.name for spec in unclassified_tool_specs)),
+            "Add each tool to CURATED_TOOL_POLICIES before making it runnable.",
+        ))
 
     if not findings:
         findings.append(DoctorFinding(
@@ -919,10 +1005,10 @@ def audit_action_registry_runtime() -> DoctorReport:
             "ready",
             "action-registry",
             f"ActionSpec coverage: {len(covered_tool_specs)}/{len(tool_names)} tools covered "
-            f"({len(registered_tool_specs)} explicit, {len(generated_tool_specs)} generated), "
+            f"({len(registered_tool_specs)} explicit, {len(curated_runtime_tool_specs)} curated-runtime), "
             f"{len(covered_slash_specs)}/{len(slash_names)} slash commands covered "
             f"({len(registered_slash_specs)} explicit, {len(generated_slash_specs)} generated)",
-            "Generated specs keep coverage complete; explicit specs carry curated risk/provider metadata.",
+            "Every runtime tool policy is curated; slash coverage remains diagnostic until its hardening milestone.",
         ))
         findings.append(DoctorFinding(
             "ready",

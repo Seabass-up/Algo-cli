@@ -52,8 +52,7 @@ and incompatible runtime state are explicit outcomes. Fallbacks must remain
 bounded and observable; swallowed exceptions and silent policy downgrades are
 not valid recovery.
 
-Authoritative implementation boundaries: `tool_runtime.py`, `tool_policy.py`,
-`agent_pipeline.py`, `agent_threads.py`, `runtime_services.py`, and
+Authoritative implementation boundaries: `nathan_runtime.py`, `samuel_policy.py`,
+`agent_pipeline.py`, `agent_threads.py`, `theodore_runtime_services.py`, and
 `session_commands.py`. Focused tests prove behavior; registry declarations only
 describe the available contract.
-

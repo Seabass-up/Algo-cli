@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from algo_cli import reflex
 from algo_cli.config import Config
-from algo_cli.tool_runtime import record_tool_attempt, tool_runtime_args
+from algo_cli.nathan_runtime import record_tool_attempt, tool_runtime_args
 
 
 def test_detect_loop_on_third_same_signature():
@@ -44,6 +44,33 @@ def test_maybe_augment_on_failed_search():
     assert reflex._reflex_cycles(cfg) == 1
 
 
+def test_reflex_plans_recovery_without_direct_tool_execution(monkeypatch):
+    from algo_cli import tools
+
+    monkeypatch.setattr(
+        tools,
+        "harness_search",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("direct action bypass")),
+    )
+    monkeypatch.setattr(
+        tools,
+        "available_actions",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("direct action bypass")),
+    )
+    cfg = Config(reflex_enabled=True)
+
+    result, note = reflex.maybe_augment_tool_result(
+        cfg,
+        "harness_search",
+        {"query": "algo-cli reflex"},
+        "Error: unavailable",
+        "failed",
+    )
+
+    assert "canonical dispatcher" in result
+    assert note is not None
+
+
 def test_runtime_default_args_share_attempt_signature_with_reflex(tmp_path):
     cfg = Config(reflex_enabled=True, cwd=tmp_path)
     raw_args = {"path": "note.md"}
@@ -60,6 +87,10 @@ def test_runtime_default_args_share_attempt_signature_with_reflex(tmp_path):
 
     assert trigger is not None
     assert trigger.label == "empty_repeat"
+    signature = reflex.tool_signature("read_file", runtime_args)
+    assert signature.startswith("hmac-sha256:")
+    assert "note.md" not in signature
+    assert str(tmp_path) not in signature
 
 
 def test_repeated_search_miss_uses_specific_trigger():

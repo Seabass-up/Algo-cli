@@ -1,0 +1,370 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, "hardening/**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Runtime quality gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.26"
+          enable-cache: true
+      - name: Install locked project and quality tools
+        run: uv sync --frozen --no-editable --extra dev --extra supply-chain --reinstall-package algo-cli-runtime
+      - name: Installed-source parity (blocking)
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain python -I scripts/oliver_installed_source_parity.py
+      - name: Ruff (blocking)
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain ruff check algo_cli tests scripts
+      - name: Public source scan (blocking)
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain python scripts/check_public_release.py
+      - name: Reachable history scan (blocking)
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain python scripts/check_public_history.py --allow-contributor-identities
+      - name: Release version source (blocking)
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain python scripts/check_release_version.py
+      - name: Locked Python dependency audit (blocking)
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain pip-audit --local --strict --progress-spinner off
+      - name: Runtime mypy contract (blocking)
+        run: >-
+          uv run --frozen --no-editable --extra dev --extra supply-chain mypy
+          algo_cli/main.py
+          algo_cli/tools.py
+          algo_cli/harness.py
+          algo_cli/agent_pipeline.py
+          algo_cli/arthur_control_doctor.py
+          algo_cli/arthur_control_readiness.py
+          algo_cli/ada_control_journal.py
+          algo_cli/ada_credential_registry.py
+          algo_cli/ada_uninstall_recovery.py
+          algo_cli/austin_install_finalizer.py
+          algo_cli/austin_release_packager.py
+          algo_cli/austin_thomas_binding.py
+          algo_cli/david_control_kernel.py
+          algo_cli/david_control_runtime.py
+          algo_cli/grace_key_store.py
+          algo_cli/oliver_control_installation.py
+          algo_cli/oliver_control_installer.py
+          algo_cli/oliver_control_uninstall.py
+          algo_cli/oliver_authority_rotation.py
+          algo_cli/neon_browser_simulator.py
+          algo_cli/austin_desktop_simulator.py
+          algo_cli/boron_browser_isolation.py
+          algo_cli/boron_browser_wrapper.py
+          algo_cli/boron_browser_entry.py
+          algo_cli/carbon_browser_binding.py
+          algo_cli/neon_browser_native_host.py
+          algo_cli/xenon_browser_egress.py
+          algo_cli/xenon_browser_broker.py
+          algo_cli/xenon_browser_entry.py
+          algo_cli/henry_hardening_qualification.py
+          algo_cli/theodore_runtime_services.py
+          algo_cli/execution_guardrails.py
+          algo_cli/private_event_store.py
+          algo_cli/dorothy_perf_telemetry.py
+          algo_cli/skills.py
+          algo_cli/evals/competitive_harness_rating.py
+          scripts/boron_browser_build_images.py
+          scripts/boron_browser_live_session.py
+          scripts/arthur_m9_completion_audit.py
+          scripts/david_hardening_gate.py
+          scripts/henry_boron_hosted_qualification.py
+          scripts/henry_m8_qualification.py
+          scripts/henry_austin_ada_crash_qualification.py
+          scripts/henry_austin_lifecycle_authority_preflight.py
+          scripts/henry_austin_prepare_public_key.py
+          scripts/henry_austin_signing_provisioner.py
+          scripts/henry_austin_signing_runner.py
+          scripts/ada_austin_signing_lifecycle_receipt.py
+          scripts/henry_github_hardening_readiness.py
+          scripts/austin_native_package_audit.py
+          --ignore-missing-imports
+          --no-strict-optional
+          --follow-imports=skip
+          --show-error-codes
+      - name: Compile check
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain python -m compileall -q algo_cli ollama_cli
+      - name: Full suite with branch coverage floor
+        run: >-
+          uv run --frozen --no-editable --extra dev --extra supply-chain pytest tests
+          --cov
+          --cov-branch
+          --cov-report=term-missing:skip-covered
+          --cov-report=xml:coverage.xml
+          --cov-fail-under=57
+      - name: Upload coverage evidence
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: coverage-python-3.12-linux
+          path: coverage.xml
+          if-no-files-found: error
+
+  test:
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: windows-latest
+            python: "3.12"
+          - os: macos-latest
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.26"
+          enable-cache: true
+      - name: Install locked project
+        run: uv sync --frozen --no-editable --extra dev --reinstall-package algo-cli-runtime
+      - name: Installed-source parity
+        run: uv run --frozen --no-editable --extra dev python -I scripts/oliver_installed_source_parity.py
+      - name: Run full suite
+        run: uv run --frozen --no-editable --extra dev pytest tests
+
+  native:
+    name: Native helper checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: "1.26.5"
+          cache: false
+      - name: Rust formatting, lint, and tests
+        run: |
+          cargo fmt --manifest-path harness-indexer/Cargo.toml --check
+          cargo clippy --manifest-path harness-indexer/Cargo.toml --locked --all-targets -- -D warnings
+          cargo test --manifest-path harness-indexer/Cargo.toml --locked
+      - name: Rust dependency audit
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit --file harness-indexer/Cargo.lock
+      - name: Go gateway race, coverage, and vet gates
+        working-directory: harness-gateway
+        run: |
+          go test -race -coverprofile="${RUNNER_TEMP}/go-coverage.out" -covermode=atomic ./...
+          go tool cover -func="${RUNNER_TEMP}/go-coverage.out"
+          coverage="$(go tool cover -func="${RUNNER_TEMP}/go-coverage.out" | awk '/^total:/ {gsub(/%/, "", $3); print $3}')"
+          awk -v coverage="${coverage}" 'BEGIN { exit !(coverage + 0 >= 60) }'
+          go vet ./...
+      - name: Go vulnerability audit
+        working-directory: harness-gateway
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+          govulncheck ./...
+
+  browser-isolation:
+    name: Boron public-browser boundary
+    needs: quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.26"
+          enable-cache: true
+      - name: Install locked browser audit environment
+        run: uv sync --frozen --no-editable --extra dev --reinstall-package algo-cli-runtime
+      - name: Verify Docker and focused contracts
+        run: |
+          docker version
+          docker buildx version
+          uv run --frozen --no-editable --extra dev pytest -q tests/test_boron_browser_isolation.py tests/test_boron_browser_images.py tests/test_xenon_browser_egress.py tests/test_xenon_browser_broker.py tests/test_boron_browser_wrapper.py tests/test_boron_browser_entry.py tests/test_henry_boron_hosted_qualification.py
+      - name: Run repeated source-bound hosted qualification
+        run: >-
+          uv run --frozen --no-editable --extra dev python
+          scripts/henry_boron_hosted_qualification.py --repetitions 5
+          | tee "${RUNNER_TEMP}/grace-boron-hosted-qualification.json"
+      - name: Retain Boron evidence
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: boron-browser-boundary
+          path: ${{ runner.temp }}/grace-boron-hosted-qualification.json
+          if-no-files-found: warn
+
+  browser-evidence-attestation:
+    name: Attest Boron hosted evidence
+    if: ${{ github.event_name == 'push' }}
+    needs: browser-isolation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: boron-browser-boundary
+          path: ${{ runner.temp }}/boron-browser-boundary
+      - name: Attest hosted browser qualification
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: ${{ runner.temp }}/boron-browser-boundary/grace-boron-hosted-qualification.json
+          create-storage-record: false
+
+  macos-native:
+    name: macOS native boundary
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.26"
+          enable-cache: true
+      - name: Install locked audit environment
+        run: uv sync --frozen --no-editable --extra dev --reinstall-package algo-cli-runtime
+      - name: Swift tests and release compilation
+        run: |
+          swift --version
+          swift test --package-path native/austin
+          swift build --package-path native/austin --configuration release
+      - name: Ada replay-store process-kill qualification
+        run: >-
+          uv run --frozen --no-editable --extra dev python
+          scripts/henry_austin_ada_crash_qualification.py --trials 3
+          | tee "${RUNNER_TEMP}/ada-native-crash-qualification.json"
+      - name: Stage, audit, and negatively probe native boundaries
+        run: |
+          ./script/austin_build_and_run.sh neon-probe
+          ./script/austin_build_and_run.sh migration-probe
+      - name: Retain Ada crash evidence
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: ada-native-crash-qualification
+          path: ${{ runner.temp }}/ada-native-crash-qualification.json
+          if-no-files-found: error
+
+  website:
+    name: Website build and safety gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Render and route tests
+        run: npm test
+      - name: Lint
+        run: npm run lint
+      - name: Dependency audit
+        run: npm audit
+
+  package:
+    name: Build and inspect distributions
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.26"
+          enable-cache: true
+      - name: Install locked build tooling
+        run: uv sync --frozen --no-editable --extra release --reinstall-package algo-cli-runtime
+      - name: Build wheel and source distribution
+        run: uv run --frozen --no-editable --extra release python -m build
+      - name: Generate normalized runtime SBOM and checksums
+        run: |
+          uv export --frozen --no-dev --format cyclonedx1.5 --preview-features sbom-export --output-file "${RUNNER_TEMP}/ada-runtime-sbom.raw.json"
+          uv run --frozen --no-editable --extra release python scripts/ada_supply_chain_manifest.py sbom --source "${RUNNER_TEMP}/ada-runtime-sbom.raw.json" --output "${GITHUB_WORKSPACE}/dist/algo-cli-runtime.lock.cdx.json"
+          uv run --frozen --no-editable --extra release python scripts/ada_supply_chain_manifest.py checksums --output "${GITHUB_WORKSPACE}/dist/SHA256SUMS" dist/*.whl dist/*.tar.gz dist/*.cdx.json
+      - name: Validate metadata and public contents
+        run: |
+          uv run --frozen --no-editable --extra release python -m twine check dist/*.whl dist/*.tar.gz
+          uv run --frozen --no-editable --extra release python scripts/check_public_release.py --artifacts-only --artifact dist/*.whl --artifact dist/*.tar.gz
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: python-package-distributions
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: release-supply-chain-evidence
+          path: |
+            dist/algo-cli-runtime.lock.cdx.json
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  package-smoke:
+    name: Installed wheel (${{ matrix.os }})
+    needs: package
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: python-package-distributions
+          path: dist/
+      - name: Install and exercise wheel in an isolated home
+        run: python scripts/oliver_smoke_wheel_install.py dist

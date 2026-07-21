@@ -12,7 +12,8 @@ from typing import Any, Callable
 from ollama import Client
 
 from .config import Config, load_runtime_env
-from . import context_supersession
+from . import dorothy_perf_telemetry as perf_telemetry
+from . import evelyn_context_supersession as context_supersession
 from . import harness
 from . import identity
 from . import model_info as _model_info_module
@@ -44,6 +45,32 @@ _CALIBRATION_BLOCK = (
 )
 
 CONTEXT_USAGE_CACHE: tuple[tuple[Any, ...], int] | None = None
+
+
+def _echo_veil_memory_items(cfg: Config) -> list[str]:
+    """Return query-relevant durable memories, falling back to the legacy list."""
+    fallback = [str(item) for item in cfg.memories]
+    if not cfg.echo_veil_enabled:
+        return fallback
+    try:
+        from .memory_echo_veil import (  # type: ignore[attr-defined]
+            recall_with_echo_veil,
+            sync_existing_memories,
+        )
+
+        sync_existing_memories(cfg, fallback)
+        query = next(
+            (
+                str(message.get("content", ""))
+                for message in reversed(cfg.messages)
+                if message.get("role") == "user"
+            ),
+            "",
+        )
+        recalled = recall_with_echo_veil(cfg, query, top_k=8) if query else []
+        return list(dict.fromkeys(recalled or fallback))
+    except Exception:
+        return fallback
 
 
 def invalidate_context_usage_cache() -> None:
@@ -250,8 +277,9 @@ def build_system_prompt(
             "- Prefer action_program for a predictable multi-step workflow once targets and checks are known; failed verification returns control to the model.\n"
             "- After one successful fail-on-mismatch verifier, give one concise final answer; do not reread, rediff, or rerun unchanged evidence."
         )
-        if cfg.memories:
-            memories = "\n".join(f"- {item}" for item in cfg.memories)
+        memory_items = _echo_veil_memory_items(cfg)
+        if memory_items:
+            memories = "\n".join(f"- {item}" for item in memory_items)
             prompt += f"\n\n## Long-term Memories\n{memories}"
         if active_model_info:
             size_b = _model_info_module.parameter_size_billions(active_model_info)
@@ -339,8 +367,9 @@ def build_system_prompt(
             "Only retry when the arguments materially change, new evidence appears, or the user asks.\n"
             + "\n".join(ledger_lines)
         )
-    if cfg.memories:
-        memories = "\n".join(f"- {item}" for item in cfg.memories)
+    memory_items = _echo_veil_memory_items(cfg)
+    if memory_items:
+        memories = "\n".join(f"- {item}" for item in memory_items)
         prompt += f"\n\n## Long-term Memories\n{memories}"
     if active_model_info:
         size_b = _model_info_module.parameter_size_billions(active_model_info)
@@ -605,8 +634,6 @@ def prune_stale_tool_messages(cfg: Config) -> int:
         # Supersession changes earlier messages without changing list length or
         # the last message, so the ordinary cache key cannot observe it.
         invalidate_context_usage_cache()
-        from . import perf_telemetry
-
         perf_telemetry.record_perf_event(
             "semantic_supersession",
             **supersession.to_dict(),
@@ -672,7 +699,7 @@ def prune_stale_tool_messages(cfg: Config) -> int:
         # Count pruning is a lossy last resort.  Limit it to read-only snapshots;
         # mutation calls, verification evidence, approvals, and unknown/custom
         # tools remain intact until ordinary context compaction summarizes them.
-        if not context_supersession.is_supersedable_tool(tool_name):
+        if not context_supersession.is_count_prunable_tool(tool_name):
             new_messages.append(message)
             continue
         if pending is not None:
@@ -687,8 +714,6 @@ def prune_stale_tool_messages(cfg: Config) -> int:
 
     if removed:
         cfg.messages = new_messages
-        from . import perf_telemetry
-
         perf_telemetry.record_perf_event(
             "prune",
             removed=removed,
@@ -732,8 +757,6 @@ def maybe_compact_context(
         return False
     started = time.perf_counter()
     from . import main as _main
-    from . import perf_telemetry
-
     summary = summarize_message_batch(
         cfg, batch, client, maintenance_client_fn=_main.small_maintenance_client
     )
@@ -759,8 +782,6 @@ def rebuild_context_summary(client: Client, cfg: Config) -> tuple[bool, str]:
         return False, "No safe message boundary found for compaction."
     started = time.perf_counter()
     from . import main as _main
-    from . import perf_telemetry
-
     summary = summarize_message_batch(
         cfg, batch, client, maintenance_client_fn=_main.small_maintenance_client
     )

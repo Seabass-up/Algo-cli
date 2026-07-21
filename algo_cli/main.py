@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from html import escape
 import importlib
 import json
@@ -24,6 +25,7 @@ from prompt_toolkit.shortcuts import CompleteStyle
 from prompt_toolkit.styles import Style
 from rich import box
 from rich.table import Table
+from rich.text import Text
 
 from .config import (
     CODE_RAG_CONSENT_VERSION,
@@ -49,7 +51,7 @@ from . import code_rag
 from . import execution_guardrails
 from . import model_info as _model_info_module
 from . import model_profile
-from . import memory_runtime
+from . import julia_memory_runtime as memory_runtime
 from . import reasoning_bridge
 from . import reconciliation
 from . import task_ledger
@@ -77,14 +79,13 @@ from .display import (
     show_thinking_text,
     finish_thinking_block,
     show_tool_call,
-    show_tool_result,
+    show_tool_result,  # noqa: F401 - compatibility surface for callers and tests
     show_recalled_context,
     show_session_overview,  # noqa: F401 — re-exported for slash_dispatch (m.show_session_overview)
     finish_streaming_response,
     theme_colors,
     set_theme,
     json_sink,
-    tool_execution_status,
 )
 from . import tools as tools_module
 from .chat_protocol import (
@@ -102,42 +103,49 @@ from .model_routing import (
     require_cloud_api_key,  # noqa: F401
     uses_ollama_cloud,  # noqa: F401
 )
-from .runtime_services import (
+from .theodore_runtime_services import (
     SERVER_READY_CACHE,
     client_for_model,  # noqa: F401 — re-exported for tests
     create_client,
     host_is_local,
     ollama_server_ready,
-    scoped_tool_runtime_env,
     start_local_ollama_host,
     start_ollama_server,
     start_supplemental_gateway,
 )
-from .runtime_qos import order_tool_batch_by_qos
-from .perf_telemetry import (
+from .theodore_runtime_qos import order_tool_batch_by_qos
+from .dorothy_perf_telemetry import (
     flush_perf_records,
     log_embed_perf,
     record_chat_metrics,
     record_perf_event,
 )
-from .tool_runtime import (
-    RuntimeToolPreflight,
+from .nathan_runtime import (
     ask_approval,
-    augment_tool_result_with_reflex,
-    classify_tool_status,
-    find_failed_attempt,
-    preflight_runtime_tool,
-    record_tool_attempt,
     reflection_checkpoint,
     run_tool,
+    show_typed_tool_result,
     run_args_preview as _run_args_preview,
-    tool_attempt_signature,
-    tool_result_message,
     tool_runtime_args,
 )
+from .james_dispatch import (
+    DispatchDependencies,
+    DispatchResult,
+    TRUSTED_ADAPTER_ACTIONS,
+    batch_policy_ceiling_codes,
+    default_dispatch_dependencies,
+    dispatch_action,
+)
+from .marcus_authority import ConfirmationMode, EffectClass, IdempotencyClass
+from .samuel_policy_engine import resolve_action
 from .tool_context import select_tools_for_prompt
 from .tool_schema import estimate_tool_schema_tokens
-from .slash_dispatch import SLASH_COMMANDS, SlashCommandCompleter, handle_command, unknown_command_message
+from .oliver_slash_dispatch import (
+    SLASH_COMMANDS,
+    SlashCommandCompleter,
+    handle_command,
+    unknown_command_message,
+)
 from .agent_pipeline import (  # noqa: F401
     _session_pipeline_blocks,
     AgentRunResult,
@@ -1704,7 +1712,7 @@ def reload_runtime() -> Config:
         "algo_cli.workspace_resolver",
         "algo_cli.task_router",
         "algo_cli.reflex",
-        "algo_cli.tool_policy",
+        "algo_cli.samuel_policy",
     ):
         loaded = sys.modules.get(module_name)
         if loaded is not None:
@@ -1897,6 +1905,53 @@ READ_ONLY_TOOLS = frozenset({
     "available_actions", "action_search",
     "model_show",
 })
+
+
+def _main_dispatch_dependencies() -> DispatchDependencies:
+    """Build canonical dispatcher dependencies while preserving test injection points."""
+
+    dependencies = default_dispatch_dependencies()
+    trusted_invoke = dependencies.invoke
+
+    def invoke(name: str, args: dict[str, Any], cfg: Config) -> str:
+        if name in TRUSTED_ADAPTER_ACTIONS:
+            return trusted_invoke(name, args, cfg)
+        return run_tool(name, args, cfg)
+
+    dependencies.invoke = invoke
+    dependencies.approve = ask_approval
+    return dependencies
+
+
+def _parallel_dispatch_allowed(
+    calls: list[tuple[str, dict[str, Any]]],
+    cfg: Config,
+) -> bool:
+    """Allow concurrency only for distinct, pure, no-confirmation observations."""
+
+    if len(calls) <= 1 or bool(getattr(cfg, "reflex_enabled", False)):
+        return False
+    actions = []
+    try:
+        for name, args in calls:
+            if name not in READ_ONLY_TOOLS:
+                return False
+            action = resolve_action(
+                name,
+                tool_runtime_args(name, args, cfg),
+                cwd=cfg.cwd,
+            )
+            if (
+                action.effect_class is not EffectClass.OBSERVE
+                or action.confirmation_mode is not ConfirmationMode.NONE
+                or action.idempotency is not IdempotencyClass.PURE
+                or action.target.endswith(":unresolved")
+            ):
+                return False
+            actions.append(action)
+    except Exception:
+        return False
+    return len({action.action_digest for action in actions}) == len(actions)
 
 
 def _terminal_answer_from_tool_calls(tool_calls: list[Any]) -> str | None:
@@ -2633,6 +2688,30 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
         retrieved_lessons = identity.retrieve_lessons(
             context_query_message, _shared_embed, _embed_model, k=LESSONS_TOP_K
         )
+    # Governed memory recall is independent from the optional Intuition layer.
+    # Pinned facts are already injected by context_budget; only curated/history
+    # records are retrieved here so the prompt does not contain duplicates.
+    try:
+        memory_catalog = memory_runtime.MemoryCatalog()
+        memory_catalog.sync_legacy_facts(cfg.memories, authoritative=False)
+        memory_embed_fn = (
+            _shared_embed
+            if host_is_local(cfg.host) and ollama_server_ready(cfg.host)
+            else None
+        )
+        memory_hits = memory_catalog.search(
+            context_query_message,
+            embed_fn=memory_embed_fn,
+            embedding_model=_embed_model,
+            tiers={"curated", "history"},
+        )
+        memory_block = memory_runtime.format_prompt_hits(memory_hits)
+        if memory_block:
+            optional_context_blocks.append(
+                OptionalContextBlock("memory", "Relevant System Memory", memory_block)
+            )
+    except memory_runtime.MemorySystemError as exc:
+        logger.debug("Governed memory recall failed: %s", exc)
     retrieved_context: list[dict[str, Any]] | None = None
     from .session_mode import normalize_mode
 
@@ -2752,7 +2831,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 if tool_name in verification_tools:
                     verification_tokens += tokens
                 content = str(message.get("content") or "")
-                if "artifact://sha256/" in content or "receipt://sha256/" in content:
+                if "artifact://private/v1/" in content or "receipt://sha256/" in content:
                     artifact_referenced_chars += len(content)
             else:
                 conversation_tokens += tokens
@@ -2835,7 +2914,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
         show_error(f"Cannot start a safe execution scope: {exc}")
         return
 
-    from .program_runtime import authorization_for_actions
+    from .nathan_program_runtime import authorization_for_actions
 
     _program_auth_missing = object()
     _previous_program_authorization = getattr(
@@ -3175,196 +3254,90 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 )
                 break
 
-            # Normalize all calls once; reused by both the parallel check and _batch build.
-            _nc = [normalize_tool_call(c) for c in tool_calls]
+            normalized_calls = [normalize_tool_call(call) for call in tool_calls]
+            batch = [
+                (normalized, str(serialized.get("id") or "") or None)
+                for normalized, serialized in zip(normalized_calls, serialized_calls)
+            ]
+            batch_ceiling_codes = batch_policy_ceiling_codes(batch, cfg)
+            dependencies = _main_dispatch_dependencies()
             next_round_trigger = "tool_result_requires_interpretation"
 
-            def _exec_one(item: tuple[tuple[str, dict[str, Any]], str | None]) -> tuple[str, dict[str, Any], str | None, str, float]:
-                (n, a), tid = item
-                t0 = time.perf_counter()
-                res = run_tool(n, a, cfg)
-                return n, a, tid, res, round((time.perf_counter() - t0) * 1000, 2)
+            def consume_dispatch(
+                name: str,
+                args: dict[str, Any],
+                tool_call_id: str | None,
+                dispatched: DispatchResult,
+            ) -> None:
+                nonlocal tool_ms_since_previous_round, tool_calls_since_reflection
 
-            # Parallel dispatch when all tool calls in this batch are read-only.
-            _parallel = (
-                len(tool_calls) > 1
-                and all(n[0] in READ_ONLY_TOOLS for n in _nc)
-                and all(not find_failed_attempt(cfg, tool_attempt_signature(n[0], tool_runtime_args(n[0], n[1], cfg))) for n in _nc)
-            )
-            if _parallel:
-                # _batch items must match _exec_one signature: tuple[tuple[str, dict], str | None]
-                _batch = [(n, (str(sc.get("id") or "") or None)) for n, sc in zip(_nc, serialized_calls)]
-                for item in _batch:
-                    (name, args), tid = item
-                    show_tool_call(name, args, call_id=tid)
+                tool_ms_since_previous_round += dispatched.duration_ms
+                show_typed_tool_result(
+                    name,
+                    dispatched.result,
+                    outcome_status=dispatched.outcome.status,
+                    duration_ms=(
+                        dispatched.duration_ms if dispatched.outcome.invoked else None
+                    ),
+                    call_id=tool_call_id,
+                )
+                cfg.messages.append(dispatched.message)
+                run_tool_calls.append(
+                    {
+                        "name": name,
+                        "status": dispatched.status,
+                        "args": _run_args_preview(args, name=name),
+                    }
+                )
+                tool_calls_since_reflection += 1
 
-                ordered_results: list[
-                    tuple[str, dict[str, Any], str | None, str, float] | None
-                ] = [None] * len(_batch)
-                dispatch_order = order_tool_batch_by_qos([item[0] for item in _batch])
-                preflight_by_index: dict[int, RuntimeToolPreflight] = {}
-                allowed_dispatch_order: list[int] = []
-                for queue_position, batch_index in enumerate(dispatch_order):
-                    (queued_name, queued_args), _queued_id = _batch[batch_index]
-                    preflight = preflight_runtime_tool(
-                        queued_name,
-                        queued_args,
-                        cfg,
-                        queue_position=queue_position,
-                    )
-                    preflight_by_index[batch_index] = preflight
-                    if preflight.allowed:
-                        allowed_dispatch_order.append(batch_index)
-                if allowed_dispatch_order:
-                    with scoped_tool_runtime_env(cfg):
-                        with ThreadPoolExecutor(max_workers=min(4, len(allowed_dispatch_order))) as _pool:
-                            future_to_index = {
-                                _pool.submit(_exec_one, _batch[idx]): idx for idx in allowed_dispatch_order
-                            }
-                            for future in as_completed(future_to_index):
-                                ordered_results[future_to_index[future]] = future.result()
-
-                for idx, ((name, args), _tid) in enumerate(_batch):
-                    preflight = preflight_by_index[idx]
-                    if not preflight.allowed:
-                        result = preflight.blocked_result
-                        show_tool_result(name, result, approved=False, call_id=_tid)
-                        cfg.messages.append(tool_result_message(name, result, _tid))
-                        record_tool_attempt(
-                            cfg,
-                            name=name,
-                            args=preflight.signature_args,
-                            result=result,
-                            status="denied",
-                        )
-                        record_perf_event(
-                            "tool",
-                            tool=name,
-                            status="denied",
-                            duration_ms=0.0,
-                            **preflight.qos_fields,
-                        )
-                        run_tool_calls.append(
-                            {"name": name, "status": "denied", "args": _run_args_preview(args, name=name)}
-                        )
-                        tool_calls_since_reflection += 1
-                        continue
-                    row = ordered_results[idx]
-                    if row is None:
-                        continue
-                    name, args, tool_call_id, result, duration_ms = row
-                    tool_ms_since_previous_round += duration_ms
-                    tool_status = classify_tool_status(result)
-                    result = augment_tool_result_with_reflex(
-                        cfg, name, preflight.signature_args, result, tool_status
-                    )
-                    show_tool_result(name, result, duration_ms=duration_ms, call_id=tool_call_id)
-                    cfg.messages.append(tool_result_message(name, result, tool_call_id))
-                    record_tool_attempt(
-                        cfg,
-                        name=name,
-                        args=preflight.signature_args,
-                        result=result,
-                        status=tool_status,
-                    )
-                    record_perf_event(
-                        "tool",
-                        tool=name,
-                        status=tool_status,
-                        duration_ms=duration_ms,
-                        **preflight.qos_fields,
-                    )
-                    run_tool_calls.append(
-                        {"name": name, "status": tool_status, "args": _run_args_preview(args, name=name)}
-                    )
-                    tool_calls_since_reflection += 1
-            else:
-                for call, serialized_call in zip(tool_calls, serialized_calls):
-                    tool_call_id = str(serialized_call.get("id") or "") or None
-                    name, args = normalize_tool_call(call)
+            if not any(batch_ceiling_codes) and _parallel_dispatch_allowed(
+                normalized_calls,
+                cfg,
+            ):
+                for (name, args), tool_call_id in batch:
                     show_tool_call(name, args, call_id=tool_call_id)
-                    preflight = preflight_runtime_tool(name, args, cfg)
-                    signature_args = preflight.signature_args
-                    if not preflight.allowed:
-                        result = preflight.blocked_result
-                        show_tool_result(name, result, approved=False, call_id=tool_call_id)
-                        cfg.messages.append(tool_result_message(name, result, tool_call_id))
-                        record_tool_attempt(cfg, name=name, args=signature_args, result=result, status="denied")
-                        record_perf_event(
-                            "tool",
-                            tool=name,
-                            status="denied",
-                            duration_ms=0.0,
-                            **preflight.qos_fields,
-                        )
-                        run_tool_calls.append(
-                            {"name": name, "status": "denied", "args": _run_args_preview(args, name=name)}
-                        )
-                        tool_calls_since_reflection += 1
-                        continue
-                    signature = tool_attempt_signature(name, signature_args)
-                    previous_failure = find_failed_attempt(cfg, signature)
-                    if previous_failure:
-                        result = (
-                            "Skipped repeated failed attempt. "
-                            f"Prior outcome: {previous_failure.get('summary', 'same tool path already failed or was denied')}."
-                        )
-                        show_tool_result(name, result, approved=False, call_id=tool_call_id)
-                        cfg.messages.append(tool_result_message(name, result, tool_call_id))
-                        record_tool_attempt(cfg, name=name, args=signature_args, result=result, status="skipped")
-                        record_perf_event(
-                            "tool",
-                            tool=name,
-                            status="skipped",
-                            duration_ms=0.0,
-                            **preflight.qos_fields,
-                        )
-                        run_tool_calls.append({"name": name, "status": "skipped", "args": _run_args_preview(args, name=name)})
-                        tool_calls_since_reflection += 1
-                        continue
-                    if not ask_approval(name, args, cfg):
-                        result = "User denied this operation."
-                        show_tool_result(name, result, approved=False, call_id=tool_call_id)
-                        cfg.messages.append(tool_result_message(name, result, tool_call_id))
-                        record_tool_attempt(cfg, name=name, args=signature_args, result=result, status="denied")
-                        record_perf_event(
-                            "tool",
-                            tool=name,
-                            status="denied",
-                            duration_ms=0.0,
-                            **preflight.qos_fields,
-                        )
-                        run_tool_calls.append({"name": name, "status": "denied", "args": _run_args_preview(args, name=name)})
-                        continue
 
-                    started = time.perf_counter()
-                    with scoped_tool_runtime_env(cfg):
-                        with tool_execution_status(
-                            f"[muted]executing {name} · {preflight.runtime_hint.spawn_class.value}...[/]"
-                        ):
-                            result = run_tool(name, args, cfg)
-                    duration_ms = round((time.perf_counter() - started) * 1000, 2)
-                    tool_ms_since_previous_round += duration_ms
-                    tool_status = classify_tool_status(result)
-                    result = augment_tool_result_with_reflex(
-                        cfg, name, signature_args, result, tool_status
+                ordered_results: list[DispatchResult | None] = [None] * len(batch)
+                dispatch_order = order_tool_batch_by_qos([item[0] for item in batch])
+                with ThreadPoolExecutor(max_workers=min(4, len(batch))) as pool:
+                    future_to_index = {}
+                    for queue_position, batch_index in enumerate(dispatch_order):
+                        (name, args), tool_call_id = batch[batch_index]
+                        context = copy_context()
+                        future = pool.submit(
+                            context.run,
+                            dispatch_action,
+                            name,
+                            args,
+                            cfg,
+                            tool_call_id=tool_call_id,
+                            dependencies=dependencies,
+                            render=False,
+                            queue_position=queue_position,
+                        )
+                        future_to_index[future] = batch_index
+                    for future in as_completed(future_to_index):
+                        ordered_results[future_to_index[future]] = future.result()
+
+                for index, ((name, args), tool_call_id) in enumerate(batch):
+                    dispatched = ordered_results[index]
+                    if dispatched is None:  # pragma: no cover - executor invariant
+                        raise RuntimeError("canonical dispatcher returned no result")
+                    consume_dispatch(name, args, tool_call_id, dispatched)
+            else:
+                for index, ((name, args), tool_call_id) in enumerate(batch):
+                    show_tool_call(name, args, call_id=tool_call_id)
+                    dispatched = dispatch_action(
+                        name,
+                        args,
+                        cfg,
+                        tool_call_id=tool_call_id,
+                        dependencies=dependencies,
+                        render=False,
+                        policy_ceiling_code=batch_ceiling_codes[index],
                     )
-                    show_tool_result(name, result, duration_ms=duration_ms, call_id=tool_call_id)
-                    cfg.messages.append(tool_result_message(name, result, tool_call_id))
-                    record_tool_attempt(
-                        cfg, name=name, args=signature_args, result=result, status=tool_status
-                    )
-                    record_perf_event(
-                        "tool",
-                        tool=name,
-                        status=tool_status,
-                        duration_ms=duration_ms,
-                        **preflight.qos_fields,
-                    )
-                    run_tool_calls.append(
-                        {"name": name, "status": tool_status, "args": _run_args_preview(args, name=name)}
-                    )
-                    tool_calls_since_reflection += 1
+                    consume_dispatch(name, args, tool_call_id, dispatched)
 
             if tool_calls_since_reflection >= reflection_interval:
                 if json_sink() is None:
@@ -3751,7 +3724,7 @@ def _run_oneshot_entry(args: argparse.Namespace) -> int:
         overrides["cwd"] = str(Path(args.cwd).expanduser().resolve())
     if args.thinking != "auto":
         overrides["show_thinking"] = args.thinking == "on"
-    from . import oneshot as _oneshot_module
+    from . import oliver_oneshot as _oneshot_module
     return _oneshot_module.run_oneshot(
         prompt=prompt,
         approval_mode=args.approval_mode,
@@ -3884,7 +3857,7 @@ def main() -> None:
     # --- Subcommand: plugin list ---
     _prompt_lower = (args.prompt or "").strip().lower()
     if _prompt_lower.startswith("plugin ") and not args.oneshot:
-        from .plugins import discover_plugins, plugin_status
+        from .william_plugins import discover_plugins, plugin_status
         sub = _prompt_lower.split(maxsplit=1)[1].strip() if " " in _prompt_lower else ""
         if sub in ("", "list"):
             discovered = discover_plugins()
@@ -3898,9 +3871,9 @@ def main() -> None:
                 table.add_column("Enabled", style="yellow")
                 for manifest in sorted(discovered, key=lambda item: item.name.lower()):
                     table.add_row(
-                        manifest.name,
-                        manifest.version,
-                        manifest.description,
+                        Text(manifest.name),
+                        Text(manifest.version),
+                        Text(manifest.description),
                         "yes" if manifest.enabled else "no",
                     )
                 console.print(table)
@@ -3908,17 +3881,19 @@ def main() -> None:
         elif sub == "status":
             statuses = plugin_status()
             if not statuses:
-                console.print("[dim]No plugins loaded.[/dim]")
+                console.print("[dim]No plugin manifests found.[/dim]")
             else:
                 table = Table(title="Plugin Status", box=box.ROUNDED)
                 table.add_column("Name", style="cyan")
+                table.add_column("State", style="yellow")
                 table.add_column("Loaded", style="green")
                 table.add_column("Error", style="red")
                 for s in statuses:
                     table.add_row(
-                        s.get("name", "?"),
+                        Text(str(s.get("name", "?"))),
+                        Text(str(s.get("state", "unknown"))),
                         "yes" if s.get("loaded") else "no",
-                        s.get("error", "") or "",
+                        Text(str(s.get("load_error", "") or "")),
                     )
                 console.print(table)
             return

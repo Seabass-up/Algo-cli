@@ -1,0 +1,30 @@
+[freeze]
+schema_version = 1
+freeze_id = "algo-cli-hardening-2026-07-18"
+status = "active"
+base_commit = "20bb879"
+base_tag = "v0.18.0"
+started_at = "2026-07-18T00:00:00-05:00"
+reason = "Computer/browser authority research exposed fail-open policy, approval, outcome, privacy, plugin, and crash-consistency gaps."
+allowed_work = "hardening-only"
+feature_development_blocked = true
+behavioral_refactors_blocked = true
+release_blocked = true
+tagging_blocked = true
+publishing_blocked = true
+
+[lift]
+requires_all_ledger_items_verified = true
+requires_full_test_matrix = true
+requires_security_fuzz_matrix = true
+requires_signed_artifact_checks = true
+requires_requirement_audit = true
+requires_explicit_lift_commit = true
+
+[naming]
+enforce_on_created_and_modified_files = true
+classification = "primary-responsibility"
+process_names = ["arthur", "david", "henry", "james", "marcus", "nathan", "oliver", "samuel", "theodore", "william"]
+memory_names = ["ada", "alice", "clara", "dorothy", "evelyn", "grace", "helen", "irene", "julia", "margaret"]
+browser_elements = ["argon", "boron", "carbon", "cobalt", "copper", "helium", "iron", "neon", "silicon", "xenon"]
+computer_cities = ["austin", "boston", "chicago", "denver", "london", "paris", "seattle", "sydney", "tokyo", "vienna"]

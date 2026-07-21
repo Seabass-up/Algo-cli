@@ -13,9 +13,9 @@ from types import SimpleNamespace
 import pytest
 from rich.console import Console
 
-from algo_cli import tool_runtime, tools
+from algo_cli import nathan_runtime as tool_runtime, tools
 from algo_cli.config import Config
-from algo_cli.runtime_services import scoped_tool_runtime_env
+from algo_cli.theodore_runtime_services import scoped_tool_runtime_env
 
 
 def test_resolve_absolute_and_relative(tmp_path):
@@ -455,6 +455,16 @@ def test_classify_tool_status_marks_tool_errors_failed():
     assert tool_runtime.classify_tool_status("Tool error for read_file: boom") == "failed"
     assert tool_runtime.classify_tool_status("tests failed\n[exit code: 1]") == "failed"
     assert tool_runtime.classify_tool_status("tests passed\n[exit code: 0]") == "worked"
+    assert tool_runtime.classify_tool_status('{"ok": false, "message": "denied"}') == "failed"
+    assert tool_runtime.classify_tool_status('{"error": {"code": "boom"}}') == "failed"
+    assert tool_runtime.classify_tool_status('{"status": "timed_out"}') == "failed"
+    assert (
+        tool_runtime.classify_tool_status(
+            '{"error": "this is file content"}',
+            name="read_file",
+        )
+        == "worked"
+    )
 
 
 @pytest.mark.parametrize("command", ["shutdown -h now", "format C:", "diskpart /s wipe.txt"])
@@ -480,7 +490,7 @@ def test_session_command_requires_approval(monkeypatch):
     assert prompted["called"] is True
 
 
-def test_approve_all_this_session_does_not_persist(monkeypatch, config_dir):
+def test_action_time_approval_cannot_be_promoted_to_session(monkeypatch, config_dir):
     from algo_cli.config import CONFIG_FILE
 
     cfg = Config()
@@ -491,10 +501,10 @@ def test_approve_all_this_session_does_not_persist(monkeypatch, config_dir):
 
     approved = tool_runtime.ask_approval("run_shell", {"command": "echo hi"}, cfg)
 
-    assert approved is True
+    assert approved is False
     assert cfg.auto_mode is False
-    assert cfg.session_auto_approve is True
-    assert cfg.auto_approve_active is True
+    assert cfg.session_auto_approve is False
+    assert cfg.auto_approve_active is False
 
     # agent_loop saves cfg at the end of every turn; the flag must survive that.
     cfg.save()
@@ -508,17 +518,36 @@ def test_approve_all_this_session_does_not_persist(monkeypatch, config_dir):
     assert reloaded.session_auto_approve is False
 
 
-def test_approve_all_skips_prompt_for_rest_of_session(monkeypatch):
+def test_action_time_tools_require_a_fresh_confirmation(monkeypatch):
     cfg = Config()
-    answers = iter(["a"])
+    answers = iter(["y", "y"])
+    prompts: list[str] = []
 
-    def fake_input(_prompt):
+    def fake_input(prompt):
+        prompts.append(prompt)
         return next(answers)  # raises StopIteration if prompted again
 
     monkeypatch.setattr("builtins.input", fake_input)
 
     assert tool_runtime.ask_approval("run_shell", {"command": "echo hi"}, cfg) is True
-    assert tool_runtime.ask_approval("write_file", {"path": "x", "content": "y"}, cfg) is True
+    assert tool_runtime.ask_approval("run_shell", {"command": "echo again"}, cfg) is True
+    assert len(prompts) == 2
+
+
+def test_session_preapproval_is_scoped_to_action_and_target(monkeypatch):
+    cfg = Config()
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt: prompts.append(prompt) or "a",
+    )
+
+    args = {"query": "bounded authority"}
+    assert tool_runtime.ask_approval("web_search", args, cfg) is True
+    assert tool_runtime.ask_approval("web_search", args, cfg) is True
+    assert len(prompts) == 1
+    assert tool_runtime.ask_approval("web_fetch", {"url": "https://example.com"}, cfg) is True
+    assert len(prompts) == 2
 
 
 def test_repeated_failed_tool_call_is_skipped_after_runtime_defaults(tmp_path, monkeypatch):
@@ -561,6 +590,7 @@ def test_attempt_signature_excludes_config_and_conversation(monkeypatch, config_
     monkeypatch.setattr(tool_runtime, "show_tool_call", lambda *a, **k: None)
     monkeypatch.setattr(tool_runtime, "show_tool_result", lambda *a, **k: None)
     monkeypatch.setattr(tool_runtime, "record_perf_event", lambda *a, **k: None)
+    monkeypatch.setattr(tool_runtime, "ask_approval", lambda *a, **k: True)
 
     runtime_args = tool_runtime.tool_runtime_args("remember", {"fact": "user likes tea"}, cfg)
     assert "cfg" not in runtime_args
@@ -695,7 +725,7 @@ def test_available_actions_exposes_runtime_agent_threads():
 
 
 def test_plugin_tool_wrappers_serialize_and_load_discovered_manifests(monkeypatch, tmp_path):
-    from algo_cli import plugins
+    from algo_cli import william_plugins as plugins
 
     root = tmp_path / "plugins"
     plugin_dir = root / "demo"
@@ -703,10 +733,12 @@ def test_plugin_tool_wrappers_serialize_and_load_discovered_manifests(monkeypatc
     (plugin_dir / "plugin.json").write_text(
         json.dumps(
             {
+                "schema_version": 1,
                 "name": "demo",
                 "version": "1.2.3",
                 "description": "Demo plugin",
                 "enabled": True,
+                "entry_points": [],
             }
         ),
         encoding="utf-8",
@@ -719,10 +751,28 @@ def test_plugin_tool_wrappers_serialize_and_load_discovered_manifests(monkeypatc
 
     assert discovered[0]["name"] == "demo"
     assert discovered[0]["version"] == "1.2.3"
-    assert loaded["loaded"] is True
+    assert loaded["loaded"] is False
     assert loaded["name"] == "demo"
     assert loaded["path"] == "plugins/demo"
+    assert loaded["error_code"] == "code_loading_disabled"
+    assert loaded["code_loading"] is False
+    assert loaded["security_boundary"] is False
     assert str(tmp_path) not in json.dumps(loaded)
+
+
+def test_plugin_load_rejects_invalid_names_without_echoing_them() -> None:
+    hostile = "../../private-token-value\x1b[31m"
+
+    result = json.loads(tools.plugins_load(hostile))
+    serialized = json.dumps(result)
+
+    assert result == {
+        "loaded": False,
+        "error_code": "invalid_plugin_name",
+        "error": "Plugin name is invalid.",
+    }
+    assert "private-token-value" not in serialized
+    assert ".." not in serialized
 
 
 def test_version_manifest_tool_uses_manifest_as_dict(monkeypatch):
@@ -808,7 +858,7 @@ def test_sensitive_tool_args_are_redacted_from_attempt_metadata():
 
     assert "super-secret" not in signature
     assert "super-secret" not in preview
-    assert "redacted" in signature
+    assert signature.startswith("hmac-sha256:")
 
 
 def test_plugin_load_and_credential_store_require_approval(monkeypatch, capsys):
@@ -822,8 +872,10 @@ def test_plugin_load_and_credential_store_require_approval(monkeypatch, capsys):
         {"helper": "env", "key": "TOKEN", "value": "super-secret"},
         cfg,
     ) is False
-    assert len(prompts) == 2
-    assert "super-secret" not in capsys.readouterr().out
+    assert len(prompts) == 1
+    output = capsys.readouterr().out
+    assert "trusted user handoff" in output
+    assert "super-secret" not in output
 
 
 def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
@@ -1118,7 +1170,7 @@ def test_harness_index_integrity_allows_dimensions_to_differ_by_model(monkeypatc
 
 def test_show_help_contains_current_slash_commands(monkeypatch):
     from algo_cli import display
-    from algo_cli import slash_dispatch
+    from algo_cli import oliver_slash_dispatch as slash_dispatch
 
     output = StringIO()
     theme_name = getattr(display, "_active_theme_name", "tokyo-night")
@@ -1434,12 +1486,12 @@ def test_search_files_reports_rg_error_as_error(tmp_path, monkeypatch):
 
 
 def test_session_command_allows_runtime_agent_delegation(monkeypatch):
-    from algo_cli import agent_pipeline, runtime_services
+    from algo_cli import agent_pipeline, theodore_runtime_services
 
     cfg = Config()
     calls: list[tuple[str, object, object]] = []
     client = object()
-    monkeypatch.setattr(runtime_services, "create_client", lambda _cfg: client)
+    monkeypatch.setattr(theodore_runtime_services, "create_client", lambda _cfg: client)
     monkeypatch.setattr(
         agent_pipeline,
         "execute_agent_command",
@@ -1453,10 +1505,10 @@ def test_session_command_allows_runtime_agent_delegation(monkeypatch):
 
 
 def test_model_invoked_agent_output_redacts_workspace_path(monkeypatch, tmp_path):
-    from algo_cli import agent_pipeline, runtime_services
+    from algo_cli import agent_pipeline, theodore_runtime_services
 
     cfg = Config(cwd=str(tmp_path))
-    monkeypatch.setattr(runtime_services, "create_client", lambda _cfg: object())
+    monkeypatch.setattr(theodore_runtime_services, "create_client", lambda _cfg: object())
     monkeypatch.setattr(
         agent_pipeline,
         "execute_agent_command",
@@ -1728,7 +1780,7 @@ def test_x_account_post_tool_blocks_without_confirm(monkeypatch):
     from ollama_cli import x_account
 
     monkeypatch.setattr(x_account, "_run_xurl", lambda *args, **kwargs: pytest.fail("should not run xurl"))
-    out = tools.x_account_post("hello", confirm=False)
+    out = tools.x_account_post("hello")
     assert "Blocked write" in out
 
 
@@ -1736,5 +1788,5 @@ def test_x_account_post_action_tool_blocks_without_confirm(monkeypatch):
     from ollama_cli import x_account
 
     monkeypatch.setattr(x_account, "_run_xurl", lambda *args, **kwargs: pytest.fail("should not run xurl"))
-    out = tools.x_account_post_action("like", "123", confirm=False)
+    out = tools.x_account_post_action("like", "123")
     assert "Blocked write" in out

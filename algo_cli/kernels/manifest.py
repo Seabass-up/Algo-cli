@@ -535,10 +535,10 @@ _KERNELS: tuple[KernelSpec, ...] = (
     # --- Phase 4: Pattern-derived kernels (Fable-5 corpus + macOS /System audit) ---
     KernelSpec(
         name="policy-chain",
-        description="PAM-style policy chain: ordered checks with control flags (required / sufficient / requisite / include). Upgrade of tool_policy.py from a single boolean to a composable, audit-trail-preserving decision model.",
+        description="PAM-style policy chain: ordered checks with control flags (required / sufficient / requisite / include). Uses scoped authority and an audit-trail-preserving decision model.",
         modules=[
             "algo_cli._internal.policy_chain",
-            "algo_cli.tool_policy",
+            "algo_cli.samuel_policy",
         ],
         actions=["chain.evaluate", "chain.audit"],
         slash_commands=["/kernel show policy-chain"],
@@ -593,7 +593,7 @@ _KERNELS: tuple[KernelSpec, ...] = (
     KernelSpec(
         name="runtime-qos",
         description="Classify runtime posture, attach named logs, and deterministically order bounded tool batches.",
-        modules=["algo_cli.runtime_qos", "algo_cli.harness", "algo_cli.tools"],
+        modules=["algo_cli.theodore_runtime_qos", "algo_cli.harness", "algo_cli.tools"],
         actions=["runtime.qos.classify", "runtime.qos.schedule", "runtime.log_path"],
         slash_commands=["/kernel show runtime-qos"],
         safety_level="low",
@@ -611,7 +611,7 @@ _KERNELS: tuple[KernelSpec, ...] = (
     KernelSpec(
         name="performance-cusum",
         description="Detect sustained comparable-series latency shifts and report them through /selfcheck.",
-        modules=["algo_cli.evals.performance_regression", "algo_cli.perf_telemetry"],
+        modules=["algo_cli.evals.performance_regression", "algo_cli.dorothy_perf_telemetry"],
         actions=["performance.cusum.detect", "performance.cusum.selfcheck"],
         slash_commands=["/selfcheck", "/kernel show performance-cusum"],
         safety_level="low",
@@ -620,7 +620,7 @@ _KERNELS: tuple[KernelSpec, ...] = (
     KernelSpec(
         name="capability-mask",
         description="Stable numeric capability bit masks for tool/kernel tiers, inspired by macOS audit_class.",
-        modules=["algo_cli.capability_mask", "algo_cli.tool_policy"],
+        modules=["algo_cli.marcus_authority", "algo_cli.samuel_policy"],
         actions=["capability.mask", "capability.tier"],
         slash_commands=["/kernel show capability-mask"],
         safety_level="low",
@@ -629,7 +629,7 @@ _KERNELS: tuple[KernelSpec, ...] = (
     KernelSpec(
         name="extensions-manifest",
         description="SystemVersion-style extension manifest for plugins and helper binaries.",
-        modules=["algo_cli.extensions_manifest", "algo_cli.version_manifest", "algo_cli.tools"],
+        modules=["algo_cli.argon_extensions_manifest", "algo_cli.version_manifest", "algo_cli.tools"],
         actions=["extensions.manifest"],
         slash_commands=["/kernel show extensions-manifest"],
         safety_level="low",
@@ -682,7 +682,7 @@ def audit_kernel(spec: KernelSpec) -> KernelAudit:
     """
 
     from ..action_registry import list_action_specs
-    from ..slash_dispatch import SLASH_COMMANDS
+    from ..oliver_slash_dispatch import SLASH_COMMANDS
 
     issues: list[str] = []
     if spec.status not in {"planned", "preview", "active"}:

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import CONFIG_DIR, _atomic_write_text
-from .tool_policy import TOOL_GROUP_MAP, expand_tool_groups
+from .samuel_policy import TOOL_GROUP_MAP, expand_tool_groups
 
 try:
     import tomllib  # type: ignore[import-not-found]
