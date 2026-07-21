@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-import fcntl
 import hmac
 import os
 from pathlib import Path
@@ -18,6 +17,11 @@ import stat
 import threading
 from typing import Any, Iterator, Mapping, NoReturn
 import uuid
+
+try:  # pragma: no cover - exercised by hosted platform cells
+    import fcntl
+except ModuleNotFoundError:  # pragma: no cover - Windows is fail-closed
+    fcntl = None  # type: ignore[assignment]
 
 from .david_control_kernel import (
     MAX_SAFE_INTEGER,
@@ -409,6 +413,8 @@ class AdaUninstallRecoveryStore:
 
     @contextmanager
     def _lease(self) -> Iterator[int]:
+        if fcntl is None:
+            _reject("uninstall_recovery_lock_unsupported")
         with _LOCAL_RECOVERY_LOCK:
             directory_fd = self._directory_fd()
             lock_fd = -1

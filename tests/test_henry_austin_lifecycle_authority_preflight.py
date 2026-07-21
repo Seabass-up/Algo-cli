@@ -45,6 +45,11 @@ KEY_IDS = {
     "log_sink": "external-log-sink-v1",
 }
 
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Austin authority preflight verifies POSIX ownership and descriptor walks",
+)
+
 
 def _private_key(label: str) -> Ed25519PrivateKey:
     return Ed25519PrivateKey.from_private_bytes(hashlib.sha256(label.encode("ascii")).digest())
@@ -395,8 +400,10 @@ def test_interrupted_write_removes_only_the_private_temporary_file(
 
 def test_cli_emits_content_free_report_and_never_echoes_keys_or_paths(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     arguments, keys = _fixture(tmp_path)
     argv = [
         "--output",

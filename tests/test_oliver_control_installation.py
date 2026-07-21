@@ -43,6 +43,11 @@ EXTENSION_ORIGIN = "chrome-extension://" + "a" * 32 + "/"
 TEAM_ID = "ABCDE12345"
 INSTALL_ID = "00000000-0000-4000-8000-000000000101"
 ANCHOR_LABEL = RECEIPT_ANCHOR_LABEL_PREFIX + "b" * 64
+
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Oliver native-control installation uses POSIX ownership and locking",
+)
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -1150,6 +1155,7 @@ def test_installed_cli_dry_run_execute_and_terminal_resume_share_signed_recovery
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.setattr("algo_cli.oliver_control_installation.sys.platform", "darwin")
     roots, signer, credentials, inventory = _fixture(tmp_path)
     production_roots = replace(roots, production=True)
     inventory_path = tmp_path / "AdaInstallInventory.json"
@@ -1303,6 +1309,7 @@ def test_installed_cli_resumes_commit_ready_purge_without_private_signer(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.setattr("algo_cli.oliver_control_installation.sys.platform", "darwin")
     roots, signer, credentials, inventory = _fixture(tmp_path)
     production_roots = replace(roots, production=True)
     inventory_path = tmp_path / "AdaInstallInventory.json"

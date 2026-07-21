@@ -404,7 +404,9 @@ fn walk(root: &SourceRoot, current: &Path, seen: &mut Vec<PathBuf>) -> io::Resul
             if !skip_part(&name) {
                 walk(root, &path, seen)?;
             }
-        } else if file_type.is_file() && matches_patterns(root, &path, &name) && !should_skip(&path)
+        } else if file_type.is_file()
+            && matches_patterns(root, &path, &name)
+            && !should_skip(path.strip_prefix(&root.root).unwrap_or(&path))
         {
             seen.push(path);
             if seen.len() >= root.max_files {

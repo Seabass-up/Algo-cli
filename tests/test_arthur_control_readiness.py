@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -29,6 +30,11 @@ from algo_cli.oliver_control_installation import AUSTIN_APP_BUNDLE_NAME
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Austin readiness probes use POSIX process and descriptor semantics",
+)
 
 
 def _native_probe_payload(**readiness_overrides: object) -> bytes:
@@ -199,6 +205,7 @@ def _trusted_austin_fixture(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> Path:
+    monkeypatch.setattr(arthur_control_doctor.sys, "platform", "darwin")
     app = tmp_path / "Algo CLI Control.app"
     contents = app / "Contents"
     paths = (

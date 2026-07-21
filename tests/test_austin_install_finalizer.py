@@ -37,6 +37,11 @@ ORIGIN = "chrome-extension://" + "a" * 32 + "/"
 INSTALL_ID = "00000000-0000-4000-8000-000000000301"
 NOW_MS = 1_800_000_000_000
 
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Austin install finalization is a POSIX and macOS control boundary",
+)
+
 
 class FakeCredentialStore:
     service = KEYRING_SERVICE

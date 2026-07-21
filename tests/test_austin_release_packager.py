@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import plistlib
 import stat
@@ -26,6 +27,11 @@ ORIGIN = "chrome-extension://" + "a" * 32 + "/"
 APP_SUBMISSION = "00000000-0000-4000-8000-000000000111"
 PKG_SUBMISSION = "00000000-0000-4000-8000-000000000222"
 KEY_DIGEST = "sha256:" + hashlib.sha256(bytes(range(32))).hexdigest()
+
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Austin release packaging targets the macOS signing toolchain",
+)
 
 
 def _config(tmp_path: Path) -> AustinReleaseConfig:

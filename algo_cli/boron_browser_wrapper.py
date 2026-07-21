@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-import fcntl
 import hashlib
 import ipaddress
 import json
@@ -27,6 +26,11 @@ from urllib.parse import urlsplit
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
+
+try:  # pragma: no cover - exercised by hosted platform cells
+    import fcntl
+except ModuleNotFoundError:  # pragma: no cover - Windows is fail-closed
+    fcntl = None  # type: ignore[assignment]
 
 
 BORON_PIPE_PROTOCOL_VERSION = 1
@@ -899,6 +903,8 @@ def launch_boron_chrome(
 
     if type(plan) is not BoronNavigationPlan:
         _reject("navigation_plan")
+    if fcntl is None or not hasattr(os, "posix_spawn"):
+        _reject("browser_platform_unsupported")
     controller_to_chrome_read, controller_to_chrome_write = os.pipe()
     chrome_to_controller_read, chrome_to_controller_write = os.pipe()
     null_fd = os.open(os.devnull, os.O_RDWR | os.O_CLOEXEC)

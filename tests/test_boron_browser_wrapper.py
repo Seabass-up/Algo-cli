@@ -30,9 +30,23 @@ from algo_cli.boron_browser_wrapper import (
 
 VERSION = "151.0.7922.34"
 
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Boron launches Chromium through inherited POSIX descriptors",
+)
+
 
 def _plan() -> BoronNavigationPlan:
     return BoronNavigationPlan("https://example.com/path?q=1", VERSION)
+
+
+def test_launch_fails_closed_without_posix_descriptor_support(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(wrapper_module, "fcntl", None)
+
+    with pytest.raises(BoronPipeRejected, match="browser_platform_unsupported"):
+        launch_boron_chrome(_plan())
 
 
 def _response(command: dict, result: dict | None = None) -> dict:

@@ -8,12 +8,19 @@ import threading
 
 import pytest
 
+import algo_cli.ada_uninstall_recovery as recovery_module
 from algo_cli.ada_uninstall_recovery import (
     AdaUninstallRecoveryError,
     AdaUninstallRecoveryRecord,
     AdaUninstallRecoveryStore,
 )
 from algo_cli.david_control_kernel import ControlSigner
+
+
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Ada uninstall recovery uses owner-bound POSIX filesystem semantics",
+)
 
 
 NOW_MS = 1_800_000_000_000
@@ -51,6 +58,20 @@ def _store(tmp_path: Path) -> AdaUninstallRecoveryStore:
     parent.chmod(0o700)
     uid = os.getuid() if hasattr(os, "getuid") else 0
     return AdaUninstallRecoveryStore(parent / "AdaUninstallRecovery.json", uid=uid)
+
+
+def test_store_fails_closed_when_posix_locking_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(recovery_module, "fcntl", None)
+    signer = _signer()
+
+    with pytest.raises(
+        AdaUninstallRecoveryError,
+        match="uninstall_recovery_lock_unsupported",
+    ):
+        _store(tmp_path).publish(_record(signer), verifier=signer.verifier)
 
 
 def test_authorization_is_canonical_signed_content_free_and_context_bound() -> None:
