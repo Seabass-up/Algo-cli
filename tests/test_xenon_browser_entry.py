@@ -172,6 +172,14 @@ def test_prepare_rejects_expiry_and_dns_rebinding() -> None:
         (b"[]\x00", "entry_object"),
         (b"a" * (XENON_ENTRY_MAX_FRAME_BYTES + 1), "entry_frame_size"),
     ],
+    ids=[
+        "truncated",
+        "multiple-frames",
+        "duplicate-key",
+        "float",
+        "non-object",
+        "oversized",
+    ],
 )
 def test_entry_reader_rejects_open_ambiguous_and_oversized_frames(
     payload: bytes, reason: str

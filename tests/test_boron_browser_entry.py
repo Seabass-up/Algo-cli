@@ -177,6 +177,7 @@ def test_execute_fails_closed_on_ca_or_navigation_adapter_errors() -> None:
         (b"[]\x00", "entry_pipe_message_object"),
         (b"a" * (BORON_ENTRY_MAX_FRAME_BYTES + 1), "entry_frame_size"),
     ],
+    ids=["truncated", "multiple-frames", "duplicate-key", "non-object", "oversized"],
 )
 def test_entry_reader_rejects_open_ambiguous_and_oversized_frames(
     payload: bytes, reason: str

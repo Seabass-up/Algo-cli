@@ -64,7 +64,12 @@ def _regular_file(path: Path) -> os.stat_result:
 
 def _read_regular(path: Path) -> bytes:
     before = _regular_file(path)
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
     try:
         descriptor = os.open(path, flags)
         try:
@@ -161,7 +166,14 @@ def _atomic_public_write(path: Path, data: bytes) -> None:
         _fail("output_type")
 
     temporary = parent / f".ada-{uuid.uuid4().hex}.tmp"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
     descriptor: int | None = None
     try:
         descriptor = os.open(temporary, flags, 0o644)
