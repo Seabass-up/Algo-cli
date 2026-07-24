@@ -1,10 +1,10 @@
 {
   "audit_id": "arthur-m9-completion-v1",
-  "audited_at": "2026-07-24T01:26:47Z",
+  "audited_at": "2026-07-24T01:48:26Z",
   "base_commit": "20bb879",
   "contract_digest": "sha256:26a6b34c3a7f09df4255f922ce0f12e9da68f291e56da54a6e32a64053cacb32",
   "freeze_id": "algo-cli-hardening-2026-07-18",
-  "ledger_digest": "sha256:0618d7bb14dea379a0df17cde3cd7e278c16c671ce3c75f987a57027f60284bf",
+  "ledger_digest": "sha256:f7dd08c88fb6d9c06d9e2cec9b6e2e31829e1cacf98d368c2161c7682461de32",
   "ledger_status": "active",
   "limitations": "This deterministic audit proves contract and evidence completeness only. It does not independently authenticate external services, runner images, signing identities, TCC state, browser containment, or benchmark truth.",
   "milestones": [
@@ -786,7 +786,7 @@
       "evidence_count": 39,
       "external_authoritative_evidence": false,
       "id": "HARD-080",
-      "latest_timestamp": "2026-07-24T01:26:47Z",
+      "latest_timestamp": "2026-07-24T01:48:26Z",
       "ledger_status": "in_progress",
       "milestone": "M8",
       "missing_evidence_kinds": [
@@ -809,7 +809,7 @@
       "evidence_count": 32,
       "external_authoritative_evidence": false,
       "id": "HARD-081",
-      "latest_timestamp": "2026-07-24T01:26:47Z",
+      "latest_timestamp": "2026-07-24T01:48:26Z",
       "ledger_status": "in_progress",
       "milestone": "M8",
       "missing_evidence_kinds": [

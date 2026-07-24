@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import importlib.util
+import os
 from pathlib import Path
 import stat
 import sys
@@ -138,7 +139,28 @@ def test_qualification_artifact_round_trips_atomically(
     )
 
     assert restored["report_sha256"] == report["report_sha256"]
-    assert stat.S_IMODE(artifact.stat().st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE(artifact.stat().st_mode) == 0o600
+
+
+def test_qualification_private_mode_falls_back_without_fchmod(
+    tmp_path,
+    report,
+    monkeypatch,
+) -> None:
+    artifact = tmp_path / "portable-private-artifact.json"
+    monkeypatch.delattr(SCRIPT.os, "fchmod", raising=False)
+
+    SCRIPT.write_artifact(
+        artifact,
+        report,
+        allowed_root=tmp_path,
+    )
+
+    assert SCRIPT.verify_artifact(
+        artifact,
+        allowed_root=tmp_path,
+    )["report_sha256"] == report["report_sha256"]
 
 
 def test_qualification_rejects_linked_artifact(

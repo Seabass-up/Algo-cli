@@ -73,7 +73,7 @@
     ],
     "total": 13
   },
-  "created_at": "2026-07-24T01:21:18Z",
+  "created_at": "2026-07-24T01:39:04Z",
   "environment": {
     "machine": "arm64",
     "operating_system": "macOS-27.0-arm64-arm-64bit",
@@ -81,17 +81,17 @@
   },
   "gates": {
     "checkpoint_resume_p95_ms": {
-      "observed": 8.997458,
+      "observed": 8.838958,
       "passed": true,
       "threshold": 1000.0
     },
     "context_broker_p95_ms": {
-      "observed": 0.010167,
+      "observed": 0.010459,
       "passed": true,
       "threshold": 100.0
     },
     "contract_compile_p95_ms": {
-      "observed": 0.318916,
+      "observed": 0.32325,
       "passed": true,
       "threshold": 250.0
     },
@@ -104,21 +104,21 @@
   "limitations": "This is a local model-free runtime microbenchmark. It does not measure model intelligence, provider latency, end-to-end task quality, production crash or power-loss behavior, or superiority over OpenClaw, Hermes, or another harness. Latency has not been independently reproduced.",
   "performance": {
     "checkpoint_resume": {
-      "max_ms": 9.015167,
-      "p50_ms": 8.719625,
-      "p95_ms": 8.997458,
+      "max_ms": 8.859333,
+      "p50_ms": 8.559,
+      "p95_ms": 8.838958,
       "samples": 31
     },
     "context_broker": {
-      "max_ms": 0.010375,
-      "p50_ms": 0.009417,
-      "p95_ms": 0.010167,
+      "max_ms": 0.014375,
+      "p50_ms": 0.00925,
+      "p95_ms": 0.010459,
       "samples": 101
     },
     "contract_compile": {
-      "max_ms": 0.358583,
-      "p50_ms": 0.25625,
-      "p95_ms": 0.318916,
+      "max_ms": 0.442,
+      "p50_ms": 0.253042,
+      "p95_ms": 0.32325,
       "samples": 101
     }
   },
@@ -132,9 +132,9 @@
     "synthetic_runtime_microbenchmark": true,
     "warmups": 5
   },
-  "report_sha256": "sha256:e6a6eae1b6a42729cdafe5cf0285b726f60682920fbbd29251c20e8b7badf8d6",
+  "report_sha256": "sha256:1d30ecc6e2ed1aec7f6cd292d5ede20f7e52842f7a71164a023476bb4e2525f8",
   "schema_version": 1,
-  "source_revision": "c1ab8583be191c0d2be55f4d8ccaeb9f0dacfd4a",
-  "source_tree_sha256": "sha256:1e040f93527c33727222913e72a889500b15a950391b533933b2d9d38977a3dd",
+  "source_revision": "ce102e023662f04547dfb2c2544c348b4a3cc460",
+  "source_tree_sha256": "sha256:8b6030488f689eebb1bd78973742559157a975e835e8b17967b17367e94d1e1e",
   "status": "pass"
 }

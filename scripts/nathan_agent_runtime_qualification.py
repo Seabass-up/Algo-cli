@@ -111,6 +111,27 @@ def verify_artifact(
     return report
 
 
+def _set_private_mode(descriptor: int, path: Path) -> None:
+    fchmod = getattr(os, "fchmod", None)
+    if callable(fchmod):
+        fchmod(descriptor, 0o600)
+        return
+    os.chmod(path, 0o600)
+
+
+def _sync_parent_directory(path: Path) -> None:
+    if os.name != "posix":
+        return
+    directory = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
 def write_artifact(
     path: Path,
     report: dict[str, Any],
@@ -151,20 +172,13 @@ def write_artifact(
         )
         temporary = Path(raw_path)
         with os.fdopen(descriptor, "wb", closefd=True) as handle:
-            os.fchmod(handle.fileno(), 0o600)
+            _set_private_mode(handle.fileno(), temporary)
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, candidate)
         temporary = None
-        directory = os.open(
-            candidate.parent,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
-        )
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        _sync_parent_directory(candidate.parent)
     except OSError as exc:
         raise AgentRuntimeQualificationError(
             "qualification artifact could not be stored atomically"
