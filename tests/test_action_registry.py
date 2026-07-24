@@ -38,7 +38,7 @@ def test_action_registry_declares_mutation_and_approval_metadata() -> None:
 
 def test_effective_action_specs_cover_runtime_tool_and_slash_surface() -> None:
     from algo_cli import action_registry
-    from algo_cli.slash_dispatch import SLASH_COMMANDS
+    from algo_cli.oliver_slash_dispatch import SLASH_COMMANDS
     from algo_cli.tools import TOOL_MAP
 
     specs = action_registry.effective_action_specs()
@@ -191,7 +191,7 @@ def test_action_registry_runtime_audit_checks_tool_and_slash_existence(monkeypat
 
 
 def test_action_registry_audit_detects_declared_but_undispatched_slash(monkeypatch) -> None:
-    from algo_cli import action_registry, slash_dispatch
+    from algo_cli import action_registry, oliver_slash_dispatch as slash_dispatch
 
     monkeypatch.setattr(
         slash_dispatch,
@@ -222,13 +222,13 @@ def test_agent_runtime_kernel_actions_have_curated_risk_metadata() -> None:
     assert resume.requires_approval is True
 
 
-def test_tool_approval_policy_uses_registry_with_safe_memory_exceptions() -> None:
+def test_tool_approval_policy_uses_registry_and_protects_durable_memory() -> None:
     from algo_cli.action_registry import action_requires_approval
 
     assert action_requires_approval("model_pull") is True
     assert action_requires_approval("harness_refresh") is True
     assert action_requires_approval("plugins_load") is True
     assert action_requires_approval("credential_helpers_store") is True
-    assert action_requires_approval("remember") is False
-    assert action_requires_approval("append_lesson") is False
+    assert action_requires_approval("remember") is True
+    assert action_requires_approval("append_lesson") is True
     assert action_requires_approval("read_file") is False

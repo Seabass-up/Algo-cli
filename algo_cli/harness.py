@@ -345,9 +345,12 @@ def build_index_with_rust(previous: dict[str, Any] | None = None) -> dict[str, A
         return None
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     try:
+        indexer_env = os.environ.copy()
+        indexer_env["ALGO_CLI_REPO_DIR"] = str(ALGO_CLI_REPO_DIR)
         proc = subprocess.run(
             [str(binary), "--output", str(INDEX_PATH)],
             cwd=str(Path(__file__).resolve().parents[1]),
+            env=indexer_env,
             text=True,
             encoding="utf-8",
             errors="replace",
@@ -2119,7 +2122,7 @@ def stats() -> dict[str, Any]:
             "import_error": type(exc).__name__,
         }
     try:
-        from .perf_telemetry import private_perf_store_readiness
+        from .dorothy_perf_telemetry import private_perf_store_readiness
 
         runtime_event_store = private_perf_store_readiness()
     except Exception as exc:

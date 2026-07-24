@@ -2,10 +2,27 @@
 
 import base64
 import hashlib
+import importlib.util
 import json
+from pathlib import Path
 import subprocess
+import sys
 
-from scripts import check_public_history, check_public_release
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_script(name: str, filename: str):
+    spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / filename)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+check_public_release = _load_script("check_public_release", "check_public_release.py")
+check_public_history = _load_script("check_public_history", "check_public_history.py")
 
 
 def test_machine_path_scan_catches_literal_and_source_escaped_windows_paths():

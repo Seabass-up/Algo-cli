@@ -9,8 +9,9 @@ import shlex
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from rich import box
@@ -18,25 +19,29 @@ from rich.table import Table
 from rich.text import Text
 
 from . import agent_blocks
+from . import agent_context
+from . import agent_run_journal
 from . import agent_threads
 from . import spawn_budget
 from . import git_evidence
 from . import execution_guardrails
 from . import harness
 from . import inference_harness
-from . import memory_runtime
+from . import julia_memory_runtime as memory_runtime
 from . import reflex
+from . import run_contract as run_contracts
 from . import task_router
-from . import tool_policy
+from . import samuel_policy as tool_policy
 from . import worktree_runtime
 from . import model_info as _model_info_module
+from . import nathan_provider_protocol
 from . import chatgpt_client
+from . import context_budget
 from . import tools as tools_module
 from .chat_protocol import (
     collapse_tool_history_for_gemini,
     get_attr,
     normalize_tool_call,
-    serialize_tool_call,
 )
 from .config import Config
 from .display import (
@@ -45,24 +50,139 @@ from .display import (
     show_agent_block_complete,
     show_agent_block_start,
     show_agent_pipeline_complete,
-    show_agent_recovery_start,
+    show_agent_recovery_start,  # noqa: F401 - compatibility hook for tests/plugins
     show_error,
     show_info,
     show_recalled_context,
     show_thinking_text,
-    show_tool_result,
 )
-from .perf_telemetry import flush_perf_records, record_chat_metrics, record_perf_event
-from .runtime_services import client_for_model, create_client
-from .tool_runtime import (
+from .dorothy_perf_telemetry import flush_perf_records, record_chat_metrics
+from .theodore_runtime_services import client_for_model, create_client
+from .james_dispatch import batch_policy_ceiling_codes
+from .marcus_authority import EffectClass
+from .nathan_runtime import (
+    approval_mode_for_config,
+    classify_tool_status,
     execute_tool_call_for_pipeline,
-    record_tool_attempt,
     summarize_tool_result,
-    tool_result_message,
 )
+from .samuel_policy_engine import resolve_action
 
 TOOL_MAP = tools_module.TOOL_MAP
 logger = logging.getLogger(__name__)
+
+
+def _pipeline_outcome_status(execution: Any, result: str) -> str:
+    """Prefer the canonical typed outcome; parse text only for legacy adapters."""
+
+    outcome = getattr(execution, "outcome", None)
+    status = getattr(getattr(outcome, "status", None), "value", "")
+    if status:
+        return str(status)
+    lowered = str(result).strip().casefold()
+    if lowered.startswith(("blocked by runtime", "user denied")):
+        return "denied"
+    if lowered.startswith("skipped repeated"):
+        return "skipped"
+    legacy = classify_tool_status(result)
+    return "succeeded" if legacy == "worked" else legacy
+
+
+def _block_output_is_verified(block: agent_blocks.AgentBlock) -> bool:
+    text = block.output.strip()
+    if not text.startswith("## Block Output"):
+        return False
+    remainder = text[len("## Block Output") :].strip()
+    return bool(remainder)
+
+
+_MUTATION_COMPLETION_CLAIM_RE = re.compile(
+    r"\b(changed|completed|created|fixed|implemented|updated|wrote)\b",
+    re.IGNORECASE,
+)
+_UNCERTAINTY_DISCLOSURE_RE = re.compile(
+    r"\b(blocked|incomplete|partial|uncertain|unverified)\b",
+    re.IGNORECASE,
+)
+
+
+def _final_output_claims_are_grounded(
+    block: agent_blocks.AgentBlock,
+    prior_blocks: list[agent_blocks.AgentBlock],
+) -> bool:
+    """Ground completion claims in typed prior-block verification evidence."""
+
+    if block.role != "final":
+        return True
+    if any(
+        prior.status != "complete"
+        or bool(prior.verification_warning)
+        for prior in prior_blocks
+    ) and not _UNCERTAINTY_DISCLOSURE_RE.search(block.output):
+        return False
+    mutation_blocks = [
+        prior
+        for prior in prior_blocks
+        if prior.requires_change
+    ]
+    if (
+        mutation_blocks
+        and _MUTATION_COMPLETION_CLAIM_RE.search(block.output)
+    ):
+        return all(
+            prior.status == "complete"
+            and not prior.verification_warning
+            and bool(prior.successful_writes)
+            and (
+                "Verified Git state change" in prior.git_evidence
+                or "Git state changed during this block" in prior.git_evidence
+            )
+            for prior in mutation_blocks
+        )
+    return True
+
+
+def _enforce_block_output_verification(
+    block: agent_blocks.AgentBlock,
+    prior_blocks: list[agent_blocks.AgentBlock],
+) -> bool:
+    output_contract_verified = _block_output_is_verified(block)
+    claim_grounded = _final_output_claims_are_grounded(
+        block,
+        prior_blocks,
+    )
+    if block.status == "complete" and not output_contract_verified:
+        block.status = "partial"
+        block.status_code = "output_contract_failed"
+        block.status_reason = (
+            "Block output did not satisfy the required "
+            "'## Block Output' evidence contract."
+        )
+        block.verification_warning = block.status_reason
+    elif block.status == "complete" and not claim_grounded:
+        block.status = "partial"
+        block.status_code = "claim_grounding_failed"
+        block.status_reason = (
+            "Final output made a completion claim without matching "
+            "verified prior-block evidence or omitted required uncertainty."
+        )
+        block.verification_warning = block.status_reason
+    return output_contract_verified and claim_grounded
+
+
+def _estimate_agent_request_tokens(
+    messages: list[dict[str, Any]],
+    tools: list[Any],
+) -> int:
+    total = sum(
+        context_budget.estimate_message_tokens(message)
+        for message in messages
+    )
+    if tools:
+        from .tool_schema import estimate_tool_schema_tokens
+
+        total += estimate_tool_schema_tokens(tools)
+    return total
 
 
 def _model_chat_options(model: str, cfg: Config) -> dict[str, Any]:
@@ -85,6 +205,8 @@ class AgentRunResult:
     error: str = ""
     children: list[str] = field(default_factory=list)
     blocks: list[dict[str, Any]] = field(default_factory=list)
+    contract_id: str = ""
+    contract_mode: str = ""
 
     def for_tool(self) -> str:
         lines = [
@@ -93,6 +215,10 @@ class AgentRunResult:
         ]
         if self.children:
             lines.append(f"Child threads: {', '.join(self.children)}")
+        if self.contract_id:
+            lines.append(
+                f"Run contract: {self.contract_id} ({self.contract_mode or 'unknown'})"
+            )
         if self.error:
             lines.append(f"Error: {self.error}")
         if self.blocks:
@@ -103,6 +229,10 @@ class AgentRunResult:
         if self.output:
             lines.append(f"Output:\n{self.output[:12_000]}")
         return "\n".join(lines)
+
+
+AgentLoopProtocolError = nathan_provider_protocol.AgentLoopProtocolError
+AgentLoopState = nathan_provider_protocol.AgentLoopState
 
 
 _execution_state = threading.local()
@@ -133,6 +263,13 @@ def run_agent_block(
     client: Any,
     route: task_router.TaskRoute | None = None,
     completion_check: Callable[[agent_blocks.AgentBlock], None] | None = None,
+    run_contract: run_contracts.RunContract | None = None,
+    block_contract: run_contracts.BlockRunContract | None = None,
+    contract_tracker: run_contracts.RunContractTracker | None = None,
+    run_journal: agent_run_journal.AgentRunJournal | None = None,
+    block_ordinal: int | None = None,
+    recovery_phase: str = "",
+    recovery_attempt: int = 0,
 ) -> None:
     block.status = "running"
     block.status_code = ""
@@ -144,15 +281,177 @@ def run_agent_block(
         cfg.safe_mode,
         cfg.auto_approve_active,
     )
-    runtime_tool_names = policy.allowed_tools if cfg.algorithmic_tool_policy_enabled else block.allowed_tools
+    policy_enforced = cfg.algorithmic_tool_policy_enabled
+    iteration_limit = max(1, int(block.max_iterations))
+    runtime_tool_names: frozenset[str]
+    if run_contract is not None:
+        try:
+            if block_contract is None:
+                raise run_contracts.RunContractViolation(
+                    "run contract execution requires a block contract"
+                )
+            run_contract.assert_live_authority(
+                approval_mode=approval_mode_for_config(cfg),
+                safe_mode=bool(cfg.safe_mode),
+                session_preapproval=(
+                    False
+                    if approval_mode_for_config(cfg) == "never"
+                    else approval_mode_for_config(cfg) == "auto"
+                    or bool(cfg.auto_approve_active)
+                ),
+            )
+            if recovery_phase:
+                if (
+                    recovery_attempt < 1
+                    or recovery_attempt
+                    > block_contract.max_recovery_attempts
+                ):
+                    raise run_contracts.RunContractViolation(
+                        "recovery attempt exceeds the immutable run contract"
+                    )
+                if recovery_phase == "plan":
+                    if (
+                        block.role != "recovery-plan"
+                        or block.allowed_tools
+                        or block.requires_change
+                    ):
+                        raise run_contracts.RunContractViolation(
+                            "live recovery plan differs from the immutable run contract"
+                        )
+                    runtime_tool_names = frozenset()
+                    iteration_limit = 1
+                elif recovery_phase == "retry":
+                    if (
+                        block.role
+                        != f"{block_contract.role}-retry"
+                        or frozenset(block_contract.configured_tools)
+                        != block.allowed_tools
+                        or block_contract.requires_change
+                        != block.requires_change
+                    ):
+                        raise run_contracts.RunContractViolation(
+                            "live recovery retry differs from the immutable run contract"
+                        )
+                    runtime_tool_names = frozenset(
+                        block_contract.effective_tools(
+                            run_contract.mode
+                        )
+                    )
+                    iteration_limit = (
+                        block_contract.recovery_max_iterations
+                    )
+                else:
+                    raise run_contracts.RunContractViolation(
+                        "recovery phase is invalid"
+                    )
+            else:
+                if block_contract.role != block.role:
+                    raise run_contracts.RunContractViolation(
+                        "live block role differs from the immutable run contract"
+                    )
+                if (
+                    agent_run_journal.digest_text(block.prompt)
+                    != block_contract.prompt_digest
+                ):
+                    raise run_contracts.RunContractViolation(
+                        "live block prompt differs from the immutable run contract"
+                    )
+                if (
+                    frozenset(block_contract.configured_tools)
+                    != block.allowed_tools
+                ):
+                    raise run_contracts.RunContractViolation(
+                        "live block tools differ from the immutable run contract"
+                    )
+                if block_contract.requires_change != block.requires_change:
+                    raise run_contracts.RunContractViolation(
+                        "live block mutation contract differs from the immutable run contract"
+                    )
+                runtime_tool_names = frozenset(
+                    block_contract.effective_tools(run_contract.mode)
+                )
+                iteration_limit = block_contract.max_iterations
+            policy_enforced = run_contract.mode == "enforced"
+            policy = tool_policy.ToolPolicyDecision(
+                allowed_tools=(
+                    frozenset()
+                    if recovery_phase == "plan"
+                    else frozenset(block_contract.admitted_tools)
+                ),
+                denied_tools=(
+                    frozenset()
+                    if recovery_phase == "plan"
+                    else frozenset(block_contract.denied_tools)
+                ),
+                approval_required=(
+                    frozenset()
+                    if recovery_phase == "plan"
+                    else frozenset(
+                        block_contract.approval_required_tools
+                    )
+                ),
+                reasons=(
+                    ("contract-bound recovery plan",)
+                    if recovery_phase == "plan"
+                    else block_contract.policy_reasons
+                ),
+            )
+        except run_contracts.RunContractViolation as exc:
+            block.status = "failed"
+            block.status_code = "run_contract_violation"
+            block.status_reason = str(exc)
+            block.output = f"## Block Output\n\nRun contract rejected execution: {exc}"
+            block.duration_ms = 0.0
+            show_agent_block_complete(
+                block.role,
+                block.output,
+                duration_ms=block.duration_ms,
+                tool_calls=block.tool_calls,
+                status=block.status,
+                status_reason=block.status_reason,
+                status_code=block.status_code,
+                policy_summary="run contract rejected",
+            )
+            return
+    else:
+        runtime_tool_names = (
+            policy.allowed_tools if policy_enforced else block.allowed_tools
+        )
     allowed_tools = [
         TOOL_MAP[name]
         for name in sorted(runtime_tool_names)
         if name in TOOL_MAP
     ]
-    block_model = block.model or cfg.model
+    block_model = (
+        block_contract.model
+        if block_contract is not None
+        else block.model or cfg.model
+    )
     block_client = client_for_model(block_model, cfg, client)
     if block_client is client and block_model != cfg.model:
+        if run_contract is not None:
+            block.status = "failed"
+            block.status_code = "run_contract_model_unavailable"
+            block.status_reason = (
+                f"Contract model {block_model} is unavailable; runtime "
+                f"fallback to {cfg.model} was withheld."
+            )
+            block.output = (
+                "## Block Output\n\n"
+                f"{block.status_reason}"
+            )
+            block.duration_ms = 0.0
+            show_agent_block_complete(
+                block.role,
+                block.output,
+                duration_ms=block.duration_ms,
+                tool_calls=block.tool_calls,
+                status=block.status,
+                status_reason=block.status_reason,
+                status_code=block.status_code,
+                policy_summary="run contract rejected model fallback",
+            )
+            return
         block_model = cfg.model
     policy_summary = tool_policy.format_policy_summary(policy)
     if block.requires_change:
@@ -162,7 +461,7 @@ def run_agent_block(
         block_model,
         len(allowed_tools),
         policy_summary=policy_summary,
-        policy_enforced=cfg.algorithmic_tool_policy_enabled,
+        policy_enforced=policy_enforced,
         cwd=cfg.cwd,
     )
     started = time.perf_counter()
@@ -195,6 +494,24 @@ def run_agent_block(
     ]
     block.messages = messages
     completion_nudged = False
+    loop_state = AgentLoopState()
+
+    def record_protocol_dispatch(
+        name: str,
+        args: dict[str, Any],
+        tool_call_id: str | None,
+    ) -> None:
+        try:
+            action = resolve_action(name, args, cwd=cfg.cwd)
+            mutating = action.effect_class is not EffectClass.OBSERVE
+        except Exception:
+            # Unknown actions are treated as mutation-capable until the
+            # dispatcher produces their fail-closed result.
+            mutating = True
+        loop_state.record_tool_dispatch(
+            tool_call_id,
+            mutating=mutating,
+        )
 
     def finish_with_partial_output() -> None:
         messages.append(
@@ -208,6 +525,9 @@ def run_agent_block(
             }
         )
         partial_text = ""
+        partial_tool_calls: list[Any] = []
+        wrap_round = loop_state.round_number + 1
+        loop_state.begin_model_round(wrap_round)
         try:
             stream = block_client.chat(
                 model=block_model,
@@ -223,12 +543,36 @@ def run_agent_block(
                 message = get_attr(chunk, "message", {})
                 thinking = get_attr(message, "thinking", "")
                 content = get_attr(message, "content", "")
-                if thinking and cfg.show_thinking:
-                    show_thinking_text(thinking)
+                calls = get_attr(message, "tool_calls", None)
+                if thinking:
+                    loop_state.record_model_event("reasoning")
+                    if cfg.show_thinking:
+                        show_thinking_text(thinking)
                 if content:
+                    loop_state.record_model_event("content")
                     finish_thinking_block()
                     partial_text += content
+                if calls:
+                    loop_state.record_model_event("tool")
+                    partial_tool_calls.extend(calls)
+            loop_state.complete_model_round(partial_tool_calls)
+            if partial_tool_calls:
+                loop_state.cancel(
+                    "tool-free partial wrap-up attempted a tool call"
+                )
+                partial_text = ""
+            else:
+                loop_state.finish_without_tools()
+        except KeyboardInterrupt:
+            loop_state.cancel(
+                "Agent Block partial wrap-up cancelled"
+            )
+            raise
         except Exception as exc:
+            loop_state.interrupt(
+                str(exc),
+                timed_out=isinstance(exc, TimeoutError),
+            )
             logger.debug("Agent block partial wrap-up failed for %s: %s", block.role, exc)
         finally:
             finish_thinking_block()
@@ -239,7 +583,7 @@ def run_agent_block(
         block.status = "partial"
         block.status_code = "max_iterations"
         block.status_reason = (
-            f"Iteration budget exhausted after {max(1, int(block.max_iterations))} cycles; "
+            f"Iteration budget exhausted after {iteration_limit} cycles; "
             "showing a tool-free partial summary."
         )
 
@@ -265,7 +609,7 @@ def run_agent_block(
         return
 
 
-    from .program_runtime import authorization_for_actions
+    from .nathan_program_runtime import authorization_for_actions
 
     _program_auth_missing = object()
     _previous_program_authorization = getattr(
@@ -278,39 +622,112 @@ def run_agent_block(
     )
 
     try:
-        for _ in range(max(1, int(block.max_iterations))):
+        for _ in range(iteration_limit):
+            if run_contract is not None:
+                try:
+                    run_contract.assert_live_authority(
+                        approval_mode=approval_mode_for_config(cfg),
+                        safe_mode=bool(cfg.safe_mode),
+                        session_preapproval=(
+                            False
+                            if approval_mode_for_config(cfg) == "never"
+                            else approval_mode_for_config(cfg) == "auto"
+                            or bool(cfg.auto_approve_active)
+                        ),
+                    )
+                except run_contracts.RunContractViolation as exc:
+                    block.status = "partial"
+                    block.status_code = "run_contract_violation"
+                    block.status_reason = str(exc)
+                    block.output = (
+                        "## Block Output\n\n"
+                        f"Run contract stopped execution: {exc}"
+                    )
+                    break
             request_messages = messages
             if _model_info_module.is_gemini_model(block_model):
                 request_messages = collapse_tool_history_for_gemini(request_messages)
-            stream = block_client.chat(
-                model=block_model,
-                messages=request_messages,
-                tools=allowed_tools,
-                stream=True,
-                think=cfg.show_thinking,
-                keep_alive=cfg.keep_alive,
-                options=_model_chat_options(block_model, cfg),
-            )
+            if run_contract is not None:
+                try:
+                    prompt_tokens = _estimate_agent_request_tokens(
+                        request_messages,
+                        allowed_tools,
+                    )
+                    if contract_tracker is not None:
+                        contract_tracker.start_model_round(prompt_tokens)
+                    if run_journal is not None:
+                        if block_ordinal is None:
+                            raise run_contracts.RunContractViolation(
+                                "journaled block is missing its contract ordinal"
+                            )
+                        run_journal.model_round_started(
+                            block_ordinal,
+                            _,
+                            attempt=recovery_attempt,
+                            prompt_tokens=prompt_tokens,
+                        )
+                except run_contracts.RunContractViolation as exc:
+                    block.status = "partial"
+                    block.status_code = "run_contract_prompt_budget"
+                    block.status_reason = str(exc)
+                    block.output = (
+                        "## Block Output\n\n"
+                        f"Run contract stopped model dispatch: {exc}"
+                    )
+                    break
+                except agent_run_journal.AgentRunJournalError as exc:
+                    block.status = "failed"
+                    block.status_code = "run_journal_unavailable"
+                    block.status_reason = str(exc)
+                    block.output = (
+                        "## Block Output\n\n"
+                        f"Durable run checkpoint failed before model dispatch: {exc}"
+                    )
+                    break
+            loop_state.begin_model_round(_)
             thinking_text = ""
             content_text = ""
             tool_calls: list[Any] = []
             try:
+                stream = block_client.chat(
+                    model=block_model,
+                    messages=request_messages,
+                    tools=allowed_tools,
+                    stream=True,
+                    think=cfg.show_thinking,
+                    keep_alive=cfg.keep_alive,
+                    options=_model_chat_options(block_model, cfg),
+                )
                 for chunk in stream:
                     record_chat_metrics(cfg, chunk)
                     message = get_attr(chunk, "message", {})
                     thinking = get_attr(message, "thinking", "")
                     content = get_attr(message, "content", "")
                     calls = get_attr(message, "tool_calls", None)
-                    if thinking and cfg.show_thinking:
-                        show_thinking_text(thinking)
-                        thinking_text += thinking
+                    if thinking:
+                        loop_state.record_model_event("reasoning")
+                        if cfg.show_thinking:
+                            show_thinking_text(thinking)
+                            thinking_text += thinking
                     if content:
+                        loop_state.record_model_event("content")
                         finish_thinking_block()
                         content_text += content
                     if calls:
+                        loop_state.record_model_event("tool")
                         tool_calls.extend(calls)
+            except KeyboardInterrupt:
+                loop_state.cancel("Agent Block model stream cancelled")
+                raise
+            except Exception as exc:
+                loop_state.interrupt(
+                    str(exc),
+                    timed_out=isinstance(exc, TimeoutError),
+                )
+                raise
             finally:
                 finish_thinking_block()
+            serialized_calls = loop_state.complete_model_round(tool_calls)
 
             assistant: dict[str, Any] = {"role": "assistant"}
             if content_text:
@@ -318,15 +735,40 @@ def run_agent_block(
                 block.output = content_text
             if thinking_text:
                 assistant["thinking"] = thinking_text
-            serialized_calls = [serialize_tool_call(call) for call in tool_calls]
             if tool_calls:
                 assistant["tool_calls"] = serialized_calls
             messages.append(assistant)
+            if run_journal is not None and block_ordinal is not None:
+                try:
+                    run_journal.model_round_completed(
+                        block_ordinal,
+                        _,
+                        status="completed",
+                        tool_call_count=len(tool_calls),
+                        response_digest=agent_run_journal.digest_json(
+                            {
+                                "content": content_text,
+                                "thinking": thinking_text,
+                                "tool_calls": serialized_calls,
+                            }
+                        ),
+                        attempt=recovery_attempt,
+                    )
+                except agent_run_journal.AgentRunJournalError as exc:
+                    block.status = "failed"
+                    block.status_code = "run_journal_unavailable"
+                    block.status_reason = str(exc)
+                    block.output = (
+                        "## Block Output\n\n"
+                        f"Durable run checkpoint failed after model dispatch: {exc}"
+                    )
+                    break
 
             if not tool_calls:
+                loop_state.finish_without_tools()
                 completion = execution_guardrails.completion_decision()
                 if not completion.allowed:
-                    if not completion_nudged and _ + 1 < max(1, int(block.max_iterations)):
+                    if not completion_nudged and _ + 1 < iteration_limit:
                         completion_nudged = True
                         block.output = ""
                         show_info(
@@ -361,57 +803,279 @@ def run_agent_block(
                     block.output = "(no output produced)"
                 break
 
-            policy_denied_batch = False
-            for call, serialized_call in zip(tool_calls, serialized_calls):
-                name, args = normalize_tool_call(call)
-                if policy_denied_batch or name not in runtime_tool_names:
-                    if name not in runtime_tool_names:
-                        result = f"Tool not allowed in {block.role} block: {name}"
-                        block.status_reason = f"Tool policy violation: {name} is not allowed in the {block.role} block."
-                    else:
-                        result = "Skipped because another tool call in this assistant message violated block policy."
-                    show_tool_result(name, result, approved=False)
-                    messages.append(tool_result_message(name, result, str(serialized_call.get("id") or "") or None))
+            normalized_batch = [normalize_tool_call(call) for call in tool_calls]
+            batch = [
+                (normalized, str(serialized.get("id") or "") or None)
+                for normalized, serialized in zip(normalized_batch, serialized_calls)
+            ]
+            loop_state.begin_tool_batch()
+            if contract_tracker is not None:
+                try:
+                    contract_tracker.reserve_tool_calls(len(batch))
+                except run_contracts.RunContractViolation as exc:
+                    for (name, args), tool_call_id in batch:
+                        record_protocol_dispatch(
+                            name,
+                            args,
+                            tool_call_id,
+                        )
+                        execution = execute_tool_call_for_pipeline(
+                            name,
+                            args,
+                            cfg,
+                            tool_call_id=tool_call_id,
+                            policy_ceiling_code="run_contract_tool_budget",
+                        )
+                        messages.append(execution.message)
+                        loop_state.record_tool_result(tool_call_id)
+                    loop_state.finish_tool_batch()
+                    block.status = "partial"
+                    block.status_code = "run_contract_tool_budget"
+                    block.status_reason = str(exc)
+                    block.output = (
+                        "## Block Output\n\n"
+                        f"Run contract stopped tool dispatch: {exc}"
+                    )
+                    break
+            journal_steps: list[str] = []
+            if run_journal is not None and block_ordinal is not None:
+                try:
+                    for tool_index, ((name, args), tool_call_id) in enumerate(
+                        batch
+                    ):
+                        action = resolve_action(name, args, cwd=cfg.cwd)
+                        event = run_journal.tool_intent(
+                            ordinal=block_ordinal,
+                            round_number=_,
+                            tool_index=tool_index,
+                            action=name,
+                            args=args,
+                            call_id=tool_call_id or "",
+                            mutating=action.effect_class
+                            is not EffectClass.OBSERVE,
+                            idempotency=action.idempotency.value,
+                            target=action.target,
+                            attempt=recovery_attempt,
+                        )
+                        journal_steps.append(
+                            str(event.payload.get("step_id") or "")
+                        )
+                except Exception as exc:
+                    for step_id in journal_steps:
+                        try:
+                            run_journal.tool_result(
+                                step_id=step_id,
+                                status="failed",
+                                invoked=False,
+                                verification="failed",
+                                error_code="journal_intent_failed",
+                            )
+                        except agent_run_journal.AgentRunJournalError:
+                            break
+                    for (name, args), tool_call_id in batch:
+                        record_protocol_dispatch(
+                            name,
+                            args,
+                            tool_call_id,
+                        )
+                        execution = execute_tool_call_for_pipeline(
+                            name,
+                            args,
+                            cfg,
+                            tool_call_id=tool_call_id,
+                            policy_ceiling_code="run_journal_unavailable",
+                        )
+                        messages.append(execution.message)
+                        loop_state.record_tool_result(tool_call_id)
+                    loop_state.finish_tool_batch()
                     block.status = "failed"
-                    block.status_code = "policy_denied"
-                    if not block.output:
-                        block.output = result
-                    policy_denied_batch = True
-                    continue
-                block.tool_calls += 1
-                shell_decision = tool_policy.evaluate_shell_command(
+                    block.status_code = "run_journal_unavailable"
+                    block.status_reason = (
+                        f"Durable tool intent checkpoint failed: {exc}"
+                    )
+                    block.output = (
+                        "## Block Output\n\n"
+                        f"Tool dispatch was withheld because its durable intent "
+                        f"could not be recorded: {exc}"
+                    )
+                    break
+            policy_ceilings = batch_policy_ceiling_codes(batch, cfg)
+            state_ceilings = loop_state.tool_batch_ceiling_codes()
+            protocol_ceilings = tuple(
+                state_code or policy_code
+                for state_code, policy_code in zip(
+                    state_ceilings,
+                    policy_ceilings,
+                )
+            )
+            shell_decisions = [
+                tool_policy.evaluate_shell_command(
                     str(args.get("command", "")),
                     requires_change=(block.requires_change and name == "run_shell"),
                     safe_mode=cfg.safe_mode,
                 )
-                if shell_decision.blocked:
-                    result = (
-                        "Blocked by required-change policy in safe mode: "
-                        f"{shell_decision.reason}."
+                for name, args in normalized_batch
+            ]
+            has_disallowed_tool = any(
+                name not in runtime_tool_names for name, _args in normalized_batch
+            )
+            has_blocked_shell = any(decision.blocked for decision in shell_decisions)
+            batch_must_quarantine = (
+                any(protocol_ceilings) or has_disallowed_tool or has_blocked_shell
+            )
+            journal_result_failed = False
+
+            def append_journal_result(
+                index: int,
+                execution: Any,
+                result: str,
+            ) -> None:
+                nonlocal journal_result_failed
+                if (
+                    run_journal is None
+                    or block_ordinal is None
+                    or index >= len(journal_steps)
+                ):
+                    return
+                outcome = getattr(execution, "outcome", None)
+                status = _pipeline_outcome_status(execution, result)
+                verification_value = getattr(
+                    getattr(outcome, "verification", None),
+                    "value",
+                    "",
+                )
+                try:
+                    run_journal.tool_result(
+                        step_id=journal_steps[index],
+                        status=status,
+                        invoked=bool(
+                            getattr(
+                                outcome,
+                                "invoked",
+                                status == "succeeded",
+                            )
+                        ),
+                        verification=str(
+                            verification_value
+                            or (
+                                "passed"
+                                if status == "succeeded"
+                                else "failed"
+                            )
+                        ),
+                        effect_id=str(getattr(outcome, "effect_id", "") or ""),
+                        idempotency_key=str(
+                            getattr(outcome, "idempotency_key", "") or ""
+                        ),
+                        error_code=str(
+                            getattr(outcome, "error_code", "") or ""
+                        ),
+                        deduplicated=bool(
+                            getattr(outcome, "deduplicated", False)
+                        ),
                     )
-                    show_tool_result(name, result, approved=False)
-                    record_tool_attempt(cfg, name=name, args=args, result=result, status="denied")
-                    record_perf_event("tool", tool=name, status="denied", duration_ms=0.0)
-                    messages.append(tool_result_message(name, result, str(serialized_call.get("id") or "") or None))
-                    block.mutation_denied = True
+                except agent_run_journal.AgentRunJournalError as exc:
+                    journal_result_failed = True
+                    block.status = "failed"
+                    block.status_code = "run_journal_unavailable"
+                    block.status_reason = (
+                        f"Tool outcome may require reconciliation because its "
+                        f"durable checkpoint failed: {exc}"
+                    )
+                    block.output = (
+                        "## Block Output\n\n"
+                        f"Tool outcome checkpoint failed after dispatch: {exc}"
+                    )
+
+            for index, ((name, args), tool_call_id) in enumerate(batch):
+                if journal_result_failed:
+                    record_protocol_dispatch(
+                        name,
+                        args,
+                        tool_call_id,
+                    )
+                    execution = execute_tool_call_for_pipeline(
+                        name,
+                        args,
+                        cfg,
+                        tool_call_id=tool_call_id,
+                        policy_ceiling_code="run_journal_unavailable",
+                    )
+                    tool_message, result = execution
+                    messages.append(tool_message)
+                    loop_state.record_tool_result(tool_call_id)
+                    append_journal_result(
+                        index,
+                        execution,
+                        result,
+                    )
                     continue
-                tool_message, _result = execute_tool_call_for_pipeline(
+                shell_decision = shell_decisions[index]
+                if batch_must_quarantine:
+                    if name not in runtime_tool_names:
+                        block.status_reason = f"Tool policy violation: {name} is not allowed in the {block.role} block."
+                        ceiling_code = "agent_tool_not_allowed"
+                    elif shell_decision.blocked:
+                        ceiling_code = "required_change_shell_blocked"
+                        block.mutation_denied = True
+                    elif protocol_ceilings[index]:
+                        ceiling_code = protocol_ceilings[index]
+                    else:
+                        ceiling_code = "agent_batch_quarantined"
+                    record_protocol_dispatch(
+                        name,
+                        args,
+                        tool_call_id,
+                    )
+                    execution = execute_tool_call_for_pipeline(
+                        name,
+                        args,
+                        cfg,
+                        tool_call_id=tool_call_id,
+                        policy_ceiling_code=ceiling_code,
+                    )
+                    tool_message, result = execution
+                    messages.append(tool_message)
+                    loop_state.record_tool_result(tool_call_id)
+                    append_journal_result(index, execution, result)
+                    if has_disallowed_tool or any(protocol_ceilings):
+                        block.status = "failed"
+                        block.status_code = "policy_denied"
+                    if name not in runtime_tool_names or (
+                        protocol_ceilings[index]
+                        and protocol_ceilings[index] != "batch_quarantined"
+                    ):
+                        block.output = result
+                    continue
+                block.tool_calls += 1
+                record_protocol_dispatch(
+                    name,
+                    args,
+                    tool_call_id,
+                )
+                execution = execute_tool_call_for_pipeline(
                     name,
                     args,
                     cfg,
-                    tool_call_id=str(serialized_call.get("id") or "") or None,
+                    tool_call_id=tool_call_id,
                     force_approval=tool_policy.requires_explicit_approval(
                         name,
                         block_policy=policy,
                         shell_decision=shell_decision,
-                        policy_enforced=cfg.algorithmic_tool_policy_enabled,
+                        policy_enforced=policy_enforced,
                     ),
                 )
+                tool_message, _result = execution
+                append_journal_result(index, execution, _result)
+                outcome_status = _pipeline_outcome_status(execution, _result)
                 mutation_action = tool_policy.describes_mutation_action(name, args)
                 mutation_succeeded = (
-                    (name == "write_file" and str(_result).lstrip().startswith("Wrote "))
-                    or (name == "edit_file" and str(_result).lstrip().startswith("Edited "))
-                    or (name == "batch_edit" and str(_result).lstrip().startswith("Batch-edited "))
+                    outcome_status == "succeeded"
+                    and (
+                        (name == "write_file" and str(_result).lstrip().startswith("Wrote "))
+                        or (name == "edit_file" and str(_result).lstrip().startswith("Edited "))
+                        or (name == "batch_edit" and str(_result).lstrip().startswith("Batch-edited "))
+                    )
                 )
                 if mutation_succeeded:
                     written_path = str(args.get("path", "")).strip()
@@ -420,20 +1084,21 @@ def run_agent_block(
                     if mutation_action and mutation_action not in block.mutation_actions:
                         block.mutation_actions.append(mutation_action)
                 elif name in {"write_file", "edit_file", "batch_edit"}:
-                    lowered_result = str(_result).strip().lower()
-                    if lowered_result.startswith("user denied"):
+                    if outcome_status == "denied":
                         block.mutation_denied = True
-                    elif lowered_result.startswith(("error", "tool error", "tool argument error")):
+                    elif outcome_status != "succeeded":
                         block.failed_writes.append(summarize_tool_result(str(_result)))
                 elif (
                     name == "run_shell"
                     and mutation_action
-                    and not str(_result).startswith(("User denied", "Skipped repeated", "Blocked"))
+                    and outcome_status == "succeeded"
                     and mutation_action not in block.mutation_actions
                 ):
                     block.mutation_actions.append(mutation_action)
                 messages.append(tool_message)
-            if block.status == "failed":
+                loop_state.record_tool_result(tool_call_id)
+            loop_state.finish_tool_batch()
+            if block.status == "failed" or journal_result_failed:
                 break
         else:
             finish_with_partial_output()
@@ -709,15 +1374,28 @@ def enforce_required_change_contract(
     if not block.requires_change or block.status != "complete":
         return
 
-    # Git evidence is the strict path; when it is unavailable but recorded
-    # write_file evidence exists, the contract is satisfied with a manual-
-    # verification notice rather than a partial downgrade. Returning here
-    # preserves block.status == "complete" and skips the produced_change gate.
+    # A recorded write is action evidence, not final-state verification. Never
+    # convert it into a warning-only completion when Git attribution is
+    # unavailable.
     if (not before.available or not after.available) and block.successful_writes:
-        block.verification_warning = (
-            "Git verification was unavailable. Successful write_file operations were recorded, "
-            "but review must manually confirm the written files."
+        reported_output = block.output.strip()
+        block.status = "partial"
+        block.status_code = "verification_unavailable"
+        block.status_reason = (
+            "Required change not verified: Git final-state evidence is "
+            "unavailable, so recorded writes cannot establish completion."
         )
+        block.verification_warning = block.status_reason
+        block.output = (
+            "## Block Output\n\n"
+            "UNVERIFIED: a write action was recorded, but no attributable "
+            "final-state verifier was available."
+        )
+        if reported_output:
+            block.output += (
+                "\n\nUnverified reported output:\n"
+                f"{reported_output}"
+            )
         return
 
     produced_change = git_evidence.has_verified_delta(before, after) or (
@@ -856,6 +1534,9 @@ def _block_record(block: agent_blocks.AgentBlock) -> dict[str, Any]:
         "status": block.status,
         "status_code": block.status_code,
         "status_reason": block.status_reason,
+        "context_output": block.context_output[
+            : agent_threads.MAX_BLOCK_CONTEXT_CHARS
+        ],
         "tool_calls": block.tool_calls,
         "duration_ms": block.duration_ms,
         "successful_writes": list(block.successful_writes),
@@ -867,6 +1548,159 @@ def _block_record(block: agent_blocks.AgentBlock) -> dict[str, Any]:
         "untracked_digest": block.untracked_digest,
         "git_clean": block.git_clean,
     }
+
+
+def _contract_thread_link(
+    contract: run_contracts.RunContract,
+) -> dict[str, Any]:
+    return {
+        "contract_id": contract.contract_id,
+        "digest": contract.digest,
+        "run_nonce": contract.run_nonce,
+        "mode": contract.mode,
+        "approval_mode": contract.approval_mode,
+        "journal_file": agent_run_journal.journal_path(
+            contract.run_nonce
+        ).name,
+    }
+
+
+def _checkpoint_payload(
+    journal: agent_run_journal.AgentRunJournal,
+) -> dict[str, Any]:
+    return journal.checkpoint_payload()
+
+
+def _hydrate_verified_blocks(
+    pipeline: list[agent_blocks.AgentBlock],
+    block_records: list[dict[str, Any]],
+    journal: agent_run_journal.AgentRunJournal,
+) -> list[agent_blocks.AgentBlock]:
+    """Restore only context whose digest is accepted by the journal chain."""
+
+    checkpoints = journal.verified_blocks()
+    if len(block_records) < len(checkpoints):
+        raise agent_run_journal.AgentRunJournalCorrupt(
+            "thread context is missing a verified block checkpoint"
+        )
+    hydrated: list[agent_blocks.AgentBlock] = []
+    for checkpoint in checkpoints:
+        if checkpoint.ordinal >= len(pipeline):
+            raise agent_run_journal.AgentRunJournalCorrupt(
+                "verified block is outside the current pipeline"
+            )
+        raw = block_records[checkpoint.ordinal]
+        if not isinstance(raw, dict):
+            raise agent_run_journal.AgentRunJournalCorrupt(
+                "verified thread block context is invalid"
+            )
+        template = copy.deepcopy(pipeline[checkpoint.ordinal])
+        context_output = str(raw.get("context_output") or "")
+        if (
+            str(raw.get("role") or "") != checkpoint.role
+            or template.role != checkpoint.role
+            or str(raw.get("status") or "") != "complete"
+            or agent_run_journal.digest_text(context_output)
+            != checkpoint.context_digest
+        ):
+            raise agent_run_journal.AgentRunJournalCorrupt(
+                "thread block context does not match its verified journal digest"
+            )
+        template.status = "complete"
+        template.status_code = str(raw.get("status_code") or "")
+        template.status_reason = str(raw.get("status_reason") or "")
+        template.context_output = context_output
+        template.output = context_output
+        template.tool_calls = int(raw.get("tool_calls") or 0)
+        template.duration_ms = float(raw.get("duration_ms") or 0.0)
+        template.successful_writes = [
+            str(item)
+            for item in raw.get("successful_writes", [])
+            if str(item).strip()
+        ]
+        template.verification_warning = str(
+            raw.get("verification_warning") or ""
+        )
+        template.git_head = str(raw.get("git_head") or "")
+        template.git_status = str(raw.get("git_status") or "")
+        template.status_digest = str(raw.get("status_digest") or "")
+        template.tracked_diff_digest = str(
+            raw.get("tracked_diff_digest") or ""
+        )
+        template.untracked_digest = str(
+            raw.get("untracked_digest") or ""
+        )
+        template.git_clean = bool(raw.get("git_clean", False))
+        hydrated.append(template)
+    return hydrated
+
+
+def _validate_resume_contract(
+    *,
+    task: str,
+    cfg: Config,
+    pipeline: list[agent_blocks.AgentBlock],
+    pipeline_name: str,
+    journal: agent_run_journal.AgentRunJournal,
+    snapshot: git_evidence.GitSnapshot,
+) -> agent_run_journal.AgentResumeState:
+    contract = journal.contract
+    state = journal.resume_state()
+    if state.terminal:
+        raise agent_run_journal.AgentRunJournalError(
+            "terminal Agent runs cannot be resumed in place"
+        )
+    if state.uncertain_mutation_steps:
+        raise agent_run_journal.AgentRunJournalError(
+            "a prior mutation outcome is uncertain and requires reconciliation"
+        )
+    contract.assert_live_authority(
+        approval_mode=approval_mode_for_config(cfg),
+        safe_mode=bool(cfg.safe_mode),
+        session_preapproval=(
+            False
+            if approval_mode_for_config(cfg) == "never"
+            else approval_mode_for_config(cfg) == "auto"
+            or bool(cfg.auto_approve_active)
+        ),
+    )
+    if contract.task_digest != agent_run_journal.digest_text(task):
+        raise run_contracts.RunContractViolation(
+            "resume task differs from the immutable run contract"
+        )
+    if contract.pipeline != pipeline_name:
+        raise run_contracts.RunContractViolation(
+            "resume pipeline differs from the immutable run contract"
+        )
+    current_root = str(Path(cfg.cwd).expanduser().resolve(strict=False))
+    if current_root != contract.workspace.root:
+        raise run_contracts.RunContractViolation(
+            "resume workspace differs from the immutable run contract"
+        )
+    if len(pipeline) != len(contract.blocks):
+        raise run_contracts.RunContractViolation(
+            "resume pipeline shape differs from the immutable run contract"
+        )
+    for ordinal, (block, block_contract) in enumerate(
+        zip(pipeline, contract.blocks)
+    ):
+        if (
+            block_contract.ordinal != ordinal
+            or block.role != block_contract.role
+            or agent_run_journal.digest_text(block.prompt)
+            != block_contract.prompt_digest
+            or block.allowed_tools
+            != frozenset(block_contract.configured_tools)
+            or block.requires_change != block_contract.requires_change
+        ):
+            raise run_contracts.RunContractViolation(
+                "resume block definition differs from the immutable run contract"
+            )
+    if not state.workspace_matches(snapshot):
+        raise run_contracts.RunContractViolation(
+            "workspace state differs from the last verified Agent checkpoint"
+        )
+    return state
 
 
 def _capture_thread_workspace(
@@ -901,8 +1735,11 @@ def _start_thread_record(
     *,
     thread_id: str | None,
     parent_id: str,
+    contract: run_contracts.RunContract,
+    checkpoint: dict[str, Any],
 ) -> str:
     workspace = _capture_thread_workspace(cfg)
+    contract_link = _contract_thread_link(contract)
     try:
         if thread_id:
             agent_threads.begin_turn(
@@ -911,6 +1748,8 @@ def _start_thread_record(
                 pipeline=pipeline_name,
                 model=cfg.model,
                 workspace=workspace,
+                run_contract=contract_link,
+                checkpoint=checkpoint,
             )
             return thread_id
         record = agent_threads.create_thread(
@@ -921,6 +1760,8 @@ def _start_thread_record(
             status="queued",
             start_turn=True,
             workspace=workspace,
+            run_contract=contract_link,
+            checkpoint=checkpoint,
         )
         return str(record["id"])
     except (OSError, ValueError, KeyError) as exc:
@@ -938,9 +1779,11 @@ def _finish_thread_record(
     blocks: list[dict[str, Any]],
     pipeline: str,
     workspace: dict[str, Any] | None = None,
-) -> None:
+    contract: run_contracts.RunContract | None = None,
+    checkpoint: dict[str, Any] | None = None,
+) -> bool:
     if not thread_id:
-        return
+        return False
     try:
         agent_threads.finish_turn(
             thread_id,
@@ -950,9 +1793,17 @@ def _finish_thread_record(
             blocks=blocks,
             pipeline=pipeline,
             workspace=workspace,
+            run_contract=(
+                _contract_thread_link(contract)
+                if contract is not None
+                else None
+            ),
+            checkpoint=checkpoint,
         )
+        return True
     except (OSError, ValueError, KeyError) as exc:
         logger.debug("Could not finish agent thread record %s: %s", thread_id, exc)
+        return False
 
 
 def run_agent_pipeline(
@@ -965,6 +1816,9 @@ def run_agent_pipeline(
     parent_id: str = "",
     prior_context: str = "",
     thread_pipeline_label: str | None = None,
+    resume_journal: agent_run_journal.AgentRunJournal | None = None,
+    resume_block_records: list[dict[str, Any]] | None = None,
+    resume_direction: str = "",
 ) -> AgentRunResult:
     if not task.strip():
         show_error(AGENT_USAGE)
@@ -979,25 +1833,158 @@ def run_agent_pipeline(
         return AgentRunResult(status="failed", pipeline=pipeline_name, error=f"Pipeline '{pipeline_name}' is unavailable.")
     pipeline, _pipeline_source = resolved
     record_pipeline = thread_pipeline_label or pipeline_name
+    route = task_router.route_task(task)
+    journal_lease = ExitStack()
+    try:
+        initial_contract_snapshot = git_evidence.capture_git_snapshot(cfg.cwd)
+        if resume_journal is None:
+            contract = run_contracts.compile_agent_run_contract(
+                task=task,
+                route=route,
+                pipeline_name=record_pipeline,
+                blocks=pipeline,
+                cfg=cfg,
+                approval_mode=approval_mode_for_config(cfg),
+                snapshot=initial_contract_snapshot,
+            )
+            run_journal = agent_run_journal.AgentRunJournal.create(contract)
+            journal_lease.enter_context(run_journal.execution_lease())
+            contract_tracker = run_contracts.RunContractTracker(contract)
+        else:
+            run_journal = resume_journal
+            journal_lease.enter_context(run_journal.execution_lease())
+            resume_state = _validate_resume_contract(
+                task=task,
+                cfg=cfg,
+                pipeline=pipeline,
+                pipeline_name=record_pipeline,
+                journal=run_journal,
+                snapshot=initial_contract_snapshot,
+            )
+            contract = run_journal.contract
+            completed = _hydrate_verified_blocks(
+                pipeline,
+                resume_block_records or [],
+                run_journal,
+            )
+            contract_tracker = run_contracts.RunContractTracker.restore(
+                contract,
+                completed_blocks=resume_state.next_block_ordinal,
+                model_rounds=resume_state.model_rounds,
+                tool_calls=resume_state.tool_calls,
+                prompt_tokens=resume_state.prompt_tokens,
+            )
+            run_journal.run_resumed(
+                next_block_ordinal=resume_state.next_block_ordinal,
+                last_verified_sequence=(
+                    resume_state.last_verified_sequence
+                ),
+            )
+    except (
+        run_contracts.RunContractError,
+        run_contracts.RunContractViolation,
+        agent_run_journal.AgentRunJournalError,
+        OSError,
+    ) as exc:
+        journal_lease.close()
+        error = f"Agent run contract could not be compiled: {exc}"
+        show_error(error)
+        return AgentRunResult(
+            status="failed",
+            pipeline=record_pipeline,
+            error=error,
+        )
     active_thread_id = _start_thread_record(
         task,
         cfg,
         record_pipeline,
         thread_id=thread_id,
         parent_id=parent_id,
+        contract=contract,
+        checkpoint=_checkpoint_payload(run_journal),
     )
+    if not active_thread_id:
+        error = (
+            "Agent run stopped because durable thread context could not be "
+            "created."
+        )
+        try:
+            run_journal.run_finished(
+                status="failed",
+                last_verified_sequence=-1,
+            )
+        except agent_run_journal.AgentRunJournalError:
+            pass
+        journal_lease.close()
+        show_error(error)
+        return AgentRunResult(
+            status="failed",
+            pipeline=record_pipeline,
+            error=error,
+            contract_id=contract.contract_id,
+            contract_mode=contract.mode,
+        )
     if active_thread_id:
         show_info(f"Agent thread {active_thread_id} · {record_pipeline}")
-    route = task_router.route_task(task)
-    pipeline_task = task
+    show_info(
+        f"Run contract {contract.digest[:12]} · {contract.mode} · "
+        f"approval {contract.approval_mode}"
+    )
+    context_sources: list[agent_context.AgentContextSource] = []
+    if resume_direction.strip():
+        context_sources.append(
+            agent_context.AgentContextSource(
+                name="resume_direction",
+                title="Resume Direction",
+                body=resume_direction.strip(),
+                priority=120,
+                trust="user_resume_direction",
+                scope="session",
+                freshness_rank=1_000,
+                provenance="user-resume-direction",
+            )
+        )
     if prior_context.strip():
-        pipeline_task = (
-            f"{task}\n\n## Parent Thread Handoff\n"
-            "Treat this as bounded evidence from independent specialist threads. "
-            "Verify consequential claims before acting.\n\n"
-            f"{prior_context.strip()[:24_000]}"
+        context_sources.append(
+            agent_context.AgentContextSource(
+                name="parent_handoff",
+                title="Parent Thread Handoff",
+                body=prior_context.strip(),
+                priority=100,
+                trust="verified_handoff",
+                scope="session",
+                freshness_rank=900,
+                provenance="verified-parent-thread",
+            )
         )
     from . import main as _main
+
+    try:
+        memory_catalog = memory_runtime.MemoryCatalog()
+        memory_catalog.sync_legacy_facts(cfg.memories, authoritative=False)
+        memory_hits = memory_catalog.search(
+            task,
+            embed_fn=_main.intuition_embed_fn(cfg),
+            embedding_model=_main.harness.resolve_embed_model(cfg),
+            tiers={"curated", "history"},
+            scopes={memory_runtime.scope_for_workspace(cfg.cwd)},
+        )
+        memory_injection = memory_runtime.format_prompt_hits(memory_hits)
+        if memory_injection:
+            context_sources.append(
+                agent_context.AgentContextSource(
+                    name="governed_memory",
+                    title="Relevant System Memory",
+                    body=memory_injection,
+                    priority=80,
+                    trust="governed_memory",
+                    scope="workspace",
+                    freshness_rank=700,
+                    provenance="julia-memory-runtime",
+                )
+            )
+    except memory_runtime.MemorySystemError as exc:
+        logger.debug("Agent pipeline governed memory recall failed: %s", exc)
 
     engine = _main._intuition_engine
     if engine is not None and cfg.intuition_recall_enabled:
@@ -1011,20 +1998,140 @@ def run_agent_pipeline(
                 show_recalled_context(recalled_blocks)
                 injection = engine.format_for_injection(recalled_blocks)
                 if injection:
-                    pipeline_task = f"{pipeline_task}\n\n{injection}"
+                    context_sources.append(
+                        agent_context.AgentContextSource(
+                            name="intuition_memory",
+                            title="Heuristic Intuition Memory",
+                            body=injection,
+                            priority=50,
+                            trust="heuristic_memory",
+                            scope="workspace",
+                            freshness_rank=500,
+                            provenance="intuition-runtime",
+                        )
+                    )
         except Exception as exc:
             logger.debug("Agent pipeline intuition recall failed: %s", exc)
+    try:
+        context_bundle = agent_context.build_agent_context(
+            task,
+            context_sources,
+            max_tokens=max(
+                256,
+                int(
+                    contract.budget.max_prompt_tokens_per_round
+                    * 0.45
+                ),
+            ),
+        )
+        pipeline_task = context_bundle.text
+        run_journal.context_bound(context_bundle.receipt.payload())
+        if context_bundle.receipt.truncated_sources:
+            show_info(
+                "Agent context truncated by budget: "
+                + ", ".join(
+                    context_bundle.receipt.truncated_sources
+                )
+            )
+        if context_bundle.receipt.omitted_sources:
+            show_info(
+                "Agent context omitted by budget: "
+                + ", ".join(
+                    context_bundle.receipt.omitted_sources
+                )
+            )
+    except (
+        agent_context.AgentContextError,
+        agent_run_journal.AgentRunJournalError,
+    ) as exc:
+        error = f"Agent context could not be durably bound: {exc}"
+        show_error(error)
+        block_records = [_block_record(block) for block in completed]
+        _finish_thread_record(
+            active_thread_id,
+            status="failed",
+            output=completed[-1].output if completed else "",
+            error=error,
+            blocks=block_records,
+            pipeline=record_pipeline,
+            workspace=_capture_thread_workspace(cfg),
+            contract=contract,
+            checkpoint=_checkpoint_payload(run_journal),
+        )
+        try:
+            state = run_journal.resume_state()
+            if not state.uncertain_mutation_steps:
+                run_journal.run_finished(
+                    status="failed",
+                    last_verified_sequence=(
+                        state.last_verified_sequence
+                    ),
+                )
+        except agent_run_journal.AgentRunJournalError:
+            pass
+        journal_lease.close()
+        return AgentRunResult(
+            thread_id=active_thread_id,
+            status="failed",
+            pipeline=record_pipeline,
+            error=error,
+            blocks=block_records,
+            contract_id=contract.contract_id,
+            contract_mode=contract.mode,
+        )
 
-    def run_pipeline_block(block: agent_blocks.AgentBlock) -> None:
+    block_final_snapshots: dict[int, git_evidence.GitSnapshot] = {}
+
+    def run_pipeline_block(
+        block: agent_blocks.AgentBlock,
+        *,
+        ordinal: int | None = None,
+        start_contract_block: bool = True,
+        recovery_phase: str = "",
+        recovery_attempt: int = 0,
+    ) -> None:
+        selected_block_contract = None
+        if ordinal is not None:
+            try:
+                selected_block_contract = contract.block(ordinal)
+                if start_contract_block:
+                    run_journal.block_started(ordinal, block.role)
+                    contract_tracker.start_block(ordinal)
+            except (
+                run_contracts.RunContractViolation,
+                agent_run_journal.AgentRunJournalError,
+            ) as exc:
+                block.status = "failed"
+                block.status_code = (
+                    "run_contract_violation"
+                    if isinstance(
+                        exc,
+                        run_contracts.RunContractViolation,
+                    )
+                    else "run_journal_unavailable"
+                )
+                block.status_reason = str(exc)
+                block.output = (
+                    "## Block Output\n\n"
+                    f"Run contract rejected block execution: {exc}"
+                )
+                return
         before_git = (
-            git_evidence.capture_git_snapshot(cfg.cwd)
+            (
+                initial_contract_snapshot
+                if ordinal == 0
+                else git_evidence.capture_git_snapshot(cfg.cwd)
+            )
             if block.requires_change or tool_policy.supports_mutation_audit(block.allowed_tools)
             else None
         )
-        completion_check = None
-        if before_git is not None:
-            def completion_check(completed_block: agent_blocks.AgentBlock, baseline=before_git) -> None:
+        def completion_check(
+            completed_block: agent_blocks.AgentBlock,
+            baseline=before_git,
+        ) -> None:
+            if baseline is not None:
                 after_git = git_evidence.capture_git_snapshot(cfg.cwd)
+                block_final_snapshots[id(completed_block)] = after_git
                 completed_block.git_head = after_git.head or ""
                 completed_block.git_status = after_git.status
                 completed_block.status_digest = after_git.status_digest
@@ -1035,6 +2142,25 @@ def run_agent_pipeline(
                     enforce_required_change_contract(completed_block, baseline, after_git)
                 else:
                     capture_optional_mutation_audit(completed_block, baseline, after_git)
+                if ordinal is not None:
+                    run_journal.verifier_result(
+                        ordinal=ordinal,
+                        verifier=(
+                            "post_mutation"
+                            if completed_block.requires_change
+                            else "mutation_audit"
+                        ),
+                        status=(
+                            "passed"
+                            if completed_block.status == "complete"
+                            else "failed"
+                        ),
+                        snapshot=after_git,
+                    )
+            _enforce_block_output_verification(
+                completed_block,
+                completed,
+            )
         run_agent_block(
             block,
             task=pipeline_task,
@@ -1043,45 +2169,267 @@ def run_agent_pipeline(
             client=client,
             route=route,
             completion_check=completion_check,
+            run_contract=contract if selected_block_contract is not None else None,
+            block_contract=selected_block_contract,
+            contract_tracker=(
+                contract_tracker if selected_block_contract is not None else None
+            ),
+            run_journal=(
+                run_journal if selected_block_contract is not None else None
+            ),
+            block_ordinal=ordinal,
+            recovery_phase=recovery_phase,
+            recovery_attempt=recovery_attempt,
         )
 
-    def append_pipeline_block(block: agent_blocks.AgentBlock) -> None:
-        block.context_output = agent_blocks.compact_block_output(block.output)
-        completed.append(block)
+    def run_typed_recovery(
+        block: agent_blocks.AgentBlock,
+        *,
+        ordinal: int,
+    ) -> None:
+        block_contract = contract.block(ordinal)
+        if (
+            block.status_code not in block_contract.recovery_codes
+            or block_contract.max_recovery_attempts < 1
+        ):
+            return
+        retry_iterations = block_contract.recovery_max_iterations
+        show_agent_recovery_start(
+            block.role,
+            block.status_reason,
+            retry_iterations,
+        )
+        original_output = block.output
+        replan = recovery_plan_block(block, cfg)
+        retry: agent_blocks.AgentBlock | None = None
+        try:
+            run_journal.recovery_started(
+                ordinal=ordinal,
+                attempt=1,
+                recovery_code=block.status_code,
+            )
+            run_pipeline_block(
+                replan,
+                ordinal=ordinal,
+                start_contract_block=False,
+                recovery_phase="plan",
+                recovery_attempt=1,
+            )
+            if replan.status == "complete":
+                retry = retry_implementation_block(block)
+                retry.max_iterations = retry_iterations
+                run_pipeline_block(
+                    retry,
+                    ordinal=ordinal,
+                    start_contract_block=False,
+                    recovery_phase="retry",
+                    recovery_attempt=1,
+                )
+                block.status = retry.status
+                block.status_code = retry.status_code
+                block.status_reason = retry.status_reason
+                block.tool_calls += retry.tool_calls
+                block.duration_ms += retry.duration_ms
+                block.successful_writes = list(
+                    dict.fromkeys(
+                        [
+                            *block.successful_writes,
+                            *retry.successful_writes,
+                        ]
+                    )
+                )
+                block.verification_warning = retry.verification_warning
+                block.git_evidence = retry.git_evidence
+                block.git_head = retry.git_head
+                block.git_status = retry.git_status
+                block.status_digest = retry.status_digest
+                block.tracked_diff_digest = retry.tracked_diff_digest
+                block.untracked_digest = retry.untracked_digest
+                block.git_clean = retry.git_clean
+                retry_snapshot = block_final_snapshots.pop(
+                    id(retry),
+                    None,
+                )
+                if retry_snapshot is not None:
+                    block_final_snapshots[id(block)] = retry_snapshot
+            recovery_output = (
+                retry.output
+                if retry is not None
+                else "Recovery retry was not started."
+            )
+            block.output = (
+                "## Block Output\n\n"
+                "### Original attempt\n"
+                f"{original_output}\n\n"
+                "### Contract-bound recovery plan\n"
+                f"{replan.output}\n\n"
+                "### Recovery retry\n"
+                f"{recovery_output}"
+            )
+            run_journal.recovery_finished(
+                ordinal=ordinal,
+                attempt=1,
+                status=block.status,
+                context_digest=agent_run_journal.digest_text(
+                    agent_blocks.compact_block_output(block.output)[
+                        : agent_threads.MAX_BLOCK_CONTEXT_CHARS
+                    ]
+                ),
+            )
+        except (
+            run_contracts.RunContractViolation,
+            agent_run_journal.AgentRunJournalError,
+        ) as exc:
+            block.status = "failed"
+            block.status_code = "run_journal_unavailable"
+            block.status_reason = f"Contract-bound recovery failed: {exc}"
+            block.output = (
+                "## Block Output\n\n"
+                f"{block.status_reason}"
+            )
 
-    terminal_block: agent_blocks.AgentBlock | None = None
+    def append_pipeline_block(
+        block: agent_blocks.AgentBlock,
+        *,
+        ordinal: int | None = None,
+    ) -> bool:
+        block.context_output = agent_blocks.compact_block_output(
+            block.output
+        )[: agent_threads.MAX_BLOCK_CONTEXT_CHARS]
+        if ordinal is not None:
+            try:
+                snapshot = block_final_snapshots.pop(
+                    id(block),
+                    None,
+                ) or git_evidence.capture_git_snapshot(cfg.cwd)
+                output_verified = (
+                    _enforce_block_output_verification(
+                        block,
+                        completed,
+                    )
+                )
+                agent_threads.update_thread(
+                    active_thread_id,
+                    status="running",
+                    blocks=[
+                        _block_record(item)
+                        for item in [*completed, block]
+                    ],
+                    workspace=_capture_thread_workspace(cfg, block),
+                    run_contract=_contract_thread_link(contract),
+                    checkpoint=_checkpoint_payload(run_journal),
+                )
+                run_journal.verifier_result(
+                    ordinal=ordinal,
+                    verifier=(
+                        "final_output"
+                        if block.role == "final"
+                        else "block_output"
+                    ),
+                    status=(
+                        "passed"
+                        if output_verified
+                        and block.status == "complete"
+                        else "failed"
+                    ),
+                    snapshot=snapshot,
+                )
+                run_journal.block_finished(
+                    ordinal=ordinal,
+                    role=block.role,
+                    status=block.status,
+                    verified=(
+                        block.status == "complete"
+                        and not block.verification_warning
+                        and output_verified
+                    ),
+                    context_digest=agent_run_journal.digest_text(
+                        block.context_output
+                    ),
+                    snapshot=snapshot,
+                )
+            except (
+                OSError,
+                ValueError,
+                KeyError,
+                agent_run_journal.AgentRunJournalError,
+            ) as exc:
+                block.status = "failed"
+                block.status_code = "run_journal_unavailable"
+                block.status_reason = (
+                    f"Durable block checkpoint failed: {exc}"
+                )
+                block.output = (
+                    "## Block Output\n\n"
+                    f"Block completion was withheld because its durable "
+                    f"checkpoint failed: {exc}"
+                )
+                return False
+        completed.append(block)
+        if ordinal is not None:
+            try:
+                agent_threads.update_thread(
+                    active_thread_id,
+                    status="running",
+                    blocks=[
+                        _block_record(item)
+                        for item in completed
+                    ],
+                    workspace=_capture_thread_workspace(cfg, block),
+                    run_contract=_contract_thread_link(contract),
+                    checkpoint=_checkpoint_payload(run_journal),
+                )
+            except (OSError, ValueError, KeyError) as exc:
+                # The staged context was persisted before the authoritative
+                # journal boundary, so resume can reconstruct this checkpoint
+                # even if the redundant metadata refresh is unavailable.
+                logger.debug(
+                    "Could not refresh Agent thread checkpoint %s: %s",
+                    active_thread_id,
+                    exc,
+                )
+        return True
+
+    terminal_block: agent_blocks.AgentBlock | None = (
+        completed[-1] if completed else None
+    )
     cancelled = False
     run_error = ""
     try:
         with _agent_execution_scope():
-            for block in pipeline:
+            for ordinal, block in enumerate(pipeline):
+                if ordinal < len(completed):
+                    continue
                 terminal_block = block
-                run_pipeline_block(block)
+                run_pipeline_block(block, ordinal=ordinal)
                 if block.status not in {"complete", "partial"}:
                     detail = f" ({block.status_reason})" if block.status_reason else ""
                     show_error(f"Agent pipeline stopped at {block.role}: {block.status}{detail}")
                     break
-                append_pipeline_block(block)
+                if should_recover_implementation(block):
+                    run_typed_recovery(block, ordinal=ordinal)
+                    if block.status not in {"complete", "partial"}:
+                        detail = (
+                            f" ({block.status_reason})"
+                            if block.status_reason
+                            else ""
+                        )
+                        show_error(
+                            f"Agent pipeline stopped at {block.role}: "
+                            f"{block.status}{detail}"
+                        )
+                        break
+                if not append_pipeline_block(block, ordinal=ordinal):
+                    show_error(
+                        f"Agent pipeline stopped at {block.role}: "
+                        f"{block.status_reason}"
+                    )
+                    break
                 if block.status_code == "verification_missing":
                     show_error(
                         f"Agent pipeline stopped at {block.role}: post-mutation verification is missing."
                     )
                     break
-                if should_recover_implementation(block):
-                    retry_iterations = min(MAX_RECOVERY_IMPLEMENT_ITERATIONS, max(1, block.max_iterations))
-                    show_agent_recovery_start(block.role, block.status_reason, retry_iterations)
-                    replan = recovery_plan_block(block, cfg)
-                    terminal_block = replan
-                    run_pipeline_block(replan)
-                    if replan.status in {"complete", "partial"}:
-                        append_pipeline_block(replan)
-                    if replan.status == "complete":
-                        retry = retry_implementation_block(block)
-                        terminal_block = retry
-                        run_pipeline_block(retry)
-                        append_pipeline_block(retry)
-                    else:
-                        show_info("Recovery replan did not complete; continuing with the original partial evidence.")
             if (
                 completed
                 and completed[-1].role == "final"
@@ -1137,15 +2485,96 @@ def run_agent_pipeline(
             (block for block in reversed(persisted_blocks) if block.git_head),
             None,
         )
-        _finish_thread_record(
-            active_thread_id,
-            status=status,
-            output=output,
-            error=error,
-            blocks=block_records,
-            pipeline=record_pipeline,
-            workspace=_capture_thread_workspace(cfg, latest_git_block),
-        )
+        workspace = _capture_thread_workspace(cfg, latest_git_block)
+        try:
+            resume_state = run_journal.resume_state()
+            if resume_state.uncertain_mutation_steps:
+                status = "failed"
+                error = (
+                    "A mutation outcome lacks a durable checkpoint and must "
+                    "be reconciled before resume."
+                )
+            elif (
+                status == "complete"
+                and resume_state.next_block_ordinal
+                != len(contract.blocks)
+            ):
+                status = "failed"
+                error = (
+                    "Agent completion was withheld because not every "
+                    "contract block reached a verified checkpoint."
+                )
+            checkpoint = _checkpoint_payload(run_journal)
+            thread_persisted = _finish_thread_record(
+                active_thread_id,
+                status=status,
+                output=output,
+                error=error,
+                blocks=block_records,
+                pipeline=record_pipeline,
+                workspace=workspace,
+                contract=contract,
+                checkpoint=checkpoint,
+            )
+            if not thread_persisted:
+                status = "failed"
+                error = (
+                    "Agent terminal state could not be durably persisted; "
+                    "the nonterminal journal was retained for recovery."
+                )
+            elif not resume_state.uncertain_mutation_steps:
+                try:
+                    run_journal.run_finished(
+                        status=status,
+                        last_verified_sequence=(
+                            resume_state.last_verified_sequence
+                        ),
+                    )
+                    agent_threads.update_thread(
+                        active_thread_id,
+                        checkpoint=_checkpoint_payload(run_journal),
+                    )
+                except (
+                    OSError,
+                    ValueError,
+                    KeyError,
+                    agent_run_journal.AgentRunJournalError,
+                ) as exc:
+                    status = "failed"
+                    error = (
+                        "Agent run journal could not be finalized: "
+                        f"{exc}"
+                    )
+                    _finish_thread_record(
+                        active_thread_id,
+                        status=status,
+                        output=output,
+                        error=error,
+                        blocks=block_records,
+                        pipeline=record_pipeline,
+                        workspace=workspace,
+                        contract=contract,
+                        checkpoint=_checkpoint_payload(run_journal),
+                    )
+        except (
+            OSError,
+            agent_run_journal.AgentRunJournalError,
+        ) as exc:
+            status = "failed"
+            error = f"Agent run journal could not be finalized: {exc}"
+            _finish_thread_record(
+                active_thread_id,
+                status=status,
+                output=output,
+                error=error,
+                blocks=block_records,
+                pipeline=record_pipeline,
+                workspace=workspace,
+                contract=contract,
+                checkpoint={},
+            )
+        finally:
+            journal_lease.close()
         cfg.save()
         flush_perf_records()
     return AgentRunResult(
@@ -1155,6 +2584,8 @@ def run_agent_pipeline(
         output=output,
         error=error,
         blocks=block_records,
+        contract_id=contract.contract_id,
+        contract_mode=contract.mode,
     )
 
 
@@ -1194,6 +2625,200 @@ def _finish_specialist_thread(
         )
     except (OSError, ValueError, KeyError) as exc:
         logger.debug("Could not finish specialist thread %s: %s", thread_id, exc)
+
+
+def _run_contract_bound_specialist(
+    *,
+    task: str,
+    route: task_router.TaskRoute,
+    cfg: Config,
+    client: Any,
+    block: agent_blocks.AgentBlock,
+    thread_id: str,
+) -> agent_blocks.AgentBlock:
+    """Run one team specialist with the same contract/journal loop as Agent."""
+
+    lease = ExitStack()
+    contract: run_contracts.RunContract | None = None
+    journal: agent_run_journal.AgentRunJournal | None = None
+    initial_snapshot = git_evidence.capture_git_snapshot(cfg.cwd)
+    try:
+        contract = run_contracts.compile_agent_run_contract(
+            task=task,
+            route=route,
+            pipeline_name="specialist",
+            blocks=[block],
+            cfg=cfg,
+            approval_mode=approval_mode_for_config(cfg),
+            snapshot=initial_snapshot,
+        )
+        journal = agent_run_journal.AgentRunJournal.create(contract)
+        lease.enter_context(journal.execution_lease())
+        tracker = run_contracts.RunContractTracker(contract)
+        agent_threads.begin_turn(
+            thread_id,
+            task,
+            pipeline="specialist",
+            model=contract.blocks[0].model,
+            workspace=_capture_thread_workspace(cfg),
+            run_contract=_contract_thread_link(contract),
+            checkpoint=_checkpoint_payload(journal),
+        )
+        context_bundle = agent_context.build_agent_context(
+            task,
+            [],
+            max_tokens=max(
+                256,
+                int(
+                    contract.budget.max_prompt_tokens_per_round
+                    * 0.45
+                ),
+            ),
+        )
+        journal.context_bound(context_bundle.receipt.payload())
+        journal.block_started(0, block.role)
+        tracker.start_block(0)
+        run_agent_block(
+            block,
+            task=context_bundle.text,
+            completed=[],
+            cfg=cfg,
+            client=client,
+            route=route,
+            run_contract=contract,
+            block_contract=contract.block(0),
+            contract_tracker=tracker,
+            run_journal=journal,
+            block_ordinal=0,
+        )
+        block.context_output = agent_blocks.compact_block_output(
+            block.output
+        )[: agent_threads.MAX_BLOCK_CONTEXT_CHARS]
+        final_snapshot = git_evidence.capture_git_snapshot(cfg.cwd)
+        output_verified = _block_output_is_verified(block)
+        if (
+            block.status == "complete"
+            and agent_run_journal.workspace_view(initial_snapshot)
+            != agent_run_journal.workspace_view(final_snapshot)
+        ):
+            block.status = "partial"
+            block.status_code = "specialist_workspace_drift"
+            block.status_reason = (
+                "Workspace changed during the read-only specialist run."
+            )
+            block.verification_warning = block.status_reason
+        if block.status == "complete" and not output_verified:
+            block.status = "partial"
+            block.status_code = "output_contract_failed"
+            block.status_reason = (
+                "Specialist output did not satisfy the required "
+                "'## Block Output' evidence contract."
+            )
+            block.verification_warning = block.status_reason
+        agent_threads.update_thread(
+            thread_id,
+            status="running",
+            blocks=[_block_record(block)],
+            workspace=_capture_thread_workspace(cfg, block),
+            run_contract=_contract_thread_link(contract),
+            checkpoint=_checkpoint_payload(journal),
+        )
+        journal.verifier_result(
+            ordinal=0,
+            verifier="block_output",
+            status=(
+                "passed"
+                if block.status == "complete" and output_verified
+                else "failed"
+            ),
+            snapshot=final_snapshot,
+        )
+        journal.block_finished(
+            ordinal=0,
+            role=block.role,
+            status=block.status,
+            verified=(
+                block.status == "complete"
+                and output_verified
+                and not block.verification_warning
+            ),
+            context_digest=agent_run_journal.digest_text(
+                block.context_output
+            ),
+            snapshot=final_snapshot,
+        )
+        state = journal.resume_state()
+        terminal_status = (
+            block.status
+            if block.status in {
+                "complete",
+                "partial",
+                "failed",
+                "cancelled",
+            }
+            else "failed"
+        )
+        persisted = _finish_thread_record(
+            thread_id,
+            status=terminal_status,
+            output=block.output,
+            error=block.status_reason,
+            blocks=[_block_record(block)],
+            pipeline="specialist",
+            workspace=_capture_thread_workspace(cfg, block),
+            contract=contract,
+            checkpoint=_checkpoint_payload(journal),
+        )
+        if not persisted:
+            raise agent_run_journal.AgentRunJournalError(
+                "specialist terminal state was not persisted"
+            )
+        if state.uncertain_mutation_steps:
+            raise agent_run_journal.AgentRunJournalError(
+                "read-only specialist recorded an uncertain mutation"
+            )
+        journal.run_finished(
+            status=terminal_status,
+            last_verified_sequence=state.last_verified_sequence,
+        )
+        agent_threads.update_thread(
+            thread_id,
+            checkpoint=_checkpoint_payload(journal),
+        )
+    except Exception as exc:
+        block.status = "failed"
+        block.status_code = (
+            block.status_code or "specialist_contract_error"
+        )
+        block.status_reason = str(exc)
+        block.output = (
+            block.output
+            or f"## Block Output\n\nSpecialist failed: {exc}"
+        )
+        block.context_output = agent_blocks.compact_block_output(
+            block.output
+        )[: agent_threads.MAX_BLOCK_CONTEXT_CHARS]
+        if contract is not None and journal is not None:
+            _finish_thread_record(
+                thread_id,
+                status="failed",
+                output=block.output,
+                error=block.status_reason,
+                blocks=[_block_record(block)],
+                pipeline="specialist",
+                workspace=_capture_thread_workspace(cfg, block),
+                contract=contract,
+                checkpoint=_checkpoint_payload(journal),
+            )
+        else:
+            _finish_specialist_thread(
+                thread_id,
+                block,
+                error=block.status_reason,
+            )
+    finally:
+        lease.close()
+    return block
 
 
 def run_agent_team(
@@ -1247,7 +2872,7 @@ def run_agent_team(
                 model=cfg.model,
                 parent_id=parent_id,
                 status="queued",
-                start_turn=True,
+                start_turn=False,
                 title=f"{role}: {' '.join(task.split())[:64]}",
                 workspace=workspace,
             )
@@ -1256,7 +2881,18 @@ def run_agent_team(
             child_by_role[role] = child_id
     except (OSError, ValueError, KeyError) as exc:
         logger.debug("Could not initialize complete team thread tree: %s", exc)
-        show_info(f"Some team thread history may be unavailable: {exc}")
+        error = (
+            "Agent team stopped because its durable thread tree could not "
+            f"be created: {exc}"
+        )
+        show_error(error)
+        return AgentRunResult(
+            thread_id=parent_id,
+            status="failed",
+            pipeline="team",
+            error=error,
+            children=child_ids,
+        )
 
     show_info(
         f"Agent team {parent_id or '(unrecorded)'}: launching {len(selected_roles)} read-only specialists "
@@ -1277,13 +2913,13 @@ def run_agent_team(
         try:
             member_client = create_client(member_cfg)
             with _agent_execution_scope():
-                run_agent_block(
-                    block,
+                return _run_contract_bound_specialist(
                     task=task,
-                    completed=[],
+                    route=route,
                     cfg=member_cfg,
                     client=member_client,
-                    route=route,
+                    block=block,
+                    thread_id=child_by_role[role],
                 )
         except Exception as exc:
             block.status = "failed"
@@ -1301,7 +2937,6 @@ def run_agent_team(
                 role = futures[future]
                 block = future.result()
                 specialists[role] = block
-                _finish_specialist_thread(child_by_role.get(role, ""), block)
         except KeyboardInterrupt:
             for future in futures:
                 future.cancel()
@@ -1430,6 +3065,32 @@ def show_agent_thread(thread_ref: str) -> str:
         ("workspace", record.get("workspace", {}).get("workspace_root") or "-"),
         ("branch", record.get("workspace", {}).get("branch") or "-"),
         ("HEAD", record.get("workspace", {}).get("head") or "-"),
+        (
+            "run contract",
+            record.get("run_contract", {}).get("contract_id") or "-",
+        ),
+        (
+            "contract mode",
+            record.get("run_contract", {}).get("mode") or "-",
+        ),
+        (
+            "approval mode",
+            record.get("run_contract", {}).get("approval_mode") or "-",
+        ),
+        (
+            "next block",
+            record.get("checkpoint", {}).get(
+                "next_block_ordinal",
+                "-",
+            ),
+        ),
+        (
+            "checkpoint",
+            record.get("checkpoint", {}).get(
+                "last_verified_sequence",
+                "-",
+            ),
+        ),
         ("task", record["task"]),
         ("error", record["error"] or "-"),
     ):
@@ -1448,6 +3109,30 @@ def _pipeline_for_thread(record: dict[str, Any]) -> str:
         return pipeline
     route = task_router.route_task(str(record.get("task") or ""))
     return route.suggested_pipeline if route.recommended_mode == "agent" else "research"
+
+
+def _journal_for_thread(
+    record: dict[str, Any],
+) -> agent_run_journal.AgentRunJournal | None:
+    link = record.get("run_contract")
+    if not isinstance(link, dict) or not link:
+        return None
+    run_nonce = str(link.get("run_nonce") or "").strip()
+    digest = str(link.get("digest") or "").strip()
+    contract_id = str(link.get("contract_id") or "").strip()
+    if not run_nonce or not digest or not contract_id:
+        raise agent_run_journal.AgentRunJournalCorrupt(
+            "thread run-contract link is incomplete"
+        )
+    journal = agent_run_journal.AgentRunJournal.load(run_nonce)
+    if (
+        journal.contract.digest != digest
+        or journal.contract.contract_id != contract_id
+    ):
+        raise agent_run_journal.AgentRunJournalCorrupt(
+            "thread run-contract link does not match the private journal"
+        )
+    return journal
 
 
 def _completed_agent_result_for_tool(
@@ -1547,18 +3232,64 @@ def execute_agent_command(arg: str, cfg: Config, client: Any) -> str:
                 message = str(exc).strip("'")
                 show_error(message)
                 return f"Error: {message}"
-            try:
-                restored = worktree_runtime.activate_thread_workspace(record, cfg)
-            except worktree_runtime.WorktreeError as exc:
-                message = str(exc)
-                show_error(message)
-                return f"Error: {message}"
+            structured_journal = None
+            structured_state = None
+            if action == "resume":
+                try:
+                    structured_journal = _journal_for_thread(record)
+                    if structured_journal is not None:
+                        structured_state = structured_journal.resume_state()
+                        if structured_state.terminal:
+                            structured_journal = None
+                            structured_state = None
+                except agent_run_journal.AgentRunJournalError as exc:
+                    message = (
+                        "Could not verify the durable Agent checkpoint: "
+                        f"{exc}"
+                    )
+                    show_error(message)
+                    return f"Error: {message}"
+            if structured_state is not None:
+                if structured_state.uncertain_mutation_steps:
+                    message = (
+                        "This Agent run has an uncertain mutation outcome. "
+                        "Inspect the workspace and start a new run only after "
+                        "reconciling the recorded step IDs: "
+                        + ", ".join(
+                            structured_state.uncertain_mutation_steps
+                        )
+                    )
+                    show_error(message)
+                    return f"Error: {message}"
+                target = Path(
+                    structured_state.contract.workspace.root
+                ).expanduser().resolve(strict=False)
+                if not target.is_dir():
+                    message = f"Thread workspace is missing: {target}"
+                    show_error(message)
+                    return f"Error: {message}"
+                cfg.cwd = str(target)
+                cfg.save()
+                restored = True
+            else:
+                try:
+                    restored = worktree_runtime.activate_thread_workspace(
+                        record,
+                        cfg,
+                    )
+                except worktree_runtime.WorktreeError as exc:
+                    message = str(exc)
+                    show_error(message)
+                    return f"Error: {message}"
             if restored:
                 show_info(
                     f"Restored thread {record['id']} workspace: "
                     f"{record.get('workspace', {}).get('branch') or cfg.cwd}"
                 )
-            task = " ".join(parts[2:]).strip() or "Continue from the latest verified state and finish remaining work."
+            task = " ".join(parts[2:]).strip() or (
+                "Continue from the latest verified state and finish "
+                "remaining work."
+            )
             if action == "fork" and restored and not same_worktree:
                 source_state = worktree_runtime.capture_workspace(cfg.cwd)
                 if not source_state.get("available"):
@@ -1607,16 +3338,37 @@ def execute_agent_command(arg: str, cfg: Config, client: Any) -> str:
                     "Use /worktree new first for isolation."
                 )
             handoff = agent_threads.context_handoff(record)
+            run_task = task
+            resume_kwargs: dict[str, Any] = {}
+            if structured_journal is not None:
+                run_task = str(record.get("task") or "").strip()
+                if not run_task:
+                    message = (
+                        "Durable Agent checkpoint has no original task to "
+                        "bind during resume."
+                    )
+                    show_error(message)
+                    return f"Error: {message}"
+                resume_kwargs = {
+                    "resume_journal": structured_journal,
+                    "resume_block_records": record.get("blocks", []),
+                    "resume_direction": task,
+                }
             result = run_agent_pipeline(
-                task,
+                run_task,
                 cfg,
                 client,
                 pipeline_name=_pipeline_for_thread(record),
                 thread_id=record["id"] if action == "resume" else None,
                 parent_id=record["id"] if action == "fork" else "",
                 prior_context=handoff,
+                **resume_kwargs,
             )
-            return _completed_agent_result_for_tool(result, task=task, cfg=cfg)
+            return _completed_agent_result_for_tool(
+                result,
+                task=task,
+                cfg=cfg,
+            )
     pipeline_name, task, error = parse_agent_invocation_checked(text)
     if error:
         show_error(error)

@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlparse
 from algo_cli import google_workspace_auth
 from algo_cli import main
 from algo_cli import session_commands
-from algo_cli import slash_dispatch
+from algo_cli import oliver_slash_dispatch as slash_dispatch
 from algo_cli import tools
 
 

@@ -1,0 +1,58 @@
+name: Hardening freeze
+
+on:
+  push:
+    branches: [main, develop, "hardening/**"]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published, prereleased]
+
+permissions:
+  contents: read
+
+jobs:
+  freeze:
+    name: Enforce hardening-only changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        if: ${{ github.event_name != 'release' }}
+        with:
+          version: "0.11.26"
+          enable-cache: true
+      - name: Install locked freeze-test environment
+        if: ${{ github.event_name != 'release' }}
+        run: uv sync --frozen --no-editable --extra dev --reinstall-package algo-cli-runtime
+      - name: Reject release while frozen
+        if: ${{ github.event_name == 'release' }}
+        run: python scripts/david_hardening_gate.py --release-event
+      - name: Validate freeze, scope, naming, and ledger
+        if: ${{ github.event_name != 'release' }}
+        run: uv run --frozen --no-editable --extra dev python scripts/david_hardening_gate.py
+      - name: Verify source-bound M9 completion state
+        if: ${{ github.event_name != 'release' }}
+        run: >-
+          uv run --frozen --no-editable --extra dev
+          python scripts/arthur_m9_completion_audit.py
+          --verify-report hardening/ada-m9-completion-audit.json
+          --expect-blocked --quiet
+      - name: Verify source-bound Agent runtime qualification
+        if: ${{ github.event_name != 'release' }}
+        run: >-
+          uv run --frozen --no-editable --extra dev
+          python scripts/nathan_agent_runtime_qualification.py --quiet
+      - name: Test the gate itself
+        if: ${{ github.event_name != 'release' }}
+        run: uv run --frozen --no-editable --extra dev pytest tests/test_david_hardening_gate.py -q
+      - name: Test the M9 auditor itself
+        if: ${{ github.event_name != 'release' }}
+        run: uv run --frozen --no-editable --extra dev pytest tests/test_arthur_m9_completion_audit.py -q

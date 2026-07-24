@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -27,6 +27,8 @@ dependencies = [
     "rich>=13.0",
     "prompt-toolkit>=3.0",
     "numpy>=1.20",
+    "cryptography>=44.0",
+    "keyring>=25.0",
     'tomli>=2.0; python_version < "3.11"',
 ]
 
@@ -45,6 +47,13 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.0",
 ]
+release = [
+    "build==1.5.0",
+    "twine==6.2.0",
+]
+supply-chain = [
+    "pip-audit==2.10.1",
+]
 pdf = [
     "PyMuPDF>=1.24",
 ]
@@ -54,6 +63,8 @@ quantization = [
 
 [project.scripts]
 algo-cli = "algo_cli.main:main"
+algo-cli-control-install = "algo_cli.austin_install_finalizer:main"
+algo-cli-control-uninstall = "algo_cli.oliver_control_uninstall:main"
 # Legacy shim for 1-2 releases (prints deprecation, then works)
 ollama-cli = "algo_cli.main:main"
 
@@ -61,6 +72,9 @@ ollama-cli = "algo_cli.main:main"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-q"
+
+[tool.uv]
+required-version = "==0.11.26"
 
 [tool.ruff]
 target-version = "py310"
@@ -72,7 +86,7 @@ select = ["F", "E4", "E7", "E9"]
 
 [tool.coverage.run]
 branch = true
-source = ["algo_cli"]
+source_pkgs = ["algo_cli"]
 
 [tool.coverage.report]
 fail_under = 57

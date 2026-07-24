@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -8,11 +9,15 @@ import pytest
 from algo_cli import (
     agent_blocks,
     agent_pipeline,
+    agent_run_journal,
     agent_threads,
     execution_guardrails,
     git_evidence,
     harness,
     main,
+    nathan_provider_protocol,
+    run_contract,
+    task_router,
     tool_runtime,
 )
 from algo_cli.config import Config
@@ -44,6 +49,200 @@ class ScriptedClient:
         return iter([{"message": response}])
 
 
+def test_agent_loop_state_requires_balanced_provider_tool_results():
+    state = agent_pipeline.AgentLoopState()
+
+    state.begin_model_round(0)
+    state.complete_model_round(2)
+    state.begin_tool_batch()
+    first, second = state.expected_call_ids
+    state.record_tool_dispatch(first, mutating=False)
+    state.record_tool_result(first)
+    with pytest.raises(
+        agent_pipeline.AgentLoopProtocolError,
+        match="missing balanced",
+    ):
+        state.finish_tool_batch()
+    state.record_tool_dispatch(second, mutating=False)
+    state.record_tool_result(second)
+    state.finish_tool_batch()
+
+    assert state.phase == "ready"
+    with pytest.raises(agent_pipeline.AgentLoopProtocolError):
+        state.record_tool_result()
+
+
+def test_provider_protocol_normalizes_provider_shapes_and_balances_results():
+    state = nathan_provider_protocol.ProviderToolLoopState(
+        loop_id="provider-fixture"
+    )
+    state.begin_model_round(0)
+    state.record_model_event("content")
+    state.record_model_event("reasoning")
+    state.record_model_event("tool")
+    calls = state.complete_model_round(
+        [
+            {
+                "function": {
+                    "name": "read_file",
+                    "arguments": {"path": "ollama.txt"},
+                }
+            },
+            {
+                "id": "xai-call",
+                "type": "function",
+                "function": {
+                    "name": "search_files",
+                    "arguments": '{"query": "needle"}',
+                },
+            },
+            {
+                "id": "gemini-call",
+                "thought_signature": "opaque-signature",
+                "function": {
+                    "name": "git_diff",
+                    "arguments": {},
+                },
+            },
+        ]
+    )
+
+    assert calls[0]["id"].startswith("algo-provider-fixture-")
+    assert calls[1]["function"]["arguments"] == {"query": "needle"}
+    assert calls[2]["thought_signature"] == "opaque-signature"
+    assert len({call["id"] for call in calls}) == 3
+    assert state.model_event_counts == {
+        "content": 1,
+        "reasoning": 1,
+        "tool": 1,
+    }
+
+    state.begin_tool_batch()
+    for call in calls:
+        state.record_tool_dispatch(call["id"], mutating=False)
+        state.record_tool_result(call["id"])
+    state.finish_tool_batch()
+
+    assert state.phase == "ready"
+
+
+def test_provider_protocol_canonicalizes_duplicate_ids_and_quarantines_batch():
+    state = nathan_provider_protocol.ProviderToolLoopState(
+        loop_id="duplicate-fixture"
+    )
+    state.begin_model_round(0)
+    calls = state.complete_model_round(
+        [
+            {
+                "id": "duplicate",
+                "function": {"name": "read_file", "arguments": {}},
+            },
+            {
+                "id": "duplicate",
+                "function": {"name": "read_file", "arguments": {}},
+            },
+        ]
+    )
+
+    assert calls[0]["id"] != calls[1]["id"]
+    assert state.protocol_violations == (
+        "duplicate_or_reused_call_id",
+    )
+    assert state.tool_batch_ceiling_codes() == (
+        "provider_tool_protocol",
+        "provider_tool_protocol",
+    )
+
+
+def test_provider_protocol_blocks_fallback_after_uncertain_mutation():
+    state = nathan_provider_protocol.ProviderToolLoopState(
+        loop_id="fallback-fixture"
+    )
+    state.begin_model_round(0)
+    calls = state.complete_model_round(
+        [
+            {
+                "id": "mutation",
+                "function": {"name": "write_file", "arguments": {}},
+            }
+        ]
+    )
+    state.begin_tool_batch()
+    state.record_tool_dispatch(calls[0]["id"], mutating=True)
+    state.interrupt("provider disconnected")
+
+    assert state.uncertain_mutation_call_ids == ("mutation",)
+    with pytest.raises(
+        nathan_provider_protocol.ProviderToolProtocolError,
+        match="uncertain mutation",
+    ):
+        state.assert_provider_fallback_safe()
+
+
+def test_provider_protocol_allows_fallback_before_any_tool_dispatch():
+    state = nathan_provider_protocol.ProviderToolLoopState(
+        loop_id="safe-fallback-fixture"
+    )
+    state.begin_model_round(0)
+    state.record_model_event("content")
+    state.interrupt("provider timed out", timed_out=True)
+
+    state.assert_provider_fallback_safe()
+    assert state.phase == "timed_out"
+
+
+def test_final_claim_grounding_rejects_unverified_mutation_claim() -> None:
+    implement = agent_blocks.AgentBlock(
+        role="implement",
+        prompt="implement",
+        requires_change=True,
+        status="partial",
+        status_code="verification_unavailable",
+        output="## Block Output\nUnverified write.",
+        successful_writes=["main.py"],
+        verification_warning="Git unavailable",
+    )
+    final = agent_blocks.AgentBlock(
+        role="final",
+        prompt="final",
+        status="complete",
+        output="## Block Output\nImplemented the requested change.",
+    )
+
+    assert (
+        agent_pipeline._final_output_claims_are_grounded(
+            final,
+            [implement],
+        )
+        is False
+    )
+
+
+def test_final_claim_grounding_accepts_verified_mutation_claim() -> None:
+    implement = agent_blocks.AgentBlock(
+        role="implement",
+        prompt="implement",
+        requires_change=True,
+        status="complete",
+        output="## Block Output\nVerified implementation.",
+        successful_writes=["main.py"],
+        git_evidence=(
+            "Verified Git state change introduced during this block."
+        ),
+    )
+    final = agent_blocks.AgentBlock(
+        role="final",
+        prompt="final",
+        status="complete",
+        output="## Block Output\nImplemented the requested change.",
+    )
+
+    assert agent_pipeline._final_output_claims_are_grounded(
+        final,
+        [implement],
+    )
+
+
 def _quiet_display(monkeypatch):
     def noop(*_args, **_kwargs):
         return None
@@ -57,7 +256,6 @@ def _quiet_display(monkeypatch):
         "finish_thinking_block",
         "show_recalled_context",
         "record_chat_metrics",
-        "record_perf_event",
         "flush_perf_records",
     ):
         monkeypatch.setattr(agent_pipeline, name, noop)
@@ -198,6 +396,7 @@ def test_run_agent_block_rejects_disallowed_tool(monkeypatch):
 
 def test_run_agent_block_displays_policy_without_enforcing_it(monkeypatch):
     cfg = Config()
+    cfg.algorithmic_tool_policy_enabled = False
     block = agent_blocks.AgentBlock(role="implement", prompt="p", allowed_tools=agent_blocks.IMPLEMENT_TOOLS)
     client = FakeClient(contents=["## Block Output\ncomplete"])
     displayed: dict[str, str] = {}
@@ -229,6 +428,268 @@ def test_run_agent_block_enforces_policy_tool_intersection(monkeypatch):
     assert "write_file" not in submitted_names
     assert "run_shell" not in submitted_names
     assert "read_file" in submitted_names
+
+
+def test_enforced_contract_keeps_never_mode_read_only_tools_available(
+    monkeypatch,
+    tmp_path,
+):
+    cfg = Config(cwd=str(tmp_path))
+    setattr(cfg, "_nathan_approval_mode", "never")
+    block = agent_blocks.review_pipeline()[0]
+    contract = run_contract.compile_agent_run_contract(
+        task="Review auth.py for bugs",
+        route=task_router.route_task("Review auth.py for bugs"),
+        pipeline_name="review",
+        blocks=[block],
+        cfg=cfg,
+        approval_mode="never",
+        snapshot=git_evidence.GitSnapshot(False, "not git", None, "", "", ()),
+    )
+    tracker = run_contract.RunContractTracker(contract)
+    tracker.start_block(0)
+    client = ScriptedClient(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "read-1",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": {"path": "auth.py"},
+                        },
+                    }
+                ]
+            },
+            {"content": "## Block Output\nReviewed."},
+        ]
+    )
+    dispatched: list[tuple[str, bool]] = []
+    _quiet_display(monkeypatch)
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _prompt: (_ for _ in ()).throw(
+            AssertionError("never mode must not prompt")
+        ),
+    )
+
+    def fake_execute(
+        name,
+        _args,
+        _cfg,
+        *,
+        tool_call_id=None,
+        force_approval=False,
+        **_kwargs,
+    ):
+        dispatched.append((name, force_approval))
+        return (
+            {
+                "role": "tool",
+                "content": "read",
+                "tool_call_id": tool_call_id,
+            },
+            "read",
+        )
+
+    monkeypatch.setattr(
+        agent_pipeline,
+        "execute_tool_call_for_pipeline",
+        fake_execute,
+    )
+
+    main.run_agent_block(
+        block,
+        task="Review auth.py for bugs",
+        completed=[],
+        cfg=cfg,
+        client=client,
+        route=task_router.route_task("Review auth.py for bugs"),
+        run_contract=contract,
+        block_contract=contract.block(0),
+        contract_tracker=tracker,
+    )
+
+    assert block.status == "complete"
+    assert dispatched == [("read_file", False)]
+    assert tracker.tool_calls == 1
+
+
+def test_enforced_contract_cannot_be_weakened_by_live_policy_toggle(
+    monkeypatch,
+    tmp_path,
+):
+    cfg = Config(cwd=str(tmp_path))
+    block = agent_blocks.code_change_pipeline()[1]
+    task = "Fix credential handling"
+    contract = run_contract.compile_agent_run_contract(
+        task=task,
+        route=task_router.route_task(task),
+        pipeline_name="code-change",
+        blocks=[block],
+        cfg=cfg,
+        approval_mode="interactive",
+        snapshot=git_evidence.GitSnapshot(False, "not git", None, "", "", ()),
+    )
+    tracker = run_contract.RunContractTracker(contract)
+    tracker.start_block(0)
+    cfg.algorithmic_tool_policy_enabled = False
+    client = FakeClient(contents=["## Block Output\nNo permitted mutation."])
+    _quiet_display(monkeypatch)
+
+    main.run_agent_block(
+        block,
+        task=task,
+        completed=[],
+        cfg=cfg,
+        client=client,
+        route=task_router.route_task(task),
+        run_contract=contract,
+        block_contract=contract.block(0),
+        contract_tracker=tracker,
+    )
+
+    submitted_names = {tool.__name__ for tool in client.calls[0]["tools"]}
+    assert contract.mode == "enforced"
+    assert "write_file" not in submitted_names
+    assert "run_shell" not in submitted_names
+
+
+def test_run_contract_approval_drift_fails_before_model_call(
+    monkeypatch,
+    tmp_path,
+):
+    cfg = Config(cwd=str(tmp_path))
+    setattr(cfg, "_nathan_approval_mode", "never")
+    block = agent_blocks.review_pipeline()[0]
+    task = "Review auth.py for bugs"
+    contract = run_contract.compile_agent_run_contract(
+        task=task,
+        route=task_router.route_task(task),
+        pipeline_name="review",
+        blocks=[block],
+        cfg=cfg,
+        approval_mode="never",
+        snapshot=git_evidence.GitSnapshot(False, "not git", None, "", "", ()),
+    )
+    tracker = run_contract.RunContractTracker(contract)
+    tracker.start_block(0)
+    setattr(cfg, "_nathan_approval_mode", "auto")
+    cfg.auto_mode = True
+    client = FakeClient(contents=["## Block Output\nshould not run"])
+    _quiet_display(monkeypatch)
+
+    main.run_agent_block(
+        block,
+        task=task,
+        completed=[],
+        cfg=cfg,
+        client=client,
+        route=task_router.route_task(task),
+        run_contract=contract,
+        block_contract=contract.block(0),
+        contract_tracker=tracker,
+    )
+
+    assert client.calls == []
+    assert block.status == "failed"
+    assert block.status_code == "run_contract_violation"
+
+
+def test_run_contract_prompt_drift_fails_before_model_call(
+    monkeypatch,
+    tmp_path,
+):
+    cfg = Config(cwd=str(tmp_path))
+    block = agent_blocks.review_pipeline()[0]
+    task = "Review auth.py"
+    contract = run_contract.compile_agent_run_contract(
+        task=task,
+        route=task_router.route_task(task),
+        pipeline_name="review",
+        blocks=[block],
+        cfg=cfg,
+        approval_mode="interactive",
+        snapshot=git_evidence.GitSnapshot(
+            False,
+            "not git",
+            None,
+            "",
+            "",
+            (),
+        ),
+    )
+    tracker = run_contract.RunContractTracker(contract)
+    tracker.start_block(0)
+    block.prompt += "\nForged authority."
+    client = FakeClient(["## Block Output\nmust not run"])
+    _quiet_display(monkeypatch)
+
+    main.run_agent_block(
+        block,
+        task=task,
+        completed=[],
+        cfg=cfg,
+        client=client,
+        route=task_router.route_task(task),
+        run_contract=contract,
+        block_contract=contract.block(0),
+        contract_tracker=tracker,
+    )
+
+    assert client.calls == []
+    assert block.status == "failed"
+    assert "prompt differs" in block.status_reason
+
+
+def test_run_contract_prompt_budget_stops_provider_dispatch(
+    monkeypatch,
+    tmp_path,
+):
+    cfg = Config(cwd=str(tmp_path), num_ctx=1_024)
+    block = agent_blocks.AgentBlock(
+        role="review",
+        prompt="x" * 8_000,
+        allowed_tools=agent_blocks.NO_TOOLS,
+    )
+    task = "Review auth.py"
+    contract = run_contract.compile_agent_run_contract(
+        task=task,
+        route=task_router.route_task(task),
+        pipeline_name="review",
+        blocks=[block],
+        cfg=cfg,
+        approval_mode="interactive",
+        snapshot=git_evidence.GitSnapshot(
+            False,
+            "not git",
+            None,
+            "",
+            "",
+            (),
+        ),
+    )
+    tracker = run_contract.RunContractTracker(contract)
+    tracker.start_block(0)
+    client = FakeClient(["## Block Output\nmust not run"])
+    _quiet_display(monkeypatch)
+
+    main.run_agent_block(
+        block,
+        task=task,
+        completed=[],
+        cfg=cfg,
+        client=client,
+        route=task_router.route_task(task),
+        run_contract=contract,
+        block_contract=contract.block(0),
+        contract_tracker=tracker,
+    )
+
+    assert client.calls == []
+    assert block.status_code == "run_contract_prompt_budget"
+    assert tracker.model_rounds == 0
+    assert tracker.prompt_tokens == 0
 
 
 def test_run_agent_block_prompt_does_not_disclose_absolute_workspace(monkeypatch, tmp_path):
@@ -295,7 +756,6 @@ def test_run_agent_block_policy_denial_balances_sibling_tool_results(monkeypatch
         ]
     )
     _quiet_display(monkeypatch)
-    monkeypatch.setattr(agent_pipeline, "show_tool_result", lambda *args, **kwargs: None)
 
     main.run_agent_block(block, task="Review only", completed=[], cfg=cfg, client=client)
 
@@ -304,6 +764,166 @@ def test_run_agent_block_policy_denial_balances_sibling_tool_results(monkeypatch
     assert [msg.get("tool_call_id") for msg in tool_messages] == ["bad", "sibling"]
     assert "Tool not allowed" in tool_messages[0]["content"]
     assert "Skipped because another tool call" in tool_messages[1]["content"]
+
+
+def test_agent_batch_preflight_quarantines_safe_sibling_before_late_violation(monkeypatch):
+    cfg = Config()
+    block = agent_blocks.AgentBlock(
+        role="review",
+        prompt="p",
+        allowed_tools=frozenset({"read_file"}),
+    )
+    client = ScriptedClient(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "safe-first",
+                        "function": {"name": "read_file", "arguments": {"path": "x"}},
+                    },
+                    {
+                        "id": "bad-second",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": {"path": "x", "content": "y"},
+                        },
+                    },
+                ]
+            }
+        ]
+    )
+    _quiet_display(monkeypatch)
+    monkeypatch.setattr(
+        tool_runtime,
+        "run_tool",
+        lambda *_args, **_kwargs: pytest.fail("quarantined safe sibling executed"),
+    )
+
+    main.run_agent_block(block, task="Review only", completed=[], cfg=cfg, client=client)
+
+    tool_messages = [message for message in block.messages if message.get("role") == "tool"]
+    assert block.status == "failed"
+    assert len(tool_messages) == 2
+    assert "Skipped because another tool call" in tool_messages[0]["content"]
+    assert "Tool not allowed" in tool_messages[1]["content"]
+
+
+def test_journal_outcome_failure_quarantines_later_sibling(
+    monkeypatch,
+    tmp_path,
+):
+    cfg = Config(cwd=str(tmp_path))
+    block = agent_blocks.review_pipeline()[0]
+    task = "Review two files"
+    contract = run_contract.compile_agent_run_contract(
+        task=task,
+        route=task_router.route_task(task),
+        pipeline_name="review",
+        blocks=[block],
+        cfg=cfg,
+        approval_mode="interactive",
+        snapshot=git_evidence.GitSnapshot(
+            False,
+            "not git",
+            None,
+            "",
+            "",
+            (),
+        ),
+    )
+    tracker = run_contract.RunContractTracker(contract)
+    tracker.start_block(0)
+    client = ScriptedClient(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "first",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": {"path": "one.txt"},
+                        },
+                    },
+                    {
+                        "id": "second",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": {"path": "two.txt"},
+                        },
+                    },
+                ]
+            }
+        ]
+    )
+    dispatched: list[tuple[str, str | None]] = []
+
+    class FailingOutcomeJournal:
+        def model_round_started(self, *_args, **_kwargs):
+            return None
+
+        def model_round_completed(self, *_args, **_kwargs):
+            return None
+
+        def tool_intent(self, **kwargs):
+            return SimpleNamespace(
+                payload={
+                    "step_id": (
+                        f"b0-r0-t{kwargs['tool_index']}"
+                    )
+                }
+            )
+
+        def tool_result(self, **_kwargs):
+            raise agent_run_journal.AgentRunJournalError(
+                "simulated durable write failure"
+            )
+
+    def fake_execute(
+        name,
+        _args,
+        _cfg,
+        *,
+        tool_call_id=None,
+        policy_ceiling_code=None,
+        **_kwargs,
+    ):
+        dispatched.append((name, policy_ceiling_code))
+        return (
+            {
+                "role": "tool",
+                "content": policy_ceiling_code or "read",
+                "tool_call_id": tool_call_id,
+            },
+            policy_ceiling_code or "read",
+        )
+
+    _quiet_display(monkeypatch)
+    monkeypatch.setattr(
+        agent_pipeline,
+        "execute_tool_call_for_pipeline",
+        fake_execute,
+    )
+
+    main.run_agent_block(
+        block,
+        task=task,
+        completed=[],
+        cfg=cfg,
+        client=client,
+        route=task_router.route_task(task),
+        run_contract=contract,
+        block_contract=contract.block(0),
+        contract_tracker=tracker,
+        run_journal=FailingOutcomeJournal(),
+        block_ordinal=0,
+    )
+
+    assert dispatched == [
+        ("read_file", None),
+        ("read_file", "run_journal_unavailable"),
+    ]
+    assert block.status == "failed"
+    assert block.status_code == "run_journal_unavailable"
 
 
 def test_run_agent_block_gemini_collapse_uses_block_model(monkeypatch):
@@ -492,14 +1112,27 @@ def test_required_change_safe_mode_blocks_shell_mutation(monkeypatch):
         ]
     )
     _quiet_display(monkeypatch)
+    original_dispatch = agent_pipeline.execute_tool_call_for_pipeline
+    ceiling_codes: list[str] = []
+
+    def tracked_dispatch(*args, **kwargs):
+        ceiling_codes.append(str(kwargs.get("policy_ceiling_code") or ""))
+        return original_dispatch(*args, **kwargs)
+
     monkeypatch.setattr(
         agent_pipeline,
         "execute_tool_call_for_pipeline",
+        tracked_dispatch,
+    )
+    monkeypatch.setattr(
+        tool_runtime,
+        "run_tool",
         lambda *_args, **_kwargs: pytest.fail("blocked mutation must not execute"),
     )
 
     main.run_agent_block(block, task="Fix a bug", completed=[], cfg=cfg, client=client)
 
+    assert ceiling_codes == ["required_change_shell_blocked"]
     assert "Blocked by required-change policy" in block.messages[3]["content"]
 
 
@@ -635,12 +1268,12 @@ def test_run_agent_pipeline_passes_no_git_delta_to_review(monkeypatch):
     snapshot = git_evidence.GitSnapshot(
         available=True,
         error=None,
-        head="abc",
+        head="a" * 40,
         status="## branch\n M ollama_cli/main.py",
         tracked_diff="+old dirty work",
         untracked_files=(),
-        tracked_diff_digest="same",
-        untracked_digest="same",
+        tracked_diff_digest="b" * 64,
+        untracked_digest="c" * 64,
     )
     displayed_status: dict[str, str] = {}
     _quiet_display(monkeypatch)
@@ -653,6 +1286,11 @@ def test_run_agent_pipeline_passes_no_git_delta_to_review(monkeypatch):
     )
     monkeypatch.setattr(agent_pipeline, "resolve_pipeline_for_cli", lambda _name: ([implement, review, final], "test"))
     monkeypatch.setattr(git_evidence, "capture_git_snapshot", lambda _cwd: snapshot)
+    monkeypatch.setattr(
+        agent_pipeline,
+        "should_recover_implementation",
+        lambda _block: False,
+    )
 
     main.run_agent_pipeline("build it", cfg, client, pipeline_name="code-change")
 
@@ -666,8 +1304,17 @@ def test_run_agent_pipeline_passes_no_git_delta_to_review(monkeypatch):
 
 def test_required_change_allows_clean_attributable_git_delta():
     empty = git_evidence._digest("")
-    before = git_evidence.GitSnapshot(True, None, "abc", "## main", "", (), empty, empty)
-    after = git_evidence.GitSnapshot(True, None, "abc", "## main\n M main.py", "+change", (), "changed", empty)
+    before = git_evidence.GitSnapshot(True, None, "a" * 40, "## main", "", (), empty, empty)
+    after = git_evidence.GitSnapshot(
+        True,
+        None,
+        "a" * 40,
+        "## main\n M main.py",
+        "+change",
+        (),
+        "b" * 64,
+        empty,
+    )
     block = agent_blocks.AgentBlock(role="implement", prompt="p", requires_change=True, status="complete", output="done")
 
     main.enforce_required_change_contract(block, before, after)
@@ -713,7 +1360,7 @@ def test_required_change_rejects_write_that_leaves_no_final_delta():
     assert "No verified code change was produced" in block.output
 
 
-def test_required_change_allows_recorded_write_when_git_is_unavailable_with_warning():
+def test_required_change_rejects_recorded_write_when_git_is_unavailable():
     snapshot = git_evidence.GitSnapshot(False, "not a Git repository", None, "", "", ())
     block = agent_blocks.AgentBlock(
         role="implement",
@@ -726,15 +1373,14 @@ def test_required_change_allows_recorded_write_when_git_is_unavailable_with_warn
 
     main.enforce_required_change_contract(block, snapshot, snapshot)
 
-    assert block.status == "complete"
-    assert block.output == "Implemented."
-    assert "Verification Warning" not in block.output
-    assert "manually confirm" in block.verification_warning
+    assert block.status == "partial"
+    assert block.status_code == "verification_unavailable"
+    assert "UNVERIFIED" in block.output
+    assert "final-state evidence is unavailable" in block.verification_warning
     assert "manual" not in block.git_evidence.lower()
     context = agent_blocks.pipeline_context("Fix it", [block])
     assert "Implemented." in context
-    assert "## Verification\nGit verification was unavailable." in context
-    assert "manually confirm" in context
+    assert "## Verification\nRequired change not verified" in context
 
 
 def test_required_change_rejects_no_write_when_git_is_unavailable():
@@ -771,6 +1417,7 @@ def test_required_change_rejects_recorded_write_across_head_change():
 
 def test_non_change_mutation_is_audited_without_status_gate(monkeypatch):
     cfg = Config()
+    cfg.algorithmic_tool_policy_enabled = False
     review = agent_blocks.AgentBlock(role="review", prompt="review", allowed_tools=agent_blocks.REVIEW_TOOLS)
     final = agent_blocks.AgentBlock(role="final", prompt="final")
     client = ScriptedClient(
@@ -781,9 +1428,27 @@ def test_non_change_mutation_is_audited_without_status_gate(monkeypatch):
         ]
     )
     empty = git_evidence._digest("")
-    before = git_evidence.GitSnapshot(True, None, "abc", "## main", "", (), empty, empty)
-    after = git_evidence.GitSnapshot(True, None, "abc", "## main\n M main.py", "+change", (), "changed", empty)
-    snapshots = iter([before, after])
+    before = git_evidence.GitSnapshot(
+        True,
+        None,
+        "a" * 40,
+        "## main",
+        "",
+        (),
+        empty,
+        empty,
+    )
+    after = git_evidence.GitSnapshot(
+        True,
+        None,
+        "a" * 40,
+        "## main\n M main.py",
+        "+change",
+        (),
+        "b" * 64,
+        empty,
+    )
+    snapshots = iter([before, after, after])
     infos: list[str] = []
     _quiet_display(monkeypatch)
     monkeypatch.setattr(agent_pipeline, "resolve_pipeline_for_cli", lambda _name: ([review, final], "test"))
@@ -819,6 +1484,30 @@ def test_non_change_denied_shell_mutation_is_not_audited(monkeypatch):
         agent_pipeline,
         "execute_tool_call_for_pipeline",
         lambda *_args, **_kwargs: ({"role": "tool", "content": "denied"}, "User denied this operation."),
+    )
+
+    main.run_agent_block(block, task="Review it", completed=[], cfg=cfg, client=client)
+
+    assert block.mutation_actions == []
+
+
+def test_failed_shell_mutation_is_not_audited_as_success(monkeypatch):
+    cfg = Config()
+    block = agent_blocks.AgentBlock(role="review", prompt="review", allowed_tools=agent_blocks.REVIEW_TOOLS)
+    client = ScriptedClient(
+        [
+            {"tool_calls": [{"function": {"name": "run_shell", "arguments": {"command": "git add main.py"}}}]},
+            {"content": "## Block Output\nReview complete."},
+        ]
+    )
+    _quiet_display(monkeypatch)
+    monkeypatch.setattr(
+        agent_pipeline,
+        "execute_tool_call_for_pipeline",
+        lambda *_args, **_kwargs: (
+            {"role": "tool", "content": "failed"},
+            "command failed\n[exit code: 1]",
+        ),
     )
 
     main.run_agent_block(block, task="Review it", completed=[], cfg=cfg, client=client)
@@ -928,16 +1617,33 @@ def test_pipeline_recovery_runs_one_replan_and_reduced_budget_retry(monkeypatch)
             final_context.append(agent_blocks.pipeline_context(task, completed))
             block.status = "complete"
             block.output = "## Block Output\n\nFinal."
+        if block.role == "implement-retry" and block.status == "complete":
+            journal = _kwargs["run_journal"]
+            journal.verifier_result(
+                ordinal=_kwargs["block_ordinal"],
+                verifier="post_mutation",
+                status="passed",
+                snapshot=git_evidence.capture_git_snapshot(cfg.cwd),
+            )
 
     monkeypatch.setattr(agent_pipeline, "run_agent_block", fake_run)
 
     main.run_agent_pipeline("Fix it", cfg, object(), pipeline_name="code-change")
 
     assert roles == ["implement", "recovery-plan", "implement-retry", "final"]
-    assert notices == [("implement", implement.status_reason, 8)]
-    assert "## Output from implement\n## Block Output\n\nOriginal attempt." in final_context[0]
-    assert "## Output from recovery-plan" in final_context[0]
-    assert "## Output from implement-retry" in final_context[0]
+    assert notices == [
+        (
+            "implement",
+            "Required change not verified: no write evidence.",
+            8,
+        )
+    ]
+    assert "### Original attempt" in final_context[0]
+    assert "Original attempt." in final_context[0]
+    assert "### Contract-bound recovery plan" in final_context[0]
+    assert "Write the confirmed target directly." in final_context[0]
+    assert "### Recovery retry" in final_context[0]
+    assert "Retry implemented." in final_context[0]
 
 
 def test_pipeline_recovery_does_not_recurse_after_partial_retry(monkeypatch):
@@ -962,6 +1668,14 @@ def test_pipeline_recovery_does_not_recurse_after_partial_retry(monkeypatch):
             block.status_reason = "No verified write."
         else:
             block.status = "complete"
+        if block.role == "implement-retry" and block.status == "complete":
+            journal = _kwargs["run_journal"]
+            journal.verifier_result(
+                ordinal=_kwargs["block_ordinal"],
+                verifier="post_mutation",
+                status="passed",
+                snapshot=git_evidence.capture_git_snapshot(cfg.cwd),
+            )
 
     monkeypatch.setattr(agent_pipeline, "run_agent_block", fake_run)
 
@@ -1028,7 +1742,7 @@ def test_parse_agent_invocation_reports_missing_pipeline_args():
 
 
 def test_agent_command_rejects_missing_pipeline_args(monkeypatch):
-    from algo_cli import slash_dispatch
+    from algo_cli import oliver_slash_dispatch as slash_dispatch
 
     cfg = Config()
     errors: list[str] = []
@@ -1046,7 +1760,7 @@ def test_agent_command_rejects_missing_pipeline_args(monkeypatch):
 
 
 def test_agent_help_shows_usage_without_starting_pipeline(monkeypatch):
-    from algo_cli import slash_dispatch
+    from algo_cli import oliver_slash_dispatch as slash_dispatch
 
     cfg = Config()
     infos: list[str] = []
@@ -1135,6 +1849,12 @@ def test_agent_team_fans_out_specialists_then_passes_bounded_handoff(monkeypatch
     assert len(result.children) == 3
     parent = agent_threads.resolve_thread(result.thread_id)
     assert set(parent["children"]) == set(result.children)
+    children = [
+        agent_threads.resolve_thread(thread_id)
+        for thread_id in result.children
+    ]
+    assert all(child["run_contract"]["mode"] == "enforced" for child in children)
+    assert all(child["checkpoint"]["terminal"] is True for child in children)
 
 
 def test_execute_agent_memory_seam_uses_original_task_and_completion_status(monkeypatch):
@@ -1228,6 +1948,369 @@ def test_agent_resume_and_fork_pass_prior_thread_handoff(monkeypatch):
     assert calls[1]["thread_id"] is None
     assert calls[1]["parent_id"] == original["id"]
     assert "Verified prior evidence" in calls[0]["prior_context"]
+
+
+def test_structured_resume_skips_verified_block_and_keeps_contract(
+    monkeypatch,
+    tmp_path,
+):
+    cfg = Config(cwd=str(tmp_path))
+    task = "Review the runtime"
+    pipeline = agent_blocks.review_pipeline()
+    snapshot = git_evidence.GitSnapshot(
+        False,
+        "not a Git repository",
+        None,
+        "",
+        "",
+        (),
+    )
+    contract = run_contract.compile_agent_run_contract(
+        task=task,
+        route=task_router.route_task(task),
+        pipeline_name="review",
+        blocks=pipeline,
+        cfg=cfg,
+        approval_mode="interactive",
+        snapshot=snapshot,
+        run_nonce="resume-test-run",
+        issued_at="2026-07-23T12:00:00+00:00",
+    )
+    journal = agent_run_journal.AgentRunJournal.create(contract)
+    context_output = "## Block Output\nVerified review evidence."
+    journal.block_started(0, "review")
+    journal.model_round_started(0, 0)
+    journal.model_round_completed(
+        0,
+        0,
+        status="completed",
+        tool_call_count=0,
+        response_digest=agent_run_journal.digest_text("review"),
+    )
+    journal.verifier_result(
+        ordinal=0,
+        verifier="block_output",
+        status="passed",
+        snapshot=snapshot,
+    )
+    journal.block_finished(
+        ordinal=0,
+        role="review",
+        status="complete",
+        verified=True,
+        context_digest=agent_run_journal.digest_text(context_output),
+        snapshot=snapshot,
+    )
+    record = agent_threads.create_thread(
+        task,
+        pipeline="review",
+        status="running",
+        start_turn=True,
+        workspace={"available": False, "cwd": str(tmp_path)},
+        run_contract=agent_pipeline._contract_thread_link(contract),
+        checkpoint=journal.checkpoint_payload(),
+    )
+    agent_threads.update_thread(
+        record["id"],
+        blocks=[
+            {
+                "role": "review",
+                "status": "complete",
+                "context_output": context_output,
+            }
+        ],
+        checkpoint=journal.checkpoint_payload(),
+    )
+    client = ScriptedClient(
+        [{"content": "## Block Output\nFinal from checkpoint."}]
+    )
+    _quiet_display(monkeypatch)
+
+    result = agent_pipeline.execute_agent_command(
+        f"resume {record['id']} Finish the verified review",
+        cfg,
+        client,
+    )
+
+    assert result.startswith(
+        f"Agent thread {record['id']}: complete"
+    )
+    assert len(client.calls) == 1
+    assert "You are the final block" in (
+        client.calls[0]["messages"][0]["content"]
+    )
+    assert context_output in client.calls[0]["messages"][1]["content"]
+    events = agent_run_journal.AgentRunJournal.load(
+        contract.run_nonce
+    ).records()
+    assert any(event.kind == "run_resumed" for event in events)
+    assert events[-1].kind == "run_finished"
+
+
+def test_structured_resume_fails_closed_on_approval_drift(
+    monkeypatch,
+    tmp_path,
+):
+    cfg = Config(cwd=str(tmp_path))
+    task = "Review the runtime"
+    pipeline = agent_blocks.review_pipeline()
+    snapshot = git_evidence.GitSnapshot(
+        False,
+        "not a Git repository",
+        None,
+        "",
+        "",
+        (),
+    )
+    contract = run_contract.compile_agent_run_contract(
+        task=task,
+        route=task_router.route_task(task),
+        pipeline_name="review",
+        blocks=pipeline,
+        cfg=cfg,
+        approval_mode="interactive",
+        snapshot=snapshot,
+        run_nonce="resume-approval-drift",
+        issued_at="2026-07-23T12:00:00+00:00",
+    )
+    journal = agent_run_journal.AgentRunJournal.create(contract)
+    record = agent_threads.create_thread(
+        task,
+        pipeline="review",
+        status="running",
+        start_turn=True,
+        workspace={"available": False, "cwd": str(tmp_path)},
+        run_contract=agent_pipeline._contract_thread_link(contract),
+        checkpoint=journal.checkpoint_payload(),
+    )
+    setattr(cfg, "_nathan_approval_mode", "never")
+    client = FakeClient(["## Block Output\nmust not run"])
+    _quiet_display(monkeypatch)
+
+    result = agent_pipeline.execute_agent_command(
+        f"resume {record['id']} Continue",
+        cfg,
+        client,
+    )
+
+    assert "live approval mode differs" in result
+    assert client.calls == []
+
+
+def test_structured_resume_fails_closed_on_workspace_drift(
+    monkeypatch,
+    tmp_path,
+):
+    cfg = Config(cwd=str(tmp_path))
+    task = "Review the runtime"
+    pipeline = agent_blocks.review_pipeline()
+    initial = git_evidence.GitSnapshot(
+        True,
+        None,
+        "a" * 40,
+        "## main",
+        "",
+        (),
+        "b" * 64,
+        "c" * 64,
+        0,
+        "d" * 64,
+    )
+    changed = git_evidence.GitSnapshot(
+        True,
+        None,
+        "a" * 40,
+        "## main\n M runtime.py",
+        "+changed",
+        (),
+        "e" * 64,
+        "c" * 64,
+        0,
+        "f" * 64,
+    )
+    contract = run_contract.compile_agent_run_contract(
+        task=task,
+        route=task_router.route_task(task),
+        pipeline_name="review",
+        blocks=pipeline,
+        cfg=cfg,
+        approval_mode="interactive",
+        snapshot=initial,
+        run_nonce="resume-workspace-drift",
+        issued_at="2026-07-23T12:00:00+00:00",
+    )
+    journal = agent_run_journal.AgentRunJournal.create(contract)
+    record = agent_threads.create_thread(
+        task,
+        pipeline="review",
+        status="running",
+        start_turn=True,
+        workspace={"available": True, "workspace_root": str(tmp_path)},
+        run_contract=agent_pipeline._contract_thread_link(contract),
+        checkpoint=journal.checkpoint_payload(),
+    )
+    client = FakeClient(["## Block Output\nmust not run"])
+    _quiet_display(monkeypatch)
+    monkeypatch.setattr(
+        git_evidence,
+        "capture_git_snapshot",
+        lambda _cwd: changed,
+    )
+
+    result = agent_pipeline.execute_agent_command(
+        f"resume {record['id']} Continue",
+        cfg,
+        client,
+    )
+
+    assert "workspace state differs" in result
+    assert client.calls == []
+
+
+def test_structured_resume_rejects_tampered_thread_context(
+    monkeypatch,
+    tmp_path,
+):
+    cfg = Config(cwd=str(tmp_path))
+    task = "Review the runtime"
+    pipeline = agent_blocks.review_pipeline()
+    snapshot = git_evidence.GitSnapshot(
+        False,
+        "not a Git repository",
+        None,
+        "",
+        "",
+        (),
+    )
+    contract = run_contract.compile_agent_run_contract(
+        task=task,
+        route=task_router.route_task(task),
+        pipeline_name="review",
+        blocks=pipeline,
+        cfg=cfg,
+        approval_mode="interactive",
+        snapshot=snapshot,
+        run_nonce="resume-context-tamper",
+        issued_at="2026-07-23T12:00:00+00:00",
+    )
+    journal = agent_run_journal.AgentRunJournal.create(contract)
+    journal.block_started(0, "review")
+    journal.verifier_result(
+        ordinal=0,
+        verifier="block_output",
+        status="passed",
+        snapshot=snapshot,
+    )
+    journal.block_finished(
+        ordinal=0,
+        role="review",
+        status="complete",
+        verified=True,
+        context_digest=agent_run_journal.digest_text(
+            "## Block Output\nOriginal"
+        ),
+        snapshot=snapshot,
+    )
+    record = agent_threads.create_thread(
+        task,
+        pipeline="review",
+        status="running",
+        start_turn=True,
+        workspace={"available": False, "cwd": str(tmp_path)},
+        run_contract=agent_pipeline._contract_thread_link(contract),
+        checkpoint=journal.checkpoint_payload(),
+    )
+    agent_threads.update_thread(
+        record["id"],
+        blocks=[
+            {
+                "role": "review",
+                "status": "complete",
+                "context_output": "## Block Output\nTampered",
+            }
+        ],
+    )
+    client = FakeClient(["## Block Output\nmust not run"])
+    _quiet_display(monkeypatch)
+
+    result = agent_pipeline.execute_agent_command(
+        f"resume {record['id']} Continue",
+        cfg,
+        client,
+    )
+
+    assert "does not match its verified journal digest" in result
+    assert client.calls == []
+
+
+def test_structured_resume_rejects_uncertain_mutation(
+    monkeypatch,
+    tmp_path,
+):
+    cfg = Config(cwd=str(tmp_path))
+    task = "Fix the runtime"
+    pipeline = agent_blocks.code_change_pipeline()
+    snapshot = git_evidence.GitSnapshot(
+        False,
+        "not a Git repository",
+        None,
+        "",
+        "",
+        (),
+    )
+    contract = run_contract.compile_agent_run_contract(
+        task=task,
+        route=task_router.route_task(task),
+        pipeline_name="code-change",
+        blocks=pipeline,
+        cfg=cfg,
+        approval_mode="interactive",
+        snapshot=snapshot,
+        run_nonce="resume-uncertain-mutation",
+        issued_at="2026-07-23T12:00:00+00:00",
+    )
+    journal = agent_run_journal.AgentRunJournal.create(contract)
+    journal.block_started(0, "plan")
+    journal.model_round_started(0, 0)
+    journal.model_round_completed(
+        0,
+        0,
+        status="completed",
+        tool_call_count=1,
+        response_digest=agent_run_journal.digest_text("write"),
+    )
+    journal.tool_intent(
+        ordinal=0,
+        round_number=0,
+        tool_index=0,
+        action="write_file",
+        args={"path": "runtime.py", "content": "private"},
+        call_id="write-1",
+        mutating=True,
+        idempotency="non_idempotent",
+        target="workspace:runtime.py",
+    )
+    record = agent_threads.create_thread(
+        task,
+        pipeline="code-change",
+        status="running",
+        start_turn=True,
+        workspace={"available": False, "cwd": str(tmp_path)},
+        run_contract=agent_pipeline._contract_thread_link(contract),
+        checkpoint=journal.checkpoint_payload(),
+    )
+    client = FakeClient(["## Block Output\nmust not run"])
+    _quiet_display(monkeypatch)
+
+    result = agent_pipeline.execute_agent_command(
+        f"resume {record['id']} Continue",
+        cfg,
+        client,
+    )
+
+    assert "uncertain mutation outcome" in result
+    assert "b0-r0-t0" in result
+    assert client.calls == []
 
 
 def test_agent_fork_creates_and_activates_isolated_worktree(monkeypatch, tmp_path):

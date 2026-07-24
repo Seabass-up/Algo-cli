@@ -1,18 +1,17 @@
-"""Minimal reflex loop v0.1 — session recovery behind ``reflex_enabled`` (default off).
+"""Bounded reflex planning behind ``reflex_enabled`` (default off).
 
-Implements a subset of docs/reflex-loop-v0.2.md: detect → one safe ACT → inject
-result. No background tasks, no index mutation, no verification-loop integration.
+The reflex layer detects a failed strategy and suggests one bounded recovery
+action. It never executes tools itself; the next action must return through the
+canonical authority and outcome dispatcher.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from typing import Any
 
-from . import tools as tools_module
-from .display import redact_tool_args
+from .irene_privacy_views import PrivacyProjectionError, keyed_action_fingerprint
 
 REFLEX_MAX_CYCLES = 3
 REFLEX_LEDGER_CONTEXT_KEY = "reflex_cycles"
@@ -43,12 +42,10 @@ _EMPTY_RESULT_MARKERS = (
 
 
 def tool_signature(name: str, args: dict[str, Any]) -> str:
-    safe_args = redact_tool_args(name, args)
     try:
-        encoded = json.dumps(safe_args, sort_keys=True, ensure_ascii=True, default=str, separators=(",", ":"))
-    except TypeError:
-        encoded = str(safe_args)
-    return f"{name}:{encoded}"
+        return keyed_action_fingerprint(name, args)
+    except (PrivacyProjectionError, TypeError, ValueError):
+        return f"{name}:privacy-projection-error"
 
 
 def _reflex_cycles(cfg: Any) -> int:
@@ -164,8 +161,14 @@ def _recovery_query_for_tool(name: str, args: dict[str, Any]) -> str:
     return _broaden_harness_query(args) or "workspace context"
 
 
-def _run_safe_act(cfg: Any, trigger: ReflexTrigger, name: str, args: dict[str, Any]) -> tuple[str, bool]:
-    """Return (supplemental text, resolved)."""
+def _plan_safe_act(
+    _cfg: Any,
+    trigger: ReflexTrigger,
+    name: str,
+    args: dict[str, Any],
+) -> tuple[str, bool]:
+    """Return a bounded recovery suggestion without invoking another action."""
+
     if trigger.label == "loop_detected":
         return (
             "Reflex: loop detected (same tool + args). Stop retrying this path. "
@@ -174,26 +177,19 @@ def _run_safe_act(cfg: Any, trigger: ReflexTrigger, name: str, args: dict[str, A
         )
 
     query = _recovery_query_for_tool(name, args)
-    if "harness_search" in REFLEX_SAFE_TOOLS:
-        fallback = tools_module.harness_search(query=query, limit=5)
-        if fallback and "no harness matches" not in fallback.lower():
-            return f"Reflex recovery — harness_search:\n{fallback}", True
-
-    if name == "read_file" and "search_files" in REFLEX_SAFE_TOOLS:
+    if name == "read_file":
         pattern = str(args.get("path", "")).split("/")[-1].split("\\")[-1]
         if pattern:
-            alt = tools_module.search_files(
-                pattern=pattern,
-                cwd=str(getattr(cfg, "cwd", ".")),
-                limit=5,
+            return (
+                "Reflex recovery plan: call search_files through the canonical dispatcher "
+                f"with the bounded filename pattern {pattern[:120]!r}; do not repeat read_file.",
+                False,
             )
-            if alt and "error" not in alt.lower()[:20]:
-                return f"Reflex recovery — search_files for {pattern}:\n{alt}", True
-
-    actions = tools_module.available_actions(topic=query[:40])
+    suggested = "harness_search" if name == "harness_search" else "available_actions"
     return (
         f"Reflex ({trigger.label}): {trigger.reason}\n"
-        f"Suggested next reads:\n{actions[:1200]}",
+        f"Recovery plan: call {suggested} through the canonical dispatcher with "
+        f"topic/query {query[:120]!r}. Do not execute a hidden recovery action.",
         False,
     )
 
@@ -234,7 +230,7 @@ def maybe_augment_tool_result(
         return result, None
 
     _increment_reflex_cycles(cfg)
-    supplement, resolved = _run_safe_act(cfg, trigger, name, args)
+    supplement, resolved = _plan_safe_act(cfg, trigger, name, args)
     verdict = "resolved" if resolved else "escalate"
     note = f"↻ reflex [{trigger.label}] cycle {_reflex_cycles(cfg)}/{REFLEX_MAX_CYCLES} — {verdict}"
     block = f"\n\n---\n{supplement}"

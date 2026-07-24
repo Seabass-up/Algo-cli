@@ -6,6 +6,7 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from algo_cli import harness
 from conftest import make_fake_embed
@@ -957,6 +958,48 @@ def test_rust_indexer_candidates_accepts_legacy_env(monkeypatch, tmp_path):
     candidates = harness.rust_indexer_candidates()
 
     assert candidates[0] == legacy_binary
+
+
+def test_rust_indexer_receives_exact_imported_package_boundary(monkeypatch, tmp_path):
+    binary = tmp_path / "harness-indexer"
+    binary.write_bytes(b"fixture")
+    index_path = tmp_path / "private" / "harness_index.json"
+    config_dir = index_path.parent
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+        index_path.write_text(
+            json.dumps(
+                {
+                    "generated": "1",
+                    "record_count": 0,
+                    "roots": [],
+                    "records": [],
+                    "refresh_stats": {
+                        "reused_records": 0,
+                        "rebuilt_records": 0,
+                        "removed_records": 0,
+                    },
+                    "indexer": "rust",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(harness, "_EXTERNAL_SOURCES_ENABLED", True)
+    monkeypatch.setattr(harness, "find_rust_indexer", lambda: binary)
+    monkeypatch.setattr(harness, "INDEX_PATH", index_path)
+    monkeypatch.setattr(harness, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(harness.subprocess, "run", fake_run)
+
+    result = harness.build_index_with_rust()
+
+    assert result is not None and result["indexer"] == "rust"
+    assert captured["command"] == [str(binary), "--output", str(index_path)]
+    assert captured["env"]["ALGO_CLI_REPO_DIR"] == str(harness.ALGO_CLI_REPO_DIR)
 
 
 def test_retrieve_for_query_skips_excluded_records():

@@ -7,7 +7,7 @@ truncated history long before compaction ever fired.
 
 from algo_cli import context_budget, model_info
 from algo_cli.config import Config
-from algo_cli.tool_runtime import tool_result_message
+from algo_cli.nathan_runtime import tool_result_message
 from algo_cli.tool_schema import estimate_tool_schema_tokens
 from algo_cli import tools
 

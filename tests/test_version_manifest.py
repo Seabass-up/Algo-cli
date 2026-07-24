@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from algo_cli import extensions_manifest, tools, version_manifest
+from algo_cli import argon_extensions_manifest as extensions_manifest
+from algo_cli import tools, version_manifest
 
 
 class TestVersionManifest:
@@ -113,16 +114,18 @@ def test_extensions_manifest_has_component_records():
 
 
 def test_extensions_manifest_includes_discovered_plugin_path(tmp_path, monkeypatch):
-    from algo_cli import plugins
+    from algo_cli import william_plugins as plugins
 
     plugin_dir = tmp_path / "example-plugin"
     plugin_dir.mkdir()
     (plugin_dir / "plugin.json").write_text(
         json.dumps(
             {
+                "schema_version": 1,
                 "name": "example-plugin",
                 "version": "1.2.3",
                 "description": "test plugin",
+                "entry_points": [],
             }
         ),
         encoding="utf-8",
@@ -135,7 +138,7 @@ def test_extensions_manifest_includes_discovered_plugin_path(tmp_path, monkeypat
     )
 
     assert component.version == "1.2.3"
-    assert component.path == str(plugin_dir)
+    assert component.path == "plugins/example-plugin"
 
 
 def test_extensions_manifest_tool_returns_json():

@@ -156,7 +156,7 @@ def test_emits_perf_event_only_on_actual_prune(monkeypatch):
     cfg = Config()
     cfg.messages = _msgs_with_user_assistant_tool_pattern(40)
     events: list[dict] = []
-    from algo_cli import perf_telemetry
+    from algo_cli import dorothy_perf_telemetry as perf_telemetry
 
     monkeypatch.setattr(
         perf_telemetry,

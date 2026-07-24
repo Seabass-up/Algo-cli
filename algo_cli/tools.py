@@ -20,12 +20,13 @@ from pathlib import Path
 import inspect
 from typing import Any
 from urllib.error import URLError
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 from . import harness
 from . import identity
 from . import index_compute_lab as _index_compute_lab
 from .config import CONFIG_DIR, Config, load_runtime_env, _atomic_write_text
+from .marcus_authority import CuratedToolRegistry
 from ollama import Client
 
 from .chat_protocol import get_attr
@@ -51,6 +52,10 @@ DEFAULT_GATEWAY_URL = (
     or os.environ.get("OLLAMA_CLI_GATEWAY_URL")
     or "http://127.0.0.1:8765"
 )
+MAX_GATEWAY_REQUEST_BYTES = 4 * 1024 * 1024
+MAX_GATEWAY_RESPONSE_BYTES = 16 * 1024 * 1024
+MAX_GATEWAY_BATCH_ITEMS = 256
+MAX_GATEWAY_MODEL_CHARS = 256
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DENY_COMMAND_RE = re.compile(
     r"\b(rm|del|erase|rd|rmdir|format|diskpart|shutdown|restart-computer|stop-computer|"
@@ -1472,44 +1477,41 @@ def x_account_draft_reply(post: str, text: str) -> str:
     return x_account.draft_reply(post, text).to_json()
 
 
-def x_account_post(text: str, confirm: bool = False) -> str:
-    """Publish an X post through xurl only after explicit user confirmation.
+def x_account_post(text: str) -> str:
+    """Request an X post; only the trusted dispatcher can publish it.
 
     Args:
         text: Exact post text to publish.
-        confirm: Must be true only when the user explicitly approved this exact text.
     """
     from . import x_account
 
-    return x_account.post(text, confirm=confirm).to_json()
+    return x_account.post(text, confirm=False).to_json()
 
 
-def x_account_reply(post: str, text: str, confirm: bool = False) -> str:
-    """Publish an X reply through xurl only after explicit user confirmation.
+def x_account_reply(post: str, text: str) -> str:
+    """Request an X reply; only the trusted dispatcher can publish it.
 
     Args:
         post: X post id or x.com status URL to reply to.
         text: Exact reply text to publish.
-        confirm: Must be true only when the user explicitly approved this exact reply.
     """
     from . import x_account
 
-    return x_account.reply(post, text, confirm=confirm).to_json()
+    return x_account.reply(post, text, confirm=False).to_json()
 
 
-def x_account_post_action(action: str, post: str, confirm: bool = False) -> str:
-    """Run a confirmed X post action through xurl.
+def x_account_post_action(action: str, post: str) -> str:
+    """Request an X post action; only the trusted dispatcher can execute it.
 
     Supported actions: delete, like, unlike, repost, unrepost, bookmark, unbookmark.
 
     Args:
         action: The action to run.
         post: X post id or x.com status URL.
-        confirm: Must be true only when the user explicitly approved this exact action.
     """
     from . import x_account
 
-    return x_account.post_action(action, post, confirm=confirm).to_json()
+    return x_account.post_action(action, post, confirm=False).to_json()
 
 
 def remember(fact: str, cfg: Config | None = None) -> str:
@@ -1525,7 +1527,12 @@ def remember(fact: str, cfg: Config | None = None) -> str:
         cfg: Optional Config instance for persistence (required for actual storage).
     """
     if cfg is not None:
-        added = cfg.remember_fact(fact)
+        from . import julia_memory_runtime as memory_runtime
+
+        try:
+            added = memory_runtime.remember_fact(cfg, fact)
+        except memory_runtime.MemorySystemError as exc:
+            return f"Error: {exc}"
         if added:
             from .main import capture_intuition_block
             capture_intuition_block(cfg, "memory", fact, source="tool:remember")
@@ -1578,21 +1585,121 @@ def update_user_profile(content: str) -> str:
 
 
 def current_gateway_url(url: str | None = None) -> str:
-    return (
+    raw_candidate: object = (
         url
-        or os.environ.get("ALGO_CLI_GATEWAY_URL")
+        if url is not None
+        else os.environ.get("ALGO_CLI_GATEWAY_URL")
         or os.environ.get("OLLAMA_CLI_GATEWAY_URL")
         or DEFAULT_GATEWAY_URL
-    ).rstrip("/")
+    )
+    if type(raw_candidate) is not str:
+        raise ValueError("Gateway URL must be text.")
+    candidate = raw_candidate.strip().rstrip("/")
+    from .theodore_runtime_services import local_service_address
+
+    if local_service_address(candidate, require_http=True) is None:
+        raise ValueError("Gateway URL must be an explicit credential-free HTTP loopback endpoint.")
+    return candidate
+
+
+def _open_local_gateway(request: Request, *, timeout: float) -> Any:
+    """Open a validated loopback request without honoring proxy variables."""
+
+    return build_opener(ProxyHandler({})).open(request, timeout=timeout)
+
+
+def _gateway_payload(
+    inputs: str | list[str],
+    model: str,
+    truncate: bool,
+    dimensions: int | None,
+) -> bytes | None:
+    if type(model) is not str:
+        return None
+    clean_model = model.strip()
+    if (
+        not clean_model
+        or clean_model != model
+        or len(clean_model) > MAX_GATEWAY_MODEL_CHARS
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in clean_model)
+        or type(truncate) is not bool
+        or (
+            dimensions is not None
+            and (
+                type(dimensions) is not int
+                or not 1 <= dimensions <= 16_384
+            )
+        )
+    ):
+        return None
+    if isinstance(inputs, list):
+        if (
+            not inputs
+            or len(inputs) > MAX_GATEWAY_BATCH_ITEMS
+            or any(type(text) is not str for text in inputs)
+        ):
+            return None
+        normalized_inputs: str | list[str] = list(inputs)
+    elif type(inputs) is str:
+        normalized_inputs = inputs
+    else:
+        return None
+    payload: dict[str, Any] = {
+        "model": clean_model,
+        "input": normalized_inputs,
+        "truncate": truncate,
+    }
+    if dimensions is not None:
+        payload["dimensions"] = dimensions
+    try:
+        data = json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError):
+        return None
+    return data if len(data) <= MAX_GATEWAY_REQUEST_BYTES else None
+
+
+def _gateway_json_response(response: Any) -> dict[str, Any] | None:
+    try:
+        raw = response.read(MAX_GATEWAY_RESPONSE_BYTES + 1)
+    except (OSError, TypeError, ValueError):
+        return None
+    if not isinstance(raw, bytes) or len(raw) > MAX_GATEWAY_RESPONSE_BYTES:
+        return None
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate key")
+            result[key] = value
+        return result
+
+    def reject_constant(_value: str) -> None:
+        raise ValueError("non-finite value")
+
+    try:
+        loaded = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
 
 
 def gateway_ready(url: str | None = None) -> bool:
-    url = current_gateway_url(url)
     try:
-        request = Request(url + "/healthz", method="GET")
-        with urlopen(request, timeout=1.0) as response:
+        base_url = current_gateway_url(url)
+        request = Request(base_url + "/healthz", method="GET")
+        with _open_local_gateway(request, timeout=1.0) as response:
             return 200 <= response.status < 500
-    except (OSError, URLError, ValueError):
+    except (OSError, URLError, TypeError, ValueError):
         return False
 
 
@@ -1603,30 +1710,20 @@ def gateway_embed(
     dimensions: int | None,
     url: str | None = None,
 ) -> dict[str, Any] | None:
-    payload: dict[str, Any] = {
-        "model": model,
-        "input": text,
-        "truncate": truncate,
-    }
-    if dimensions is not None:
-        payload["dimensions"] = dimensions
-    data = json.dumps(payload).encode("utf-8")
-    request = Request(
-        current_gateway_url(url) + "/supplemental/embed",
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
     try:
-        with urlopen(request, timeout=60) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-    except (OSError, URLError, ValueError):
+        data = _gateway_payload(text, model, truncate, dimensions)
+        if data is None:
+            return None
+        request = Request(
+            current_gateway_url(url) + "/supplemental/embed",
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with _open_local_gateway(request, timeout=60) as response:
+            return _gateway_json_response(response)
+    except (OSError, URLError, TypeError, ValueError):
         return None
-    try:
-        loaded = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    return loaded if isinstance(loaded, dict) else None
 
 
 def gateway_embed_batch(
@@ -1636,30 +1733,21 @@ def gateway_embed_batch(
     dimensions: int | None,
     url: str | None = None,
 ) -> dict[str, Any] | None:
-    payload: dict[str, Any] = {
-        "model": model,
-        "input": list(texts),
-        "truncate": truncate,
-    }
-    if dimensions is not None:
-        payload["dimensions"] = dimensions
-    data = json.dumps(payload).encode("utf-8")
-    request = Request(
-        current_gateway_url(url) + "/supplemental/embed",
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
     try:
-        with urlopen(request, timeout=60) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-    except (OSError, URLError, ValueError):
+        data = _gateway_payload(texts, model, truncate, dimensions)
+        if data is None:
+            return None
+        request = Request(
+            current_gateway_url(url) + "/supplemental/embed",
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with _open_local_gateway(request, timeout=60) as response:
+            return _gateway_json_response(response)
+    except (OSError, URLError, TypeError, ValueError):
         return None
-    try:
-        loaded = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    return loaded if isinstance(loaded, dict) else None
+
 
 def embed_text(
     text: str,
@@ -1783,6 +1871,9 @@ def available_actions(topic: str | None = None) -> str:
         ],
         "documents": ["/pdf [--pages N] [--chars N] PATH"],
         "memory": [
+            "/memory [home|search QUERY|show ID|doctor|benchmark|reindex]",
+            "/memory add [--tier curated|history] [--scope NAME] [--slot KEY] TEXT",
+            "/memory supersede ID TEXT | promote ID | demote ID | archive ID",
             "/memory-auto [on|off|status]",
             "/remember FACT",
             "/memories",
@@ -2058,6 +2149,9 @@ def _session_command_captures_output(command_line: str) -> bool:
             return False
         if normalized_arg in _SESSION_STATUS_ARGS:
             return True
+    if root == "/memory":
+        subcommand = normalized_arg.split(maxsplit=1)[0] if normalized_arg else "home"
+        return subcommand in {"?", "benchmark", "doctor", "help", "home", "search", "show", "show-home", "status"}
     if root == "/harness":
         subcommand = normalized_arg.split(maxsplit=1)[0] if normalized_arg else ""
         return subcommand in _READ_ONLY_HARNESS_SUBCOMMANDS
@@ -2180,6 +2274,8 @@ def session_command(command: str, cfg: Any = None) -> str:
     - /code-rag on|off|status — opt in/out of cwd source indexing and prompt retrieval
     - /harness status, /harness refresh, /harness embed, /harness score, /harness compare, /hsearch QUERY, /hread ID — harness index
     - /intelligence status|query TERM|reindex or /intel ... — repository intelligence project graph
+    - /memory home|search QUERY|show ID|doctor|benchmark — governed memory review, recall, and measured qualification
+    - /memory add|supersede|promote|demote|archive|reindex — governed memory mutations
     - /remember FACT, /memories, /forget ID, /lesson TEXT, /lessons reindex
     - /context status|rebuild|clear — context management
     - /save NAME, /load NAME — conversation persistence
@@ -2195,8 +2291,8 @@ def session_command(command: str, cfg: Any = None) -> str:
     if cfg is None:
         return "Error: session_command must be invoked by the algo CLI runtime (not called directly)."
     normalized = command.strip()
-    from .slash_dispatch import handle_command, unknown_command_message
-    from .runtime_services import create_client
+    from .oliver_slash_dispatch import handle_command, unknown_command_message
+    from .theodore_runtime_services import create_client
     if normalized.lower() == "/agent" or normalized.lower().startswith("/agent "):
         from .agent_pipeline import agent_execution_active, execute_agent_command
 
@@ -3342,23 +3438,41 @@ def _hide_cfg_param(fn):
 
 def plugins_discover() -> str:
     """Discover plugins from ~/.algo_cli/plugins/ and return a JSON summary."""
-    from .plugins import discover_plugins
+    from .william_plugins import discover_plugins
     return json.dumps([manifest.as_dict() for manifest in discover_plugins()], indent=2, sort_keys=True)
 
 
 def plugins_load(plugin_name: str) -> str:
-    """Explicitly import a discovered plugin and return its module load status.
+    """Return the blocked status for a manifest-only local plugin.
 
-    Dynamic action/tool registration is not yet part of the stable runtime API.
+    In-process Python plugin imports and callable contributions are disabled.
+    No local plugin execution route is enabled during hardening.
     """
-    from .plugins import discover_plugins, load_plugin
+    from .william_plugins import discover_plugins, load_plugin
 
+    requested = str(plugin_name or "").strip().casefold()
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", requested):
+        return json.dumps(
+            {
+                "loaded": False,
+                "error_code": "invalid_plugin_name",
+                "error": "Plugin name is invalid.",
+            },
+            sort_keys=True,
+        )
     manifest = next(
-        (item for item in discover_plugins() if item.name.lower() == plugin_name.strip().lower()),
+        (item for item in discover_plugins() if item.name == requested),
         None,
     )
     if manifest is None:
-        return json.dumps({"loaded": False, "error": f"Plugin not found: {plugin_name}"})
+        return json.dumps(
+            {
+                "loaded": False,
+                "error_code": "plugin_not_found",
+                "error": "Plugin was not found.",
+            },
+            sort_keys=True,
+        )
     result = load_plugin(manifest)
     return json.dumps(result.as_dict(), indent=2, sort_keys=True)
 
@@ -3372,14 +3486,14 @@ def version_manifest_build() -> str:
 
 def extensions_manifest_build() -> str:
     """Build an extension manifest with plugin/helper binary versions and status."""
-    from .extensions_manifest import build_extensions_manifest
+    from .argon_extensions_manifest import build_extensions_manifest
     m = build_extensions_manifest()
     return m.to_json()
 
 
 def runtime_qos_hint(tool_name: str, args_json: str = "{}") -> str:
     """Classify a tool call's runtime QoS and named log destination."""
-    from .runtime_qos import classify_tool_runtime
+    from .theodore_runtime_qos import classify_tool_runtime
     try:
         args = json.loads(args_json or "{}")
         if not isinstance(args, dict):
@@ -3399,7 +3513,7 @@ def screenshot_description_verify(description: str, expected_terms: str = "", fo
 
 def capability_mask_describe(tier: str = "", capabilities: str = "") -> str:
     """Describe a stable capability bit mask from a tier and/or comma-separated capability names."""
-    from .capability_mask import CapabilityMask, mask_from_names, tier_mask
+    from .marcus_authority import CapabilityMask, mask_from_names, tier_mask
     names = [name.strip() for name in (capabilities or "").split(",") if name.strip()]
     mask = CapabilityMask(tier_mask(tier) | mask_from_names(names).value)
     return json.dumps(mask.to_dict(), indent=2, sort_keys=True)
@@ -3507,10 +3621,15 @@ def action_program(plan: dict, cfg: Any = None) -> str:
     ``kind: action``, ``action``, and ``args``. A transform step has ``id``,
     ``kind: transform``, ``op``, ``input``, and optional ``args``. References
     use ``{"$ref": "earlier_step", "path": ["optional", "keys"]}``.
-    Supported deterministic transforms are returned by validation errors.
-    Large intermediates become content-addressed artifacts; every nested action
-    retains its normal policy, approval, guardrail, attempt-ledger, and telemetry
-    path. Session/meta calls and recursive programs are forbidden.
+    Action arguments are static in version 1: observations may feed deterministic
+    transforms and outputs, but may not become arguments to another action. All
+    action schemas, exact effects, targets, and transform contracts are frozen
+    before step one. At most one state-changing/code/external action is allowed;
+    it must be final and directly returned. Large or protected intermediates use
+    encrypted run-scoped artifacts. Every nested action retains its normal policy,
+    approval, guardrail, deadline, cancellation, attempt-ledger, and telemetry
+    path. Session/meta calls and recursive programs are forbidden. Receipts are
+    local hash-linked, tamper-evident records; they are not immutable or signed.
 
     Args:
         plan: Typed version-1 plan object with bounded ordered steps and outputs.
@@ -3518,7 +3637,7 @@ def action_program(plan: dict, cfg: Any = None) -> str:
 
     if cfg is None:
         return json.dumps({"status": "error", "error": "runtime config was not injected"})
-    from .program_runtime import ProgramAuthorization, execute_program
+    from .nathan_program_runtime import ProgramAuthorization, execute_program
 
     authorization = getattr(cfg, "_algo_program_authorization", None)
     if not isinstance(authorization, ProgramAuthorization):
@@ -3596,4 +3715,4 @@ ALL_TOOLS = [
     credential_helpers_store,
     url_scheme_parse,
 ]
-TOOL_MAP = {fn.__name__: fn for fn in ALL_TOOLS}
+TOOL_MAP = CuratedToolRegistry({fn.__name__: fn for fn in ALL_TOOLS})

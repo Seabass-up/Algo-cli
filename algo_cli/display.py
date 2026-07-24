@@ -718,15 +718,14 @@ def _short_value(value: Any, limit: int = 80) -> str:
 
 
 def redact_tool_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
-    """Remove secret-bearing values before display, JSON events, or audit previews."""
+    """Return the recursive confirmation-safe view used by display bridges."""
 
-    sensitive_keys = {"api_key", "access_token", "refresh_token", "password", "secret", "token"}
-    if name == "credential_helpers_store":
-        sensitive_keys.add("value")
-    return {
-        key: "<redacted>" if key.lower() in sensitive_keys else value
-        for key, value in args.items()
-    }
+    from .irene_privacy_views import PrivacyProjectionError, PrivacyView, project_action_args
+
+    try:
+        return project_action_args(name, args, PrivacyView.CONFIRMATION)
+    except (PrivacyProjectionError, TypeError, ValueError):
+        return {"privacy_error": "arguments unavailable"}
 
 
 def show_tool_call(name: str, args: dict, *, call_id: str | None = None) -> None:
@@ -1325,7 +1324,7 @@ def show_help() -> None:
     table.add_column(style="primary", no_wrap=True)
     table.add_column(style="text")
 
-    from . import slash_dispatch
+    from . import oliver_slash_dispatch as slash_dispatch
 
     def _group(command: str) -> str:
         if command in {
