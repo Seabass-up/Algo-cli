@@ -1025,6 +1025,22 @@ profile/network containment cannot pass until the exact M5/M7 production
 topology exists. The report is explicitly not eligible for public claims, and
 finite zero-failure samples are not described as zero risk.
 
+The unreleased Agent runtime candidate adds a separate source-bound,
+model-free M8 cell. An immutable Run Contract now binds approval semantics,
+block prompts, tools, mutation scope, workspace identity, verifiers, recovery,
+and resource ceilings before execution. A private hash-chained journal records
+content-free intent/outcome checkpoints and rejects both byte tampering and
+semantically impossible event ordering. Resume accepts only the last
+contiguous verified block boundary and fails closed on authority, prompt,
+context, workspace, or uncertain-mutation drift. One provider-neutral loop
+balances tool calls/results, a provenance-labeled context broker enforces a
+single token budget, and multi-signal routing preserves the highest observed
+risk. The `nathan-agent-runtime-hardening-v1` artifact records deterministic
+correctness probes plus p50/p95 contract, context, and durable
+checkpoint/resume latency. It remains local candidate evidence and does not
+claim model quality, production crash/power-loss behavior, or superiority over
+another harness.
+
 ### M9 — Requirement audit and controlled freeze lift
 
 For each ledger item, inspect the authoritative current code, test, runtime, signed artifact, package, permission state, or benchmark output. Mark uncertain, missing, indirect, or narrow evidence as not verified.

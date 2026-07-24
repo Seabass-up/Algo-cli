@@ -1361,6 +1361,126 @@ def test_embed_text_accepts_object_response_from_current_ollama_client(monkeypat
     assert payload["preview"] == [0.25, 0.75]
 
 
+@pytest.mark.parametrize(
+    "url",
+    (
+        "https://example.com:8765",
+        "http://localhost",
+        "http://user:secret@localhost:8765",
+        "http://localhost:8765/unexpected-path",
+        "file:///tmp/algo-gateway",
+    ),
+)
+def test_gateway_functions_never_open_remote_or_ambiguous_endpoints(monkeypatch, url):
+    opened: list[str] = []
+
+    def fail_open(request, *, timeout):
+        opened.append(request.full_url)
+        raise AssertionError(f"unexpected request with timeout {timeout}")
+
+    monkeypatch.setattr(tools, "_open_local_gateway", fail_open)
+
+    assert tools.gateway_ready(url) is False
+    assert tools.gateway_embed("hello", "embeddinggemma", True, None, url) is None
+    assert tools.gateway_embed_batch(["hello"], "embeddinggemma", True, None, url) is None
+    assert opened == []
+
+
+def test_gateway_embed_is_bounded_strict_and_uses_validated_loopback(monkeypatch):
+    opened: list[tuple[str, float, dict]] = []
+
+    class Response:
+        status = 200
+
+        def __init__(self, raw: bytes):
+            self.raw = raw
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, limit: int) -> bytes:
+            return self.raw[:limit]
+
+    def open_gateway(request, *, timeout):
+        opened.append((request.full_url, timeout, json.loads(request.data)))
+        return Response(b'{"model":"m1","embeddings":[[1.0,0.0]]}')
+
+    monkeypatch.setattr(tools, "_open_local_gateway", open_gateway)
+
+    result = tools.gateway_embed(
+        "hello",
+        "m1",
+        True,
+        2,
+        "http://127.0.0.1:8765",
+    )
+
+    assert result == {"model": "m1", "embeddings": [[1.0, 0.0]]}
+    assert opened == [
+        (
+            "http://127.0.0.1:8765/supplemental/embed",
+            60,
+            {"model": "m1", "input": "hello", "truncate": True, "dimensions": 2},
+        )
+    ]
+
+    monkeypatch.setattr(
+        tools,
+        "_open_local_gateway",
+        lambda *_args, **_kwargs: Response(b'{"model":"first","model":"second"}'),
+    )
+    assert tools.gateway_embed("hello", "m1", True, None) is None
+
+    oversized = b"{" + b"x" * tools.MAX_GATEWAY_RESPONSE_BYTES + b"}"
+    monkeypatch.setattr(
+        tools,
+        "_open_local_gateway",
+        lambda *_args, **_kwargs: Response(oversized),
+    )
+    assert tools.gateway_embed("hello", "m1", True, None) is None
+
+
+def test_gateway_payload_limits_fail_closed_before_open(monkeypatch):
+    monkeypatch.setattr(
+        tools,
+        "_open_local_gateway",
+        lambda *_args, **_kwargs: pytest.fail("invalid payload reached transport"),
+    )
+
+    assert tools.gateway_embed_batch(
+        ["x"] * (tools.MAX_GATEWAY_BATCH_ITEMS + 1),
+        "m1",
+        True,
+        None,
+    ) is None
+    assert tools.gateway_embed("x", " m1 ", True, None) is None
+    assert tools.gateway_embed("x", "m1", True, 0) is None
+    assert tools.gateway_embed("x" * tools.MAX_GATEWAY_REQUEST_BYTES, "m1", True, None) is None
+
+
+def test_local_gateway_transport_ignores_proxy_environment(monkeypatch):
+    captured: list[object] = []
+    sentinel = object()
+
+    class Opener:
+        def open(self, request, *, timeout):
+            captured.extend((request, timeout))
+            return sentinel
+
+    def build(handler):
+        assert handler.proxies == {}
+        return Opener()
+
+    monkeypatch.setattr(tools, "build_opener", build)
+    request = tools.Request("http://127.0.0.1:8765/healthz")
+
+    assert tools._open_local_gateway(request, timeout=1.0) is sentinel
+    assert captured == [request, 1.0]
+
+
 def test_model_create_translates_modelfile_to_current_ollama_api(monkeypatch):
     calls: list[dict[str, object]] = []
 

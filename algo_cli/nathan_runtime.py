@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass, replace
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ollama import Client
 
@@ -159,6 +159,8 @@ _POLICY_CEILING_REASONS = {
     "dispatch_deadline_elapsed": "Action deadline elapsed before dispatch",
     "dispatch_invalid_deadline": "Action deadline was invalid",
     "dispatch_clock_error": "Action dispatch clock was invalid",
+    "run_contract_tool_budget": "Run contract tool-call budget is exhausted",
+    "run_journal_unavailable": "Durable Agent run checkpoint is unavailable",
 }
 _OPAQUE_JSON_RESULT_TOOLS = frozenset(
     {"harness_read", "read_file", "read_pdf", "render_pdf_pages", "web_fetch"}
@@ -287,9 +289,23 @@ def authority_session_for(cfg: Config) -> RuntimeAuthoritySession:
         return current
 
 
-def _approval_mode(cfg: Config) -> str:
+def approval_mode_for_config(
+    cfg: Config,
+) -> Literal["interactive", "never", "auto"]:
+    """Return the closed approval mode without changing legacy semantics."""
+
     value = str(getattr(cfg, "_nathan_approval_mode", "interactive")).casefold()
-    return value if value in {"interactive", "never", "auto"} else "never"
+    if value == "interactive":
+        return "interactive"
+    if value == "auto":
+        return "auto"
+    return "never"
+
+
+def _approval_mode(cfg: Config) -> str:
+    """Compatibility alias for older internal callers."""
+
+    return approval_mode_for_config(cfg)
 
 
 def _prepared_grant(

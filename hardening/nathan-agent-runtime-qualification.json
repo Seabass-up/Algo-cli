@@ -1,0 +1,140 @@
+{
+  "benchmark": "nathan-agent-runtime-hardening-v1",
+  "claim": "The source-bound Algo Agent runtime candidate passed every deterministic approval, contract, context, protocol, checkpoint, tamper, resume, routing, and verifier probe while remaining within the stated local p95 microbenchmark ceilings.",
+  "correctness": {
+    "pass_rate": 1.0,
+    "passed": 13,
+    "probes": [
+      {
+        "failure_code": "",
+        "id": "approval_mode_separation",
+        "passed": true
+      },
+      {
+        "failure_code": "",
+        "id": "read_only_mutation_rejection",
+        "passed": true
+      },
+      {
+        "failure_code": "",
+        "id": "authority_drift_rejection",
+        "passed": true
+      },
+      {
+        "failure_code": "",
+        "id": "prompt_and_token_binding",
+        "passed": true
+      },
+      {
+        "failure_code": "",
+        "id": "bounded_provenance_context",
+        "passed": true
+      },
+      {
+        "failure_code": "",
+        "id": "verified_checkpoint_resume",
+        "passed": true
+      },
+      {
+        "failure_code": "",
+        "id": "workspace_drift_rejection",
+        "passed": true
+      },
+      {
+        "failure_code": "",
+        "id": "uncertain_mutation_rejection",
+        "passed": true
+      },
+      {
+        "failure_code": "",
+        "id": "journal_hash_tamper_rejection",
+        "passed": true
+      },
+      {
+        "failure_code": "",
+        "id": "semantic_checkpoint_forgery_rejection",
+        "passed": true
+      },
+      {
+        "failure_code": "",
+        "id": "balanced_provider_tool_protocol",
+        "passed": true
+      },
+      {
+        "failure_code": "",
+        "id": "structured_output_verifier",
+        "passed": true
+      },
+      {
+        "failure_code": "",
+        "id": "multi_signal_risk_routing",
+        "passed": true
+      }
+    ],
+    "total": 13
+  },
+  "created_at": "2026-07-24T00:59:47Z",
+  "environment": {
+    "machine": "arm64",
+    "operating_system": "macOS-27.0-arm64-arm-64bit",
+    "python": "3.10.20"
+  },
+  "gates": {
+    "checkpoint_resume_p95_ms": {
+      "observed": 9.011209,
+      "passed": true,
+      "threshold": 1000.0
+    },
+    "context_broker_p95_ms": {
+      "observed": 0.0145,
+      "passed": true,
+      "threshold": 100.0
+    },
+    "contract_compile_p95_ms": {
+      "observed": 0.295166,
+      "passed": true,
+      "threshold": 250.0
+    },
+    "correctness": {
+      "observed": 1.0,
+      "passed": true,
+      "threshold": 1.0
+    }
+  },
+  "limitations": "This is a local model-free runtime microbenchmark. It does not measure model intelligence, provider latency, end-to-end task quality, production crash or power-loss behavior, or superiority over OpenClaw, Hermes, or another harness. Latency has not been independently reproduced.",
+  "performance": {
+    "checkpoint_resume": {
+      "max_ms": 9.061625,
+      "p50_ms": 8.691208,
+      "p95_ms": 9.011209,
+      "samples": 31
+    },
+    "context_broker": {
+      "max_ms": 0.018584,
+      "p50_ms": 0.009458,
+      "p95_ms": 0.0145,
+      "samples": 101
+    },
+    "contract_compile": {
+      "max_ms": 0.367458,
+      "p50_ms": 0.254209,
+      "p95_ms": 0.295166,
+      "samples": 101
+    }
+  },
+  "protocol": {
+    "checkpoint_repetitions": 31,
+    "clock": "time.perf_counter_ns",
+    "context_repetitions": 101,
+    "contract_repetitions": 101,
+    "model_calls": 0,
+    "network_calls": 0,
+    "synthetic_runtime_microbenchmark": true,
+    "warmups": 5
+  },
+  "report_sha256": "sha256:8fe8fb733301c4359bef085b4950b997436ca680e3392e8974f8eb18e74f780f",
+  "schema_version": 1,
+  "source_revision": "8207e11ced877015307732a0227994b8b7e1074b",
+  "source_tree_sha256": "sha256:9c68f41257b9bb1df7a4c1885bc3c0143b02543deee69866f9f7ceb617da0ec8",
+  "status": "pass"
+}

@@ -20,7 +20,7 @@ from pathlib import Path
 import inspect
 from typing import Any
 from urllib.error import URLError
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 from . import harness
 from . import identity
@@ -52,6 +52,10 @@ DEFAULT_GATEWAY_URL = (
     or os.environ.get("OLLAMA_CLI_GATEWAY_URL")
     or "http://127.0.0.1:8765"
 )
+MAX_GATEWAY_REQUEST_BYTES = 4 * 1024 * 1024
+MAX_GATEWAY_RESPONSE_BYTES = 16 * 1024 * 1024
+MAX_GATEWAY_BATCH_ITEMS = 256
+MAX_GATEWAY_MODEL_CHARS = 256
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DENY_COMMAND_RE = re.compile(
     r"\b(rm|del|erase|rd|rmdir|format|diskpart|shutdown|restart-computer|stop-computer|"
@@ -1581,21 +1585,121 @@ def update_user_profile(content: str) -> str:
 
 
 def current_gateway_url(url: str | None = None) -> str:
-    return (
+    raw_candidate: object = (
         url
-        or os.environ.get("ALGO_CLI_GATEWAY_URL")
+        if url is not None
+        else os.environ.get("ALGO_CLI_GATEWAY_URL")
         or os.environ.get("OLLAMA_CLI_GATEWAY_URL")
         or DEFAULT_GATEWAY_URL
-    ).rstrip("/")
+    )
+    if type(raw_candidate) is not str:
+        raise ValueError("Gateway URL must be text.")
+    candidate = raw_candidate.strip().rstrip("/")
+    from .theodore_runtime_services import local_service_address
+
+    if local_service_address(candidate, require_http=True) is None:
+        raise ValueError("Gateway URL must be an explicit credential-free HTTP loopback endpoint.")
+    return candidate
+
+
+def _open_local_gateway(request: Request, *, timeout: float) -> Any:
+    """Open a validated loopback request without honoring proxy variables."""
+
+    return build_opener(ProxyHandler({})).open(request, timeout=timeout)
+
+
+def _gateway_payload(
+    inputs: str | list[str],
+    model: str,
+    truncate: bool,
+    dimensions: int | None,
+) -> bytes | None:
+    if type(model) is not str:
+        return None
+    clean_model = model.strip()
+    if (
+        not clean_model
+        or clean_model != model
+        or len(clean_model) > MAX_GATEWAY_MODEL_CHARS
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in clean_model)
+        or type(truncate) is not bool
+        or (
+            dimensions is not None
+            and (
+                type(dimensions) is not int
+                or not 1 <= dimensions <= 16_384
+            )
+        )
+    ):
+        return None
+    if isinstance(inputs, list):
+        if (
+            not inputs
+            or len(inputs) > MAX_GATEWAY_BATCH_ITEMS
+            or any(type(text) is not str for text in inputs)
+        ):
+            return None
+        normalized_inputs: str | list[str] = list(inputs)
+    elif type(inputs) is str:
+        normalized_inputs = inputs
+    else:
+        return None
+    payload: dict[str, Any] = {
+        "model": clean_model,
+        "input": normalized_inputs,
+        "truncate": truncate,
+    }
+    if dimensions is not None:
+        payload["dimensions"] = dimensions
+    try:
+        data = json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError):
+        return None
+    return data if len(data) <= MAX_GATEWAY_REQUEST_BYTES else None
+
+
+def _gateway_json_response(response: Any) -> dict[str, Any] | None:
+    try:
+        raw = response.read(MAX_GATEWAY_RESPONSE_BYTES + 1)
+    except (OSError, TypeError, ValueError):
+        return None
+    if not isinstance(raw, bytes) or len(raw) > MAX_GATEWAY_RESPONSE_BYTES:
+        return None
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate key")
+            result[key] = value
+        return result
+
+    def reject_constant(_value: str) -> None:
+        raise ValueError("non-finite value")
+
+    try:
+        loaded = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
 
 
 def gateway_ready(url: str | None = None) -> bool:
-    url = current_gateway_url(url)
     try:
-        request = Request(url + "/healthz", method="GET")
-        with urlopen(request, timeout=1.0) as response:
+        base_url = current_gateway_url(url)
+        request = Request(base_url + "/healthz", method="GET")
+        with _open_local_gateway(request, timeout=1.0) as response:
             return 200 <= response.status < 500
-    except (OSError, URLError, ValueError):
+    except (OSError, URLError, TypeError, ValueError):
         return False
 
 
@@ -1606,30 +1710,20 @@ def gateway_embed(
     dimensions: int | None,
     url: str | None = None,
 ) -> dict[str, Any] | None:
-    payload: dict[str, Any] = {
-        "model": model,
-        "input": text,
-        "truncate": truncate,
-    }
-    if dimensions is not None:
-        payload["dimensions"] = dimensions
-    data = json.dumps(payload).encode("utf-8")
-    request = Request(
-        current_gateway_url(url) + "/supplemental/embed",
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
     try:
-        with urlopen(request, timeout=60) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-    except (OSError, URLError, ValueError):
+        data = _gateway_payload(text, model, truncate, dimensions)
+        if data is None:
+            return None
+        request = Request(
+            current_gateway_url(url) + "/supplemental/embed",
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with _open_local_gateway(request, timeout=60) as response:
+            return _gateway_json_response(response)
+    except (OSError, URLError, TypeError, ValueError):
         return None
-    try:
-        loaded = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    return loaded if isinstance(loaded, dict) else None
 
 
 def gateway_embed_batch(
@@ -1639,30 +1733,21 @@ def gateway_embed_batch(
     dimensions: int | None,
     url: str | None = None,
 ) -> dict[str, Any] | None:
-    payload: dict[str, Any] = {
-        "model": model,
-        "input": list(texts),
-        "truncate": truncate,
-    }
-    if dimensions is not None:
-        payload["dimensions"] = dimensions
-    data = json.dumps(payload).encode("utf-8")
-    request = Request(
-        current_gateway_url(url) + "/supplemental/embed",
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
     try:
-        with urlopen(request, timeout=60) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-    except (OSError, URLError, ValueError):
+        data = _gateway_payload(texts, model, truncate, dimensions)
+        if data is None:
+            return None
+        request = Request(
+            current_gateway_url(url) + "/supplemental/embed",
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with _open_local_gateway(request, timeout=60) as response:
+            return _gateway_json_response(response)
+    except (OSError, URLError, TypeError, ValueError):
         return None
-    try:
-        loaded = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    return loaded if isinstance(loaded, dict) else None
+
 
 def embed_text(
     text: str,

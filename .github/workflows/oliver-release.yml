@@ -42,6 +42,11 @@ jobs:
         run: uv sync --frozen --no-editable --extra dev --extra release --extra supply-chain --reinstall-package algo-cli-runtime
       - name: Installed-source parity
         run: uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python -I scripts/oliver_installed_source_parity.py
+      - name: Verify source-bound Agent runtime qualification
+        run: >-
+          uv run --frozen --no-editable --extra dev --extra release
+          --extra supply-chain
+          python scripts/nathan_agent_runtime_qualification.py --quiet
       - name: Verify source, version, and tests
         run: |
           uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python scripts/check_release_version.py --tag "${{ github.event.release.tag_name }}"

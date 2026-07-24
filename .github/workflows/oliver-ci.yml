@@ -46,7 +46,12 @@ jobs:
           algo_cli/main.py
           algo_cli/tools.py
           algo_cli/harness.py
+          algo_cli/agent_context.py
           algo_cli/agent_pipeline.py
+          algo_cli/agent_run_journal.py
+          algo_cli/agent_threads.py
+          algo_cli/run_contract.py
+          algo_cli/task_router.py
           algo_cli/arthur_control_doctor.py
           algo_cli/arthur_control_readiness.py
           algo_cli/ada_control_journal.py
@@ -92,11 +97,16 @@ jobs:
           scripts/henry_austin_signing_runner.py
           scripts/ada_austin_signing_lifecycle_receipt.py
           scripts/henry_github_hardening_readiness.py
+          scripts/nathan_agent_runtime_qualification.py
           scripts/austin_native_package_audit.py
           --ignore-missing-imports
           --no-strict-optional
           --follow-imports=skip
           --show-error-codes
+      - name: Agent runtime hardening qualification (blocking)
+        run: >-
+          uv run --frozen --no-editable --extra dev --extra supply-chain
+          python scripts/nathan_agent_runtime_qualification.py --quiet
       - name: Compile check
         run: uv run --frozen --no-editable --extra dev --extra supply-chain python -m compileall -q algo_cli ollama_cli
       - name: Full suite with branch coverage floor

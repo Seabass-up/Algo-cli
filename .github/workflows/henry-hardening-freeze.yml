@@ -45,6 +45,11 @@ jobs:
           python scripts/arthur_m9_completion_audit.py
           --verify-report hardening/ada-m9-completion-audit.json
           --expect-blocked --quiet
+      - name: Verify source-bound Agent runtime qualification
+        if: ${{ github.event_name != 'release' }}
+        run: >-
+          uv run --frozen --no-editable --extra dev
+          python scripts/nathan_agent_runtime_qualification.py --quiet
       - name: Test the gate itself
         if: ${{ github.event_name != 'release' }}
         run: uv run --frozen --no-editable --extra dev pytest tests/test_david_hardening_gate.py -q

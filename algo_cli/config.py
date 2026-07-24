@@ -505,7 +505,9 @@ class Config:
     verify_mode: bool = False
     intuition_recall_enabled: bool = False
     intuition_capture_enabled: bool = False
-    algorithmic_tool_policy_enabled: bool = False
+    # Enforced for new Agent runs by default. Ordinary chat and non-approval
+    # baseline reads do not use the Agent Block route ceiling.
+    algorithmic_tool_policy_enabled: bool = True
     reflex_enabled: bool = False
     model_adaptive: bool = True  # adapt num_ctx/temperature/reflection to model size+provider
     code_rag_enabled: bool = False  # opt in to retrieving cfg.cwd source chunks each turn

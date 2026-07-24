@@ -2704,6 +2704,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
             embed_fn=memory_embed_fn,
             embedding_model=_embed_model,
             tiers={"curated", "history"},
+            scopes={memory_runtime.scope_for_workspace(cfg.cwd)},
         )
         memory_block = memory_runtime.format_prompt_hits(memory_hits)
         if memory_block:
