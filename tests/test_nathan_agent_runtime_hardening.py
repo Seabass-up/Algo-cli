@@ -36,6 +36,42 @@ def report() -> dict[str, object]:
     )
 
 
+def test_benchmark_discovers_checkout_from_installed_module(
+    tmp_path,
+) -> None:
+    checkout = tmp_path / "checkout"
+    (checkout / ".git").mkdir(parents=True)
+    working_directory = checkout / "tests"
+    working_directory.mkdir()
+    required_paths = (
+        "algo_cli/agent_context.py",
+        "tests/test_agent_context.py",
+    )
+    for relative in required_paths:
+        source = checkout / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("# source\n", encoding="utf-8")
+
+    installed_module = (
+        tmp_path
+        / "venv"
+        / "site-packages"
+        / "algo_cli"
+        / "evals"
+        / "nathan_agent_runtime_hardening.py"
+    )
+    installed_module.parent.mkdir(parents=True)
+    installed_module.write_text("# installed\n", encoding="utf-8")
+
+    discovered = benchmark._discover_source_root(
+        required_paths,
+        module_file=installed_module,
+        cwd=working_directory,
+    )
+
+    assert discovered == checkout.resolve()
+
+
 def test_runtime_benchmark_passes_every_source_bound_probe(
     report,
 ) -> None:

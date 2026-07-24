@@ -38,7 +38,6 @@ from .. import task_router
 from ..config import Config
 
 
-ROOT = Path(__file__).resolve().parents[2]
 BENCHMARK_ID = "nathan-agent-runtime-hardening-v1"
 SCHEMA_VERSION = 1
 FIXED_TIME = "2026-07-23T12:00:00+00:00"
@@ -80,6 +79,44 @@ LATENCY_THRESHOLDS_MS = {
 
 class AgentRuntimeBenchmarkError(RuntimeError):
     """Raised when the benchmark or its stored report fails closed."""
+
+
+def _discover_source_root(
+    required_paths: tuple[str, ...],
+    *,
+    module_file: Path | None = None,
+    cwd: Path | None = None,
+) -> Path:
+    """Find the checked-out Git tree even when this module is installed."""
+
+    try:
+        resolved_module = (module_file or Path(__file__)).resolve(strict=True)
+        resolved_cwd = (cwd or Path.cwd()).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise AgentRuntimeBenchmarkError(
+            "benchmark source root is unavailable"
+        ) from exc
+
+    candidates = (
+        resolved_module.parents[2],
+        resolved_cwd,
+        *resolved_cwd.parents,
+    )
+    visited: set[Path] = set()
+    for candidate in candidates:
+        if candidate in visited:
+            continue
+        visited.add(candidate)
+        if not (candidate / ".git").exists():
+            continue
+        if all((candidate / relative).is_file() for relative in required_paths):
+            return candidate
+    raise AgentRuntimeBenchmarkError(
+        "benchmark must run from the Algo CLI source checkout"
+    )
+
+
+ROOT = _discover_source_root(SOURCE_PATHS)
 
 
 def _canonical(value: Any) -> bytes:

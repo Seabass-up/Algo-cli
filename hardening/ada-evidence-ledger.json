@@ -2659,10 +2659,10 @@
         {
           "kind": "qualification",
           "path_or_command": "python scripts/henry_m8_qualification.py in a clean candidate worktree excluding unrelated unpublished website changes",
-          "digest": "sha256:d6183d267d872bce05914893e4ac0949cc7af4a2499b2157e1f9623a78f32eef",
+          "digest": "sha256:f49ea2cb3479b0664c0a95c2fd53a1bc2413c835b6d340e79253d54eb79cbc30",
           "result": "local pass/externally blocked: 9 source-bound M8 metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, public_claim_eligible is false, and the expanded focused adversarial suite includes the immutable Agent contract, journal grammar, approval-mode, context, routing, and runtime qualification tests",
-          "timestamp": "2026-07-24T01:05:51Z",
-          "scope": "source digest sha256:1ff52b4e61539ac97cd9c75de669cb3202a65708b43f247fe498d5d27f58948f retains 10000 stale-target races, 1000 unknown outcomes, 1000 malformed programs, 1000 privacy canaries, 100000 malformed frames, 1000 fresh postconditions, five efficiency repetitions, and the source-bound Nathan Agent runtime qualification gate; stale-target p50/p95 are 5.123/5.613 ms and fresh-postcondition p50/p95 are 6.726/7.143 ms",
+          "timestamp": "2026-07-24T01:26:47Z",
+          "scope": "source digest sha256:30f05b297cfd53f41b79d16a01b5356ccc6279893cb152a1b6325a289c8fec81 retains 10000 stale-target races, 1000 unknown outcomes, 1000 malformed programs, 1000 privacy canaries, 100000 malformed frames, 1000 fresh postconditions, five efficiency repetitions, and the source-bound Nathan Agent runtime qualification gate; stale-target p50/p95 are 5.010/5.877 ms and fresh-postcondition p50/p95 are 6.218/6.712 ms",
           "limitations": "clean local candidate evidence is not hosted native-amd64 browser, selected Chrome, semantic-route or screenshot reduction, live profile/network containment, browser freshness, signed XPC/TCC, production power-loss, or installed lifecycle proof; HARD-080 remains in progress and the active freeze remains in force"
         }
       ]
@@ -2946,19 +2946,19 @@
         {
           "kind": "benchmark",
           "path_or_command": "hardening/nathan-agent-runtime-qualification.json via scripts/nathan_agent_runtime_qualification.py --refresh",
-          "digest": "sha256:cc30c4d31b23b752c962075d10aa3fc45e82f0f682d97860c3a21d0b1f135a50",
+          "digest": "sha256:94c44d6d5c5f2dfa6bbf93d7da125e9f9fbb5f6b62371f921a44d4afb740bab3",
           "result": "local pass: 13 of 13 deterministic Agent runtime hardening probes pass with zero model or network calls; source and report digests, denominators, p50/p95, exact approval-mode semantics, and public-claim limitations are retained",
-          "timestamp": "2026-07-24T00:59:47Z",
-          "scope": "101 contract compilations at p50 0.254209 ms and p95 0.295166 ms; 101 context broker runs at p50 0.009458 ms and p95 0.014500 ms; 31 durable checkpoint/load/resume cycles at p50 8.691208 ms and p95 9.011209 ms; correctness covers read-only containment, authority, prompt/token and workspace drift, context provenance, provider/tool balance, byte and semantic tamper detection, uncertain mutation, verified resume, output verification, and multi-signal routing",
+          "timestamp": "2026-07-24T01:21:18Z",
+          "scope": "source digest sha256:1e040f93527c33727222913e72a889500b15a950391b533933b2d9d38977a3dd; 101 contract compilations at p50 0.256250 ms and p95 0.318916 ms; 101 context broker runs at p50 0.009417 ms and p95 0.010167 ms; 31 durable checkpoint/load/resume cycles at p50 8.719625 ms and p95 8.997458 ms; correctness covers read-only containment, authority, prompt/token and workspace drift, context provenance, provider/tool balance, byte and semantic tamper detection, uncertain mutation, verified resume, output verification, and multi-signal routing",
           "limitations": "local model-free microbenchmark evidence does not prove model intelligence, provider latency, end-to-end supported-task quality, production crash or power-loss behavior, or superiority over OpenClaw, Hermes, or another harness; M8 production browser and signed native gates remain blocked, HARD-081 stays in progress, and the active freeze forbids public benchmark claims"
         },
         {
           "kind": "benchmark",
           "path_or_command": "hardening/grace-m8-local-qualification.json after Agent runtime qualification integration",
-          "digest": "sha256:d6183d267d872bce05914893e4ac0949cc7af4a2499b2157e1f9623a78f32eef",
+          "digest": "sha256:f49ea2cb3479b0664c0a95c2fd53a1bc2413c835b6d340e79253d54eb79cbc30",
           "result": "current clean-candidate M8 measurements retain exact source/fixture digests, denominators, Wilson 95 percent intervals, p50/p95, public_claim_eligible false, 9 local passes, 5 production-browser blocks, and zero failed or not-verified metrics",
-          "timestamp": "2026-07-24T01:05:51Z",
-          "scope": "five model-free efficiency repetitions measure 78.948 percent median tool-schema reduction and 96.644 percent typed-program reduction; stale-target p50/p95 are 5.123/5.613 ms; fresh-postcondition p50/p95 are 6.726/7.143 ms; the focused suite includes the separate 13-probe Nathan Agent runtime cell",
+          "timestamp": "2026-07-24T01:26:47Z",
+          "scope": "five model-free efficiency repetitions measure 78.948 percent median tool-schema reduction and 96.644 percent typed-program reduction; stale-target p50/p95 are 5.010/5.877 ms; fresh-postcondition p50/p95 are 6.218/6.712 ms; the focused suite includes the separate 13-probe Nathan Agent runtime cell",
           "limitations": "synthetic local measurements do not prove live task completion, model quality, semantic-route share, screenshot reduction, confirmation count, provider latency, production-signed XPC/TCC readiness, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked and HARD-081 stays in progress"
         }
       ]
