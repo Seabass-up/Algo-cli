@@ -450,7 +450,6 @@ def test_harness_stats_reports_truthful_echo_veil_readiness(monkeypatch):
 
     monkeypatch.setattr(memory_echo_veil, "ECHO_VEIL_AVAILABLE", False)
     monkeypatch.setattr(memory_echo_veil, "ECHO_VEIL_IMPORT_ERROR", "ModuleNotFoundError")
-    monkeypatch.setattr(memory_echo_veil, "ECHO_VEIL_MODULE_ORIGIN", "")
     stats = harness.stats()
 
     assert stats["echo_veil"]["installed"] is False
@@ -459,6 +458,7 @@ def test_harness_stats_reports_truthful_echo_veil_readiness(monkeypatch):
     assert stats["echo_veil"]["retrieval_wired"] is False
     assert stats["echo_veil"]["persistence_wired"] is False
     assert stats["echo_veil"]["import_error"] == "ModuleNotFoundError"
+    assert "module_origin" not in stats["echo_veil"]
     assert tools.harness is harness
     assert json.loads(tools.harness_stats())["echo_veil"] == stats["echo_veil"]
 

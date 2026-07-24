@@ -92,7 +92,7 @@ CURATED_PROJECT_WIKI_DOCS = (
     "echo-veil-security-status.md",
 )
 CURATED_PROJECT_MEMORY_DOCS = (
-    "algo-cli-memory-lifecycle-contract.md",
+    "ada-algo-cli-memory-lifecycle-contract.md",
     "algo-cli-execution-verification-contract.md",
     "algo-cli-algorithm-evidence-contract.md",
 )
@@ -115,65 +115,6 @@ except (TypeError, ValueError):
     QUERY_VEC_CACHE_SIZE = _QUERY_VEC_CACHE_SIZE_DEFAULT
 
 EmbedFn = Callable[[list[str]], list[list[float]]]
-
-# Echo Veil memory layer (optional)
-_echo_veil_layer: Any = None
-
-
-def get_echo_veil_layer() -> Any:
-    """Lazily initialize and return the Echo Veil memory layer."""
-    global _echo_veil_layer
-    if _echo_veil_layer is not None:
-        return _echo_veil_layer
-
-    try:
-        from .memory_echo_veil import create_echo_veil_layer
-
-        # Load config to check if Echo Veil is enabled
-        config_path = CONFIG_DIR / "config.json"
-        if config_path.exists():
-            with open(config_path, 'r') as f:
-                config = __import__('json').load(f)
-
-            if config.get('echo_veil_enabled', False):
-                # Build a real embed function: batches Ollama embed calls directly.
-                # Mirrors make_local_embed_fn in main.py (gateway-less path) so the
-                # Echo Veil layer can vectorize memory writes without the proxy.
-                _ev_host = config.get('host', 'http://localhost:11434')
-                _ev_model = config.get('harness_embed_model', DEFAULT_EMBED_MODEL)
-                _ev_dim = config.get('embed_dimensions')
-
-                def _echo_veil_embed(texts: list[str]) -> list[list[float]]:
-                    if not texts:
-                        return []
-                    try:
-                        from ollama import Client as _OClient
-                        kwargs: dict = {"model": _ev_model, "input": texts}
-                        if _ev_dim:
-                            try:
-                                kwargs["dimensions"] = int(_ev_dim)
-                            except (TypeError, ValueError):
-                                pass
-                        resp = _OClient(host=_ev_host).embed(**kwargs)
-                        # ollama client returns .embeddings (list[list[float]])
-                        embs = getattr(resp, "embeddings", None) or resp.get("embeddings") if isinstance(resp, dict) else None
-                        if embs is None:
-                            embs = getattr(resp, "embeddings", None) or []
-                        return embs or []
-                    except Exception:
-                        return []
-
-                _ev_key_path = config.get('echo_veil_crypto_key_path')
-
-                _echo_veil_layer = create_echo_veil_layer(
-                    embed_fn=_echo_veil_embed,
-                    config=config,
-                    crypto_key_path=_ev_key_path,
-                )
-    except Exception:
-        pass
-
-    return _echo_veil_layer
 
 SECRET_RE = re.compile(
     r"(?:^|[/\\._-])"
@@ -2106,19 +2047,25 @@ def stats() -> dict[str, Any]:
     except Exception:
         record_distribution = {}
     try:
-        from .memory_echo_veil import get_echo_veil_readiness
+        from .ada_memory_echo_veil import get_echo_veil_readiness
 
         echo_veil = get_echo_veil_readiness()
     except Exception as exc:
         echo_veil = {
             "installed": False,
+            "version_supported": False,
             "enabled": False,
+            "crypto_initialized": False,
             "write_wired": False,
+            "index_wired": False,
             "retrieval_wired": False,
             "persistence_wired": False,
+            "restart_restored": False,
+            "rotation_ready": False,
+            "healthy": False,
             "readiness_source": "algo_cli.harness.stats.fallback",
             "runtime": f"{sys.implementation.name}-{sys.version_info.major}.{sys.version_info.minor}",
-            "module_origin": None,
+            "installation_identity": "unsupported",
             "import_error": type(exc).__name__,
         }
     try:
@@ -2575,9 +2522,9 @@ def retrieve_for_query(
     """Cosine-rank harness records against the query. Returns up to k records as dicts
     with id/harness/kind/title/path/snippet. Empty list if no embeddings ready.
 
-    If the experimental Echo Veil layer is enabled, run its observation cycle
-    for diagnostics. Its result does not affect ranking until the write,
-    retrieval-consumption, and full-state persistence paths are complete.
+    Echo Veil memory retrieval is deliberately separate from harness-record
+    ranking. The authoritative adapter is consumed by context assembly, not by
+    mutating a duplicate Oracle from query vectors here.
     """
     query = (query or "").strip()
     if not query:
@@ -2599,15 +2546,6 @@ def retrieve_for_query(
             return []
         qvec = vecs[0]
         _QUERY_VEC_CACHE.put(cache_key, qvec)
-
-    # Optional Echo Veil observation only. Readiness reports retrieval_wired=False
-    # until this output is deliberately consumed by the ranking/prompt path.
-    echo_veil_layer = get_echo_veil_layer()
-    if echo_veil_layer is not None and hasattr(echo_veil_layer, 'observe'):
-        try:
-            echo_veil_layer.observe(qvec)
-        except Exception:
-            pass  # Echo Veil is optional - don't fail on errors
 
     harness_names = harness_filter_names(harness)
     candidates = [

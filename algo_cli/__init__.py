@@ -8,6 +8,7 @@ from types import ModuleType
 __version__ = "0.18.0"
 
 _RENAMED_INTERNAL_MODULES = {
+    "memory_echo_veil": "ada_memory_echo_veil",
     "oneshot": "oliver_oneshot",
     "program_runtime": "nathan_program_runtime",
     "tool_policy": "samuel_policy",

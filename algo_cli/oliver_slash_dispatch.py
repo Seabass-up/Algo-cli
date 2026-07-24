@@ -831,12 +831,42 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 m.show_error(str(exc))
             else:
                 if added:
-                    m.capture_intuition_block(cfg, "memory", arg, source="/remember")
+                    from .ada_memory_echo_veil import protection_required
+
+                    if not protection_required(cfg):
+                        m.capture_intuition_block(
+                            cfg,
+                            "memory",
+                            arg,
+                            source="/remember",
+                        )
                     m.show_info("Memory saved.")
                 else:
                     m.show_info("Memory already stored.")
     elif command == "/memories":
-        display.show_memory(cfg.memories)
+        from .ada_memory_echo_veil import (
+            list_echo_veil_memories,
+            protection_required,
+        )
+
+        if protection_required(cfg):
+            try:
+                records = list_echo_veil_memories(cfg)
+            except RuntimeError as exc:
+                m.show_error(
+                    "Required Echo Veil memory is unavailable "
+                    f"({type(exc).__name__})."
+                )
+            else:
+                display.show_memory(
+                    [
+                        str(record.get("payload") or "")
+                        for record in records
+                        if record.get("superseded_by") is None
+                    ]
+                )
+        else:
+            display.show_memory(cfg.memories)
     elif command == "/forget":
         try:
             display_index = int(arg)
@@ -845,7 +875,13 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             from . import julia_memory_runtime as memory_runtime
 
             forgotten = memory_runtime.forget_memory_index(cfg, display_index - 1)
-            m.show_info(f"Forgot: {forgotten}")
+            from .ada_memory_echo_veil import protection_required
+
+            m.show_info(
+                "Protected memory forgotten."
+                if protection_required(cfg)
+                else f"Forgot: {forgotten}"
+            )
         except (ValueError, IndexError):
             m.show_error("Usage: /forget <number>")
         except Exception as exc:

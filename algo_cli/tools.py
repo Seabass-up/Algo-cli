@@ -1528,16 +1528,34 @@ def remember(fact: str, cfg: Config | None = None) -> str:
     """
     if cfg is not None:
         from . import julia_memory_runtime as memory_runtime
+        from .ada_memory_echo_veil import protection_required
+
+        required_protection = protection_required(cfg)
 
         try:
             added = memory_runtime.remember_fact(cfg, fact)
         except memory_runtime.MemorySystemError as exc:
             return f"Error: {exc}"
         if added:
-            from .main import capture_intuition_block
-            capture_intuition_block(cfg, "memory", fact, source="tool:remember")
-            return f"Remembered: {fact}"
-        return f"Fact already in memory: {fact}"
+            if not required_protection:
+                from .main import capture_intuition_block
+
+                capture_intuition_block(
+                    cfg,
+                    "memory",
+                    fact,
+                    source="tool:remember",
+                )
+            return (
+                "Protected memory saved."
+                if required_protection
+                else f"Remembered: {fact}"
+            )
+        return (
+            "Protected memory already stored."
+            if required_protection
+            else f"Fact already in memory: {fact}"
+        )
     return f"Remembered: {fact} (no config provided - not persisted)"
 
 

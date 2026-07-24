@@ -1961,7 +1961,10 @@ def run_agent_pipeline(
 
     try:
         memory_catalog = memory_runtime.MemoryCatalog()
-        memory_catalog.sync_legacy_facts(cfg.memories, authoritative=False)
+        from .ada_memory_echo_veil import protection_required
+
+        if not protection_required(cfg):
+            memory_catalog.sync_legacy_facts(cfg.memories, authoritative=False)
         memory_hits = memory_catalog.search(
             task,
             embed_fn=_main.intuition_embed_fn(cfg),

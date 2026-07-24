@@ -1652,14 +1652,30 @@ def command_text(
 ) -> str:
     """Execute the ``/memory`` surface and return terminal-friendly text."""
 
-    catalog = MemoryCatalog()
-    catalog.sync_legacy_facts(getattr(cfg, "memories", ()), authoritative=False)
     try:
         parts = shlex.split(arg or "")
     except ValueError as exc:
         raise MemorySystemError(f"Unable to parse /memory arguments: {exc}") from exc
     subcommand = parts[0].lower() if parts else "home"
     remainder = parts[1:]
+    from .ada_memory_echo_veil import protection_required
+
+    required_protection = protection_required(cfg)
+    if required_protection and subcommand in {
+        "add",
+        "supersede",
+        "promote",
+        "demote",
+        "archive",
+        "reindex",
+    }:
+        raise MemorySystemError(
+            "This legacy /memory mutation is prohibited while Echo Veil "
+            "protection is required. Use /remember and /forget."
+        )
+    catalog = MemoryCatalog()
+    if not required_protection:
+        catalog.sync_legacy_facts(getattr(cfg, "memories", ()), authoritative=False)
     if subcommand in {"home", "status", "show-home"}:
         return home_text(catalog, getattr(cfg, "memories", ()))
     if subcommand in {"help", "?"}:
@@ -1756,6 +1772,15 @@ def remember_fact(
     """Persist one pinned fact through the legacy and governed stores."""
 
     clean_fact = _validate_content(fact)
+    from .ada_memory_echo_veil import protection_required, remember_with_echo_veil
+
+    if protection_required(cfg):
+        try:
+            return remember_with_echo_veil(cfg, clean_fact, source=source)
+        except RuntimeError as exc:
+            raise MemorySystemError(
+                "Required Echo Veil protection is unavailable; memory write refused."
+            ) from exc
     catalog = MemoryCatalog()
     current = _latest_legacy_facts(cfg)
     catalog.sync_legacy_facts(current, authoritative=False)
@@ -1805,6 +1830,30 @@ def _remove_legacy_fact(cfg: Config, fact: str) -> bool:
 
 def forget_memory_index(cfg: Config, index: int) -> str:
     """Apply fail-recoverable hard-delete semantics to both memory stores."""
+
+    from .ada_memory_echo_veil import (
+        create_echo_veil_layer,
+        list_echo_veil_memories,
+        protection_required,
+    )
+
+    if protection_required(cfg):
+        records = [
+            record
+            for record in list_echo_veil_memories(cfg)
+            if record.get("superseded_by") is None
+        ]
+        record = records[index]
+        vine_id = str(record.get("vine_id") or "")
+        payload = str(record.get("payload") or "")
+        layer = create_echo_veil_layer(cfg)
+        if layer is None:
+            raise MemorySystemError("Required Echo Veil memory is unavailable.")
+        result = layer.forget(vine_id)
+        if not result.get("forgotten"):
+            raise MemorySystemError("Echo Veil memory was not found.")
+        cfg.memories = [item for item in cfg.memories if str(item) != payload]
+        return payload
 
     removed = _latest_legacy_facts(cfg)[index]
     # Delete governed/catalog state first. If the process stops before the

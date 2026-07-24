@@ -111,7 +111,7 @@ path = "algo_cli/__init__.py"
 "docs/privacy-and-context.md" = "algo_cli/resources/docs/privacy-and-context.md"
 "docs/runtime-capability-catalog.md" = "algo_cli/resources/docs/runtime-capability-catalog.md"
 "docs/echo-veil-security-status.md" = "algo_cli/resources/docs/echo-veil-security-status.md"
-"docs/algo-cli-memory-lifecycle-contract.md" = "algo_cli/resources/docs/algo-cli-memory-lifecycle-contract.md"
+"docs/ada-algo-cli-memory-lifecycle-contract.md" = "algo_cli/resources/docs/ada-algo-cli-memory-lifecycle-contract.md"
 "docs/algo-cli-execution-verification-contract.md" = "algo_cli/resources/docs/algo-cli-execution-verification-contract.md"
 "docs/algo-cli-algorithm-evidence-contract.md" = "algo_cli/resources/docs/algo-cli-algorithm-evidence-contract.md"
 "docs/t3-code-parity-2026-07.md" = "algo_cli/resources/docs/t3-code-parity-2026-07.md"
@@ -142,7 +142,7 @@ include = [
     "/docs/privacy-and-context.md",
     "/docs/runtime-capability-catalog.md",
     "/docs/echo-veil-security-status.md",
-    "/docs/algo-cli-memory-lifecycle-contract.md",
+    "/docs/ada-algo-cli-memory-lifecycle-contract.md",
     "/docs/algo-cli-execution-verification-contract.md",
     "/docs/algo-cli-algorithm-evidence-contract.md",
     "/docs/t3-code-parity-2026-07.md",

@@ -936,7 +936,7 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
             "write_wired": False,
             "retrieval_wired": False,
             "persistence_wired": False,
-            "readiness_source": "algo_cli.memory_echo_veil.get_echo_veil_readiness",
+            "readiness_source": "algo_cli.ada_memory_echo_veil.get_echo_veil_readiness",
             "runtime": "cpython-test",
         },
         "runtime_event_store": {

@@ -53,12 +53,11 @@ def _echo_veil_memory_items(cfg: Config) -> list[str]:
     if not cfg.echo_veil_enabled:
         return fallback
     try:
-        from .memory_echo_veil import (  # type: ignore[attr-defined]
+        from .ada_memory_echo_veil import (
+            protection_required,
             recall_with_echo_veil,
-            sync_existing_memories,
         )
 
-        sync_existing_memories(cfg, fallback)
         query = next(
             (
                 str(message.get("content", ""))
@@ -68,9 +67,22 @@ def _echo_veil_memory_items(cfg: Config) -> list[str]:
             "",
         )
         recalled = recall_with_echo_veil(cfg, query, top_k=8) if query else []
-        return list(dict.fromkeys(recalled or fallback))
-    except Exception:
-        return fallback
+        if recalled:
+            return list(dict.fromkeys(recalled))
+        return [] if protection_required(cfg) else fallback
+    except Exception as exc:
+        logger = getattr(perf_telemetry, "logger", None)
+        if logger is not None:
+            logger.debug(
+                "Echo Veil context recall unavailable: %s",
+                type(exc).__name__,
+            )
+        try:
+            from .ada_memory_echo_veil import protection_required
+
+            return [] if protection_required(cfg) else fallback
+        except Exception:
+            return fallback
 
 
 def invalidate_context_usage_cache() -> None:

@@ -1,8 +1,8 @@
 ---
-title: Algo CLI Memory Lifecycle Contract
+title: Ada Algo CLI Memory Lifecycle Contract
 description: Durable placement, authority, capture, deduplication, retention, and readiness rules across Algo CLI memory systems.
 status: active
-updated: 2026-07-10
+updated: 2026-07-24
 tags: [algo-cli, product-memory, memory-lifecycle, retrieval-authority, retention]
 ---
 
@@ -16,12 +16,12 @@ product-identity page or a current-state dashboard.
 
 | Information | Durable home | Rule |
 |---|---|---|
-| One stable fact or standing preference needed on most turns | `memory.json` through explicit `remember` or bounded completion capture | Keep it atomic and concise because it is always-on context. |
+| One stable fact or standing preference needed on most turns | Echo Veil scoped-v2 when protection is required; otherwise `memory.json` through explicit `remember` or bounded completion capture | Keep it atomic and concise. Required mode prohibits a plaintext shadow copy. |
 | A behavioral lesson the user explicitly asks to retain | `lessons-learned.md` through `append_lesson` | Capture the lesson, not a transcript. |
 | A multi-paragraph product decision or invariant | Curated harness memory | State the contract, rationale, failure behavior, and authoritative modules. |
 | A procedure, runbook, dated audit, or current snapshot | Curated wiki | Make its date and status explicit; archive it when superseded. |
 | Entity relationships and ranked associations | index-compute-lab | Use for navigation and discovery, not as proof of a live fact. |
-| Optional associative/session recall | Intuition or Echo Veil | Treat as a hint layer; it is never canonical by itself. |
+| Associative/session recall | Echo Veil when protection is required; Intuition or Echo Veil in optional mode | Treat as a hint layer; it is never canonical by itself. |
 
 Do not copy the same prose across tiers. Promote a small atomic fact to
 always-on memory only when its value justifies prompt cost; keep supporting
@@ -61,12 +61,19 @@ catch up.
 ## Readiness vocabulary
 
 Memory readiness is multi-dimensional. `installed`, `enabled`, `write_wired`,
-`retrieval_wired`, and `persistence_wired` are separate claims. A package or
-feature flag alone must never be presented as a functioning write/recall path.
-The score accepts disabled Echo Veil; if enabled, installation and all three
-wiring stages must be proven or the critical memory gate fails.
+`version_supported`, `crypto_initialized`, `index_wired`, `retrieval_wired`,
+`persistence_wired`, `restart_restored`, `rotation_ready`, and `healthy` are
+separate claims. A package or feature flag alone must never be presented as a
+functioning write/recall path. Required protection fails closed unless every
+fact needed by the requested operation is true. `healthy` describes the local
+scoped-v2 path; it is not a production-enclave or external-review claim.
 
 Authoritative implementation boundaries: `config.py`, `memory_candidates.py`,
 `memory_runtime.py`, `context_budget.py`, `harness.py`, and
-`memory_echo_veil.py`. When this document and live behavior disagree, verify
+`ada_memory_echo_veil.py`. When this document and live behavior disagree, verify
 the code and update this contract.
+
+The per-entry-point protection classification and current release blockers are
+maintained in `echo-veil-security-status.md`. Curated memory, lessons, harness
+documents, wiki records, graph data, transcripts, and session history remain
+outside Echo unless their implementation and tests are deliberately changed.

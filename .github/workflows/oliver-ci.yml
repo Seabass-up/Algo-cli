@@ -57,6 +57,7 @@ jobs:
           algo_cli/arthur_control_readiness.py
           algo_cli/ada_control_journal.py
           algo_cli/ada_credential_registry.py
+          algo_cli/ada_memory_echo_veil.py
           algo_cli/ada_uninstall_recovery.py
           algo_cli/austin_install_finalizer.py
           algo_cli/austin_release_packager.py

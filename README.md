@@ -259,7 +259,7 @@ The CLI retrieves relevant records from a local index. The public built-in corpu
 /harness external status
 /harness build-rust
 /hsearch retrieval benchmark
-/hread algo-cli:memory:algo-cli-memory-lifecycle-contract.md
+/hread algo-cli:memory:ada-algo-cli-memory-lifecycle-contract.md
 ```
 
 `/harness score` grades Algo CLI's internal retrieval/runtime readiness.

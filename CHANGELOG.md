@@ -4,6 +4,24 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced the duplicate in-memory Echo wrapper with one authoritative bridge
+  to `echo_veil.agent_memory`, enforced matching supported source/distribution
+  versions plus pinned non-editable installation identity, and separated
+  installation, crypto, write, index, retrieval, persistence, restart,
+  rotation, and health readiness facts.
+- Routed ordinary remember, automatic capture, context recall, listing, and
+  deletion through Echo when protection is required; curated/history mutations
+  are explicitly prohibited instead of creating a plaintext shadow.
+
+### Security
+
+- Added fail-closed required protection, non-leaking diagnostics, scoped profile
+  configuration without raw key material, and a fresh-process black-box test
+  proving ordinary write → confidential disk state → restart → authorized
+  recall while rejecting a mismatched scope.
+
 ## [0.18.0] - 2026-07-17
 
 ### Added

@@ -2696,7 +2696,10 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
     # records are retrieved here so the prompt does not contain duplicates.
     try:
         memory_catalog = memory_runtime.MemoryCatalog()
-        memory_catalog.sync_legacy_facts(cfg.memories, authoritative=False)
+        from .ada_memory_echo_veil import protection_required
+
+        if not protection_required(cfg):
+            memory_catalog.sync_legacy_facts(cfg.memories, authoritative=False)
         memory_embed_fn = (
             _shared_embed
             if host_is_local(cfg.host) and ollama_server_ready(cfg.host)

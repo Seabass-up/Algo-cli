@@ -13,7 +13,7 @@ from algo_cli import harness
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCS_ROOT = REPO_ROOT / "docs"
 EXPECTED_MEMORY_DOCS = (
-    "algo-cli-memory-lifecycle-contract.md",
+    "ada-algo-cli-memory-lifecycle-contract.md",
     "algo-cli-execution-verification-contract.md",
     "algo-cli-algorithm-evidence-contract.md",
 )
@@ -115,7 +115,7 @@ def test_curated_memory_contract_frontmatter_and_scope(filename: str, category: 
     (
         (
             "memory placement retention Echo Veil readiness",
-            "algo-cli:memory:algo-cli-memory-lifecycle-contract.md",
+            "algo-cli:memory:ada-algo-cli-memory-lifecycle-contract.md",
         ),
         (
             "single mutation owner policy preflight verification agent team",
