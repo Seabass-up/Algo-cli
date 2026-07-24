@@ -66,6 +66,7 @@
     "algo_cli/main.py",
     "algo_cli/marcus_authority.py",
     "algo_cli/nathan_program_runtime.py",
+    "algo_cli/nathan_provider_protocol.py",
     "algo_cli/nathan_runtime.py",
     "algo_cli/neon_browser_simulator.py",
     "algo_cli/neon_browser_native_host.py",
@@ -2960,6 +2961,15 @@
           "timestamp": "2026-07-24T01:48:26Z",
           "scope": "five model-free efficiency repetitions measure 78.948 percent median tool-schema reduction and 96.644 percent typed-program reduction; stale-target p50/p95 are 4.802/5.950 ms; fresh-postcondition p50/p95 are 6.280/7.495 ms; the focused suite includes the separate 13-probe Nathan Agent runtime cell",
           "limitations": "synthetic local measurements do not prove live task completion, model quality, semantic-route share, screenshot reduction, confirmation count, provider latency, production-signed XPC/TCC readiness, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked and HARD-081 stays in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json via scripts/nathan_agent_runtime_qualification.py --refresh",
+          "digest": "sha256:6eac55b2d696176b1c3d3d47b295c20e9d702adcc7792cc395c297a057c75e0a",
+          "result": "local source-bound pass: 14 of 14 adversarial probes and 31 of 31 frozen end-to-end Agent workloads pass; task, verifier, crash-resume, protocol, and context-usefulness rates are 100 percent with zero policy escapes, unverified completions, or duplicate mutations",
+          "timestamp": "2026-07-24T02:28:12Z",
+          "scope": "model-free workload p50/p95 are 25.325/26.499 ms total and 3.546/3.841 ms to first Agent event; contract p50/p95 are 0.252/0.318 ms, broker p50/p95 are 0.042/0.050 ms, checkpoint-resume p50/p95 are 9.007/9.267 ms, and context used 2356 of 31744 available fixture tokens",
+          "limitations": "deterministic local fixtures measure harness coordination rather than model intelligence, live provider latency, production power-loss behavior, or superiority over OpenClaw, Hermes, or another harness; production browser and signed native gates remain blocked, HARD-081 stays in progress, and the active freeze forbids public benchmark claims"
         }
       ]
     },

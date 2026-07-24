@@ -1186,6 +1186,103 @@ def test_normal_chat_serial_path_uses_canonical_dispatcher(monkeypatch, tmp_path
     assert cfg.attempt_ledger[-1]["status"] == "worked"
 
 
+def test_normal_chat_uses_shared_protocol_without_prompting_never_mode(
+    monkeypatch,
+    tmp_path,
+):
+    class ScriptedClient:
+        calls = 0
+
+        def chat(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return iter(
+                    [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": {
+                                                "path": "README.md"
+                                            },
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                )
+            return iter([{"message": {"content": "done"}}])
+
+    _patch_agent_loop_for_tool_policy_test(monkeypatch)
+    (tmp_path / "README.md").write_text(
+        "README contents",
+        encoding="utf-8",
+    )
+    states = []
+    protocol_type = (
+        main.nathan_provider_protocol.ProviderToolLoopState
+    )
+
+    def make_protocol_state():
+        state = protocol_type(loop_id="ordinary-chat")
+        states.append(state)
+        return state
+
+    monkeypatch.setattr(
+        main.nathan_provider_protocol,
+        "ProviderToolLoopState",
+        make_protocol_state,
+    )
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("never mode read must not prompt")
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "run_tool",
+        lambda *_args, **_kwargs: "README contents",
+    )
+    monkeypatch.setattr(
+        main.memory_runtime,
+        "capture_completed_user_turn",
+        lambda *_args, **_kwargs: {"status": "skipped"},
+    )
+    cfg = Config(
+        model="test-model",
+        cwd=str(tmp_path),
+        skill_crystallize_enabled=False,
+    )
+    setattr(cfg, "_nathan_approval_mode", "never")
+
+    main.agent_loop(
+        ScriptedClient(),
+        cfg,
+        "read the project",
+    )  # type: ignore[arg-type]
+
+    assert len(states) == 1
+    assert states[0].phase == "ready"
+    assistant_call = next(
+        message["tool_calls"][0]
+        for message in cfg.messages
+        if message.get("tool_calls")
+    )
+    assert assistant_call["id"].startswith(
+        "algo-ordinary-chat-r0000-c0000"
+    )
+    tool_message = next(
+        message
+        for message in cfg.messages
+        if message.get("role") == "tool"
+    )
+    assert tool_message["tool_call_id"] == assistant_call["id"]
+
+
 def test_normal_chat_parallel_dispatch_preserves_scope_and_order(monkeypatch, tmp_path):
     class ScriptedClient:
         calls = 0

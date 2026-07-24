@@ -198,6 +198,7 @@ def refresh_artifact(
     contract_repetitions: int = 101,
     context_repetitions: int = 101,
     checkpoint_repetitions: int = 31,
+    workload_repetitions: int = 31,
     warmups: int = 5,
     allowed_root: Path = HARDENING_ROOT,
 ) -> dict[str, Any]:
@@ -205,6 +206,7 @@ def refresh_artifact(
         contract_repetitions=contract_repetitions,
         context_repetitions=context_repetitions,
         checkpoint_repetitions=checkpoint_repetitions,
+        workload_repetitions=workload_repetitions,
         warmups=warmups,
     )
     write_artifact(
@@ -237,6 +239,11 @@ def _receipt(
             "passed": report["correctness"]["passed"],
             "total": report["correctness"]["total"],
         },
+        "effectiveness": {
+            key: value
+            for key, value in report["effectiveness"].items()
+            if key != "workloads"
+        },
         "p95_ms": {
             metric: row["p95_ms"]
             for metric, row in report["performance"].items()
@@ -259,6 +266,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--contract-repetitions", type=int, default=101)
     parser.add_argument("--context-repetitions", type=int, default=101)
     parser.add_argument("--checkpoint-repetitions", type=int, default=31)
+    parser.add_argument("--workload-repetitions", type=int, default=31)
     parser.add_argument("--warmups", type=int, default=5)
     parser.add_argument("--quiet", action="store_true")
     arguments = parser.parse_args(argv)
@@ -269,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
                 contract_repetitions=arguments.contract_repetitions,
                 context_repetitions=arguments.context_repetitions,
                 checkpoint_repetitions=arguments.checkpoint_repetitions,
+                workload_repetitions=arguments.workload_repetitions,
                 warmups=arguments.warmups,
             )
             if arguments.refresh

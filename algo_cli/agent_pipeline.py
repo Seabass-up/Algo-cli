@@ -34,6 +34,7 @@ from . import task_router
 from . import samuel_policy as tool_policy
 from . import worktree_runtime
 from . import model_info as _model_info_module
+from . import nathan_provider_protocol
 from . import chatgpt_client
 from . import context_budget
 from . import tools as tools_module
@@ -41,7 +42,6 @@ from .chat_protocol import (
     collapse_tool_history_for_gemini,
     get_attr,
     normalize_tool_call,
-    serialize_tool_call,
 )
 from .config import Config
 from .display import (
@@ -94,6 +94,80 @@ def _block_output_is_verified(block: agent_blocks.AgentBlock) -> bool:
         return False
     remainder = text[len("## Block Output") :].strip()
     return bool(remainder)
+
+
+_MUTATION_COMPLETION_CLAIM_RE = re.compile(
+    r"\b(changed|completed|created|fixed|implemented|updated|wrote)\b",
+    re.IGNORECASE,
+)
+_UNCERTAINTY_DISCLOSURE_RE = re.compile(
+    r"\b(blocked|incomplete|partial|uncertain|unverified)\b",
+    re.IGNORECASE,
+)
+
+
+def _final_output_claims_are_grounded(
+    block: agent_blocks.AgentBlock,
+    prior_blocks: list[agent_blocks.AgentBlock],
+) -> bool:
+    """Ground completion claims in typed prior-block verification evidence."""
+
+    if block.role != "final":
+        return True
+    if any(
+        prior.status != "complete"
+        or bool(prior.verification_warning)
+        for prior in prior_blocks
+    ) and not _UNCERTAINTY_DISCLOSURE_RE.search(block.output):
+        return False
+    mutation_blocks = [
+        prior
+        for prior in prior_blocks
+        if prior.requires_change
+    ]
+    if (
+        mutation_blocks
+        and _MUTATION_COMPLETION_CLAIM_RE.search(block.output)
+    ):
+        return all(
+            prior.status == "complete"
+            and not prior.verification_warning
+            and bool(prior.successful_writes)
+            and (
+                "Verified Git state change" in prior.git_evidence
+                or "Git state changed during this block" in prior.git_evidence
+            )
+            for prior in mutation_blocks
+        )
+    return True
+
+
+def _enforce_block_output_verification(
+    block: agent_blocks.AgentBlock,
+    prior_blocks: list[agent_blocks.AgentBlock],
+) -> bool:
+    output_contract_verified = _block_output_is_verified(block)
+    claim_grounded = _final_output_claims_are_grounded(
+        block,
+        prior_blocks,
+    )
+    if block.status == "complete" and not output_contract_verified:
+        block.status = "partial"
+        block.status_code = "output_contract_failed"
+        block.status_reason = (
+            "Block output did not satisfy the required "
+            "'## Block Output' evidence contract."
+        )
+        block.verification_warning = block.status_reason
+    elif block.status == "complete" and not claim_grounded:
+        block.status = "partial"
+        block.status_code = "claim_grounding_failed"
+        block.status_reason = (
+            "Final output made a completion claim without matching "
+            "verified prior-block evidence or omitted required uncertainty."
+        )
+        block.verification_warning = block.status_reason
+    return output_contract_verified and claim_grounded
 
 
 def _estimate_agent_request_tokens(
@@ -157,81 +231,8 @@ class AgentRunResult:
         return "\n".join(lines)
 
 
-class AgentLoopProtocolError(RuntimeError):
-    """Raised when provider/tool messages would become structurally unbalanced."""
-
-
-@dataclass
-class AgentLoopState:
-    """Provider-neutral state machine for one Agent Block tool loop."""
-
-    phase: str = "ready"
-    round_number: int = -1
-    expected_tool_results: int = 0
-    observed_tool_results: int = 0
-
-    def begin_model_round(self, round_number: int) -> None:
-        if self.phase != "ready" or round_number < 0:
-            raise AgentLoopProtocolError(
-                "model round cannot start from the current loop state"
-            )
-        self.phase = "model_inflight"
-        self.round_number = round_number
-        self.expected_tool_results = 0
-        self.observed_tool_results = 0
-
-    def complete_model_round(self, tool_call_count: int) -> None:
-        if (
-            self.phase != "model_inflight"
-            or tool_call_count < 0
-        ):
-            raise AgentLoopProtocolError(
-                "model round completion is structurally invalid"
-            )
-        self.phase = "model_complete"
-        self.expected_tool_results = tool_call_count
-
-    def finish_without_tools(self) -> None:
-        if (
-            self.phase != "model_complete"
-            or self.expected_tool_results != 0
-        ):
-            raise AgentLoopProtocolError(
-                "tool-free completion has pending tool calls"
-            )
-        self.phase = "ready"
-
-    def begin_tool_batch(self) -> None:
-        if (
-            self.phase != "model_complete"
-            or self.expected_tool_results < 1
-        ):
-            raise AgentLoopProtocolError(
-                "tool dispatch has no completed model tool batch"
-            )
-        self.phase = "tools_inflight"
-
-    def record_tool_result(self) -> None:
-        if (
-            self.phase != "tools_inflight"
-            or self.observed_tool_results
-            >= self.expected_tool_results
-        ):
-            raise AgentLoopProtocolError(
-                "tool result is duplicated or outside a tool batch"
-            )
-        self.observed_tool_results += 1
-
-    def finish_tool_batch(self) -> None:
-        if (
-            self.phase != "tools_inflight"
-            or self.observed_tool_results
-            != self.expected_tool_results
-        ):
-            raise AgentLoopProtocolError(
-                "provider tool batch is missing balanced tool results"
-            )
-        self.phase = "ready"
+AgentLoopProtocolError = nathan_provider_protocol.AgentLoopProtocolError
+AgentLoopState = nathan_provider_protocol.AgentLoopState
 
 
 _execution_state = threading.local()
@@ -495,6 +496,23 @@ def run_agent_block(
     completion_nudged = False
     loop_state = AgentLoopState()
 
+    def record_protocol_dispatch(
+        name: str,
+        args: dict[str, Any],
+        tool_call_id: str | None,
+    ) -> None:
+        try:
+            action = resolve_action(name, args, cwd=cfg.cwd)
+            mutating = action.effect_class is not EffectClass.OBSERVE
+        except Exception:
+            # Unknown actions are treated as mutation-capable until the
+            # dispatcher produces their fail-closed result.
+            mutating = True
+        loop_state.record_tool_dispatch(
+            tool_call_id,
+            mutating=mutating,
+        )
+
     def finish_with_partial_output() -> None:
         messages.append(
             {
@@ -507,6 +525,9 @@ def run_agent_block(
             }
         )
         partial_text = ""
+        partial_tool_calls: list[Any] = []
+        wrap_round = loop_state.round_number + 1
+        loop_state.begin_model_round(wrap_round)
         try:
             stream = block_client.chat(
                 model=block_model,
@@ -522,12 +543,36 @@ def run_agent_block(
                 message = get_attr(chunk, "message", {})
                 thinking = get_attr(message, "thinking", "")
                 content = get_attr(message, "content", "")
-                if thinking and cfg.show_thinking:
-                    show_thinking_text(thinking)
+                calls = get_attr(message, "tool_calls", None)
+                if thinking:
+                    loop_state.record_model_event("reasoning")
+                    if cfg.show_thinking:
+                        show_thinking_text(thinking)
                 if content:
+                    loop_state.record_model_event("content")
                     finish_thinking_block()
                     partial_text += content
+                if calls:
+                    loop_state.record_model_event("tool")
+                    partial_tool_calls.extend(calls)
+            loop_state.complete_model_round(partial_tool_calls)
+            if partial_tool_calls:
+                loop_state.cancel(
+                    "tool-free partial wrap-up attempted a tool call"
+                )
+                partial_text = ""
+            else:
+                loop_state.finish_without_tools()
+        except KeyboardInterrupt:
+            loop_state.cancel(
+                "Agent Block partial wrap-up cancelled"
+            )
+            raise
         except Exception as exc:
+            loop_state.interrupt(
+                str(exc),
+                timed_out=isinstance(exc, TimeoutError),
+            )
             logger.debug("Agent block partial wrap-up failed for %s: %s", block.role, exc)
         finally:
             finish_thinking_block()
@@ -640,36 +685,49 @@ def run_agent_block(
                     )
                     break
             loop_state.begin_model_round(_)
-            stream = block_client.chat(
-                model=block_model,
-                messages=request_messages,
-                tools=allowed_tools,
-                stream=True,
-                think=cfg.show_thinking,
-                keep_alive=cfg.keep_alive,
-                options=_model_chat_options(block_model, cfg),
-            )
             thinking_text = ""
             content_text = ""
             tool_calls: list[Any] = []
             try:
+                stream = block_client.chat(
+                    model=block_model,
+                    messages=request_messages,
+                    tools=allowed_tools,
+                    stream=True,
+                    think=cfg.show_thinking,
+                    keep_alive=cfg.keep_alive,
+                    options=_model_chat_options(block_model, cfg),
+                )
                 for chunk in stream:
                     record_chat_metrics(cfg, chunk)
                     message = get_attr(chunk, "message", {})
                     thinking = get_attr(message, "thinking", "")
                     content = get_attr(message, "content", "")
                     calls = get_attr(message, "tool_calls", None)
-                    if thinking and cfg.show_thinking:
-                        show_thinking_text(thinking)
-                        thinking_text += thinking
+                    if thinking:
+                        loop_state.record_model_event("reasoning")
+                        if cfg.show_thinking:
+                            show_thinking_text(thinking)
+                            thinking_text += thinking
                     if content:
+                        loop_state.record_model_event("content")
                         finish_thinking_block()
                         content_text += content
                     if calls:
+                        loop_state.record_model_event("tool")
                         tool_calls.extend(calls)
+            except KeyboardInterrupt:
+                loop_state.cancel("Agent Block model stream cancelled")
+                raise
+            except Exception as exc:
+                loop_state.interrupt(
+                    str(exc),
+                    timed_out=isinstance(exc, TimeoutError),
+                )
+                raise
             finally:
                 finish_thinking_block()
-            loop_state.complete_model_round(len(tool_calls))
+            serialized_calls = loop_state.complete_model_round(tool_calls)
 
             assistant: dict[str, Any] = {"role": "assistant"}
             if content_text:
@@ -677,7 +735,6 @@ def run_agent_block(
                 block.output = content_text
             if thinking_text:
                 assistant["thinking"] = thinking_text
-            serialized_calls = [serialize_tool_call(call) for call in tool_calls]
             if tool_calls:
                 assistant["tool_calls"] = serialized_calls
             messages.append(assistant)
@@ -757,6 +814,11 @@ def run_agent_block(
                     contract_tracker.reserve_tool_calls(len(batch))
                 except run_contracts.RunContractViolation as exc:
                     for (name, args), tool_call_id in batch:
+                        record_protocol_dispatch(
+                            name,
+                            args,
+                            tool_call_id,
+                        )
                         execution = execute_tool_call_for_pipeline(
                             name,
                             args,
@@ -765,7 +827,7 @@ def run_agent_block(
                             policy_ceiling_code="run_contract_tool_budget",
                         )
                         messages.append(execution.message)
-                        loop_state.record_tool_result()
+                        loop_state.record_tool_result(tool_call_id)
                     loop_state.finish_tool_batch()
                     block.status = "partial"
                     block.status_code = "run_contract_tool_budget"
@@ -811,6 +873,11 @@ def run_agent_block(
                         except agent_run_journal.AgentRunJournalError:
                             break
                     for (name, args), tool_call_id in batch:
+                        record_protocol_dispatch(
+                            name,
+                            args,
+                            tool_call_id,
+                        )
                         execution = execute_tool_call_for_pipeline(
                             name,
                             args,
@@ -819,7 +886,7 @@ def run_agent_block(
                             policy_ceiling_code="run_journal_unavailable",
                         )
                         messages.append(execution.message)
-                        loop_state.record_tool_result()
+                        loop_state.record_tool_result(tool_call_id)
                     loop_state.finish_tool_batch()
                     block.status = "failed"
                     block.status_code = "run_journal_unavailable"
@@ -832,7 +899,15 @@ def run_agent_block(
                         f"could not be recorded: {exc}"
                     )
                     break
-            protocol_ceilings = batch_policy_ceiling_codes(batch, cfg)
+            policy_ceilings = batch_policy_ceiling_codes(batch, cfg)
+            state_ceilings = loop_state.tool_batch_ceiling_codes()
+            protocol_ceilings = tuple(
+                state_code or policy_code
+                for state_code, policy_code in zip(
+                    state_ceilings,
+                    policy_ceilings,
+                )
+            )
             shell_decisions = [
                 tool_policy.evaluate_shell_command(
                     str(args.get("command", "")),
@@ -914,6 +989,11 @@ def run_agent_block(
 
             for index, ((name, args), tool_call_id) in enumerate(batch):
                 if journal_result_failed:
+                    record_protocol_dispatch(
+                        name,
+                        args,
+                        tool_call_id,
+                    )
                     execution = execute_tool_call_for_pipeline(
                         name,
                         args,
@@ -923,7 +1003,7 @@ def run_agent_block(
                     )
                     tool_message, result = execution
                     messages.append(tool_message)
-                    loop_state.record_tool_result()
+                    loop_state.record_tool_result(tool_call_id)
                     append_journal_result(
                         index,
                         execution,
@@ -942,6 +1022,11 @@ def run_agent_block(
                         ceiling_code = protocol_ceilings[index]
                     else:
                         ceiling_code = "agent_batch_quarantined"
+                    record_protocol_dispatch(
+                        name,
+                        args,
+                        tool_call_id,
+                    )
                     execution = execute_tool_call_for_pipeline(
                         name,
                         args,
@@ -951,7 +1036,7 @@ def run_agent_block(
                     )
                     tool_message, result = execution
                     messages.append(tool_message)
-                    loop_state.record_tool_result()
+                    loop_state.record_tool_result(tool_call_id)
                     append_journal_result(index, execution, result)
                     if has_disallowed_tool or any(protocol_ceilings):
                         block.status = "failed"
@@ -963,6 +1048,11 @@ def run_agent_block(
                         block.output = result
                     continue
                 block.tool_calls += 1
+                record_protocol_dispatch(
+                    name,
+                    args,
+                    tool_call_id,
+                )
                 execution = execute_tool_call_for_pipeline(
                     name,
                     args,
@@ -1006,7 +1096,7 @@ def run_agent_block(
                 ):
                     block.mutation_actions.append(mutation_action)
                 messages.append(tool_message)
-                loop_state.record_tool_result()
+                loop_state.record_tool_result(tool_call_id)
             loop_state.finish_tool_batch()
             if block.status == "failed" or journal_result_failed:
                 break
@@ -1284,15 +1374,28 @@ def enforce_required_change_contract(
     if not block.requires_change or block.status != "complete":
         return
 
-    # Git evidence is the strict path; when it is unavailable but recorded
-    # write_file evidence exists, the contract is satisfied with a manual-
-    # verification notice rather than a partial downgrade. Returning here
-    # preserves block.status == "complete" and skips the produced_change gate.
+    # A recorded write is action evidence, not final-state verification. Never
+    # convert it into a warning-only completion when Git attribution is
+    # unavailable.
     if (not before.available or not after.available) and block.successful_writes:
-        block.verification_warning = (
-            "Git verification was unavailable. Successful write_file operations were recorded, "
-            "but review must manually confirm the written files."
+        reported_output = block.output.strip()
+        block.status = "partial"
+        block.status_code = "verification_unavailable"
+        block.status_reason = (
+            "Required change not verified: Git final-state evidence is "
+            "unavailable, so recorded writes cannot establish completion."
         )
+        block.verification_warning = block.status_reason
+        block.output = (
+            "## Block Output\n\n"
+            "UNVERIFIED: a write action was recorded, but no attributable "
+            "final-state verifier was available."
+        )
+        if reported_output:
+            block.output += (
+                "\n\nUnverified reported output:\n"
+                f"{reported_output}"
+            )
         return
 
     produced_change = git_evidence.has_verified_delta(before, after) or (
@@ -1836,6 +1939,9 @@ def run_agent_pipeline(
                 body=resume_direction.strip(),
                 priority=120,
                 trust="user_resume_direction",
+                scope="session",
+                freshness_rank=1_000,
+                provenance="user-resume-direction",
             )
         )
     if prior_context.strip():
@@ -1846,6 +1952,9 @@ def run_agent_pipeline(
                 body=prior_context.strip(),
                 priority=100,
                 trust="verified_handoff",
+                scope="session",
+                freshness_rank=900,
+                provenance="verified-parent-thread",
             )
         )
     from . import main as _main
@@ -1869,6 +1978,9 @@ def run_agent_pipeline(
                     body=memory_injection,
                     priority=80,
                     trust="governed_memory",
+                    scope="workspace",
+                    freshness_rank=700,
+                    provenance="julia-memory-runtime",
                 )
             )
     except memory_runtime.MemorySystemError as exc:
@@ -1893,6 +2005,9 @@ def run_agent_pipeline(
                             body=injection,
                             priority=50,
                             trust="heuristic_memory",
+                            scope="workspace",
+                            freshness_rank=500,
+                            provenance="intuition-runtime",
                         )
                     )
         except Exception as exc:
@@ -2010,9 +2125,11 @@ def run_agent_pipeline(
             if block.requires_change or tool_policy.supports_mutation_audit(block.allowed_tools)
             else None
         )
-        completion_check = None
-        if before_git is not None:
-            def completion_check(completed_block: agent_blocks.AgentBlock, baseline=before_git) -> None:
+        def completion_check(
+            completed_block: agent_blocks.AgentBlock,
+            baseline=before_git,
+        ) -> None:
+            if baseline is not None:
                 after_git = git_evidence.capture_git_snapshot(cfg.cwd)
                 block_final_snapshots[id(completed_block)] = after_git
                 completed_block.git_head = after_git.head or ""
@@ -2040,6 +2157,10 @@ def run_agent_pipeline(
                         ),
                         snapshot=after_git,
                     )
+            _enforce_block_output_verification(
+                completed_block,
+                completed,
+            )
         run_agent_block(
             block,
             task=pipeline_task,
@@ -2181,15 +2302,12 @@ def run_agent_pipeline(
                     id(block),
                     None,
                 ) or git_evidence.capture_git_snapshot(cfg.cwd)
-                output_verified = _block_output_is_verified(block)
-                if block.status == "complete" and not output_verified:
-                    block.status = "partial"
-                    block.status_code = "output_contract_failed"
-                    block.status_reason = (
-                        "Block output did not satisfy the required "
-                        "'## Block Output' evidence contract."
+                output_verified = (
+                    _enforce_block_output_verification(
+                        block,
+                        completed,
                     )
-                    block.verification_warning = block.status_reason
+                )
                 agent_threads.update_thread(
                     active_thread_id,
                     status="running",

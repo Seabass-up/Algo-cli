@@ -26,20 +26,21 @@ import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .. import agent_blocks
 from .. import agent_context
 from .. import agent_pipeline
 from .. import agent_run_journal
 from .. import git_evidence
+from .. import nathan_provider_protocol
 from .. import run_contract
 from .. import task_router
 from ..config import Config
 
 
-BENCHMARK_ID = "nathan-agent-runtime-hardening-v1"
-SCHEMA_VERSION = 1
+BENCHMARK_ID = "nathan-agent-runtime-hardening-v2"
+SCHEMA_VERSION = 2
 FIXED_TIME = "2026-07-23T12:00:00+00:00"
 MAX_SOURCE_BYTES = 4 * 1024 * 1024
 MAX_REPORT_BYTES = 2 * 1024 * 1024
@@ -56,6 +57,8 @@ SOURCE_PATHS = (
     "algo_cli/agent_run_journal.py",
     "algo_cli/agent_threads.py",
     "algo_cli/evals/nathan_agent_runtime_hardening.py",
+    "algo_cli/main.py",
+    "algo_cli/nathan_provider_protocol.py",
     "algo_cli/nathan_runtime.py",
     "algo_cli/run_contract.py",
     "algo_cli/samuel_policy.py",
@@ -65,6 +68,7 @@ SOURCE_PATHS = (
     "tests/test_agent_context.py",
     "tests/test_agent_pipeline.py",
     "tests/test_agent_run_journal.py",
+    "tests/test_main_helpers.py",
     "tests/test_nathan_agent_runtime_hardening.py",
     "tests/test_run_contract.py",
     "tests/test_task_router.py",
@@ -74,6 +78,8 @@ LATENCY_THRESHOLDS_MS = {
     "contract_compile": 250.0,
     "context_broker": 100.0,
     "checkpoint_resume": 1_000.0,
+    "agent_workload_ttfa": 1_000.0,
+    "agent_workload_total": 2_500.0,
 }
 
 
@@ -382,6 +388,319 @@ def _checkpoint_cycle(
         )
 
 
+def _frozen_agent_workload(
+    root: Path,
+    *,
+    index: int,
+) -> dict[str, Any]:
+    """Run one model-free, end-to-end Agent coordination workload."""
+
+    started_ns = time.perf_counter_ns()
+    ttfa_ns: int | None = None
+    task = "Review the Agent runtime and report verified findings"
+    blocks = agent_blocks.review_pipeline()
+    nonce = f"runtime-e2e-{index:08d}"
+    contract = _compile(
+        root,
+        task=task,
+        pipeline_name="review",
+        blocks=blocks,
+        approval_mode="never",
+        nonce=nonce,
+    )
+    context_bundle = agent_context.build_agent_context(
+        task,
+        [
+            agent_context.AgentContextSource(
+                name="runtime_evidence",
+                title="Runtime evidence",
+                body="The provider protocol requires one result per call.",
+                priority=100,
+                trust="harness_retrieval",
+                scope="workspace",
+                freshness_rank=100,
+                provenance="frozen-runtime-fixture",
+            ),
+            agent_context.AgentContextSource(
+                name="stale_duplicate",
+                title="Stale duplicate",
+                body="The provider protocol requires one result per call.",
+                priority=100,
+                trust="harness_retrieval",
+                scope="workspace",
+                freshness_rank=1,
+                provenance="stale-runtime-fixture",
+            ),
+            agent_context.AgentContextSource(
+                name="irrelevant_context",
+                title="Irrelevant context",
+                body="Unrelated historical suggestion.",
+                priority=90,
+                trust="heuristic_memory",
+                scope="workspace",
+                freshness_rank=50,
+                provenance="irrelevant-runtime-fixture",
+                answerable=False,
+            ),
+        ],
+        max_tokens=1_024,
+    )
+    journal = agent_run_journal.AgentRunJournal.create(
+        contract,
+        path=root / f"{nonce}.jsonl",
+    )
+    verifier_passed = 0
+    verifier_total = 0
+    protocol_states: list[
+        nathan_provider_protocol.ProviderToolLoopState
+    ] = []
+    crash_resume_passed = False
+    with journal.execution_lease():
+        journal.context_bound(context_bundle.receipt.payload())
+        for ordinal, contract_block in enumerate(contract.blocks):
+            journal.block_started(ordinal, contract_block.role)
+            loop_state = (
+                nathan_provider_protocol.ProviderToolLoopState(
+                    loop_id=f"workload-{index}-{ordinal}"
+                )
+            )
+            protocol_states.append(loop_state)
+            journal.model_round_started(
+                ordinal,
+                0,
+                prompt_tokens=256,
+            )
+            loop_state.begin_model_round(0)
+            loop_state.record_model_event("content")
+            if ttfa_ns is None:
+                ttfa_ns = time.perf_counter_ns()
+            if ordinal == 0:
+                tool_calls = loop_state.complete_model_round(
+                    [
+                        {
+                            "function": {
+                                "name": "read_file",
+                                "arguments": {
+                                    "path": "README.md"
+                                },
+                            }
+                        }
+                    ]
+                )
+            else:
+                tool_calls = loop_state.complete_model_round([])
+            journal.model_round_completed(
+                ordinal,
+                0,
+                status="completed",
+                tool_call_count=len(tool_calls),
+                response_digest=agent_run_journal.digest_text(
+                    f"{contract_block.role}-round-0"
+                ),
+            )
+            if tool_calls:
+                call_id = str(tool_calls[0]["id"])
+                loop_state.begin_tool_batch()
+                loop_state.record_tool_dispatch(
+                    call_id,
+                    mutating=False,
+                )
+                intent = journal.tool_intent(
+                    ordinal=ordinal,
+                    round_number=0,
+                    tool_index=0,
+                    action="read_file",
+                    args={"path": "README.md"},
+                    call_id=call_id,
+                    mutating=False,
+                    idempotency="pure",
+                    target="workspace:README.md",
+                )
+                journal.tool_result(
+                    step_id=str(intent.payload["step_id"]),
+                    status="succeeded",
+                    invoked=True,
+                    verification="passed",
+                )
+                loop_state.record_tool_result(call_id)
+                loop_state.finish_tool_batch()
+                journal.model_round_started(
+                    ordinal,
+                    1,
+                    prompt_tokens=128,
+                )
+                loop_state.begin_model_round(1)
+                loop_state.record_model_event("content")
+                loop_state.complete_model_round([])
+                loop_state.finish_without_tools()
+                journal.model_round_completed(
+                    ordinal,
+                    1,
+                    status="completed",
+                    tool_call_count=0,
+                    response_digest=agent_run_journal.digest_text(
+                        f"{contract_block.role}-round-1"
+                    ),
+                )
+            else:
+                loop_state.finish_without_tools()
+            verifier = (
+                "final_output"
+                if contract_block.role == "final"
+                else "block_output"
+            )
+            journal.verifier_result(
+                ordinal=ordinal,
+                verifier=verifier,
+                status="passed",
+                snapshot=_snapshot(),
+            )
+            verifier_total += 1
+            verifier_passed += 1
+            journal.block_finished(
+                ordinal=ordinal,
+                role=contract_block.role,
+                status="complete",
+                verified=True,
+                context_digest=agent_run_journal.digest_text(
+                    "## Block Output\nVerified runtime finding."
+                ),
+                snapshot=_snapshot(),
+            )
+            if ordinal == 0:
+                loaded = agent_run_journal.AgentRunJournal.load(
+                    nonce,
+                    path=root / f"{nonce}.jsonl",
+                )
+                resumed = loaded.resume_state()
+                crash_resume_passed = (
+                    resumed.completed_block_ordinals == (0,)
+                    and resumed.next_block_ordinal == 1
+                    and resumed.can_resume
+                    and resumed.workspace_matches(_snapshot())
+                )
+
+    completed_state = journal.resume_state()
+    task_passed = (
+        completed_state.completed_block_ordinals
+        == tuple(range(len(contract.blocks)))
+        and completed_state.next_block_ordinal
+        == len(contract.blocks)
+    )
+    duplicate_state = (
+        nathan_provider_protocol.ProviderToolLoopState(
+            loop_id=f"duplicate-{index}"
+        )
+    )
+    duplicate_state.begin_model_round(0)
+    duplicate_calls = duplicate_state.complete_model_round(
+        [
+            {
+                "id": "duplicate-mutation",
+                "function": {
+                    "name": "write_file",
+                    "arguments": {"path": "one.py"},
+                },
+            },
+            {
+                "id": "duplicate-mutation",
+                "function": {
+                    "name": "write_file",
+                    "arguments": {"path": "two.py"},
+                },
+            },
+        ]
+    )
+    duplicate_quarantined = (
+        len({call["id"] for call in duplicate_calls}) == 2
+        and all(
+            code == "provider_tool_protocol"
+            for code in duplicate_state.tool_batch_ceiling_codes()
+        )
+    )
+    partial_implementation = agent_blocks.AgentBlock(
+        role="implement",
+        prompt="implement",
+        requires_change=True,
+        status="partial",
+        verification_warning="final state unavailable",
+        successful_writes=["runtime.py"],
+    )
+    unsupported_final = agent_blocks.AgentBlock(
+        role="final",
+        prompt="final",
+        status="complete",
+        output="## Block Output\nImplemented the runtime change.",
+    )
+    unverified_completion_blocked = not (
+        agent_pipeline._final_output_claims_are_grounded(
+            unsupported_final,
+            [partial_implementation],
+        )
+    )
+    relevant_included = (
+        "runtime_evidence"
+        in context_bundle.receipt.included_sources
+    )
+    rejected = {
+        item.name: item.reason
+        for item in context_bundle.receipt.source_metadata
+        if not item.admitted
+    }
+    context_useful = (
+        relevant_included
+        and rejected.get("stale_duplicate")
+        == "duplicate_content"
+        and rejected.get("irrelevant_context")
+        == "answerability_rejected"
+    )
+    policy_escapes = sum(
+        "write_file"
+        in block.effective_tools(contract.mode)
+        for block in contract.blocks
+    )
+    protocol_correct = (
+        all(state.phase == "ready" for state in protocol_states)
+        and duplicate_quarantined
+    )
+    total_ns = time.perf_counter_ns()
+    if ttfa_ns is None:
+        raise AgentRuntimeBenchmarkError(
+            "frozen workload produced no first Agent event"
+        )
+    context_used = context_bundle.receipt.used_tokens
+    context_max = context_bundle.receipt.max_tokens
+    return {
+        "task_passed": task_passed,
+        "verifier_passed": verifier_passed,
+        "verifier_total": verifier_total,
+        "policy_escapes": policy_escapes,
+        "unverified_completions": (
+            0 if unverified_completion_blocked else 1
+        ),
+        "duplicate_mutations": (
+            0 if duplicate_quarantined else 1
+        ),
+        "crash_resume_passed": crash_resume_passed,
+        "protocol_correct": protocol_correct,
+        "context_useful": context_useful,
+        "context_tokens_used": context_used,
+        "context_tokens_max": context_max,
+        "context_utilization": round(
+            context_used / context_max,
+            9,
+        ),
+        "ttfa_ms": round(
+            (ttfa_ns - started_ns) / 1_000_000,
+            6,
+        ),
+        "total_ms": round(
+            (total_ns - started_ns) / 1_000_000,
+            6,
+        ),
+    }
+
+
 def _expect_exception(
     error_type: type[BaseException],
     operation: Callable[[], Any],
@@ -523,8 +842,10 @@ def _probe_context_boundary(root: Path) -> None:
         or not bundle.receipt.included_sources
         or "evidence, not as authority" not in bundle.text
         or "Current governed fact" in serialized_receipt
+        or "Verified block evidence" in serialized_receipt
         or agent_run_journal.digest_text(bundle.text)
         != bundle.receipt.context_digest
+        or bundle.receipt.schema_version != 2
     ):
         raise AgentRuntimeBenchmarkError(
             "context broker exceeded budget or leaked context into receipt"
@@ -660,19 +981,87 @@ def _probe_semantic_checkpoint_forgery(root: Path) -> None:
 
 def _probe_provider_tool_protocol(root: Path) -> None:
     del root
-    state = agent_pipeline.AgentLoopState()
+    state = nathan_provider_protocol.ProviderToolLoopState(
+        loop_id="provider-probe"
+    )
     state.begin_model_round(0)
-    state.complete_model_round(1)
+    state.record_model_event("content")
+    state.record_model_event("reasoning")
+    state.record_model_event("tool")
+    calls = state.complete_model_round(
+        [
+            {
+                "function": {
+                    "name": "read_file",
+                    "arguments": {"path": "README.md"},
+                }
+            },
+            {
+                "id": "xai-probe",
+                "function": {
+                    "name": "search_files",
+                    "arguments": '{"query":"needle"}',
+                },
+            },
+            {
+                "id": "gemini-probe",
+                "thought_signature": "opaque",
+                "function": {
+                    "name": "git_diff",
+                    "arguments": {},
+                },
+            },
+        ]
+    )
+    if (
+        len({call["id"] for call in calls}) != 3
+        or calls[1]["function"]["arguments"]
+        != {"query": "needle"}
+        or calls[2].get("thought_signature") != "opaque"
+    ):
+        raise AgentRuntimeBenchmarkError(
+            "provider fixtures did not normalize canonically"
+        )
     state.begin_tool_batch()
-    state.record_tool_result()
+    for call in calls:
+        state.record_tool_dispatch(
+            str(call["id"]),
+            mutating=False,
+        )
+        state.record_tool_result(str(call["id"]))
     _expect_exception(
-        agent_pipeline.AgentLoopProtocolError,
-        state.record_tool_result,
+        nathan_provider_protocol.ProviderToolProtocolError,
+        lambda: state.record_tool_result(str(calls[0]["id"])),
     )
     state.finish_tool_batch()
     state.begin_model_round(1)
-    state.complete_model_round(0)
+    state.complete_model_round([])
     state.finish_without_tools()
+    unsafe = nathan_provider_protocol.ProviderToolLoopState(
+        loop_id="fallback-probe"
+    )
+    unsafe.begin_model_round(0)
+    mutation_calls = unsafe.complete_model_round(
+        [
+            {
+                "id": "mutation-probe",
+                "function": {
+                    "name": "write_file",
+                    "arguments": {},
+                },
+            }
+        ]
+    )
+    unsafe.begin_tool_batch()
+    unsafe.record_tool_dispatch(
+        str(mutation_calls[0]["id"]),
+        mutating=True,
+    )
+    unsafe.interrupt("connection lost")
+    _expect_exception(
+        nathan_provider_protocol.ProviderToolProtocolError,
+        unsafe.assert_provider_fallback_safe,
+    )
 
 
 def _probe_output_verifier(root: Path) -> None:
@@ -690,6 +1079,60 @@ def _probe_output_verifier(root: Path) -> None:
     if not agent_pipeline._block_output_is_verified(block):
         raise AgentRuntimeBenchmarkError(
             "valid structured output failed verification"
+        )
+    unverified = agent_blocks.AgentBlock(
+        role="implement",
+        prompt="implement",
+        requires_change=True,
+        status="partial",
+        successful_writes=["runtime.py"],
+        verification_warning="Git unavailable",
+    )
+    final = agent_blocks.AgentBlock(
+        role="final",
+        prompt="final",
+        status="complete",
+        output="## Block Output\nImplemented the runtime change.",
+    )
+    if agent_pipeline._final_output_claims_are_grounded(
+        final,
+        [unverified],
+    ):
+        raise AgentRuntimeBenchmarkError(
+            "unverified completion claim bypassed grounding"
+        )
+
+
+def _probe_verifier_first_write_completion(root: Path) -> None:
+    del root
+    unavailable = git_evidence.GitSnapshot(
+        False,
+        "not a Git repository",
+        None,
+        "",
+        "",
+        (),
+    )
+    block = agent_blocks.AgentBlock(
+        role="implement",
+        prompt="implement",
+        requires_change=True,
+        status="complete",
+        output="## Block Output\nImplemented.",
+        successful_writes=["runtime.py"],
+    )
+    agent_pipeline.enforce_required_change_contract(
+        block,
+        unavailable,
+        unavailable,
+    )
+    if (
+        block.status != "partial"
+        or block.status_code != "verification_unavailable"
+        or "UNVERIFIED" not in block.output
+    ):
+        raise AgentRuntimeBenchmarkError(
+            "recorded write bypassed final-state verification"
         )
 
 
@@ -730,6 +1173,10 @@ PROBES: tuple[
     ),
     ("balanced_provider_tool_protocol", _probe_provider_tool_protocol),
     ("structured_output_verifier", _probe_output_verifier),
+    (
+        "verifier_first_write_completion",
+        _probe_verifier_first_write_completion,
+    ),
     ("multi_signal_risk_routing", _probe_multi_signal_routing),
 )
 
@@ -778,6 +1225,7 @@ def run_benchmark(
     contract_repetitions: int = 101,
     context_repetitions: int = 101,
     checkpoint_repetitions: int = 31,
+    workload_repetitions: int = 31,
     warmups: int = 5,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
@@ -787,6 +1235,7 @@ def run_benchmark(
         ("contract_repetitions", contract_repetitions),
         ("context_repetitions", context_repetitions),
         ("checkpoint_repetitions", checkpoint_repetitions),
+        ("workload_repetitions", workload_repetitions),
     ):
         if (
             isinstance(value, bool)
@@ -837,11 +1286,106 @@ def run_benchmark(
             repetitions=checkpoint_repetitions,
             warmups=warmups,
         )
+        workload_rows = [
+            _frozen_agent_workload(
+                root,
+                index=100_000 + index,
+            )
+            for index in range(
+                warmups + workload_repetitions
+            )
+        ][warmups:]
 
     performance = {
         "contract_compile": contract_latency,
         "context_broker": context_latency,
         "checkpoint_resume": checkpoint_latency,
+        "agent_workload_ttfa": _latency_summary(
+            [float(row["ttfa_ms"]) for row in workload_rows]
+        ),
+        "agent_workload_total": _latency_summary(
+            [float(row["total_ms"]) for row in workload_rows]
+        ),
+    }
+    workload_count = len(workload_rows)
+    verifier_passed = sum(
+        int(row["verifier_passed"])
+        for row in workload_rows
+    )
+    verifier_total = sum(
+        int(row["verifier_total"])
+        for row in workload_rows
+    )
+    effectiveness = {
+        "runs": workload_count,
+        "task_pass_rate": (
+            sum(row["task_passed"] is True for row in workload_rows)
+            / workload_count
+        ),
+        "verifier_pass_rate": (
+            verifier_passed / verifier_total
+        ),
+        "policy_escapes": sum(
+            int(row["policy_escapes"])
+            for row in workload_rows
+        ),
+        "unverified_completions": sum(
+            int(row["unverified_completions"])
+            for row in workload_rows
+        ),
+        "duplicate_mutations": sum(
+            int(row["duplicate_mutations"])
+            for row in workload_rows
+        ),
+        "crash_resume_rate": (
+            sum(
+                row["crash_resume_passed"] is True
+                for row in workload_rows
+            )
+            / workload_count
+        ),
+        "protocol_correctness_rate": (
+            sum(
+                row["protocol_correct"] is True
+                for row in workload_rows
+            )
+            / workload_count
+        ),
+        "context_usefulness_rate": (
+            sum(
+                row["context_useful"] is True
+                for row in workload_rows
+            )
+            / workload_count
+        ),
+        "context_token_utilization": {
+            "p50": round(
+                statistics.median(
+                    float(row["context_utilization"])
+                    for row in workload_rows
+                ),
+                9,
+            ),
+            "p95": round(
+                _percentile(
+                    [
+                        float(row["context_utilization"])
+                        for row in workload_rows
+                    ],
+                    0.95,
+                ),
+                9,
+            ),
+            "tokens_used": sum(
+                int(row["context_tokens_used"])
+                for row in workload_rows
+            ),
+            "tokens_available": sum(
+                int(row["context_tokens_max"])
+                for row in workload_rows
+            ),
+        },
+        "workloads": workload_rows,
     }
     passed = sum(row["passed"] is True for row in probes)
     correctness_rate = passed / len(probes)
@@ -850,7 +1394,57 @@ def run_benchmark(
             "threshold": 1.0,
             "observed": correctness_rate,
             "passed": correctness_rate == 1.0,
-        }
+        },
+        "task_pass_rate": {
+            "threshold": 1.0,
+            "observed": effectiveness["task_pass_rate"],
+            "passed": effectiveness["task_pass_rate"] == 1.0,
+        },
+        "verifier_pass_rate": {
+            "threshold": 1.0,
+            "observed": effectiveness["verifier_pass_rate"],
+            "passed": effectiveness["verifier_pass_rate"] == 1.0,
+        },
+        "policy_escapes": {
+            "threshold": 0,
+            "observed": effectiveness["policy_escapes"],
+            "passed": effectiveness["policy_escapes"] == 0,
+        },
+        "unverified_completions": {
+            "threshold": 0,
+            "observed": effectiveness["unverified_completions"],
+            "passed": effectiveness["unverified_completions"] == 0,
+        },
+        "duplicate_mutations": {
+            "threshold": 0,
+            "observed": effectiveness["duplicate_mutations"],
+            "passed": effectiveness["duplicate_mutations"] == 0,
+        },
+        "crash_resume_rate": {
+            "threshold": 1.0,
+            "observed": effectiveness["crash_resume_rate"],
+            "passed": effectiveness["crash_resume_rate"] == 1.0,
+        },
+        "protocol_correctness_rate": {
+            "threshold": 1.0,
+            "observed": effectiveness[
+                "protocol_correctness_rate"
+            ],
+            "passed": effectiveness[
+                "protocol_correctness_rate"
+            ]
+            == 1.0,
+        },
+        "context_usefulness_rate": {
+            "threshold": 1.0,
+            "observed": effectiveness[
+                "context_usefulness_rate"
+            ],
+            "passed": effectiveness[
+                "context_usefulness_rate"
+            ]
+            == 1.0,
+        },
     }
     for metric, threshold in LATENCY_THRESHOLDS_MS.items():
         observed = float(performance[metric]["p95_ms"])
@@ -885,6 +1479,7 @@ def run_benchmark(
             "contract_repetitions": contract_repetitions,
             "context_repetitions": context_repetitions,
             "checkpoint_repetitions": checkpoint_repetitions,
+            "workload_repetitions": workload_repetitions,
         },
         "correctness": {
             "passed": passed,
@@ -893,19 +1488,21 @@ def run_benchmark(
             "probes": probes,
         },
         "performance": performance,
+        "effectiveness": effectiveness,
         "gates": gates,
         "claim": (
             "The source-bound Algo Agent runtime candidate passed every "
-            "deterministic approval, contract, context, protocol, checkpoint, "
-            "tamper, resume, routing, and verifier probe while remaining "
-            "within the stated local p95 microbenchmark ceilings."
+            "deterministic hardening probe and every frozen end-to-end Agent "
+            "workload with no policy escape, unverified completion, or "
+            "duplicate mutation, while meeting its stated local TTFA and "
+            "total-latency ceilings."
         ),
         "limitations": (
-            "This is a local model-free runtime microbenchmark. It does not "
-            "measure model intelligence, provider latency, end-to-end task "
-            "quality, production crash or power-loss behavior, or superiority "
-            "over OpenClaw, Hermes, or another harness. Latency has not been "
-            "independently reproduced."
+            "This is a local model-free runtime benchmark with deterministic "
+            "provider and task fixtures. It measures harness coordination, "
+            "not model intelligence, live provider latency, production "
+            "power-loss behavior, or superiority over OpenClaw, Hermes, or "
+            "another harness. Latency has not been independently reproduced."
         ),
     }
     report["report_sha256"] = _digest(report)
@@ -931,6 +1528,7 @@ def validate_report(
         "protocol",
         "correctness",
         "performance",
+        "effectiveness",
         "gates",
         "claim",
         "limitations",
@@ -972,6 +1570,7 @@ def validate_report(
                 "contract_repetitions",
                 "context_repetitions",
                 "checkpoint_repetitions",
+                "workload_repetitions",
             )
         )
     ):
@@ -1041,17 +1640,291 @@ def validate_report(
             raise AgentRuntimeBenchmarkError(
                 f"runtime benchmark latency is invalid: {metric}"
             )
+    effectiveness = report["effectiveness"]
+    expected_effectiveness_fields = {
+        "runs",
+        "task_pass_rate",
+        "verifier_pass_rate",
+        "policy_escapes",
+        "unverified_completions",
+        "duplicate_mutations",
+        "crash_resume_rate",
+        "protocol_correctness_rate",
+        "context_usefulness_rate",
+        "context_token_utilization",
+        "workloads",
+    }
+    if (
+        not isinstance(effectiveness, dict)
+        or set(effectiveness) != expected_effectiveness_fields
+    ):
+        raise AgentRuntimeBenchmarkError(
+            "runtime benchmark effectiveness fields are invalid"
+        )
+    workloads = effectiveness["workloads"]
+    expected_workload_fields = {
+        "task_passed",
+        "verifier_passed",
+        "verifier_total",
+        "policy_escapes",
+        "unverified_completions",
+        "duplicate_mutations",
+        "crash_resume_passed",
+        "protocol_correct",
+        "context_useful",
+        "context_tokens_used",
+        "context_tokens_max",
+        "context_utilization",
+        "ttfa_ms",
+        "total_ms",
+    }
+    if (
+        not isinstance(workloads, list)
+        or len(workloads) != protocol["workload_repetitions"]
+    ):
+        raise AgentRuntimeBenchmarkError(
+            "runtime benchmark workload count is invalid"
+        )
+    for row in workloads:
+        if (
+            not isinstance(row, dict)
+            or set(row) != expected_workload_fields
+            or any(
+                type(row[field]) is not bool
+                for field in (
+                    "task_passed",
+                    "crash_resume_passed",
+                    "protocol_correct",
+                    "context_useful",
+                )
+            )
+            or any(
+                isinstance(row[field], bool)
+                or not isinstance(row[field], int)
+                or row[field] < 0
+                for field in (
+                    "verifier_passed",
+                    "verifier_total",
+                    "policy_escapes",
+                    "unverified_completions",
+                    "duplicate_mutations",
+                    "context_tokens_used",
+                    "context_tokens_max",
+                )
+            )
+            or row["verifier_total"] < 1
+            or row["verifier_passed"] > row["verifier_total"]
+            or row["context_tokens_max"] < 1
+            or row["context_tokens_used"]
+            > row["context_tokens_max"]
+            or any(
+                isinstance(row[field], bool)
+                or not isinstance(row[field], (int, float))
+                or not math.isfinite(float(row[field]))
+                or float(row[field]) < 0
+                for field in (
+                    "context_utilization",
+                    "ttfa_ms",
+                    "total_ms",
+                )
+            )
+            or not 0
+            <= float(row["context_utilization"])
+            <= 1
+            or float(row["ttfa_ms"]) > float(row["total_ms"])
+            or float(row["context_utilization"])
+            != round(
+                row["context_tokens_used"]
+                / row["context_tokens_max"],
+                9,
+            )
+        ):
+            raise AgentRuntimeBenchmarkError(
+                "runtime benchmark workload row is invalid"
+            )
+    workload_count = len(workloads)
+    verifier_passed = sum(
+        int(row["verifier_passed"])
+        for row in workloads
+    )
+    verifier_total = sum(
+        int(row["verifier_total"])
+        for row in workloads
+    )
+    utilization_values = [
+        float(row["context_utilization"])
+        for row in workloads
+    ]
+    expected_utilization = {
+        "p50": round(
+            statistics.median(utilization_values),
+            9,
+        ),
+        "p95": round(
+            _percentile(utilization_values, 0.95),
+            9,
+        ),
+        "tokens_used": sum(
+            int(row["context_tokens_used"])
+            for row in workloads
+        ),
+        "tokens_available": sum(
+            int(row["context_tokens_max"])
+            for row in workloads
+        ),
+    }
+    expected_effectiveness = {
+        "runs": workload_count,
+        "task_pass_rate": (
+            sum(row["task_passed"] is True for row in workloads)
+            / workload_count
+        ),
+        "verifier_pass_rate": (
+            verifier_passed / verifier_total
+        ),
+        "policy_escapes": sum(
+            int(row["policy_escapes"])
+            for row in workloads
+        ),
+        "unverified_completions": sum(
+            int(row["unverified_completions"])
+            for row in workloads
+        ),
+        "duplicate_mutations": sum(
+            int(row["duplicate_mutations"])
+            for row in workloads
+        ),
+        "crash_resume_rate": (
+            sum(
+                row["crash_resume_passed"] is True
+                for row in workloads
+            )
+            / workload_count
+        ),
+        "protocol_correctness_rate": (
+            sum(
+                row["protocol_correct"] is True
+                for row in workloads
+            )
+            / workload_count
+        ),
+        "context_usefulness_rate": (
+            sum(
+                row["context_useful"] is True
+                for row in workloads
+            )
+            / workload_count
+        ),
+        "context_token_utilization": expected_utilization,
+        "workloads": workloads,
+    }
+    if effectiveness != expected_effectiveness:
+        raise AgentRuntimeBenchmarkError(
+            "runtime benchmark effectiveness aggregate is invalid"
+        )
+    if performance["agent_workload_ttfa"] != _latency_summary(
+        [float(row["ttfa_ms"]) for row in workloads]
+    ) or performance["agent_workload_total"] != _latency_summary(
+        [float(row["total_ms"]) for row in workloads]
+    ):
+        raise AgentRuntimeBenchmarkError(
+            "runtime benchmark workload latency aggregate is invalid"
+        )
     gates = report["gates"]
     expected_gate_names = {
         "correctness",
+        "task_pass_rate",
+        "verifier_pass_rate",
+        "policy_escapes",
+        "unverified_completions",
+        "duplicate_mutations",
+        "crash_resume_rate",
+        "protocol_correctness_rate",
+        "context_usefulness_rate",
         *(f"{metric}_p95_ms" for metric in LATENCY_THRESHOLDS_MS),
     }
     if not isinstance(gates, dict) or set(gates) != expected_gate_names:
         raise AgentRuntimeBenchmarkError(
             "runtime benchmark gates are invalid"
         )
+    task_pass_rate = cast(
+        float,
+        expected_effectiveness["task_pass_rate"],
+    )
+    verifier_pass_rate = cast(
+        float,
+        expected_effectiveness["verifier_pass_rate"],
+    )
+    policy_escape_count = cast(
+        int,
+        expected_effectiveness["policy_escapes"],
+    )
+    unverified_completion_count = cast(
+        int,
+        expected_effectiveness["unverified_completions"],
+    )
+    duplicate_mutation_count = cast(
+        int,
+        expected_effectiveness["duplicate_mutations"],
+    )
+    crash_resume_rate = cast(
+        float,
+        expected_effectiveness["crash_resume_rate"],
+    )
+    protocol_correctness_rate = cast(
+        float,
+        expected_effectiveness["protocol_correctness_rate"],
+    )
+    context_usefulness_rate = cast(
+        float,
+        expected_effectiveness["context_usefulness_rate"],
+    )
     expected_gates: dict[str, tuple[float, float, bool]] = {
-        "correctness": (1.0, recomputed_rate, recomputed_rate == 1.0)
+        "correctness": (
+            1.0,
+            recomputed_rate,
+            recomputed_rate == 1.0,
+        ),
+        "task_pass_rate": (
+            1.0,
+            task_pass_rate,
+            task_pass_rate == 1.0,
+        ),
+        "verifier_pass_rate": (
+            1.0,
+            verifier_pass_rate,
+            verifier_pass_rate == 1.0,
+        ),
+        "policy_escapes": (
+            0,
+            float(policy_escape_count),
+            policy_escape_count == 0,
+        ),
+        "unverified_completions": (
+            0,
+            float(unverified_completion_count),
+            unverified_completion_count == 0,
+        ),
+        "duplicate_mutations": (
+            0,
+            float(duplicate_mutation_count),
+            duplicate_mutation_count == 0,
+        ),
+        "crash_resume_rate": (
+            1.0,
+            crash_resume_rate,
+            crash_resume_rate == 1.0,
+        ),
+        "protocol_correctness_rate": (
+            1.0,
+            protocol_correctness_rate,
+            protocol_correctness_rate == 1.0,
+        ),
+        "context_usefulness_rate": (
+            1.0,
+            context_usefulness_rate,
+            context_usefulness_rate == 1.0,
+        ),
     }
     for metric, threshold in LATENCY_THRESHOLDS_MS.items():
         observed = float(performance[metric]["p95_ms"])

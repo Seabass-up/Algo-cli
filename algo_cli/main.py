@@ -44,6 +44,7 @@ from .config import (
     code_rag_consent_granted,
 )
 from . import agent_blocks  # noqa: F401 — tests patch main.agent_blocks
+from . import agent_context
 from . import git_evidence  # noqa: F401 — tests patch main.git_evidence
 from . import harness
 from . import identity
@@ -51,6 +52,7 @@ from . import code_rag
 from . import execution_guardrails
 from . import model_info as _model_info_module
 from . import model_profile
+from . import nathan_provider_protocol
 from . import julia_memory_runtime as memory_runtime
 from . import reasoning_bridge
 from . import reconciliation
@@ -92,7 +94,7 @@ from .chat_protocol import (
     collapse_tool_history_for_gemini,
     get_attr,
     normalize_tool_call,
-    serialize_tool_call,
+    serialize_tool_call,  # noqa: F401 - compatibility helper
 )
 from .model_routing import (
     effective_runtime_host,  # noqa: F401 — re-exported for tests and oneshot callers
@@ -2630,6 +2632,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
     persisted_user_message = user_message
     context_query_message = user_message
     optional_context_blocks: list[OptionalContextBlock] = []
+    broker_omitted_contexts: list[str] = []
     reconciliation_guidance = reconciliation.guidance_for_prompt(user_message)
     if reconciliation_guidance:
         optional_context_blocks.append(
@@ -2779,6 +2782,149 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
         plan_block = reasoning_bridge.maybe_reasoning_plan(cfg, client, persisted_user_message)
         if plan_block:
             optional_context_blocks.append(OptionalContextBlock("reasoning", "", plan_block))
+    context_policies: dict[
+        str,
+        tuple[int, str, str, str],
+    ] = {
+        "reconciliation": (
+            120,
+            "runtime_reconciliation",
+            "session",
+            "reconciliation-runtime",
+        ),
+        "memory": (
+            110,
+            "governed_memory",
+            "workspace",
+            "julia-memory-runtime",
+        ),
+        "code": (
+            100,
+            "code_retrieval",
+            "workspace",
+            "code-rag-index",
+        ),
+        "harness": (
+            90,
+            "harness_retrieval",
+            "workspace",
+            "harness-hybrid-index",
+        ),
+        "index-compute-lab": (
+            80,
+            "knowledge_graph",
+            "workspace",
+            "index-compute-lab",
+        ),
+        "reasoning": (
+            70,
+            "reasoning_plan",
+            "session",
+            "reasoning-preflight",
+        ),
+        "intuition": (
+            50,
+            "heuristic_memory",
+            "workspace",
+            "intuition-runtime",
+        ),
+    }
+    context_titles = {
+        "intuition": "Heuristic Intuition Memory",
+        "reasoning": "Reasoning Preflight",
+    }
+    broker_sources: list[agent_context.AgentContextSource] = []
+    for index, optional_block in enumerate(optional_context_blocks):
+        (
+            priority,
+            trust,
+            scope,
+            provenance,
+        ) = context_policies.get(
+            optional_block.name,
+            (
+                40,
+                "harness_retrieval",
+                "workspace",
+                "runtime-context",
+            ),
+        )
+        broker_sources.append(
+            agent_context.AgentContextSource(
+                name=optional_block.name,
+                title=(
+                    optional_block.title
+                    or context_titles.get(
+                        optional_block.name,
+                        optional_block.name.replace("-", " ").title(),
+                    )
+                ),
+                body=optional_block.body,
+                priority=priority,
+                trust=trust,
+                scope=scope,
+                freshness_rank=max(
+                    0,
+                    1_000 - index,
+                ),
+                provenance=provenance,
+                answerable=bool(optional_block.body.strip()),
+            )
+        )
+    try:
+        context_admission = (
+            agent_context.admit_agent_context_sources(
+                broker_sources,
+                allowed_scopes={
+                    "global",
+                    "workspace",
+                    "session",
+                },
+            )
+        )
+        optional_context_blocks = [
+            OptionalContextBlock(
+                source.name,
+                "",
+                source.render(),
+            )
+            for source in context_admission.sources
+        ]
+        broker_omitted_contexts = list(
+            context_admission.omitted_sources
+        )
+        cfg.context_state["context_broker"] = {
+            "schema_version": (
+                agent_context.AGENT_CONTEXT_SCHEMA_VERSION
+            ),
+            "admitted_sources": [
+                source.name
+                for source in context_admission.sources
+            ],
+            "omitted_sources": broker_omitted_contexts,
+            "source_metadata": [
+                item.payload()
+                for item in context_admission.source_metadata
+            ],
+        }
+    except agent_context.AgentContextError as exc:
+        logger.debug(
+            "Context broker rejected optional chat context: %s",
+            exc,
+        )
+        broker_omitted_contexts = [
+            block.name
+            for block in optional_context_blocks
+        ]
+        optional_context_blocks = []
+        cfg.context_state["context_broker"] = {
+            "schema_version": (
+                agent_context.AGENT_CONTEXT_SCHEMA_VERSION
+            ),
+            "admitted_sources": [],
+            "omitted_sources": broker_omitted_contexts,
+            "error": type(exc).__name__,
+        }
     cfg.messages.append({"role": "user", "content": persisted_user_message})
     max_iterations = max(1, min(128, int(cfg.max_tool_iterations)))
     # Model-aware params: adapt num_ctx/temperature/reflection cadence to the
@@ -2811,6 +2957,22 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
     completion_nudged = False
     next_round_trigger = "initial_plan"
     tool_ms_since_previous_round = 0.0
+    loop_state = nathan_provider_protocol.ProviderToolLoopState()
+
+    def record_protocol_dispatch(
+        name: str,
+        args: dict[str, Any],
+        tool_call_id: str | None,
+    ) -> None:
+        try:
+            action = resolve_action(name, args, cwd=cfg.cwd)
+            mutating = action.effect_class is not EffectClass.OBSERVE
+        except Exception:
+            mutating = True
+        loop_state.record_tool_dispatch(
+            tool_call_id,
+            mutating=mutating,
+        )
 
     def _round_context_sources(
         request_messages: list[dict[str, Any]],
@@ -2906,6 +3068,14 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
             base_used_tokens=adjusted_base_used,
             runtime_cap=runtime_cap,
             model_info=_active_model_info,
+        )
+        omitted = list(
+            dict.fromkeys(
+                [
+                    *broker_omitted_contexts,
+                    *omitted,
+                ]
+            )
         )
         return fitted, adjusted_base_used + optional_used, included, omitted
 
@@ -3058,6 +3228,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
             provider_metrics: dict[str, Any] = {}
             context_build_ms = (time.perf_counter() - context_build_started) * 1000
             model_started = time.perf_counter()
+            loop_state.begin_model_round(_)
             try:
                 stream = client.chat(
                     model=cfg.model,
@@ -3092,15 +3263,18 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                         record_usage(
                             prompt_tokens=get_attr(chunk, "prompt_eval_count", None),
                             completion_tokens=get_attr(chunk, "eval_count", None),
-                        )
+                    )
                     message = get_attr(chunk, "message", {})
                     thinking = get_attr(message, "thinking", "")
                     content = get_attr(message, "content", "")
                     calls = get_attr(message, "tool_calls", None)
-                    if thinking and cfg.show_thinking:
-                        show_thinking_text(thinking)
-                        thinking_text += thinking
+                    if thinking:
+                        loop_state.record_model_event("reasoning")
+                        if cfg.show_thinking:
+                            show_thinking_text(thinking)
+                            thinking_text += thinking
                     if content:
+                        loop_state.record_model_event("content")
                         finish_thinking_block()
                         if not completion_pending_before_response:
                             if not stream_started:
@@ -3109,6 +3283,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                             show_stream_text(content)
                         content_text += content
                     if calls:
+                        loop_state.record_model_event("tool")
                         tool_calls.extend(calls)
                     # Forward-compat: capture any message-level thought_signature
                     # for round-tripping when the SDK starts exposing it.
@@ -3176,24 +3351,31 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
 
             if json_sink() is None:
                 console.print()
-            if stream_error is not None and not (content_text or thinking_text):
-                raise stream_error
-            terminal_answer = _terminal_answer_from_tool_calls(tool_calls)
-            if terminal_answer is not None:
-                tool_calls = []
-                if terminal_answer:
-                    content_text = terminal_answer
-                    if not completion_pending_before_response:
-                        start_streaming_response()
-                        show_stream_text(terminal_answer)
-                        finish_streaming_response()
+            serialized_calls: list[dict[str, Any]] = []
+            if stream_error is not None:
+                loop_state.interrupt(
+                    str(stream_error),
+                    timed_out=isinstance(stream_error, TimeoutError),
+                )
+                if not (content_text or thinking_text):
+                    raise stream_error
+            else:
+                terminal_answer = _terminal_answer_from_tool_calls(tool_calls)
+                if terminal_answer is not None:
+                    tool_calls = []
+                    if terminal_answer:
+                        content_text = terminal_answer
+                        if not completion_pending_before_response:
+                            start_streaming_response()
+                            show_stream_text(terminal_answer)
+                            finish_streaming_response()
+                serialized_calls = loop_state.complete_model_round(tool_calls)
             assistant: dict[str, Any] = {"role": "assistant"}
             if content_text:
                 assistant["content"] = content_text
                 final_content = content_text
             if thinking_text:
                 assistant["thinking"] = thinking_text
-            serialized_calls = [serialize_tool_call(call) for call in tool_calls]
             if tool_calls and stream_error is None:
                 assistant["tool_calls"] = serialized_calls
             if message_signature:
@@ -3208,11 +3390,15 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 break
 
             if finalization_turn and tool_calls:
+                loop_state.cancel(
+                    "finalization turn attempted a tool call"
+                )
                 final_content = ""
                 show_error("Finalization turn attempted an additional tool call; completion withheld.")
                 break
 
             if not tool_calls:
+                loop_state.finish_without_tools()
                 completion = execution_guardrails.completion_decision()
                 if completion.allowed:
                     turn_completed_normally = True
@@ -3260,7 +3446,16 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 (normalized, str(serialized.get("id") or "") or None)
                 for normalized, serialized in zip(normalized_calls, serialized_calls)
             ]
-            batch_ceiling_codes = batch_policy_ceiling_codes(batch, cfg)
+            loop_state.begin_tool_batch()
+            policy_ceiling_codes = batch_policy_ceiling_codes(batch, cfg)
+            state_ceiling_codes = loop_state.tool_batch_ceiling_codes()
+            batch_ceiling_codes = tuple(
+                state_code or policy_code
+                for state_code, policy_code in zip(
+                    state_ceiling_codes,
+                    policy_ceiling_codes,
+                )
+            )
             dependencies = _main_dispatch_dependencies()
             next_round_trigger = "tool_result_requires_interpretation"
 
@@ -3283,6 +3478,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                     call_id=tool_call_id,
                 )
                 cfg.messages.append(dispatched.message)
+                loop_state.record_tool_result(tool_call_id)
                 run_tool_calls.append(
                     {
                         "name": name,
@@ -3305,6 +3501,11 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                     future_to_index = {}
                     for queue_position, batch_index in enumerate(dispatch_order):
                         (name, args), tool_call_id = batch[batch_index]
+                        record_protocol_dispatch(
+                            name,
+                            args,
+                            tool_call_id,
+                        )
                         context = copy_context()
                         future = pool.submit(
                             context.run,
@@ -3329,6 +3530,11 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
             else:
                 for index, ((name, args), tool_call_id) in enumerate(batch):
                     show_tool_call(name, args, call_id=tool_call_id)
+                    record_protocol_dispatch(
+                        name,
+                        args,
+                        tool_call_id,
+                    )
                     dispatched = dispatch_action(
                         name,
                         args,
@@ -3339,6 +3545,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                         policy_ceiling_code=batch_ceiling_codes[index],
                     )
                     consume_dispatch(name, args, tool_call_id, dispatched)
+            loop_state.finish_tool_batch()
 
             if tool_calls_since_reflection >= reflection_interval:
                 if json_sink() is None:

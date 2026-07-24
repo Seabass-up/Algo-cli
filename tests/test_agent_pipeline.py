@@ -15,6 +15,7 @@ from algo_cli import (
     git_evidence,
     harness,
     main,
+    nathan_provider_protocol,
     run_contract,
     task_router,
     tool_runtime,
@@ -54,18 +55,192 @@ def test_agent_loop_state_requires_balanced_provider_tool_results():
     state.begin_model_round(0)
     state.complete_model_round(2)
     state.begin_tool_batch()
-    state.record_tool_result()
+    first, second = state.expected_call_ids
+    state.record_tool_dispatch(first, mutating=False)
+    state.record_tool_result(first)
     with pytest.raises(
         agent_pipeline.AgentLoopProtocolError,
         match="missing balanced",
     ):
         state.finish_tool_batch()
-    state.record_tool_result()
+    state.record_tool_dispatch(second, mutating=False)
+    state.record_tool_result(second)
     state.finish_tool_batch()
 
     assert state.phase == "ready"
     with pytest.raises(agent_pipeline.AgentLoopProtocolError):
         state.record_tool_result()
+
+
+def test_provider_protocol_normalizes_provider_shapes_and_balances_results():
+    state = nathan_provider_protocol.ProviderToolLoopState(
+        loop_id="provider-fixture"
+    )
+    state.begin_model_round(0)
+    state.record_model_event("content")
+    state.record_model_event("reasoning")
+    state.record_model_event("tool")
+    calls = state.complete_model_round(
+        [
+            {
+                "function": {
+                    "name": "read_file",
+                    "arguments": {"path": "ollama.txt"},
+                }
+            },
+            {
+                "id": "xai-call",
+                "type": "function",
+                "function": {
+                    "name": "search_files",
+                    "arguments": '{"query": "needle"}',
+                },
+            },
+            {
+                "id": "gemini-call",
+                "thought_signature": "opaque-signature",
+                "function": {
+                    "name": "git_diff",
+                    "arguments": {},
+                },
+            },
+        ]
+    )
+
+    assert calls[0]["id"].startswith("algo-provider-fixture-")
+    assert calls[1]["function"]["arguments"] == {"query": "needle"}
+    assert calls[2]["thought_signature"] == "opaque-signature"
+    assert len({call["id"] for call in calls}) == 3
+    assert state.model_event_counts == {
+        "content": 1,
+        "reasoning": 1,
+        "tool": 1,
+    }
+
+    state.begin_tool_batch()
+    for call in calls:
+        state.record_tool_dispatch(call["id"], mutating=False)
+        state.record_tool_result(call["id"])
+    state.finish_tool_batch()
+
+    assert state.phase == "ready"
+
+
+def test_provider_protocol_canonicalizes_duplicate_ids_and_quarantines_batch():
+    state = nathan_provider_protocol.ProviderToolLoopState(
+        loop_id="duplicate-fixture"
+    )
+    state.begin_model_round(0)
+    calls = state.complete_model_round(
+        [
+            {
+                "id": "duplicate",
+                "function": {"name": "read_file", "arguments": {}},
+            },
+            {
+                "id": "duplicate",
+                "function": {"name": "read_file", "arguments": {}},
+            },
+        ]
+    )
+
+    assert calls[0]["id"] != calls[1]["id"]
+    assert state.protocol_violations == (
+        "duplicate_or_reused_call_id",
+    )
+    assert state.tool_batch_ceiling_codes() == (
+        "provider_tool_protocol",
+        "provider_tool_protocol",
+    )
+
+
+def test_provider_protocol_blocks_fallback_after_uncertain_mutation():
+    state = nathan_provider_protocol.ProviderToolLoopState(
+        loop_id="fallback-fixture"
+    )
+    state.begin_model_round(0)
+    calls = state.complete_model_round(
+        [
+            {
+                "id": "mutation",
+                "function": {"name": "write_file", "arguments": {}},
+            }
+        ]
+    )
+    state.begin_tool_batch()
+    state.record_tool_dispatch(calls[0]["id"], mutating=True)
+    state.interrupt("provider disconnected")
+
+    assert state.uncertain_mutation_call_ids == ("mutation",)
+    with pytest.raises(
+        nathan_provider_protocol.ProviderToolProtocolError,
+        match="uncertain mutation",
+    ):
+        state.assert_provider_fallback_safe()
+
+
+def test_provider_protocol_allows_fallback_before_any_tool_dispatch():
+    state = nathan_provider_protocol.ProviderToolLoopState(
+        loop_id="safe-fallback-fixture"
+    )
+    state.begin_model_round(0)
+    state.record_model_event("content")
+    state.interrupt("provider timed out", timed_out=True)
+
+    state.assert_provider_fallback_safe()
+    assert state.phase == "timed_out"
+
+
+def test_final_claim_grounding_rejects_unverified_mutation_claim() -> None:
+    implement = agent_blocks.AgentBlock(
+        role="implement",
+        prompt="implement",
+        requires_change=True,
+        status="partial",
+        status_code="verification_unavailable",
+        output="## Block Output\nUnverified write.",
+        successful_writes=["main.py"],
+        verification_warning="Git unavailable",
+    )
+    final = agent_blocks.AgentBlock(
+        role="final",
+        prompt="final",
+        status="complete",
+        output="## Block Output\nImplemented the requested change.",
+    )
+
+    assert (
+        agent_pipeline._final_output_claims_are_grounded(
+            final,
+            [implement],
+        )
+        is False
+    )
+
+
+def test_final_claim_grounding_accepts_verified_mutation_claim() -> None:
+    implement = agent_blocks.AgentBlock(
+        role="implement",
+        prompt="implement",
+        requires_change=True,
+        status="complete",
+        output="## Block Output\nVerified implementation.",
+        successful_writes=["main.py"],
+        git_evidence=(
+            "Verified Git state change introduced during this block."
+        ),
+    )
+    final = agent_blocks.AgentBlock(
+        role="final",
+        prompt="final",
+        status="complete",
+        output="## Block Output\nImplemented the requested change.",
+    )
+
+    assert agent_pipeline._final_output_claims_are_grounded(
+        final,
+        [implement],
+    )
 
 
 def _quiet_display(monkeypatch):
@@ -1185,7 +1360,7 @@ def test_required_change_rejects_write_that_leaves_no_final_delta():
     assert "No verified code change was produced" in block.output
 
 
-def test_required_change_allows_recorded_write_when_git_is_unavailable_with_warning():
+def test_required_change_rejects_recorded_write_when_git_is_unavailable():
     snapshot = git_evidence.GitSnapshot(False, "not a Git repository", None, "", "", ())
     block = agent_blocks.AgentBlock(
         role="implement",
@@ -1198,15 +1373,14 @@ def test_required_change_allows_recorded_write_when_git_is_unavailable_with_warn
 
     main.enforce_required_change_contract(block, snapshot, snapshot)
 
-    assert block.status == "complete"
-    assert block.output == "Implemented."
-    assert "Verification Warning" not in block.output
-    assert "manually confirm" in block.verification_warning
+    assert block.status == "partial"
+    assert block.status_code == "verification_unavailable"
+    assert "UNVERIFIED" in block.output
+    assert "final-state evidence is unavailable" in block.verification_warning
     assert "manual" not in block.git_evidence.lower()
     context = agent_blocks.pipeline_context("Fix it", [block])
     assert "Implemented." in context
-    assert "## Verification\nGit verification was unavailable." in context
-    assert "manually confirm" in context
+    assert "## Verification\nRequired change not verified" in context
 
 
 def test_required_change_rejects_no_write_when_git_is_unavailable():

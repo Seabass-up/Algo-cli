@@ -369,21 +369,27 @@ def _validate_event_payload(
                 )
             return
         if kind == "context_bound":
+            context_schema_version = payload.get(
+                "context_schema_version"
+            )
+            expected_context_fields = {
+                "context_schema_version",
+                "context_digest",
+                "max_tokens",
+                "base_tokens",
+                "used_tokens",
+                "included_sources",
+                "truncated_sources",
+                "omitted_sources",
+            }
+            if context_schema_version == 2:
+                expected_context_fields.add("source_metadata")
             _exact_payload(
                 payload,
-                {
-                    "context_schema_version",
-                    "context_digest",
-                    "max_tokens",
-                    "base_tokens",
-                    "used_tokens",
-                    "included_sources",
-                    "truncated_sources",
-                    "omitted_sources",
-                },
+                expected_context_fields,
                 kind,
             )
-            if payload["context_schema_version"] != 1:
+            if context_schema_version not in {1, 2}:
                 raise AgentRunJournalError(
                     "context receipt schema is unsupported"
                 )
@@ -439,6 +445,95 @@ def _validate_event_payload(
                 raise AgentRunJournalError(
                     "truncated context sources must be included"
                 )
+            if context_schema_version == 2:
+                source_metadata = payload["source_metadata"]
+                if not isinstance(source_metadata, list):
+                    raise AgentRunJournalError(
+                        "context source metadata must be a list"
+                    )
+                metadata_names: set[str] = set()
+                admitted_names: set[str] = set()
+                rejected_names: set[str] = set()
+                for item in source_metadata:
+                    expected_metadata_fields = {
+                        "name",
+                        "scope",
+                        "trust",
+                        "freshness_rank",
+                        "provenance_sha256",
+                        "admitted",
+                        "reason",
+                    }
+                    if (
+                        not isinstance(item, dict)
+                        or set(item) != expected_metadata_fields
+                    ):
+                        raise AgentRunJournalError(
+                            "context source metadata fields are invalid"
+                        )
+                    name = _safe_identifier(
+                        item["name"],
+                        "context metadata source",
+                    )
+                    if name in metadata_names:
+                        raise AgentRunJournalError(
+                            "context source metadata contains duplicates"
+                        )
+                    metadata_names.add(name)
+                    scope = _safe_identifier(
+                        item["scope"],
+                        "context scope",
+                    )
+                    if scope not in {"global", "workspace", "session"}:
+                        raise AgentRunJournalError(
+                            "context scope is invalid"
+                        )
+                    _safe_identifier(
+                        item["trust"],
+                        "context trust",
+                    )
+                    freshness = item["freshness_rank"]
+                    if (
+                        isinstance(freshness, bool)
+                        or not isinstance(freshness, int)
+                        or not 0 <= freshness <= 1_000_000
+                    ):
+                        raise AgentRunJournalError(
+                            "context freshness rank is invalid"
+                        )
+                    _digest(
+                        item["provenance_sha256"],
+                        "context provenance digest",
+                    )
+                    if type(item["admitted"]) is not bool:
+                        raise AgentRunJournalError(
+                            "context admission flag is invalid"
+                        )
+                    reason = _safe_identifier(
+                        item["reason"],
+                        "context rejection reason",
+                        allow_empty=True,
+                    )
+                    if item["admitted"]:
+                        if reason:
+                            raise AgentRunJournalError(
+                                "admitted context has a rejection reason"
+                            )
+                        admitted_names.add(name)
+                    else:
+                        if not reason:
+                            raise AgentRunJournalError(
+                                "rejected context lacks a reason"
+                            )
+                        rejected_names.add(name)
+                if admitted_names != set(payload["included_sources"]):
+                    raise AgentRunJournalError(
+                        "context admission metadata differs from included sources"
+                    )
+                if rejected_names != set(payload["omitted_sources"]):
+                    raise AgentRunJournalError(
+                        "context rejection metadata differs from omitted sources"
+                    )
             return
         if kind == "block_started":
             _exact_payload(payload, {"ordinal", "role"}, kind)
@@ -1204,6 +1299,11 @@ class AgentRunJournal:
         self,
         receipt: Mapping[str, Any],
     ) -> AgentRunEvent:
+        if not isinstance(receipt, Mapping):
+            raise AgentRunJournalError(
+                "Agent context receipt fields do not match schema"
+            )
+        schema_version = receipt.get("schema_version")
         expected = {
             "schema_version",
             "max_tokens",
@@ -1214,28 +1314,36 @@ class AgentRunJournal:
             "omitted_sources",
             "context_digest",
         }
-        if not isinstance(receipt, Mapping) or set(receipt) != expected:
+        if schema_version == 2:
+            expected.add("source_metadata")
+        if set(receipt) != expected:
             raise AgentRunJournalError(
                 "Agent context receipt fields do not match schema"
             )
+        payload = {
+            "context_schema_version": schema_version,
+            "context_digest": receipt["context_digest"],
+            "max_tokens": receipt["max_tokens"],
+            "base_tokens": receipt["base_tokens"],
+            "used_tokens": receipt["used_tokens"],
+            "included_sources": list(
+                receipt["included_sources"]
+            ),
+            "truncated_sources": list(
+                receipt["truncated_sources"]
+            ),
+            "omitted_sources": list(
+                receipt["omitted_sources"]
+            ),
+        }
+        if schema_version == 2:
+            payload["source_metadata"] = [
+                dict(item)
+                for item in receipt["source_metadata"]
+            ]
         return self._append(
             "context_bound",
-            {
-                "context_schema_version": receipt["schema_version"],
-                "context_digest": receipt["context_digest"],
-                "max_tokens": receipt["max_tokens"],
-                "base_tokens": receipt["base_tokens"],
-                "used_tokens": receipt["used_tokens"],
-                "included_sources": list(
-                    receipt["included_sources"]
-                ),
-                "truncated_sources": list(
-                    receipt["truncated_sources"]
-                ),
-                "omitted_sources": list(
-                    receipt["omitted_sources"]
-                ),
-            },
+            payload,
         )
 
     def model_round_started(

@@ -32,6 +32,7 @@ def report() -> dict[str, object]:
         contract_repetitions=3,
         context_repetitions=3,
         checkpoint_repetitions=3,
+        workload_repetitions=3,
         warmups=0,
         generated_at="2026-07-23T12:00:00Z",
     )
@@ -88,6 +89,20 @@ def test_runtime_benchmark_passes_every_source_bound_probe(
         benchmark.PROBES
     )
     assert report["correctness"]["pass_rate"] == 1.0
+    assert report["effectiveness"]["task_pass_rate"] == 1.0
+    assert report["effectiveness"]["verifier_pass_rate"] == 1.0
+    assert report["effectiveness"]["policy_escapes"] == 0
+    assert report["effectiveness"]["unverified_completions"] == 0
+    assert report["effectiveness"]["duplicate_mutations"] == 0
+    assert report["effectiveness"]["crash_resume_rate"] == 1.0
+    assert (
+        report["effectiveness"]["protocol_correctness_rate"]
+        == 1.0
+    )
+    assert (
+        report["effectiveness"]["context_usefulness_rate"]
+        == 1.0
+    )
     assert all(
         row["p50_ms"] <= row["p95_ms"] <= row["max_ms"]
         for row in report["performance"].values()

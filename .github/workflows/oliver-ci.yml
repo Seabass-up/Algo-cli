@@ -49,6 +49,7 @@ jobs:
           algo_cli/agent_context.py
           algo_cli/agent_pipeline.py
           algo_cli/agent_run_journal.py
+          algo_cli/nathan_provider_protocol.py
           algo_cli/agent_threads.py
           algo_cli/run_contract.py
           algo_cli/task_router.py
@@ -84,6 +85,7 @@ jobs:
           algo_cli/dorothy_perf_telemetry.py
           algo_cli/skills.py
           algo_cli/evals/competitive_harness_rating.py
+          algo_cli/evals/nathan_agent_runtime_hardening.py
           scripts/boron_browser_build_images.py
           scripts/boron_browser_live_session.py
           scripts/arthur_m9_completion_audit.py
