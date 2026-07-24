@@ -19,8 +19,8 @@ def _supported(monkeypatch: pytest.MonkeyPatch, module: object) -> None:
 
     monkeypatch.setattr(module, "ECHO_VEIL_AVAILABLE", True)
     monkeypatch.setattr(module, "ECHO_VEIL_IMPORT_ERROR", "")
-    monkeypatch.setattr(module, "ECHO_VEIL_SOURCE_VERSION", "0.5.0")
-    monkeypatch.setattr(module, "ECHO_VEIL_DISTRIBUTION_VERSION", "0.5.0")
+    monkeypatch.setattr(module, "ECHO_VEIL_SOURCE_VERSION", "0.6.0")
+    monkeypatch.setattr(module, "ECHO_VEIL_DISTRIBUTION_VERSION", "0.6.0")
     monkeypatch.setattr(module, "ECHO_VEIL_INSTALLATION_KIND", "registry-or-wheel")
     monkeypatch.setattr(module, "EmbeddingUnavailable", SyntheticEmbeddingUnavailable)
 
@@ -52,6 +52,26 @@ def test_readiness_rejects_source_distribution_drift(
     assert readiness["healthy"] is False
     assert readiness["production_ready"] is False
     assert "module_origin" not in readiness
+
+
+def test_readiness_rejects_retired_echo_veil_api_even_when_metadata_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from algo_cli import memory_echo_veil
+
+    _supported(monkeypatch, memory_echo_veil)
+    monkeypatch.setattr(memory_echo_veil, "ECHO_VEIL_SOURCE_VERSION", "0.5.0")
+    monkeypatch.setattr(memory_echo_veil, "ECHO_VEIL_DISTRIBUTION_VERSION", "0.5.0")
+
+    readiness = memory_echo_veil.get_echo_veil_readiness(
+        {
+            "echo_veil_enabled": True,
+            "echo_veil_protection": "required",
+        }
+    )
+
+    assert readiness["version_supported"] is False
+    assert readiness["installation_identity"] == "registry-or-wheel-unsupported"
 
 
 @pytest.mark.parametrize(
@@ -162,7 +182,7 @@ def test_authoritative_layer_constructs_agent_memory_without_raw_key_config(
         "echo_veil_capacity": 27,
         "harness_embed_model": "qwen3-embedding:latest",
         "echo_veil_embedding_dimension": 4096,
-        "host": "http://127.0.0.1:11434",
+        "host": "http://localhost:11434",
         "echo_veil_crypto_key_path": "/must/not/be/read.json",
     }
 
@@ -255,6 +275,7 @@ def test_required_mode_rejects_legacy_or_incomplete_echo_profiles(
 
 def test_optional_mode_returns_none_instead_of_claiming_encryption(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     from algo_cli import memory_echo_veil
 
@@ -274,6 +295,9 @@ def test_optional_mode_returns_none_instead_of_claiming_encryption(
         )
         is None
     )
+    assert memory_echo_veil._LAST_INITIALIZATION_ERROR == "initialization_failed"
+    assert "initialization_failed" in caplog.text
+    assert "synthetic initialization failure" not in caplog.text
 
 
 def test_readiness_exposes_independent_runtime_facts(
@@ -560,8 +584,8 @@ from algo_cli import memory_echo_veil as bridge
 from algo_cli.config import Config
 from echo_veil.agent_memory import HashingTextEmbedder
 bridge.ECHO_VEIL_AVAILABLE = True
-bridge.ECHO_VEIL_SOURCE_VERSION = "0.5.0"
-bridge.ECHO_VEIL_DISTRIBUTION_VERSION = "0.5.0"
+bridge.ECHO_VEIL_SOURCE_VERSION = "0.6.0"
+bridge.ECHO_VEIL_DISTRIBUTION_VERSION = "0.6.0"
 bridge.ECHO_VEIL_INSTALLATION_KIND = "registry-or-wheel"
 bridge.EmbeddingUnavailable = RuntimeError
 bridge.OllamaTextEmbedder = lambda **kwargs: HashingTextEmbedder()

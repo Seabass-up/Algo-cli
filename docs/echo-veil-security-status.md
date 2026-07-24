@@ -23,10 +23,17 @@ second implementation. Adding another adapter is a security regression.
 ## Runtime identity and policy
 
 Algo accepts Echo Veil only when both the imported source version and installed
-distribution metadata match and are in `>=0.5.0,<0.6.0`. Editable installs and
+distribution metadata match and are in `>=0.6.0,<0.7.0`. Echo Veil 0.5 is
+rejected because it predates the scope-bound `AgentMemory` API used by this
+bridge. Editable installs and
 unpinned direct-URL or local-directory installs are rejected even when their
 version strings match. Registry/wheel installs, content-hashed archives, and
 VCS installs pinned to a full commit ID are the accepted identity classes.
+
+The development/runtime candidate is pinned to Echo Veil commit
+`8bd84141580508eec13bd0459634cf3153c32eae` through the
+`algo-cli-runtime[echo-veil]` extra. This source pin is qualification evidence,
+not a public Echo Veil release or a production-readiness claim.
 
 The persisted Algo configuration contains profile, scope, state-directory, and
 policy settings only. It does not contain Echo encryption keys. Echo's
@@ -89,10 +96,9 @@ fresh-process restart recall, scope rejection, deduplication, reconciliation,
 corruption quarantine, lost-key behavior, and resumable rotation.
 
 This source tree is not yet a reproducible production installation. The
-hardened Echo implementation must first be released as a lockable artifact,
-added to Algo's locked optional dependency set, and verified from a clean
-installed wheel. The current managed runtime's mismatched source/distribution
-versions are therefore correctly blocked. Backup/restore qualification,
+hardened Echo implementation is locked for development through a full VCS
+commit and must still be released as a signed/versioned artifact and verified
+from a clean installed wheel. Backup/restore qualification,
 process-termination fault injection during commit/rotation, measured overhead
 in the installed Algo process, and independent security review also remain
 promotion blockers.

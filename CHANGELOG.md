@@ -6,6 +6,9 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ### Changed
 
+- Bound the governed memory bridge to Echo Veil's scope-aware 0.6 API, added a
+  full-commit-pinned optional extra, and canonicalized Algo's credential-free
+  `localhost` Ollama default to an IP-literal loopback before Echo validation.
 - Replaced the duplicate in-memory Echo wrapper with one authoritative bridge
   to `echo_veil.agent_memory`, enforced matching supported source/distribution
   versions plus pinned non-editable installation identity, and separated
@@ -17,6 +20,9 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ### Security
 
+- Rejected the incompatible Echo Veil 0.5 API instead of reporting it as
+  supported, and replaced raw initialization exception classes in optional-mode
+  warnings with bounded operational failure codes.
 - Added fail-closed required protection, non-leaking diagnostics, scoped profile
   configuration without raw key material, and a fresh-process black-box test
   proving ordinary write → confidential disk state → restart → authorized

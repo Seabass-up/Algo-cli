@@ -868,6 +868,15 @@
           "timestamp": "2026-07-24T12:45:00Z",
           "scope": "Ada authoritative Echo bridge, required-policy refusal, automatic and explicit writes, encrypted restart recall, index scope rejection, catalog and Intuition shadow prevention, version binding, and content-free diagnostics",
           "limitations": "Echo was qualified from local source; a published locked artifact, backup and restore exercise, process-kill fault matrix, and independent security review remain blockers"
+        },
+        {
+          "kind": "runtime",
+          "path_or_command": "UV_PROJECT_ENVIRONMENT=<owner-only-temp>/venv uv sync --frozen --no-editable --extra echo-veil; run fresh-process protected write, restart, and recall probe",
+          "digest": "sha256:e819c949cf16cf22d6a8e79fc4fd5bfabb8662220eada1ea91d05d8016c9251a",
+          "result": "pass: installed Algo and full-commit-pinned Echo Veil 0.6.0 initialized scoped-v2, wrote and recalled after restart, emitted no plaintext canary, and created no legacy memory file",
+          "timestamp": "2026-07-24T20:07:37Z",
+          "scope": "clean non-editable Algo installation, Echo VCS revision 8bd84141580508eec13bd0459634cf3153c32eae, live loopback qwen3-embedding, canonicalized localhost endpoint, protected persistence, restart restoration, rotation readiness, and content-free readiness",
+          "limitations": "local Python 3.11 and Ollama evidence does not prove a signed Echo release artifact, backup and restore, process-kill safety, installed cross-platform behavior, independent security review, or production readiness"
         }
       ]
     },

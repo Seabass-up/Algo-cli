@@ -25,13 +25,14 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .config import CONFIG_DIR
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_ECHO_VEIL_MIN = (0, 5, 0)
-SUPPORTED_ECHO_VEIL_MAX_EXCLUSIVE = (0, 6, 0)
+SUPPORTED_ECHO_VEIL_MIN = (0, 6, 0)
+SUPPORTED_ECHO_VEIL_MAX_EXCLUSIVE = (0, 7, 0)
 DEFAULT_ECHO_PROFILE = "algo-cli-qwen3"
 DEFAULT_ECHO_SCOPE = "algo-cli:user"
 DEFAULT_ECHO_DIMENSION = 4096
@@ -180,6 +181,38 @@ def _enabled(config: object) -> bool:
     return bool(_config_value(config, "echo_veil_enabled", False))
 
 
+def _echo_embedding_base_url(value: object) -> str:
+    """Canonicalize only a credential-free HTTP localhost endpoint.
+
+    Algo historically persists ``http://localhost:11434`` while Echo Veil
+    deliberately accepts loopback IP literals only.  Converting this exact
+    syntactic loopback form avoids DNS at the security boundary without
+    broadening Echo's endpoint policy.  Every other value is left for Echo's
+    fail-closed validator.
+    """
+
+    raw = str(value or "http://127.0.0.1:11434").strip()
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port
+    except ValueError:
+        return raw
+    if (
+        parsed.scheme.casefold() != "http"
+        or not parsed.hostname
+        or parsed.hostname.rstrip(".").casefold() != "localhost"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or port is None
+        or not 1 <= port <= 65_535
+    ):
+        return raw
+    return f"http://127.0.0.1:{port}"
+
+
 class EchoVeilMemoryLayer:
     """Thin lifecycle wrapper around Echo Veil's concrete host adapter."""
 
@@ -188,7 +221,7 @@ class EchoVeilMemoryLayer:
             raise RuntimeError("Echo Veil is not installed in the Algo CLI runtime")
         if not _version_supported():
             raise RuntimeError(
-                "Echo Veil must be a matching, supported, non-editable pinned distribution in the >=0.5.0,<0.6.0 range"
+                "Echo Veil must be a matching, supported, non-editable pinned distribution in the >=0.6.0,<0.7.0 range"
             )
         if not _enabled(config):
             raise RuntimeError("Echo Veil is not enabled")
@@ -204,7 +237,9 @@ class EchoVeilMemoryLayer:
             _config_value(config, "embed_dimensions", DEFAULT_ECHO_DIMENSION),
         )
         dimension = DEFAULT_ECHO_DIMENSION if dimension_raw is None else int(dimension_raw)
-        base_url = str(_config_value(config, "host", "http://127.0.0.1:11434") or "http://127.0.0.1:11434")
+        base_url = _echo_embedding_base_url(
+            _config_value(config, "host", "http://127.0.0.1:11434")
+        )
         capacity = int(_config_value(config, "echo_veil_capacity", 400))
         try:
             embedder = OllamaTextEmbedder(
@@ -305,7 +340,9 @@ def _fingerprint(config: object) -> tuple[Any, ...]:
         _config_value(config, "harness_embed_model", DEFAULT_ECHO_MODEL),
         _config_value(config, "echo_veil_embedding_dimension", None),
         _config_value(config, "embed_dimensions", None),
-        _config_value(config, "host", "http://127.0.0.1:11434"),
+        _echo_embedding_base_url(
+            _config_value(config, "host", "http://127.0.0.1:11434")
+        ),
         _config_value(config, "echo_veil_capacity", 400),
     )
 
@@ -317,6 +354,14 @@ def reset_echo_veil_layer() -> None:
     _LAYER = None
     _LAYER_FINGERPRINT = None
     _LAST_INITIALIZATION_ERROR = None
+
+
+def _initialization_failure_code() -> str:
+    if not ECHO_VEIL_AVAILABLE:
+        return "package_unavailable"
+    if not _version_supported():
+        return "version_or_installation_unsupported"
+    return "initialization_failed"
 
 
 def create_echo_veil_layer(
@@ -337,12 +382,12 @@ def create_echo_veil_layer(
     try:
         _LAYER = EchoVeilMemoryLayer(resolved)
     except Exception as exc:
-        _LAST_INITIALIZATION_ERROR = type(exc).__name__
+        _LAST_INITIALIZATION_ERROR = _initialization_failure_code()
         if protection_required(resolved):
             raise RuntimeError("required Echo Veil protection is unavailable; memory writes are blocked") from exc
         logger.warning(
             "Echo Veil optional mode is unavailable; legacy plaintext memory remains active (%s)",
-            type(exc).__name__,
+            _LAST_INITIALIZATION_ERROR,
         )
         return None
     _LAYER_FINGERPRINT = fingerprint

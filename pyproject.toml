@@ -57,6 +57,9 @@ supply-chain = [
 pdf = [
     "PyMuPDF>=1.24",
 ]
+echo-veil = [
+    "echo-veil @ git+https://github.com/Seabass-up/echo-veil.git@8bd84141580508eec13bd0459634cf3153c32eae",
+]
 quantization = [
     "turbovec>=0.7",
 ]
@@ -98,6 +101,9 @@ packages = ["algo_cli", "ollama_cli"]
 
 [tool.hatch.version]
 path = "algo_cli/__init__.py"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel.force-include]
 "docs/ALGO.md" = "algo_cli/resources/docs/ALGO.md"
