@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from algo_cli.config import Config
 from algo_cli import main as main_module
 from algo_cli import oliver_slash_dispatch as slash_dispatch
@@ -241,6 +243,69 @@ def test_harness_compare_prints_competitive_rating(monkeypatch):
     assert printed == ['{"claim": "blocked"}']
 
 
+def test_harness_observability_commands_expose_sources_trace_conflicts_and_stale(
+    monkeypatch,
+):
+    cfg = Config()
+    printed: list[str] = []
+
+    class _Console:
+        def print(self, value="") -> None:
+            printed.append(str(value))
+
+    monkeypatch.setattr(main_module, "console", _Console())
+    monkeypatch.setattr(
+        slash_dispatch.harness,
+        "load_index",
+        lambda: {
+            "generated": "2026-07-29T12:00:00Z",
+            "records": [{"id": "algo-cli:wiki:one", "harness": "algo-cli"}],
+        },
+    )
+    monkeypatch.setattr(
+        slash_dispatch.harness,
+        "source_roots_diagnostics",
+        lambda _records: {"enabled": False},
+    )
+    monkeypatch.setattr(
+        slash_dispatch.harness,
+        "index_is_stale",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        slash_dispatch.harness,
+        "last_retrieval_trace",
+        lambda: {"returned": 2, "context_tokens": 144},
+    )
+    monkeypatch.setattr(
+        slash_dispatch.harness,
+        "last_retrieval_conflicts",
+        lambda: [{"claim": "external stores enabled", "preferred": "runtime"}],
+    )
+    monkeypatch.setattr(
+        slash_dispatch.harness,
+        "stale_record_summary",
+        lambda: {"count": 1, "records": [{"id": "historical"}]},
+    )
+
+    for command in (
+        "/harness sources",
+        "/harness explain LAST",
+        "/harness conflicts",
+        "/harness stale",
+    ):
+        handled, _client = main_module.handle_command(command, cfg, None)
+        assert handled is True
+
+    sources, trace, conflicts, stale = map(json.loads, printed)
+    assert sources["last_refresh"] == "2026-07-29T12:00:00Z"
+    assert sources["index_stale"] is False
+    assert trace == {"context_tokens": 144, "returned": 2}
+    assert conflicts["status"] == "conflict"
+    assert conflicts["count"] == 1
+    assert stale["count"] == 1
+
+
 def test_harness_status_and_embed_are_listed_slash_commands():
     commands = {command for command, _description in slash_dispatch.SLASH_COMMANDS}
 
@@ -248,6 +313,10 @@ def test_harness_status_and_embed_are_listed_slash_commands():
     assert "/harness embed" in commands
     assert "/harness score" in commands
     assert "/harness compare" in commands
+    assert "/harness sources" in commands
+    assert "/harness explain" in commands
+    assert "/harness conflicts" in commands
+    assert "/harness stale" in commands
 
 
 def test_every_registered_slash_root_has_dispatch_or_valid_alias():

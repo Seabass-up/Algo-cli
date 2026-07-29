@@ -119,7 +119,7 @@ def _protected_memory_prompt_section(cfg: Config) -> str:
         if not query:
             return contract
         if is_exact_response_task(query):
-            readiness = get_echo_veil_readiness(cfg)
+            readiness = get_echo_veil_readiness(cfg.__dict__)
             if (
                 readiness.get("healthy") is not True
                 or readiness.get("all_records_shielded") is not True
@@ -331,12 +331,18 @@ def build_system_prompt(
         provider = "local Ollama (cloud model via login)"
     else:
         provider = "local Ollama"
-    external_harness_guidance = (
-        "External local agent stores are enabled for this session; harness tools may search Codex, Claude, "
-        "OpenClaw, Mercury, Pi, and shared .agents assets."
-        if cfg.external_harness_sources_enabled
-        else "External local agent stores are disabled. Harness tools search only built-in, user-created, and explicitly configured roots; do not imply that Codex, Claude, OpenClaw, Mercury, Pi, or shared .agents content is available."
-    )
+    try:
+        from .action_registry import external_store_guidance
+
+        external_harness_guidance = external_store_guidance(cfg)
+    except Exception:
+        # Prompt construction must remain fail-closed if diagnostics are
+        # unavailable. Never infer external-store enablement from documentation.
+        external_harness_guidance = (
+            "External-store runtime state could not be verified; do not claim "
+            "that Codex, Claude, OpenClaw, Mercury, Pi, or shared .agents "
+            "content is searchable."
+        )
     prompt += (
         "\n\n## Runtime Model Status\n"
         f"- Active model: {cfg.model}\n"

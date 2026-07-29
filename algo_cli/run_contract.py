@@ -33,11 +33,11 @@ from .config import Config
 
 RUN_CONTRACT_SCHEMA_VERSION = 3
 ContractMode = Literal["shadow", "enforced"]
-ApprovalMode = Literal["interactive", "never", "auto"]
+ApprovalMode = Literal["interactive", "never", "auto", "workspace"]
 MutationScope = Literal["none", "workspace"]
 
 _CONTRACT_MODES = frozenset({"shadow", "enforced"})
-_APPROVAL_MODES = frozenset({"interactive", "never", "auto"})
+_APPROVAL_MODES = frozenset({"interactive", "never", "auto", "workspace"})
 _MUTATION_SCOPES = frozenset({"none", "workspace"})
 _HEX_DIGEST_LENGTH = 64
 _MAX_BLOCKS = 32
@@ -402,7 +402,9 @@ class RunContract:
         if self.mode not in _CONTRACT_MODES:
             raise RunContractError("mode must be shadow or enforced")
         if self.approval_mode not in _APPROVAL_MODES:
-            raise RunContractError("approval_mode must be interactive, never, or auto")
+            raise RunContractError(
+                "approval_mode must be interactive, never, auto, or workspace"
+            )
         if type(self.safe_mode) is not bool:
             raise RunContractError("safe_mode must be boolean")
         if type(self.session_preapproval) is not bool:
@@ -745,7 +747,9 @@ def compile_agent_run_contract(
     """Compile the current routed pipeline into a closed execution contract."""
 
     if approval_mode not in _APPROVAL_MODES:
-        raise RunContractError("approval_mode must be interactive, never, or auto")
+        raise RunContractError(
+            "approval_mode must be interactive, never, auto, or workspace"
+        )
     if isinstance(blocks, (str, bytes)) or not isinstance(blocks, Sequence) or not blocks:
         raise RunContractError("pipeline must contain at least one Agent Block")
     if len(blocks) > _MAX_BLOCKS:

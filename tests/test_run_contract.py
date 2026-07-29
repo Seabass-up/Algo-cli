@@ -110,7 +110,10 @@ def test_shadow_contract_records_policy_without_changing_effective_tools(tmp_pat
     assert "write_file" not in implement.effective_tools("enforced")
 
 
-@pytest.mark.parametrize("approval_mode", ("interactive", "never", "auto"))
+@pytest.mark.parametrize(
+    "approval_mode",
+    ("interactive", "never", "auto", "workspace"),
+)
 def test_contract_binds_approval_mode_without_reinterpreting_it(
     tmp_path,
     approval_mode,

@@ -11,8 +11,10 @@ import json
 import os
 import shutil
 import inspect
+import sys
 import textwrap
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 
 from .config import load_runtime_env
 from .marcus_authority import (
@@ -35,6 +37,21 @@ from urllib.request import urlopen
 RiskLevel = Literal["low", "medium", "high"]
 FindingStatus = Literal["ready", "degraded", "blocked"]
 ActionKind = Literal["tool", "slash", "provider", "legacy", "kernel"]
+CapabilityStatus = Literal[
+    "ready",
+    "degraded",
+    "blocked",
+    "disabled",
+    "unavailable",
+    "archived",
+]
+CapabilityAuthority = Literal[
+    "runtime",
+    "source",
+    "generated-doc",
+    "user-curated",
+    "historical",
+]
 
 
 @dataclass(frozen=True)
@@ -87,6 +104,61 @@ class ActionSpec:
         value["verification"] = self.verification.value
         value["runtime_class"] = self.runtime_class.value
         return value
+
+
+@dataclass(frozen=True)
+class CapabilityRecord:
+    """One live, typed projection of a static ActionSpec.
+
+    ActionSpec remains the policy definition. CapabilityRecord is the
+    authoritative runtime observation used by help, model schemas, indexed
+    capability rows, and diagnostics. It deliberately separates presence,
+    enablement, authentication, policy, and callability so "supported" cannot
+    be mistaken for "usable in this session".
+    """
+
+    spec: ActionSpec
+    installed: bool
+    enabled: bool
+    authenticated: bool | None
+    policy_allowed: bool
+    model_callable: bool
+    read_effects: tuple[str, ...]
+    write_effects: tuple[str, ...]
+    authority: CapabilityAuthority
+    valid_from: str
+    valid_until: str | None
+    verified_at: str
+    supersedes: tuple[str, ...]
+    conflicts_with: tuple[str, ...]
+    scope: tuple[tuple[str, str], ...]
+    status: CapabilityStatus
+    reason: str
+
+    @property
+    def name(self) -> str:
+        return self.spec.name
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            **self.spec.as_dict(),
+            "installed": self.installed,
+            "enabled": self.enabled,
+            "authenticated": self.authenticated,
+            "policy_allowed": self.policy_allowed,
+            "model_callable": self.model_callable,
+            "read_effects": list(self.read_effects),
+            "write_effects": list(self.write_effects),
+            "authority": self.authority,
+            "valid_from": self.valid_from,
+            "valid_until": self.valid_until,
+            "verified_at": self.verified_at,
+            "supersedes": list(self.supersedes),
+            "conflicts_with": list(self.conflicts_with),
+            "scope": dict(self.scope),
+            "status": self.status,
+            "reason": self.reason,
+        }
 
 
 @dataclass(frozen=True)
@@ -500,6 +572,21 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         "low", False, False, True,
     ),
     _spec(
+        "harness.external_agent_stores",
+        "kernel",
+        "Report opt-in external-agent-store adapter support and live session enablement.",
+        "harness",
+        ("harness", "external-store", "privacy", "read-only", "runtime-state"),
+        "Prevents installed adapter documentation from being mistaken for active retrieval.",
+        "low",
+        False,
+        False,
+        True,
+        known_limitations=(
+            "Adapters are read-only and disabled by default; availability must be verified in the active session.",
+        ),
+    ),
+    _spec(
         "chain.evaluate", "kernel", "Evaluate the ordered runtime tool policy chain.",
         "kernel",
         ("policy", "chain", "enforcement", "read-only"),
@@ -865,6 +952,268 @@ def action_capability_mask(name: str) -> int:
     return policy_for_action(name).capability_mask.value
 
 
+def _verified_timestamp(value: str | None = None) -> str:
+    if value:
+        return value
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _provider_authentication(spec: ActionSpec) -> tuple[bool | None, str]:
+    """Return non-secret local authentication state for one capability."""
+
+    provider = spec.requires_provider
+    if not provider:
+        return None, ""
+    load_runtime_env(override=True)
+    if provider == "ollama-cloud":
+        authenticated = bool(os.environ.get("OLLAMA_API_KEY", "").strip())
+        return authenticated, (
+            "OLLAMA_API_KEY is configured"
+            if authenticated
+            else "OLLAMA_API_KEY is not configured"
+        )
+    if provider == "xai":
+        try:
+            from . import xai_auth
+
+            authenticated = bool(xai_auth.auth_status().get("api_key_configured"))
+        except Exception:
+            authenticated = False
+        return authenticated, (
+            "xAI API authentication is configured"
+            if authenticated
+            else "xAI API authentication is not configured"
+        )
+    if provider == "google-workspace":
+        try:
+            from . import google_workspace_auth
+
+            authenticated = bool(google_workspace_auth.auth_status().get("authenticated"))
+        except Exception:
+            authenticated = False
+        return authenticated, (
+            "Google Workspace authentication is active"
+            if authenticated
+            else "Google Workspace authentication is not active"
+        )
+    # Some adapters (for example x-account) own richer status protocols. Do
+    # not trigger their binaries or networks merely to render the registry.
+    return None, f"{provider} authentication is verified only by its dedicated status command"
+
+
+def _external_store_runtime_state(cfg: Any | None) -> dict[str, Any]:
+    """Return the privacy-safe live state for external harness adapters."""
+
+    try:
+        from . import harness
+
+        enabled = bool(
+            getattr(cfg, "external_harness_sources_enabled")
+            if cfg is not None and hasattr(cfg, "external_harness_sources_enabled")
+            else harness._EXTERNAL_SOURCES_ENABLED
+        )
+        persisted_index: dict[str, Any] = {}
+        cached_index = getattr(harness, "_INDEX_CACHE", None)
+        if isinstance(cached_index, dict):
+            persisted_index = cached_index
+        else:
+            try:
+                loaded = json.loads(harness.INDEX_PATH.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    persisted_index = loaded
+            except (OSError, json.JSONDecodeError):
+                pass
+        persisted_records = persisted_index.get("records")
+        records = (
+            [record for record in persisted_records if isinstance(record, dict)]
+            if isinstance(persisted_records, list)
+            else []
+        )
+        diagnostics = harness.source_roots_diagnostics(records)
+        installed = int(diagnostics.get("built_in_adapter_roots") or 0) > 0
+        available = int(diagnostics.get("available_adapter_roots") or 0)
+        indexed = int(diagnostics.get("indexed_records") or 0)
+        source_policy = persisted_index.get("source_policy")
+        index_enabled = bool(
+            isinstance(source_policy, dict)
+            and source_policy.get("external_agent_stores") is True
+        )
+    except Exception:
+        return {
+            "installed": False,
+            "enabled": False,
+            "policy_allowed": False,
+            "status": "unavailable",
+            "reason": "external-store adapter state could not be verified",
+        }
+    if not enabled:
+        return {
+            "installed": installed,
+            "enabled": False,
+            "policy_allowed": False,
+            "status": "disabled",
+            "reason": (
+                "External-store support is installed but disabled; only algo-cli "
+                "and explicitly configured roots are searchable in this session."
+            ),
+        }
+    if not installed or available == 0:
+        return {
+            "installed": installed,
+            "enabled": True,
+            "policy_allowed": True,
+            "status": "unavailable",
+            "reason": "External stores are enabled, but no built-in adapter root is currently available.",
+        }
+    return {
+        "installed": True,
+        "enabled": True,
+        "policy_allowed": True,
+        "status": "ready" if index_enabled and indexed > 0 else "degraded",
+        "reason": (
+            f"External stores are enabled; {available} adapter roots are available"
+            + (
+                f" and {indexed} records are indexed."
+                if index_enabled and indexed
+                else ", but the current index does not contain enabled external records; refresh is required."
+            )
+        ),
+    }
+
+
+def capability_registry_snapshot(
+    cfg: Any | None = None,
+    *,
+    include_archived: bool = True,
+    verified_at: str | None = None,
+) -> tuple[CapabilityRecord, ...]:
+    """Build the sole live capability projection for the current process."""
+
+    from . import __version__
+    from .oliver_slash_dispatch import SLASH_COMMANDS
+    from .tools import TOOL_MAP
+
+    observed_at = _verified_timestamp(verified_at)
+    tool_map = dict(TOOL_MAP)
+    slash_names = {command for command, _description in SLASH_COMMANDS}
+    records: list[CapabilityRecord] = []
+    for spec in effective_action_specs(include_archived=include_archived):
+        if spec.kind == "tool":
+            declared = spec.name in tool_map and callable(tool_map.get(spec.name))
+            policy_allowed = bool(spec.curated and not spec.archived)
+            model_callable = bool(declared and not spec.archived)
+        elif spec.kind == "slash":
+            declared = spec.name in slash_names
+            policy_allowed = not spec.archived
+            model_callable = False
+        else:
+            declared = True
+            policy_allowed = not spec.archived
+            model_callable = False
+
+        missing_binaries = tuple(
+            binary for binary in spec.requires_binary if shutil.which(binary) is None
+        )
+        installed = bool(declared and not missing_binaries)
+        enabled = not spec.archived
+        authenticated, authentication_reason = _provider_authentication(spec)
+        status: CapabilityStatus
+        reason = ""
+
+        if spec.name == "harness.external_agent_stores":
+            external = _external_store_runtime_state(cfg)
+            installed = bool(external["installed"])
+            enabled = bool(external["enabled"])
+            policy_allowed = bool(external["policy_allowed"])
+            status = cast(CapabilityStatus, external["status"])
+            reason = str(external["reason"])
+        elif spec.archived:
+            status = "archived"
+            reason = spec.archived_reason or "Capability is archived."
+        elif not declared:
+            status = "unavailable"
+            reason = "Capability is declared in source but absent from the live runtime surface."
+        elif missing_binaries:
+            status = "unavailable"
+            reason = "Required binaries are unavailable: " + ", ".join(missing_binaries)
+        elif not policy_allowed:
+            status = "blocked"
+            reason = "Runtime policy does not allow this capability."
+        elif authenticated is False:
+            status = "unavailable"
+            reason = authentication_reason
+        else:
+            status = "ready"
+            reason = authentication_reason or "Live runtime declaration and policy checks passed."
+
+        read_effects = tuple(
+            item.name.lower()
+            for item in spec.capabilities
+            if item in {Capability.READ, Capability.NETWORK}
+        )
+        write_effects = tuple(
+            item.name.lower()
+            for item in spec.capabilities
+            if item not in {Capability.READ, Capability.NETWORK}
+        )
+        if spec.mutates_state and spec.effect_class.value not in write_effects:
+            write_effects = (*write_effects, spec.effect_class.value)
+        records.append(
+            CapabilityRecord(
+                spec=spec,
+                installed=installed,
+                enabled=enabled,
+                authenticated=authenticated,
+                policy_allowed=policy_allowed,
+                model_callable=model_callable,
+                read_effects=read_effects,
+                write_effects=write_effects,
+                authority="historical" if spec.archived else "runtime",
+                valid_from=observed_at,
+                valid_until=observed_at if spec.archived else None,
+                verified_at=observed_at,
+                supersedes=(),
+                conflicts_with=(),
+                scope=(
+                    ("project", "algo-cli"),
+                    ("platform", sys.platform),
+                    ("version", __version__),
+                ),
+                status=status,
+                reason=reason,
+            )
+        )
+    return tuple(records)
+
+
+def get_capability_record(
+    name: str,
+    cfg: Any | None = None,
+    *,
+    verified_at: str | None = None,
+) -> CapabilityRecord:
+    normalized = name.strip().casefold()
+    for record in capability_registry_snapshot(cfg, verified_at=verified_at):
+        if record.name.casefold() == normalized:
+            return record
+    raise KeyError(f"Unknown capability: {name}")
+
+
+def capability_description(name: str) -> str | None:
+    """Return the registry-owned model/help description for an action."""
+
+    try:
+        return get_action_spec(name).description
+    except KeyError:
+        return None
+
+
+def external_store_guidance(cfg: Any | None = None) -> str:
+    """Render the registry-owned external-store statement for model context."""
+
+    return get_capability_record("harness.external_agent_stores", cfg).reason
+
+
 def _declared_dispatch_commands() -> set[str]:
     """Extract literal top-level command branches from handle_command for diagnostics."""
 
@@ -926,6 +1275,28 @@ def audit_action_registry_runtime() -> DoctorReport:
         for source, target in SLASH_COMMAND_ALIASES.items()
         if source not in slash_roots or target not in dispatch_commands
     )
+    capability_projection_error = ""
+    capability_projection_names: list[str] = []
+    capability_projection_complete = False
+    try:
+        capability_projection = capability_registry_snapshot(
+            verified_at="1970-01-01T00:00:00Z"
+        )
+        capability_projection_names = [record.name for record in capability_projection]
+        capability_projection_complete = bool(capability_projection) and all(
+            record.verified_at
+            and record.valid_from
+            and record.authority
+            and record.status
+            and dict(record.scope).get("project") == "algo-cli"
+            and record.installed is not None
+            and record.enabled is not None
+            and record.policy_allowed is not None
+            and record.model_callable is not None
+            for record in capability_projection
+        )
+    except Exception as exc:
+        capability_projection_error = type(exc).__name__
 
     for spec in registered_tool_specs + registered_slash_specs:
         if spec.kind == "tool":
@@ -994,6 +1365,25 @@ def audit_action_registry_runtime() -> DoctorReport:
             + ", ".join(sorted(spec.name for spec in unclassified_tool_specs)),
             "Add each tool to CURATED_TOOL_POLICIES before making it runnable.",
         ))
+    if capability_projection_error:
+        findings.append(DoctorFinding(
+            "blocked",
+            "capability-registry",
+            "live capability projection failed: " + capability_projection_error,
+            "Repair capability_registry_snapshot before exposing runtime help or model schemas.",
+        ))
+    elif (
+        len(capability_projection_names) != len(set(capability_projection_names))
+        or set(capability_projection_names)
+        != {spec.name for spec in effective_action_specs(include_archived=True)}
+        or not capability_projection_complete
+    ):
+        findings.append(DoctorFinding(
+            "blocked",
+            "capability-registry",
+            "live capability projection is duplicate, incomplete, or out of sync with ActionSpec",
+            "Regenerate the projection from effective_action_specs and preserve every required live field.",
+        ))
 
     if not findings:
         findings.append(DoctorFinding(
@@ -1014,6 +1404,11 @@ def audit_action_registry_runtime() -> DoctorReport:
             "ready",
             "action-registry",
             f"{len(registered_tool_specs)} explicit tool specs and {len(registered_slash_specs)} explicit slash specs resolve",
+        ))
+        findings.append(DoctorFinding(
+            "ready",
+            "capability-registry",
+            f"{len(capability_projection_names)} unique live capability records expose the complete truth contract",
         ))
 
     overall: FindingStatus = "blocked" if any(f.status == "blocked" for f in findings) else "ready"

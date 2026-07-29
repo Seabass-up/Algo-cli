@@ -47,6 +47,7 @@
     "algo_cli/boron_browser_isolation.py",
     "algo_cli/boron_browser_wrapper.py",
     "algo_cli/carbon_browser_binding.py",
+    "algo_cli/evals/harness_retrieval_benchmark.py",
     "algo_cli/evals/nathan_agent_runtime_hardening.py",
     "algo_cli/evals/tool_context_efficiency.py",
     "algo_cli/kernels/manifest.py",
@@ -91,6 +92,7 @@
     "algo_cli/theodore_runtime_services.py",
     "algo_cli/task_router.py",
     "algo_cli/tool_context.py",
+    "algo_cli/tool_schema.py",
     "algo_cli/tools.py",
     "algo_cli/slash_dispatch.py",
     "algo_cli/version_manifest.py",
@@ -179,6 +181,7 @@
     "docs/privacy-and-context.md",
     "docs/austin-native-control-contract.md",
     "docs/william-public-release-checklist.md",
+    "skills/harness-search-first.md",
     "hardening/ada-evidence-ledger.json",
     "hardening/ada-native-crash-qualification.json",
     "hardening/alice-native-capture-crash-qualification.json",
@@ -271,6 +274,7 @@
     "tests/test_google_workspace_wiring.py",
     "tests/test_grace_key_store.py",
     "tests/test_harness.py",
+    "tests/test_harness_retrieval_benchmark.py",
     "tests/test_henry_effect_control.py",
     "tests/test_henry_austin_ada_crash_qualification.py",
     "tests/test_henry_austin_alice_crash_qualification.py",
@@ -306,6 +310,7 @@
     "tests/test_oliver_slash_unknown.py",
     "tests/test_provider_usability.py",
     "tests/test_reflex.py",
+    "tests/test_retrieval_algorithms.py",
     "tests/test_run_contract.py",
     "tests/test_samuel_policy.py",
     "tests/test_samuel_policy_engine.py",
@@ -665,6 +670,15 @@
           "timestamp": "2026-07-19T01:22:33Z",
           "scope": "expanded hardening type gate",
           "limitations": "uses the repository's scoped non-strict mypy profile"
+        },
+        {
+          "kind": "test",
+          "path_or_command": "pytest tests/test_action_registry.py tests/test_tools.py tests/test_harness.py tests/test_main_helpers.py tests/test_run_contract.py; mypy algo_cli",
+          "digest": "sha256:feae33ba53b6f54d1187292947c4e2178ee79fa32c75e8895e432714f19e7914",
+          "result": "pass: one live capability registry now projects every effective ActionSpec into installed, enabled, authenticated, policy, model-callable, effect, authority, freshness, scope, status, and reason fields; all 264 source modules type-check",
+          "timestamp": "2026-07-29T21:58:05Z",
+          "scope": "KNOW, ACT, and VERIFY displays, provider wire descriptions, system-prompt external-store guidance, disabled-state wording, workspace approval contracts, and duplicate or incomplete projection rejection",
+          "limitations": "local configuration and non-secret credential presence are checked without authenticating every provider or exercising every external mutation"
         }
       ]
     },
@@ -898,6 +912,15 @@
           "timestamp": "2026-07-24T20:07:37Z",
           "scope": "clean non-editable Algo installation, Echo VCS revision 8bd84141580508eec13bd0459634cf3153c32eae, live loopback qwen3-embedding, canonicalized localhost endpoint, protected persistence, restart restoration, rotation readiness, and content-free readiness",
           "limitations": "local Python 3.11 and Ollama evidence does not prove a signed Echo release artifact, backup and restore, process-kill safety, installed cross-platform behavior, independent security review, or production readiness"
+        },
+        {
+          "kind": "test",
+          "path_or_command": "pytest tests/test_ada_memory_echo_veil.py tests/test_echo_veil_update.py tests/test_harness.py tests/test_oliver_slash_unknown.py",
+          "digest": "sha256:083012aab5418cc285c6588fd35aabdce3b8d345afd2be1786bf2c6642cb06c9",
+          "result": "pass: Echo Veil diagnostics distinguish healthy, degraded-read-only, locked, unavailable, misconfigured, and stale-index states; unavailable mode no longer claims that legacy plaintext memory remains active",
+          "timestamp": "2026-07-29T21:58:05Z",
+          "scope": "content-free operator state, retrieval mode, semantic recall, available layers, last recall, mutation posture, remediation, Config-to-doctor mapping, and fail-closed protected-memory prompt behavior",
+          "limitations": "local tests do not establish production enclave security, an independent cryptographic review, signed cross-platform packaging, or production write readiness"
         }
       ]
     },
@@ -2729,6 +2752,15 @@
           "timestamp": "2026-07-29T17:04:32Z",
           "scope": "source digest sha256:5d8054dcb3f7b2b37ba35b61738f6c53cab105a03b96f9f23a4ce48901df7869 binds the current runtime, qualification scripts, workflows, and adversarial tests; 10000 stale-target races, 1000 unknown outcomes, 1000 malformed programs, 1000 privacy canaries, 100000 malformed frames, 1000 fresh postconditions, and five efficiency repetitions pass; stale-target p50/p95 are 4.154/4.470 ms, fresh-postcondition p50/p95 are 5.567/5.858 ms, median schema reduction is 80.880 percent, and typed-program reduction is 96.644 percent",
           "limitations": "finite local fixtures and synthetic efficiency measurements do not prove hosted managed-browser or selected-Chrome completion, semantic-route or screenshot reduction, live profile/network containment, authoritative browser freshness, signed XPC/TCC, production power-loss behavior, or installed lifecycle readiness; HARD-080 remains in progress and the active freeze remains in force"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "forced locked non-editable install; full Python, mypy, Ruff, dependency, package, Swift, Rust, Go, website, public, history, version, diff, freeze, and source-bound M8 gates",
+          "digest": "sha256:c24de44ef6bfa223c69565d17b7182e932f1857c94389c48a2a835e4fc544067",
+          "result": "local pass/externally blocked: 3386 installed-package Python tests, 264-module mypy, 89 Swift tests, 7 Rust tests, Go race and vet, 4 website render tests, build, lint, and dependency audits pass; M8 records 9 local passes, 5 production-browser blocks, and zero failures or not-verified metrics",
+          "timestamp": "2026-07-29T21:58:05Z",
+          "scope": "installed/source digest sha256:b1129408cc5395902272812e809b06c741b3282ba3c4439a534bcd9358d8734d; 10000 stale-target races at p50/p95 4.796/5.305 ms, 1000 unknown outcomes, 1000 malformed programs, 1000 privacy canaries, 100000 malformed frames, 1000 fresh postconditions at p50/p95 6.309/6.743 ms, 80.7 percent median schema reduction, and 96.644 percent typed-program reduction",
+          "limitations": "local finite tests do not prove hosted managed-browser or selected-Chrome completion, semantic-route or screenshot reduction, live profile/network containment, authoritative browser freshness, signed XPC/TCC, production power-loss behavior, or release readiness; HARD-080 remains in progress and public_claim_eligible is false"
         }
       ]
     },
@@ -3052,6 +3084,15 @@
           "timestamp": "2026-07-29T17:02:30Z",
           "scope": "real-clock source digest sha256:544ce0fe2f1c1fed559c41fbfd3c15dd5daf75bdf9afeac93249f3ed4dc94df9; workload total p50/p95 19.067/19.353 ms and first-Agent-event p50/p95 2.663/2.787 ms; checkpoint-resume p50/p95 6.748/6.877 ms; context broker p50/p95 0.039/0.039 ms; contract compile p50/p95 0.182/0.201 ms; the validator unit fixture uses a deterministic clock so shared-runner scheduling cannot create false correctness failures while this retained artifact remains the real wall-clock measurement",
           "limitations": "one local machine and a model-free workload do not prove model intelligence, live provider latency, production power-loss behavior, or superiority over OpenClaw, Hermes, or another harness; the real-clock latency has not been independently reproduced, HARD-081 remains in progress, public_claim_eligible remains false, and the active freeze forbids website publication"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "algo_cli.evals.harness_retrieval_benchmark.run_harness_retrieval_benchmark over a fresh 374-record live corpus and the frozen 13-case quality fixture",
+          "digest": "sha256:d941d915a1d61b5d267250f5bc854699803d47fcbc0d4c676ff9e963f5f978a4",
+          "result": "local pass: Recall@5, MRR, nDCG@10, citation precision, no-answer accuracy, provenance accuracy, and conflict resolution accuracy are 1.0; false-positive and stale-preference rates are 0.0; context cost is 110 estimated tokens per successful answer",
+          "timestamp": "2026-07-29T21:58:05Z",
+          "scope": "exact and paraphrased known items, misspelling, multilingual and code-switched requests, multi-hop write-plus-verify, cross-source reconciliation, temporal supersession, runtime-versus-static conflict, two no-answer cases, stable canaries, and live reusable-BM25 speedup 36.672x with warm MAD ratio 0.023",
+          "limitations": "the frozen fixture and one-machine live-corpus microbenchmark do not measure answer generation, model intelligence, provider latency, broad language coverage, independent reproduction, or superiority over OpenClaw, Hermes, or another harness; HARD-081 stays in progress and public publication remains blocked"
         }
       ]
     },

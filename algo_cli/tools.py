@@ -2495,6 +2495,10 @@ def available_actions(topic: str | None = None) -> str:
         "harness": [
             "/code-rag [on|off|status]",
             "/harness status",
+            "/harness sources",
+            "/harness explain",
+            "/harness conflicts",
+            "/harness stale",
             "/harness refresh",
             "/harness embed",
             "/harness score",
@@ -2589,6 +2593,35 @@ def available_actions(topic: str | None = None) -> str:
         "Do not switch /reason for routine reads, simple edits, or before every answer; mode changes are session state changes and may require approval.",
         "Changing /reason does not replace evidence gathering: still use read_file, search_files, run_shell, git_diff, or web/harness tools to verify facts.",
     ]
+    conceptual_surface = {
+        "KNOW": {
+            "purpose": "Retrieve current evidence and prior context.",
+            "routes": [
+                "harness_search",
+                "echo_veil_recall",
+                "query_knowledge_graph",
+                "repository intelligence",
+            ],
+        },
+        "ACT": {
+            "purpose": "Use governed tools, workflows, and slash controls.",
+            "routes": [
+                "model-callable tools",
+                "Agent Blocks",
+                "skills",
+                "session_command",
+            ],
+        },
+        "VERIFY": {
+            "purpose": "Check outputs, runtime state, provenance, and claims.",
+            "routes": [
+                "run_shell",
+                "git_diff",
+                "harness_scorecard",
+                "live capability registry",
+            ],
+        },
+    }
     verification_layer = [
         "Use harness_search before broad filesystem scans for skills, prompts, memory, wiki, and workflows.",
         "Use read_pdf for PDF text extraction. If it reports a scanned/image-only PDF, use render_pdf_pages next and then vision_describe on the returned PNG paths.",
@@ -2606,17 +2639,68 @@ def available_actions(topic: str | None = None) -> str:
         "Treat memory/wiki as navigation; verify consequential facts against live files or endpoints.",
     ]
     stats = harness.stats()
+    from .action_registry import capability_registry_snapshot
+
+    live_capabilities = capability_registry_snapshot()
+    capability_status_counts: dict[str, int] = {}
+    for record in live_capabilities:
+        capability_status_counts[record.status] = (
+            capability_status_counts.get(record.status, 0) + 1
+        )
+    capability_matches = [
+        record
+        for record in live_capabilities
+        if (
+            not focus
+            or focus in record.name.casefold()
+            or focus in record.spec.group.casefold()
+            or focus in " ".join(record.spec.tags).casefold()
+        )
+    ]
     payload: dict[str, Any] = {
         "topic": focus or "all",
         "commands": commands,
         "model_callable_tools": tool_groups,
         "slash_command_guidance": slash_guidance,
         "reasoning_mode_guidance": reasoning_guidance,
+        "conceptual_surface": conceptual_surface,
+        "route_observability": (
+            "Use /route TASK to inspect the proposed route; the live capability "
+            "registry remains authoritative for whether that route is usable."
+        ),
         "verification_layer": verification_layer,
         "harness_index": {
             "record_count": stats.get("record_count"),
             "generated": stats.get("generated"),
             "counts": stats.get("counts", {}),
+        },
+        "capability_registry": {
+            "authoritative": True,
+            "verified_fields": [
+                "installed",
+                "enabled",
+                "authenticated",
+                "policy_allowed",
+                "model_callable",
+                "verified_at",
+            ],
+            "status_counts": dict(sorted(capability_status_counts.items())),
+            "records": [
+                {
+                    "name": record.name,
+                    "kind": record.spec.kind,
+                    "description": record.spec.description,
+                    "status": record.status,
+                    "installed": record.installed,
+                    "enabled": record.enabled,
+                    "authenticated": record.authenticated,
+                    "policy_allowed": record.policy_allowed,
+                    "model_callable": record.model_callable,
+                    "reason": record.reason,
+                }
+                for record in capability_matches[:40]
+            ],
+            "truncated": len(capability_matches) > 40,
         },
     }
     if focus:
@@ -3100,7 +3184,7 @@ def _collect_harness_index_integrity() -> dict[str, Any]:
 
 
 def harness_scorecard() -> str:
-    """Run the evidence-backed v2 harness scorecard and return structured JSON.
+    """Run the evidence-backed v3 harness scorecard and return structured JSON.
 
     Ten scored gates are worth one point each. A 10/10 therefore requires
     current index/embedding evidence, retrieval correctness, a repeatable
@@ -3117,7 +3201,12 @@ def harness_scorecard() -> str:
     )
     from .evals.harness_retrieval_benchmark import (
         BENCHMARK_VERSION,
+        MAX_CONTEXT_TOKENS_PER_SUCCESS,
+        MAX_FALSE_POSITIVE_RATE,
+        MAX_STALE_PREFERENCE_RATE,
         MIN_CITATION_PRECISION,
+        MIN_NO_ANSWER_ACCURACY,
+        MIN_PROVENANCE_ACCURACY,
         MIN_QUALITY_MRR,
         MIN_QUALITY_NDCG,
         MIN_QUALITY_RECALL,
@@ -3501,6 +3590,20 @@ def harness_scorecard() -> str:
             and float(quality_metrics.get("mrr") or 0.0) >= MIN_QUALITY_MRR
             and float(quality_metrics.get("ndcg_at_k") or 0.0) >= MIN_QUALITY_NDCG
             and float(quality_metrics.get("citation_precision") or 0.0) >= MIN_CITATION_PRECISION
+            and float(quality_metrics.get("false_positive_rate", 1.0)) <= MAX_FALSE_POSITIVE_RATE
+            and float(quality_metrics.get("no_answer_accuracy") or 0.0) >= MIN_NO_ANSWER_ACCURACY
+            and float(quality_metrics.get("stale_record_preference_rate", 1.0))
+            <= MAX_STALE_PREFERENCE_RATE
+            and float(quality_metrics.get("provenance_accuracy") or 0.0)
+            >= MIN_PROVENANCE_ACCURACY
+            and float(
+                quality_metrics.get(
+                    "context_tokens_per_successful_answer",
+                    math.inf,
+                )
+            )
+            <= MAX_CONTEXT_TOKENS_PER_SUCCESS
+            and float(quality_metrics.get("conflict_resolution_accuracy") or 0.0) >= 1.0
             and bool(quality.get("fixture_digest"))
             and bool(benchmark_evidence.get("index_digest"))
             and external_root_qualification.get("status") == "pass"
@@ -3832,11 +3935,15 @@ def harness_search(
     limit: int = 10,
     cfg: Any = None,
 ) -> str:
-    """Search local harness assets.
+    """Search only harness sources enabled in the active runtime.
+
+    External agent-store adapters may be installed while disabled. A Codex,
+    Claude, OpenClaw, Mercury, Pi, or shared-agent filter does not prove that
+    source is active; inspect harness_stats or /harness sources first.
 
     Args:
         query: Search terms.
-        harness_name: Optional harness filter: codex, claude, openclaw, openclaude, mercury, pi, agents.
+        harness_name: Optional currently enabled harness filter.
         kind: Optional kind filter: skill, tool, prompt, memory, wiki, workflow, extension.
         limit: Maximum records.
     """
@@ -3871,6 +3978,8 @@ def harness_search(
             f"- {record['id']}\n"
             f"  title: {record['title']}\n"
             f"  path: {record['path']}\n"
+            f"  authority: {record.get('authority') or 'source'}\n"
+            f"  verified_at: {record.get('verified_at') or record.get('updated') or 'unknown'}\n"
             f"  summary: {record.get('description') or record.get('summary', '')[:220]}"
         )
     return "\n".join(lines)

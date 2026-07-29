@@ -11365,7 +11365,7 @@ Tests:
 ## Algo CLI Runtime Self-Evaluation Notes
 
 ### Harness Scorecard
-Algo CLI exposes `/harness score` and the model-callable `harness_scorecard` tool as an evidence-backed v2 scorecard. It has exactly ten scored gates worth one point each; a 10/10 requires every gate to pass:
+Algo CLI exposes `/harness score` and the model-callable `harness_scorecard` tool as an evidence-backed v3 scorecard. It has exactly ten scored gates worth one point each; a 10/10 requires every gate to pass:
 
 1. persisted index integrity and freshness,
 2. active-model embedding completion,
@@ -11378,7 +11378,18 @@ Algo CLI exposes `/harness score` and the model-callable `harness_scorecard` too
 9. a bounded retrieval correctness/performance benchmark, and
 10. a live production-path algorithm-effectiveness probe.
 
-The retrieval benchmark runs five fixed canaries across three stability passes, requires the canonical ALGO record at top-1, checks adaptive stable-top-k parity, and compares five cold BM25 build/query samples against nine reusable-index samples after three warmups. Correctness failures fail the gate; reusable speedup below `1.5x`, insufficient samples, or warm MAD ratio above `0.25` warn and prevent 10/10.
+The retrieval benchmark runs five persisted-index canaries across three stability
+passes, requires the canonical ALGO record at top-1, checks adaptive
+stable-top-k parity, and compares five cold BM25 build/query samples against
+nine reusable-index samples after three warmups. A separate frozen 13-case
+quality pack covers exact and paraphrased requests, misspellings, English and
+Spanish code switching, multi-record answers, cross-source reconciliation,
+stale/current preference, live-runtime conflicts, and attractive no-answer
+queries. It reports Recall@5, MRR, nDCG@10, citation precision, false-positive
+rate, no-answer accuracy, stale-record preference, provenance accuracy,
+conflict resolution, and context tokens per successful answer. Correctness
+failures fail the gate; reusable speedup below `1.5x`, insufficient samples, or
+warm MAD ratio above `0.25` warn and prevent 10/10.
 
 The algorithm probe runs real production paths without a network/model call. It verifies BM25 provenance and cache reuse, exact-vector score and normalized-matrix reuse, RRF mode/coverage/arithmetic and dual-source provenance, the heap branch of adaptive top-k, a Window TinyLFU cache hit with bounded state, value-aware embedding tier arithmetic, and durable-memory admission with duplicate/secret rejection plus metadata-only persistence. All seven checks must pass.
 

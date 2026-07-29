@@ -768,6 +768,16 @@ def test_available_actions_exposes_harness_maintenance_loop():
     assert any("harness_stats" in item and "harness_refresh" in item for item in payload["verification_layer"])
 
 
+def test_available_actions_presents_know_act_verify_surface():
+    payload = json.loads(tools.available_actions())
+
+    assert set(payload["conceptual_surface"]) == {"KNOW", "ACT", "VERIFY"}
+    assert "harness_search" in payload["conceptual_surface"]["KNOW"]["routes"]
+    assert "Agent Blocks" in payload["conceptual_surface"]["ACT"]["routes"]
+    assert "live capability registry" in payload["conceptual_surface"]["VERIFY"]["routes"]
+    assert "/route TASK" in payload["route_observability"]
+
+
 def test_available_actions_exposes_runtime_agent_threads():
     payload = json.loads(tools.available_actions("agent"))
 
@@ -1023,10 +1033,10 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     )
     monkeypatch.setattr(tools, "query_knowledge_graph", lambda _query: "project:algo-cli  (187 edges)")
     monkeypatch.setattr(
-        harness_retrieval_benchmark,
-        "run_harness_retrieval_benchmark",
-        lambda: {
-            "benchmark_version": "harness-retrieval-v2",
+            harness_retrieval_benchmark,
+            "run_harness_retrieval_benchmark",
+            lambda: {
+                "benchmark_version": "harness-retrieval-v3",
             "status": "pass",
             "reason": "canaries and reusable-index benchmark passed",
             "correctness": {"passed": True, "stable_rankings": True},
@@ -1038,8 +1048,14 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
                     "case_count": 2,
                     "recall_at_k": 1.0,
                     "mrr": 1.0,
-                    "ndcg_at_k": 1.0,
-                    "citation_precision": 1.0,
+                        "ndcg_at_k": 1.0,
+                        "citation_precision": 1.0,
+                        "false_positive_rate": 0.0,
+                        "no_answer_accuracy": 1.0,
+                        "stale_record_preference_rate": 0.0,
+                        "provenance_accuracy": 1.0,
+                        "context_tokens_per_successful_answer": 100.0,
+                        "conflict_resolution_accuracy": 1.0,
                 },
                 "fixture_digest": "quality123",
                 "cases": [

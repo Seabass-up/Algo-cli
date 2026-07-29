@@ -101,7 +101,11 @@ def test_hybrid_search_exposes_bm25_vector_and_rrf_provenance() -> None:
     assert results[0]["rank_sources"] == ["keyword", "vector"]
     assert results[0]["rank_provenance"]["lexical_score"] > 0
     assert results[0]["rank_provenance"]["vector_score"] == 1.0
-    assert results[0]["rank_provenance"]["rrf_score"] == results[0]["score"]
+    assert (
+        results[0]["rank_provenance"]["rrf_score"]
+        == results[0]["rank_provenance"]["rrf_relevance_score"]
+    )
+    assert results[0]["rank_provenance"]["authority_adjusted_score"] == results[0]["score"]
 
 
 def test_partial_embedding_coverage_does_not_hide_exact_lexical_hit() -> None:

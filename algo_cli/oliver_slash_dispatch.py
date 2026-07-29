@@ -109,6 +109,10 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/reload", "Reload configuration, tools, and harness state"),
     ("/harness", "Inspect harness index health"),
     ("/harness status", "Show harness index status and quality"),
+    ("/harness sources", "Show live source-adapter enablement and availability"),
+    ("/harness explain", "Explain the latest retrieval with a content-free trace"),
+    ("/harness conflicts", "Show structured conflicts from the latest retrieval"),
+    ("/harness stale", "List records excluded as stale, historical, or superseded"),
     ("/harness refresh", "Refresh harness index"),
     ("/harness embed", "Embed pending harness records"),
     ("/harness score", "Run the ten-gate benchmark and algorithm-effectiveness scorecard"),
@@ -160,6 +164,10 @@ class SlashCommandCompleter(Completer):
 _PATH_SLASH_COMMANDS = frozenset({"/cd", "/read", "/ls"})
 _HARNESS_SUBCOMMANDS = (
     "status",
+    "sources",
+    "explain",
+    "conflicts",
+    "stale",
     "refresh",
     "embed",
     "score",
@@ -169,7 +177,7 @@ _HARNESS_SUBCOMMANDS = (
     "benchmark-embed",
 )
 _HARNESS_USAGE = (
-    "Usage: /harness [status|refresh|embed|score|compare|build-rust] or "
+    "Usage: /harness [status|sources|explain|conflicts|stale|refresh|embed|score|compare|build-rust] or "
     "/harness external [on|off|status] or "
     "/harness benchmark-embed [--count N] [--model NAME]. "
     "Search with /hsearch (alias /hs); read with /hread (alias /hr)."
@@ -203,6 +211,9 @@ def harness_subcommand_error(arg: str) -> str:
         "status",
         "stats",
         "quality",
+        "sources",
+        "conflicts",
+        "stale",
         "refresh",
         "embed",
         "score",
@@ -1290,12 +1301,70 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         harness_parts = harness_arg.split(maxsplit=1)
         subcommand = harness_parts[0].lower() if harness_parts else ""
         subargs = harness_parts[1] if len(harness_parts) > 1 else ""
-        if subargs and subcommand not in {"benchmark-embed", "external"}:
+        if subargs and subcommand not in {"benchmark-embed", "external", "explain"}:
             m.show_error(harness_subcommand_error(harness_arg))
         elif subcommand == "refresh":
             m.console.print(harness_refresh())
         elif subcommand in {"", "status", "stats", "quality"}:
             m.console.print(harness_stats())
+        elif subcommand == "sources":
+            source_index = harness.load_index()
+            records = [
+                record
+                for record in (source_index.get("records", []) or [])
+                if isinstance(record, dict)
+            ]
+            source_diagnostics = harness.source_roots_diagnostics(records)
+            source_diagnostics["last_refresh"] = (
+                source_index.get("generated") or None
+            )
+            source_diagnostics["index_stale"] = harness.index_is_stale(
+                allow_cached=True
+            )
+            m.console.print(
+                json.dumps(
+                    source_diagnostics,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif subcommand == "explain":
+            explain_arg = (subargs or "last").strip().lower()
+            if explain_arg not in {"", "last"}:
+                m.show_error("Usage: /harness explain [LAST]")
+            else:
+                trace = harness.last_retrieval_trace()
+                m.console.print(
+                    json.dumps(
+                        trace or {
+                            "status": "unavailable",
+                            "reason": "No retrieval has run in this process.",
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+        elif subcommand == "conflicts":
+            conflicts = harness.last_retrieval_conflicts()
+            m.console.print(
+                json.dumps(
+                    {
+                        "status": "conflict" if conflicts else "clear",
+                        "count": len(conflicts),
+                        "conflicts": conflicts,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif subcommand == "stale":
+            m.console.print(
+                json.dumps(
+                    harness.stale_record_summary(),
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
         elif subcommand in {"score", "scorecard", "grade", "rating"}:
             m.console.print(harness_scorecard())
         elif subcommand in {"compare", "competitive"}:

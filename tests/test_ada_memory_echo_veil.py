@@ -559,6 +559,9 @@ def test_normal_operations_release_distinct_profile_leases(
 
     assert first["lease_id"] == 1
     assert second["lease_id"] == 2
+    assert first["recall_status"] == "empty"
+    assert first["retrieval_mode"] == "semantic"
+    assert second["recall_status"] == "empty"
     assert opened == [1, 2]
     assert closed == [1, 2]
 
@@ -593,6 +596,7 @@ def test_normal_operation_releases_profile_lease_after_failure(
         )
 
     assert closed == [True]
+    assert memory_echo_veil._LAST_RECALL_STATUS == "blocked"
 
 
 def test_required_mode_blocks_write_when_crypto_cannot_initialize(
@@ -888,8 +892,109 @@ def test_readiness_exposes_independent_runtime_facts(
     assert readiness["host_profile_lease"] == "per-operation"
     assert readiness["shared_profile_safe"] is True
     assert readiness["key_id"] == "ev-0123456789abcdef"
+    assert readiness["operational_state"] == "healthy"
+    assert readiness["shield_available"] is True
+    assert readiness["semantic_recall_active"] is True
+    assert readiness["retrieval_mode"] == "semantic"
+    assert readiness["layers_available"] == [
+        "live",
+        "short_term",
+        "long_term",
+        "contextual_logic",
+    ]
+    assert readiness["recall_readiness"] == "ready"
+    assert readiness["last_recall_status"] == "not_run"
+    assert readiness["mutation_permitted"] is True
+    assert readiness["remediation"] == "No remediation required."
     assert "key_path" not in readiness
     assert "module_origin" not in readiness
+
+
+@pytest.mark.parametrize(
+    ("facts", "expected_state", "expected_mode", "mutation_permitted"),
+    [
+        (
+            {"installed": False, "enabled": False, "version_supported": False},
+            "unavailable",
+            "unavailable",
+            False,
+        ),
+        (
+            {"installed": True, "enabled": True, "version_supported": False},
+            "misconfigured",
+            "blocked",
+            False,
+        ),
+        (
+            {
+                "installed": True,
+                "enabled": True,
+                "version_supported": True,
+                "crypto_initialized": False,
+            },
+            "locked",
+            "blocked",
+            False,
+        ),
+        (
+            {
+                "installed": True,
+                "enabled": True,
+                "version_supported": True,
+                "crypto_initialized": True,
+                "index_wired": False,
+                "retrieval_wired": False,
+            },
+            "index_stale",
+            "blocked",
+            False,
+        ),
+        (
+            {
+                "installed": True,
+                "enabled": True,
+                "version_supported": True,
+                "all_records_shielded": True,
+                "shielded_read_only_ready": True,
+                "semantic_available": False,
+            },
+            "degraded_read_only",
+            "conservative_keyed_read_only",
+            False,
+        ),
+        (
+            {
+                "installed": True,
+                "enabled": True,
+                "version_supported": True,
+                "all_records_shielded": True,
+                "local_protection_ready": True,
+                "retrieval_wired": True,
+                "write_wired": True,
+                "semantic_available": True,
+                "writes_available": True,
+            },
+            "healthy",
+            "semantic",
+            True,
+        ),
+    ],
+)
+def test_operator_diagnostics_classify_actionable_echo_states(
+    facts: dict[str, object],
+    expected_state: str,
+    expected_mode: str,
+    mutation_permitted: bool,
+) -> None:
+    from algo_cli import memory_echo_veil
+
+    diagnostics = memory_echo_veil.classify_echo_veil_operational_state(facts)
+
+    assert diagnostics["operational_state"] == expected_state
+    assert diagnostics["retrieval_mode"] == expected_mode
+    assert diagnostics["mutation_permitted"] is mutation_permitted
+    assert diagnostics["last_recall_status"] == "not_run"
+    assert diagnostics["remediation"]
 
 
 def test_bridge_forwards_full_protected_lifecycle_contract(

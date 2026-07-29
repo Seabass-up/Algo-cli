@@ -280,6 +280,17 @@ def test_system_prompt_does_not_disclose_absolute_workspace_or_identity_paths(tm
     assert "Relative tool paths resolve from the active session workspace" in prompt
 
 
+def test_system_prompt_uses_live_capability_registry_for_external_sources(monkeypatch):
+    cfg = Config(external_harness_sources_enabled=False)
+    monkeypatch.setattr(main.harness, "_EXTERNAL_SOURCES_ENABLED", False)
+
+    prompt = context_budget.build_system_prompt(cfg)
+
+    assert "External-store support is installed but disabled" in prompt
+    assert "only algo-cli and explicitly configured roots are searchable" in prompt
+    assert "External local agent stores are enabled for this session" not in prompt
+
+
 def test_chatgpt_login_device_code_flag_uses_codex_device_flow(monkeypatch):
     infos: list[str] = []
     errors: list[str] = []

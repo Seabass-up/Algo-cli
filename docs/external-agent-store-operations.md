@@ -2,14 +2,24 @@
 title: External Agent Store Operations
 description: Opt-in discovery, provenance, conflicts, refresh, and recovery for external harness context.
 tags: [harness, external-store, operations, privacy, recovery]
-status: active
-updated: 2026-07-24
-last_reviewed: 2026-07-24
+status: support-documentation
+authority: generated-doc
+updated: 2026-07-29
+verified_at: 2026-07-29T00:00:00Z
+scope:
+  project: algo-cli
+  platform: "*"
+  version: "0.18.0"
+last_reviewed: 2026-07-29
 runtime_version: "Algo CLI v0.18.0"
 verification_revision: "215d7cb044fd530809af7c9d0a375e1d3bb792d5"
 ---
 
 # External Agent Store Operations
+
+This is support documentation, not evidence that any connector is active.
+The `harness.external_agent_stores` live capability record and `/harness
+sources` output are authoritative for the current process.
 
 External stores are disabled by default. Enable them only when local Codex, Claude, OpenClaw, `.agents`, Mercury, CLI Agent, or Pi content may safely enter provider prompts.
 

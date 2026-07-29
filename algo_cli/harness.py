@@ -26,7 +26,7 @@ except ImportError:
     _np = None  # type: ignore[assignment]
     _NUMPY = False
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -61,12 +61,21 @@ EMBED_PRIORITY_TIERS = (
 )
 STALE_CHECK_TTL_S = 2.0  # coalesce repeated source-tree walks within one turn
 RETRIEVAL_SNIPPET_CHARS = 400
+DEFAULT_CONTEXT_TOKEN_BUDGET = 1_200
+MIN_VECTOR_SIMILARITY = 0.45
+RECORD_AUTHORITY_WEIGHTS: dict[str, float] = {
+    "runtime": 1.0,
+    "source": 0.94,
+    "user-curated": 0.90,
+    "generated-doc": 0.72,
+    "historical": 0.25,
+}
 REVIEWED_ALGO_REL = "ALGO.md"
 REVIEWED_ALGO_TITLE = "ALGO reviewed algorithm pattern catalog"
 REVIEWED_ALGO_DESCRIPTION = (
-    "Canonical reviewed Algo algorithm and pattern catalog. Use for Algo CLI harness self-evaluation, "
-    "capability audits, action registry/selfcheck guidance, memory/wiki quality, and runtime context review. "
-    "Read and update docs/ALGO.md."
+    "Canonical reviewed Algo algorithm and pattern catalog. Use this catalog to rate your harness, "
+    "run Algo CLI self-evaluation, audit capabilities, review the action registry/selfcheck, "
+    "assess memory/wiki quality, and inspect runtime context. Read and update docs/ALGO.md."
 )
 REVIEWED_ALGO_TAGS = (
     "algorithm",
@@ -109,6 +118,34 @@ CODEX_PLUGIN_CONNECTOR_PATTERNS = ("*/.app.json",)
 CODEX_PLUGIN_MCP_PATTERNS = ("*/.mcp.json",)
 CODEX_PLUGIN_COMMAND_PATTERNS = ("*/commands/*.md",)
 CODEX_PLUGIN_AGENT_PATTERNS = ("*/agents/*.yaml", "*/skills/*/agents/*.yaml")
+ALLOWED_CONFIGURED_SOURCE_SUFFIXES = frozenset(
+    {
+        ".bat",
+        ".cmd",
+        ".csv",
+        ".go",
+        ".java",
+        ".js",
+        ".json",
+        ".jsonl",
+        ".jsx",
+        ".kt",
+        ".md",
+        ".mdx",
+        ".ps1",
+        ".py",
+        ".rs",
+        ".sh",
+        ".sql",
+        ".swift",
+        ".toml",
+        ".ts",
+        ".tsx",
+        ".txt",
+        ".yaml",
+        ".yml",
+    }
+)
 # Configurable via ALGO_CLI_QUERY_VEC_CACHE_SIZE env var (default 32)
 _QUERY_VEC_CACHE_SIZE_DEFAULT = 32
 try:
@@ -153,6 +190,8 @@ _ID_LOOKUP: dict[str, dict[str, Any]] | None = None
 _QUERY_VEC_CACHE: WindowTinyLFUCache[tuple[str, str], list[float]] = WindowTinyLFUCache(
     max(1, QUERY_VEC_CACHE_SIZE)
 )
+_LAST_RETRIEVAL_TRACE: dict[str, Any] = {}
+_LAST_RETRIEVAL_RESULT_IDS: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -198,7 +237,9 @@ def _metadata_only_json(path: Path) -> bool:
 # result has identical shape regardless of which retrieval surfaced it.
 _RESULT_FIELDS: tuple[str, ...] = (
     "id", "harness", "kind", "title", "path", "relative_path",
-    "description", "tags", "summary", "snippet", "updated", "score",
+    "description", "tags", "summary", "snippet", "status", "updated",
+    "authority", "valid_from", "valid_until", "verified_at", "supersedes",
+    "conflicts_with", "scope", "claims", "score",
 )
 
 
@@ -569,6 +610,21 @@ def _markdown_heading_text(path: Path, *, limit: int = MAX_HEADING_INDEX_TEXT) -
     return " ".join(headings)[:limit]
 
 
+def _frontmatter_value(value: str) -> Any:
+    raw = value.strip()
+    if raw.startswith("[") and raw.endswith("]"):
+        return [
+            item.strip().strip("\"'")
+            for item in raw[1:-1].split(",")
+            if item.strip()
+        ]
+    if raw.casefold() in {"true", "false"}:
+        return raw.casefold() == "true"
+    if raw.casefold() in {"null", "none", "~"}:
+        return None
+    return raw.strip("\"'")
+
+
 def parse_frontmatter(text: str) -> dict[str, Any]:
     if not text.startswith("---"):
         return {}
@@ -576,15 +632,24 @@ def parse_frontmatter(text: str) -> dict[str, Any]:
     if end == -1:
         return {}
     data: dict[str, Any] = {}
+    parent_key: str | None = None
     for line in text[3:end].splitlines():
         if ":" not in line:
             continue
+        indentation = len(line) - len(line.lstrip())
         key, value = line.split(":", 1)
-        value = value.strip()
-        if value.startswith("[") and value.endswith("]"):
-            data[key.strip()] = [item.strip().strip("\"'") for item in value[1:-1].split(",") if item.strip()]
+        normalized_key = key.strip()
+        if not normalized_key:
+            continue
+        if indentation and parent_key and isinstance(data.get(parent_key), dict):
+            data[parent_key][normalized_key] = _frontmatter_value(value)
+            continue
+        parent_key = None
+        if not value.strip():
+            data[normalized_key] = {}
+            parent_key = normalized_key
         else:
-            data[key.strip()] = value.strip("\"'")
+            data[normalized_key] = _frontmatter_value(value)
     return data
 
 
@@ -637,6 +702,91 @@ def is_excluded_from_retrieval(record: dict[str, Any]) -> bool:
     if status in {"historical", "backlog", "superseded"}:
         return True
     return False
+
+
+def _parse_record_time(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def record_truth_factors(
+    record: dict[str, Any],
+    *,
+    as_of: datetime | None = None,
+    scope: dict[str, str] | None = None,
+) -> dict[str, float]:
+    """Return bounded authority/freshness/scope/verification rank factors."""
+
+    authority_name = str(record.get("authority") or "source").strip().casefold()
+    authority = RECORD_AUTHORITY_WEIGHTS.get(authority_name, 0.65)
+    now = (as_of or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    status = str(record.get("status") or "").strip().casefold()
+    verified = _parse_record_time(record.get("verified_at") or record.get("updated"))
+    valid_from = _parse_record_time(record.get("valid_from"))
+    valid_until = _parse_record_time(record.get("valid_until"))
+    if status in {"historical", "backlog", "superseded", "archived"}:
+        freshness = 0.20
+    elif valid_from is not None and valid_from > now:
+        freshness = 0.10
+    elif valid_until is not None and valid_until < now:
+        freshness = 0.25
+    elif verified is None:
+        freshness = 0.82
+    else:
+        age_days = max(0.0, (now - verified).total_seconds() / 86_400.0)
+        if age_days <= 30:
+            freshness = 1.0
+        elif age_days <= 180:
+            freshness = 0.95
+        elif age_days <= 365:
+            freshness = 0.90
+        elif age_days <= 730:
+            freshness = 0.80
+        else:
+            freshness = 0.70
+    verification = 1.0 if verified is not None else 0.88
+    requested_scope = scope or {
+        "project": "algo-cli",
+        "platform": sys.platform,
+    }
+    record_scope = record.get("scope")
+    scope_match = 1.0
+    if isinstance(record_scope, dict):
+        for key, expected in requested_scope.items():
+            actual = str(record_scope.get(key) or "*")
+            if actual not in {"*", "", str(expected)}:
+                scope_match *= 0.75
+    return {
+        "authority": round(authority, 6),
+        "freshness": round(freshness, 6),
+        "scope_match": round(scope_match, 6),
+        "verification": round(verification, 6),
+    }
+
+
+def authority_adjusted_score(
+    relevance: float,
+    record: dict[str, Any],
+    *,
+    as_of: datetime | None = None,
+    scope: dict[str, str] | None = None,
+) -> tuple[float, dict[str, float]]:
+    """Apply the documented truth factors without inventing probability."""
+
+    factors = record_truth_factors(record, as_of=as_of, scope=scope)
+    multiplier = math.prod(factors.values())
+    return float(relevance) * multiplier, {
+        **factors,
+        "truth_multiplier": round(multiplier, 6),
+    }
 
 
 def load_mercury_stop_conditions(*, max_chars: int = 6000) -> str:
@@ -705,16 +855,31 @@ def resolve_record_kind(root: SourceRoot, rel: str) -> str:
 def iter_files(root: SourceRoot) -> list[Path]:
     if not root.root.exists():
         return []
+    try:
+        root_resolved = root.root.resolve(strict=True)
+    except OSError:
+        return []
     seen: dict[str, Path] = {}
     for current, dirs, files in os.walk(root.root):
         if len(seen) >= root.max_files:
             break
-        dirs[:] = [name for name in dirs if name not in _SKIP_DIRS]
         current_path = Path(current)
+        dirs[:] = [
+            name
+            for name in dirs
+            if name not in _SKIP_DIRS
+            and not (current_path / name).is_symlink()
+        ]
         for filename in files:
             if len(seen) >= root.max_files:
                 break
             path = current_path / filename
+            if path.is_symlink():
+                continue
+            try:
+                path.resolve(strict=True).relative_to(root_resolved)
+            except (OSError, ValueError):
+                continue
             try:
                 rel = path.relative_to(root.root).as_posix()
             except ValueError:
@@ -773,6 +938,100 @@ def _unique_tags(values: list[str]) -> list[str]:
         tags.append(tag)
         seen.add(key)
     return tags
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _record_authority(
+    root: SourceRoot,
+    path: Path,
+    *,
+    kind: str,
+    status: str,
+    frontmatter: dict[str, Any],
+) -> str:
+    explicit = str(frontmatter.get("authority") or "").strip().casefold()
+    if explicit in RECORD_AUTHORITY_WEIGHTS:
+        return explicit
+    if status.casefold() in {"historical", "backlog", "superseded", "archived"}:
+        return "historical"
+    if root.harness != "algo-cli":
+        return "source"
+    if _path_is_within(path, CONFIG_DIR):
+        return "user-curated"
+    if kind in {"tool", "model"}:
+        return "source"
+    return "generated-doc"
+
+
+def _record_scope(
+    root: SourceRoot,
+    frontmatter: dict[str, Any],
+) -> dict[str, str]:
+    raw_scope = frontmatter.get("scope")
+    scope = raw_scope if isinstance(raw_scope, dict) else {}
+    project = str(scope.get("project") or ("algo-cli" if root.harness == "algo-cli" else "*"))
+    platform = str(scope.get("platform") or "*")
+    version = str(scope.get("version") or "*")
+    return {
+        "project": project[:128],
+        "platform": platform[:64],
+        "version": version[:64],
+    }
+
+
+def _record_claims(frontmatter: dict[str, Any]) -> dict[str, Any]:
+    raw_claims = frontmatter.get("claims")
+    if not isinstance(raw_claims, dict):
+        return {}
+    claims: dict[str, Any] = {}
+    for key, value in list(raw_claims.items())[:32]:
+        normalized = str(key).strip()[:160]
+        if not normalized or not isinstance(value, (str, int, float, bool, type(None))):
+            continue
+        claims[normalized] = value
+    return claims
+
+
+def _truth_metadata(
+    root: SourceRoot,
+    path: Path,
+    *,
+    kind: str,
+    status: str,
+    updated: str,
+    frontmatter: dict[str, Any],
+) -> dict[str, Any]:
+    verified_at = str(frontmatter.get("verified_at") or updated).strip()
+    valid_from = str(frontmatter.get("valid_from") or verified_at).strip()
+    raw_valid_until = frontmatter.get("valid_until")
+    valid_until = (
+        str(raw_valid_until).strip()
+        if raw_valid_until is not None and raw_valid_until != ""
+        else None
+    )
+    return {
+        "authority": _record_authority(
+            root,
+            path,
+            kind=kind,
+            status=status,
+            frontmatter=frontmatter,
+        ),
+        "valid_from": valid_from,
+        "valid_until": valid_until,
+        "verified_at": verified_at,
+        "supersedes": _coerce_tags(frontmatter.get("supersedes"))[:32],
+        "conflicts_with": _coerce_tags(frontmatter.get("conflicts_with"))[:32],
+        "scope": _record_scope(root, frontmatter),
+        "claims": _record_claims(frontmatter),
+    }
 
 
 def _json_record_metadata(path: Path, text: str) -> dict[str, Any]:
@@ -873,7 +1132,6 @@ def _normalize_reviewed_algo_record(record: dict[str, Any]) -> dict[str, Any]:
             updated.get("title", ""),
             updated.get("description", ""),
             " ".join(tags),
-            updated.get("status", ""),
             updated.get("relative_path", ""),
             updated.get("index_text") or updated.get("summary", ""),
             updated.get("heading_text", ""),
@@ -883,6 +1141,67 @@ def _normalize_reviewed_algo_record(record: dict[str, Any]) -> dict[str, Any]:
         updated["search_text"] = search_text
         updated.pop("embedding", None)
         updated.pop("embedding_model", None)
+    return updated
+
+
+def _normalize_record_truth_metadata(record: dict[str, Any]) -> dict[str, Any]:
+    """Backfill the truth contract on indexes created before the contract existed."""
+
+    updated = dict(record)
+    status = str(updated.get("status") or "active").strip().casefold()
+    harness_name = str(updated.get("harness") or "").strip().casefold()
+    kind = str(updated.get("kind") or "").strip().casefold()
+    authority = str(updated.get("authority") or "").strip().casefold()
+    if authority not in RECORD_AUTHORITY_WEIGHTS:
+        if status in {"historical", "backlog", "superseded", "archived"}:
+            authority = "historical"
+        elif kind == "runtime_capability":
+            authority = "runtime"
+        elif harness_name != "algo-cli":
+            authority = "source"
+        else:
+            raw_path = str(updated.get("path") or "")
+            try:
+                user_curated = bool(raw_path) and _path_is_within(
+                    Path(raw_path),
+                    CONFIG_DIR,
+                )
+            except (OSError, ValueError):
+                user_curated = False
+            if user_curated:
+                authority = "user-curated"
+            elif kind in {"tool", "model"}:
+                authority = "source"
+            else:
+                authority = "generated-doc"
+    verified_at = str(
+        updated.get("verified_at") or updated.get("updated") or ""
+    ).strip()
+    valid_from = str(updated.get("valid_from") or verified_at).strip()
+    raw_scope = updated.get("scope")
+    scope = raw_scope if isinstance(raw_scope, dict) else {}
+    normalized_scope = {
+        "project": str(
+            scope.get("project")
+            or ("algo-cli" if harness_name == "algo-cli" else "*")
+        )[:128],
+        "platform": str(scope.get("platform") or "*")[:64],
+        "version": str(scope.get("version") or "*")[:64],
+    }
+    claims = updated.get("claims")
+    updated.update(
+        {
+            "status": status,
+            "authority": authority,
+            "valid_from": valid_from,
+            "valid_until": updated.get("valid_until") or None,
+            "verified_at": verified_at,
+            "supersedes": _coerce_tags(updated.get("supersedes"))[:32],
+            "conflicts_with": _coerce_tags(updated.get("conflicts_with"))[:32],
+            "scope": normalized_scope,
+            "claims": claims if isinstance(claims, dict) else {},
+        }
+    )
     return updated
 
 
@@ -897,7 +1216,9 @@ def _normalize_index_records(index: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(record, dict):
             normalized.append(record)
             continue
-        normalized_record = _normalize_reviewed_algo_record(record)
+        normalized_record = _normalize_reviewed_algo_record(
+            _normalize_record_truth_metadata(record)
+        )
         normalized.append(normalized_record)
         if normalized_record != record:
             changed = True
@@ -956,7 +1277,22 @@ def make_record(root: SourceRoot, path: Path, *, stat_result: Any | None = None)
         if root.harness == "algo-cli" and rel == REVIEWED_ALGO_REL
         else ""
     )
-    status = str(fm.get("status", "") or "").strip()
+    status = str(fm.get("status", "active") or "active").strip()
+    updated = str(
+        fm.get("updated")
+        or datetime.fromtimestamp(
+            stat_result.st_mtime,
+            tz=timezone.utc,
+        ).isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
+    truth_metadata = _truth_metadata(
+        root,
+        path,
+        kind=kind,
+        status=status,
+        updated=updated,
+        frontmatter=fm,
+    )
     search_text = " ".join(
         str(value)
         for value in (
@@ -967,6 +1303,8 @@ def make_record(root: SourceRoot, path: Path, *, stat_result: Any | None = None)
             description,
             " ".join(tags),
             status,
+            truth_metadata["authority"],
+            " ".join(truth_metadata["scope"].values()),
             rel,
             index_text,
             heading_text,
@@ -982,7 +1320,7 @@ def make_record(root: SourceRoot, path: Path, *, stat_result: Any | None = None)
         "description": description,
         "tags": tags,
         "status": status,
-        "updated": fm.get("updated") or datetime.fromtimestamp(stat_result.st_mtime).isoformat(timespec="seconds"),
+        "updated": updated,
         "file_size": int(stat_result.st_size),
         "file_mtime_ns": int(stat_result.st_mtime_ns),
         "links": links,
@@ -990,6 +1328,7 @@ def make_record(root: SourceRoot, path: Path, *, stat_result: Any | None = None)
         "index_text": index_text,
         "heading_text": heading_text,
         "search_text": search_text,
+        **truth_metadata,
     }
     return _normalize_reviewed_algo_record(record)
 
@@ -997,7 +1336,7 @@ def make_record(root: SourceRoot, path: Path, *, stat_result: Any | None = None)
 def _runtime_capability_records(
     previous: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Materialize ActionSpecs as stable, retrievable runtime knowledge."""
+    """Materialize the live typed registry as retrievable runtime knowledge."""
     from . import action_registry
 
     source_path = Path(action_registry.__file__).resolve()
@@ -1005,7 +1344,10 @@ def _runtime_capability_records(
         source_stat = source_path.stat()
         file_size = int(source_stat.st_size)
         file_mtime_ns = int(source_stat.st_mtime_ns)
-        updated = datetime.fromtimestamp(source_stat.st_mtime).isoformat(timespec="seconds")
+        updated = datetime.fromtimestamp(
+            source_stat.st_mtime,
+            tz=timezone.utc,
+        ).isoformat(timespec="seconds").replace("+00:00", "Z")
     except OSError:
         file_size = file_mtime_ns = 0
         updated = ""
@@ -1015,7 +1357,11 @@ def _runtime_capability_records(
         if isinstance(record, dict) and record.get("kind") == "runtime_capability"
     }
     records: list[dict[str, Any]] = []
-    for spec in action_registry.list_action_specs(include_archived=True):
+    capabilities = action_registry.capability_registry_snapshot(
+        include_archived=True,
+    )
+    for capability in capabilities:
+        spec = capability.spec
         record_id_value = f"algo-cli:runtime_capability:{spec.name}"
         limitations = " ".join(spec.known_limitations) or "No registry limitation recorded."
         prerequisites = " ".join(spec.prerequisites) or "No extra prerequisite recorded."
@@ -1029,19 +1375,27 @@ def _runtime_capability_records(
                     "mutating" if spec.mutates_state else "read-only",
                     "approval-required" if spec.requires_approval else "no-approval",
                     "network-required" if spec.requires_network else "local-capable",
+                    f"status-{capability.status}",
+                    "model-callable" if capability.model_callable else "not-model-callable",
                     *spec.tags,
                 )
             )
         )
-        status = "archived" if spec.archived else "ready"
+        status = capability.status
         index_text = (
             f"Capability {spec.name}. {spec.description} Group {spec.group}. "
+            f"Live status {status}: {capability.reason} "
+            f"Installed {capability.installed}; enabled {capability.enabled}; "
+            f"authenticated {capability.authenticated}; policy allowed {capability.policy_allowed}; "
+            f"model callable {capability.model_callable}. "
             f"Threat and policy use: {spec.threat_detection_use} "
             f"Risk {spec.risk_level}; mutates state {spec.mutates_state}; "
             f"approval required {spec.requires_approval}; safe retry {spec.safe_retry}; "
             f"network required {spec.requires_network}; provider {spec.requires_provider or 'none'}; "
             f"binaries {' '.join(spec.requires_binary) or 'none'}; "
             f"supported OS {' '.join(spec.supported_os)}. "
+            f"Authority {capability.authority}; "
+            f"scope {json.dumps(dict(capability.scope), sort_keys=True)}. "
             f"Prerequisites: {prerequisites} Limitations and failure modes: {limitations}"
         )[:MAX_INDEX_TEXT]
         search_text = " ".join(
@@ -1074,7 +1428,21 @@ def _runtime_capability_records(
             "index_text": index_text,
             "heading_text": "",
             "search_text": search_text,
-            "capability": spec.as_dict(),
+            "authority": capability.authority,
+            "valid_from": capability.valid_from,
+            "valid_until": capability.valid_until,
+            "verified_at": capability.verified_at,
+            "supersedes": list(capability.supersedes),
+            "conflicts_with": list(capability.conflicts_with),
+            "scope": dict(capability.scope),
+            "claims": {
+                f"capability:{spec.name}:installed": capability.installed,
+                f"capability:{spec.name}:enabled": capability.enabled,
+                f"capability:{spec.name}:authenticated": capability.authenticated,
+                f"capability:{spec.name}:policy_allowed": capability.policy_allowed,
+                f"capability:{spec.name}:model_callable": capability.model_callable,
+            },
+            "capability": capability.as_dict(),
         }
         prior = prior_by_id.get(record_id_value)
         if (
@@ -1131,11 +1499,31 @@ def _parse_extra_source_roots_payload(data: Any) -> tuple[list[SourceRoot], int]
         try:
             if not isinstance(item, dict):
                 raise TypeError("root entry must be an object")
+            enabled = item.get("enabled", True)
+            if not isinstance(enabled, bool):
+                raise TypeError("enabled must be a boolean")
+            if not enabled:
+                continue
+            mode = str(item.get("mode", "read-only")).strip().casefold()
+            if mode != "read-only":
+                raise ValueError("configured source roots must be read-only")
             patterns = item.get("patterns", ["*.md"])
             if not isinstance(patterns, list) or not patterns or not all(
                 isinstance(pattern, str) and pattern.strip() for pattern in patterns
             ):
                 raise TypeError("patterns must be a non-empty string list")
+            normalized_patterns = [pattern.strip().replace("\\", "/") for pattern in patterns]
+            if any(
+                pattern.startswith("/")
+                or "\x00" in pattern
+                or ".." in Path(pattern).parts
+                or Path(pattern).suffix.casefold()
+                not in ALLOWED_CONFIGURED_SOURCE_SUFFIXES
+                for pattern in normalized_patterns
+            ):
+                raise ValueError(
+                    "patterns must be relative allowlisted text or source-code files"
+                )
             harness_name = str(item["harness"]).strip()
             kind = str(item["kind"]).strip()
             root_value = str(item["root"]).strip()
@@ -1147,7 +1535,7 @@ def _parse_extra_source_roots_payload(data: Any) -> tuple[list[SourceRoot], int]
                     harness=harness_name,
                     kind=kind,
                     root=Path(root_value).expanduser(),
-                    patterns=tuple(patterns),
+                    patterns=tuple(normalized_patterns),
                     max_files=max_files,
                 )
             )
@@ -1303,6 +1691,15 @@ def source_roots_diagnostics(records: list[dict[str, Any]] | None = None) -> dic
             "harness/kind/relative_path records in stable source order"
         ),
         "privacy_default": "disabled; explicit opt-in required",
+        "adapter_contract": {
+            "mode": "read-only",
+            "configured_roots_only": True,
+            "allowlisted_file_types": sorted(ALLOWED_CONFIGURED_SOURCE_SUFFIXES),
+            "incremental_indexing": True,
+            "secret_filtering": True,
+            "symlink_and_path_escape_protection": True,
+            "source_mutation": False,
+        },
     }
 
 
@@ -1481,7 +1878,9 @@ def build_index(previous: dict[str, Any] | None = None) -> dict[str, Any]:
     all_roots = all_source_roots()
     if not all_roots and previous:
         prior_records = [
-            _normalize_reviewed_algo_record(record)
+            _normalize_reviewed_algo_record(
+                _normalize_record_truth_metadata(record)
+            )
             for record in (previous.get("records", []) or [])
             if isinstance(record, dict)
         ]
@@ -2815,13 +3214,13 @@ def retrieve_for_query(
         scored: list[tuple[float, dict[str, Any]]] = [
             (float(s), candidates[i])
             for i, s in enumerate(sims)
-            if math.isfinite(float(s)) and s > 0.0
+            if math.isfinite(float(s)) and s >= MIN_VECTOR_SIMILARITY
         ]
     else:
         scored = []
         for record in candidates:
             sim = _cosine(qvec, record["embedding"])
-            if sim > 0.0:
+            if sim >= MIN_VECTOR_SIMILARITY:
                 scored.append((sim, record))
     top_scored = stable_top_k(scored, k, score=lambda pair: pair[0])
     return [{**_slim_record(record), "score": round(float(sim), 4)} for sim, record in top_scored]
@@ -2929,6 +3328,7 @@ def hybrid_search(
     kind: str | None = None,
     rrf_k: int = 60,
     excluded_kinds: set[str] | frozenset[str] | None = None,
+    trace: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Reciprocal Rank Fusion of keyword and vector rankings.
 
@@ -2936,8 +3336,17 @@ def hybrid_search(
     RRF: score(d) = 1/(rrf_k+rank_keyword) + 1/(rrf_k+rank_vector).
     Falls back to keyword-only if embeddings are unavailable.
     """
+    global _LAST_RETRIEVAL_RESULT_IDS, _LAST_RETRIEVAL_TRACE
     pool = k * 3
     excluded = _normalized_excluded_kinds(excluded_kinds)
+    index_records = [
+        record
+        for record in (load_index().get("records", []) or [])
+        if isinstance(record, dict)
+    ]
+    stale_or_historical = sum(
+        1 for record in index_records if is_excluded_from_retrieval(record)
+    )
     keyword_ranked = _rank_keyword_records(
         query,
         harness=harness,
@@ -2945,7 +3354,6 @@ def hybrid_search(
         limit=pool,
         excluded_kinds=excluded,
     )
-    keyword_results = [record for _score, record in keyword_ranked]
     vector_results = retrieve_for_query(
         query,
         embed_fn,
@@ -2983,7 +3391,28 @@ def hybrid_search(
         })
 
     if not raw_scores:
-        return [{**_slim_record(r), "score": 0.0} for r in keyword_results[:k]]
+        empty_trace = {
+            "schema_version": 1,
+            "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
+            "index_records": len(index_records),
+            "lexical_matches": len(keyword_ranked),
+            "dense_matches": len(vector_results),
+            "fused_candidates": 0,
+            "returned": 0,
+            "dropped": {
+                "duplicate_context": 0,
+                "stale_or_historical": stale_or_historical,
+                "scope_mismatch": 0,
+            },
+            "conflict_detected": False,
+            "context_tokens": 0,
+        }
+        _LAST_RETRIEVAL_TRACE = empty_trace
+        _LAST_RETRIEVAL_RESULT_IDS = ()
+        if trace is not None:
+            trace.clear()
+            trace.update(empty_trace)
+        return []
 
     embedded, eligible = _retrieval_embedding_coverage(
         model,
@@ -2997,10 +3426,19 @@ def hybrid_search(
     # index is only partially embedded, that turns embedding availability into a
     # relevance signal. Average the available contributions until coverage is
     # complete so a fresh exact lexical hit is not demoted merely for being new.
-    scores = {
+    relevance_scores = {
         rid: raw_score if coverage_complete else raw_score / max(1, ranker_counts[rid])
         for rid, raw_score in raw_scores.items()
     }
+    truth_factors: dict[str, dict[str, float]] = {}
+    scores: dict[str, float] = {}
+    for rid, relevance_score in relevance_scores.items():
+        adjusted, factors = authority_adjusted_score(
+            relevance_score,
+            id_to_record[rid],
+        )
+        scores[rid] = adjusted
+        truth_factors[rid] = factors
     ranked_ids = stable_top_k(list(scores), k, score=lambda rid: scores[rid])
     results: list[dict[str, Any]] = []
     for rid in ranked_ids:
@@ -3015,33 +3453,329 @@ def hybrid_search(
                 "fusion_mode": fusion_mode,
                 "embedding_coverage": round(embedded / eligible, 6) if eligible else 0.0,
                 "rrf_raw_score": round(raw_scores[rid], 6),
-                "rrf_score": round(scores[rid], 6),
+                "rrf_relevance_score": round(relevance_scores[rid], 6),
+                "rrf_score": round(relevance_scores[rid], 6),
+                "authority_adjusted_score": round(scores[rid], 6),
+                "truth_factors": truth_factors[rid],
             },
         })
+    scope_mismatch = sum(
+        1
+        for rid in raw_scores
+        if truth_factors.get(rid, {}).get("scope_match", 1.0) < 1.0
+    )
+    retrieval_trace = {
+        "schema_version": 1,
+        "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
+        "index_records": len(index_records),
+        "lexical_matches": len(keyword_ranked),
+        "dense_matches": len(vector_results),
+        "fused_candidates": len(raw_scores),
+        "returned": len(results),
+        "dropped": {
+            "duplicate_context": 0,
+            "stale_or_historical": stale_or_historical,
+            "scope_mismatch": scope_mismatch,
+        },
+        "conflict_detected": bool(detect_retrieval_conflicts(results)),
+        "context_tokens": 0,
+    }
+    _LAST_RETRIEVAL_TRACE = retrieval_trace
+    _LAST_RETRIEVAL_RESULT_IDS = tuple(
+        str(result.get("id") or "") for result in results if result.get("id")
+    )
+    if trace is not None:
+        trace.clear()
+        trace.update(retrieval_trace)
     return results
 
 
-def format_retrieved_context(retrieved: list[dict[str, Any]]) -> str:
-    """Render retrieval results as a Markdown block for the system prompt."""
-    if not retrieved:
-        return ""
-    lines = [
-        "The following entries from your local harness are relevant to the current message.",
-        "Use harness_read with the ID to load the full record if you need more depth.",
-        "",
-    ]
-    for rec in retrieved:
-        rid = rec.get("id") or "?"
-        lines.append(f"### {rid}")
-        meta = " · ".join(
-            repair_mojibake(str(value))
-            for value in (rec.get("harness"), rec.get("kind"), rec.get("title"))
-            if value
+def _canonical_claim_value(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _conflict_preference_key(candidate: dict[str, Any]) -> tuple[float, float, float]:
+    authority = RECORD_AUTHORITY_WEIGHTS.get(
+        str(candidate.get("authority") or "source").casefold(),
+        0.65,
+    )
+    verified = _parse_record_time(candidate.get("verified_at"))
+    verified_score = verified.timestamp() if verified is not None else 0.0
+    scope_factor = float(candidate.get("scope_match") or 0.0)
+    return authority, verified_score, scope_factor
+
+
+def detect_retrieval_conflicts(
+    records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Preserve contradictory structured claims and justify any preference."""
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        claims = record.get("claims")
+        if not isinstance(claims, dict):
+            continue
+        factors = record_truth_factors(record)
+        for claim, value in claims.items():
+            grouped.setdefault(str(claim), []).append(
+                {
+                    "value": value,
+                    "source": str(record.get("id") or "?"),
+                    "authority": str(record.get("authority") or "source"),
+                    "verified_at": str(record.get("verified_at") or ""),
+                    "scope_match": factors["scope_match"],
+                }
+            )
+    conflicts: list[dict[str, Any]] = []
+    for claim, candidates in sorted(grouped.items()):
+        if len({_canonical_claim_value(item["value"]) for item in candidates}) < 2:
+            continue
+        ordered = sorted(
+            enumerate(candidates),
+            key=lambda item: (*_conflict_preference_key(item[1]), -item[0]),
+            reverse=True,
         )
-        if meta:
-            lines.append(meta)
-        snippet = rec.get("snippet")
-        if snippet:
-            lines.append(repair_mojibake(str(snippet)))
-        lines.append("")
-    return "\n".join(lines).rstrip()
+        preferred: str | None = None
+        preferred_value: Any = None
+        reason = "No candidate has a justified authority/freshness advantage; ambiguity is preserved."
+        if len(ordered) == 1 or _conflict_preference_key(ordered[0][1]) > _conflict_preference_key(ordered[1][1]):
+            winner = ordered[0][1]
+            preferred = str(winner["source"])
+            preferred_value = winner["value"]
+            reason = "Preferred by higher authority, newer verification, then scope match."
+        conflicts.append(
+            {
+                "status": "conflict",
+                "claim": claim,
+                "candidates": candidates,
+                "preferred": preferred,
+                "preferred_value": preferred_value,
+                "reason": reason,
+            }
+        )
+    return conflicts
+
+
+def _context_fingerprint(record: dict[str, Any]) -> set[str]:
+    text = " ".join(
+        str(record.get(field) or "")
+        for field in ("title", "description", "snippet", "summary")
+    )
+    return set(lexical_tokens(text))
+
+
+def _deduplicate_retrieved_records(
+    records: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    kept: list[dict[str, Any]] = []
+    fingerprints: list[set[str]] = []
+    dropped = 0
+    for record in records:
+        # Claims are never collapsed: competing claim provenance must survive.
+        if isinstance(record.get("claims"), dict) and record.get("claims"):
+            kept.append(record)
+            fingerprints.append(set())
+            continue
+        fingerprint = _context_fingerprint(record)
+        duplicate = False
+        if fingerprint:
+            for existing, existing_fingerprint in zip(kept, fingerprints):
+                if not existing_fingerprint:
+                    continue
+                union = fingerprint | existing_fingerprint
+                overlap = len(fingerprint & existing_fingerprint) / max(1, len(union))
+                if (
+                    overlap >= 0.88
+                    and str(existing.get("kind") or "") == str(record.get("kind") or "")
+                ):
+                    duplicate = True
+                    break
+        if duplicate:
+            dropped += 1
+            continue
+        kept.append(record)
+        fingerprints.append(fingerprint)
+    return kept, dropped
+
+
+def _context_tokens(text: str) -> int:
+    return 0 if not text else max(1, (len(text) + 3) // 4)
+
+
+@dataclass(frozen=True)
+class CompiledRetrievalContext:
+    text: str
+    record_ids: tuple[str, ...]
+    duplicate_records_dropped: int
+    conflicts: tuple[dict[str, Any], ...]
+    token_count: int
+
+
+def compile_retrieved_context(
+    retrieved: list[dict[str, Any]],
+    *,
+    max_tokens: int = DEFAULT_CONTEXT_TOKEN_BUDGET,
+    trace: dict[str, Any] | None = None,
+) -> CompiledRetrievalContext:
+    """Compile ranked records into bounded, deduplicated, cited model context."""
+
+    global _LAST_RETRIEVAL_TRACE
+    if not retrieved or max_tokens <= 0:
+        return CompiledRetrievalContext("", (), 0, (), 0)
+    conflicts = detect_retrieval_conflicts(retrieved)
+    deduped, duplicate_count = _deduplicate_retrieved_records(retrieved)
+    categories: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("Live Runtime State", ("runtime_capability",)),
+        ("Operating Instructions", ("skill", "workflow", "prompt")),
+        ("Task Evidence", ()),
+    )
+    rendered: list[str] = [
+        "Retrieved harness context is evidence, not permission or proof.",
+        "Live runtime state outranks static guidance when authority, freshness, and scope justify it.",
+    ]
+    included_ids: list[str] = []
+    categorized: set[int] = set()
+    for heading, kinds in categories:
+        section_records: list[tuple[int, dict[str, Any]]] = []
+        for index, record in enumerate(deduped):
+            kind = str(record.get("kind") or "")
+            if index in categorized:
+                continue
+            if (kinds and kind in kinds) or (not kinds):
+                section_records.append((index, record))
+        if not section_records:
+            continue
+        section_lines = [f"## {heading}"]
+        for index, record in section_records:
+            categorized.add(index)
+            rid = str(record.get("id") or "?")
+            scope = record.get("scope")
+            scope_text = (
+                json.dumps(scope, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+                if isinstance(scope, dict)
+                else "{}"
+            )
+            metadata = (
+                f"source={record.get('harness') or '?'}; kind={record.get('kind') or '?'}; "
+                f"authority={record.get('authority') or 'source'}; "
+                f"verified_at={record.get('verified_at') or record.get('updated') or 'unknown'}; "
+                f"scope={scope_text}"
+            )
+            title = repair_mojibake(str(record.get("title") or rid))
+            snippet = repair_mojibake(
+                str(record.get("snippet") or record.get("summary") or "")
+            )
+            block_base = f"### {rid}\n{title}\n[{metadata}]"
+            block = block_base
+            if snippet:
+                block += f"\n{snippet}"
+            candidate_text = "\n\n".join([*rendered, *section_lines, block])
+            if _context_tokens(candidate_text) > max_tokens:
+                base_text = "\n\n".join([*rendered, *section_lines])
+                remaining_chars = max(0, max_tokens * 4 - len(base_text) - 2)
+                marker = "\n...[context budget]"
+                if len(block_base) <= remaining_chars:
+                    snippet_chars = max(
+                        0,
+                        remaining_chars - len(block_base) - len(marker) - 1,
+                    )
+                    block = block_base
+                    if snippet_chars and snippet:
+                        block += f"\n{snippet[:snippet_chars].rstrip()}{marker}"
+                    candidate_text = "\n\n".join(
+                        [*rendered, *section_lines, block]
+                    )
+                if _context_tokens(candidate_text) > max_tokens:
+                    continue
+            section_lines.append(block)
+            included_ids.append(rid)
+        if len(section_lines) > 1:
+            rendered.extend(section_lines)
+    if conflicts:
+        conflict_lines = ["## Contradictions"]
+        for conflict in conflicts:
+            candidates = ", ".join(
+                f"{item['source']}={_canonical_claim_value(item['value'])}"
+                for item in conflict["candidates"]
+            )
+            preference = conflict["preferred"] or "unresolved"
+            conflict_lines.append(
+                f"- {conflict['claim']}: {candidates}; preferred={preference}. "
+                f"{conflict['reason']}"
+            )
+        candidate_text = "\n\n".join([*rendered, *conflict_lines])
+        if _context_tokens(candidate_text) <= max_tokens:
+            rendered.extend(conflict_lines)
+    text = "\n\n".join(rendered).rstrip()
+    if _context_tokens(text) > max_tokens:
+        text = text[: max_tokens * 4].rstrip()
+    token_count = _context_tokens(text)
+    target_trace = trace if trace is not None else _LAST_RETRIEVAL_TRACE
+    if target_trace is not None:
+        dropped = target_trace.setdefault("dropped", {})
+        if isinstance(dropped, dict):
+            dropped["duplicate_context"] = duplicate_count
+        target_trace["conflict_detected"] = bool(conflicts)
+        target_trace["context_tokens"] = token_count
+    if trace is not None:
+        _LAST_RETRIEVAL_TRACE = dict(trace)
+    return CompiledRetrievalContext(
+        text=text,
+        record_ids=tuple(included_ids),
+        duplicate_records_dropped=duplicate_count,
+        conflicts=tuple(conflicts),
+        token_count=token_count,
+    )
+
+
+def format_retrieved_context(
+    retrieved: list[dict[str, Any]],
+    *,
+    max_tokens: int = DEFAULT_CONTEXT_TOKEN_BUDGET,
+    trace: dict[str, Any] | None = None,
+) -> str:
+    """Render authority-aware, bounded retrieval context for the system prompt."""
+
+    return compile_retrieved_context(
+        retrieved,
+        max_tokens=max_tokens,
+        trace=trace,
+    ).text
+
+
+def last_retrieval_trace() -> dict[str, Any]:
+    """Return a content-free copy of the latest in-process retrieval trace."""
+
+    return json.loads(json.dumps(_LAST_RETRIEVAL_TRACE))
+
+
+def last_retrieval_conflicts() -> list[dict[str, Any]]:
+    """Return structured conflicts among the latest result IDs."""
+
+    records = [
+        record
+        for record_id in _LAST_RETRIEVAL_RESULT_IDS
+        if (record := get_record(record_id)) is not None
+    ]
+    return detect_retrieval_conflicts(records)
+
+
+def stale_record_summary(*, limit: int = 20) -> dict[str, Any]:
+    """Summarize excluded stale/historical records without reading their bodies."""
+
+    records = [
+        record
+        for record in (load_index().get("records", []) or [])
+        if isinstance(record, dict) and is_excluded_from_retrieval(record)
+    ]
+    return {
+        "count": len(records),
+        "record_ids": [str(record.get("id") or "?") for record in records[: max(0, limit)]],
+        "truncated": len(records) > max(0, limit),
+    }

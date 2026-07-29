@@ -2770,6 +2770,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
         and (json_sink() is None or harness_tools_available)
         and harness_ready
     ):
+        retrieval_trace: dict[str, Any] = {}
         retrieved_context = harness.hybrid_search(
             context_query_message,
             _shared_embed,
@@ -2778,8 +2779,13 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
             excluded_kinds=(
                 {"memory"} if required_memory_protection else None
             ),
+            trace=retrieval_trace,
         )
-        context_block = harness.format_retrieved_context(retrieved_context or [])
+        context_block = harness.format_retrieved_context(
+            retrieved_context or [],
+            trace=retrieval_trace,
+        )
+        cfg.context_state["harness_retrieval_trace"] = retrieval_trace
         if context_block:
             optional_context_blocks.append(
                 OptionalContextBlock("harness", "Relevant Context", context_block)

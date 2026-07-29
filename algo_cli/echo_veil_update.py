@@ -305,7 +305,20 @@ def collect_echo_status(
         try:
             from .ada_memory_echo_veil import get_echo_veil_readiness
 
-            readiness_getter = get_echo_veil_readiness
+            def default_readiness(config_value: object) -> dict[str, Any]:
+                raw_mapping = (
+                    config_value
+                    if isinstance(config_value, dict)
+                    else getattr(config_value, "__dict__", None)
+                )
+                mapping = (
+                    {str(key): value for key, value in raw_mapping.items()}
+                    if isinstance(raw_mapping, dict)
+                    else None
+                )
+                return get_echo_veil_readiness(mapping)
+
+            readiness_getter = default_readiness
         except ImportError:
             readiness_getter = None
     readiness: dict[str, Any] = {}
@@ -817,15 +830,15 @@ def update_echo_veil(
                 )
 
             try:
-                installed = _install_requirement(
+                install_result = _install_requirement(
                     QUALIFIED_ECHO_VEIL_REQUIREMENT,
                     installer=selected_installer,
                     executable=python,
                     runner=runner,
                     cwd=root,
                 )
-                if installed.returncode == 0:
-                    verified = _verify_installed(
+                if install_result.returncode == 0:
+                    verify_result = _verify_installed(
                         executable=python,
                         version=QUALIFIED_ECHO_VEIL_VERSION,
                         commit=QUALIFIED_ECHO_VEIL_COMMIT,
@@ -833,18 +846,19 @@ def update_echo_veil(
                         cwd=root,
                     )
                 else:
-                    verified = installed
+                    verify_result = install_result
+                installed = install_result
+                verified = verify_result
+                failure_details = _bounded_details(
+                    install_result.stdout,
+                    install_result.stderr,
+                    verify_result.stdout,
+                    verify_result.stderr,
+                )
             except (OSError, subprocess.TimeoutExpired) as exc:
                 installed = None
                 verified = None
                 failure_details = str(exc)
-            else:
-                failure_details = _bounded_details(
-                    installed.stdout,
-                    installed.stderr,
-                    verified.stdout,
-                    verified.stderr,
-                )
             if installed is None or verified is None or verified.returncode != 0:
                 rollback_ok, rollback_details = _rollback(
                     before_version=before_version,

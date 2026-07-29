@@ -576,13 +576,15 @@ class EchoVeilMemoryLayer:
 
 
 _LAST_INITIALIZATION_ERROR: str | None = None
+_LAST_RECALL_STATUS = "not_run"
 
 
 def reset_echo_veil_layer() -> None:
     """Reset diagnostic state retained between tests or interactive reloads."""
 
-    global _LAST_INITIALIZATION_ERROR
+    global _LAST_INITIALIZATION_ERROR, _LAST_RECALL_STATUS
     _LAST_INITIALIZATION_ERROR = None
+    _LAST_RECALL_STATUS = "not_run"
 
 
 def _initialization_failure_code() -> str:
@@ -619,7 +621,8 @@ def create_echo_veil_layer(
         if protection_required(resolved):
             raise RuntimeError("required Echo Veil protection is unavailable; memory writes are blocked") from exc
         logger.warning(
-            "Echo Veil optional mode is unavailable; legacy plaintext memory remains active (%s)",
+            "Echo Veil is unavailable in optional mode; protected recall was "
+            "skipped (failure=%s). Run /memory doctor for non-secret remediation.",
             _LAST_INITIALIZATION_ERROR,
         )
         return None
@@ -689,17 +692,41 @@ def recall_response_with_echo_veil(
     top_k: int = 8,
     layers: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
+    global _LAST_RECALL_STATUS
     layer = create_echo_veil_layer(config)
     if layer is None:
+        _LAST_RECALL_STATUS = "skipped"
         return {
             "query": str(query),
             "results": [],
             "degraded": False,
             "semantic_available": False,
             "unavailable": True,
+            "recall_status": _LAST_RECALL_STATUS,
+            "retrieval_mode": "unavailable",
         }
     try:
-        return layer.recall(query, top_k=top_k, layers=layers)
+        response = dict(layer.recall(query, top_k=top_k, layers=layers))
+        results = response.get("results")
+        has_results = isinstance(results, list) and bool(results)
+        degraded = response.get("degraded") is True
+        _LAST_RECALL_STATUS = (
+            "degraded_returned"
+            if degraded and has_results
+            else "degraded_empty"
+            if degraded
+            else "returned"
+            if has_results
+            else "empty"
+        )
+        response["recall_status"] = _LAST_RECALL_STATUS
+        response["retrieval_mode"] = (
+            "conservative_keyed_read_only" if degraded else "semantic"
+        )
+        return response
+    except Exception:
+        _LAST_RECALL_STATUS = "blocked"
+        raise
     finally:
         layer.close()
 
@@ -971,6 +998,120 @@ def reindex_with_echo_veil(config: object) -> dict[str, Any]:
         layer.close()
 
 
+def classify_echo_veil_operational_state(
+    readiness: dict[str, Any],
+) -> dict[str, Any]:
+    """Translate independent readiness facts into one practical operator view."""
+
+    installed = readiness.get("installed") is True
+    enabled = readiness.get("enabled") is True
+    version_supported = readiness.get("version_supported") is True
+    local_ready = readiness.get("local_protection_ready") is True
+    degraded_ready = readiness.get("shielded_read_only_ready") is True
+    crypto_ready = readiness.get("crypto_initialized") is True
+    index_ready = readiness.get("index_wired") is True
+    retrieval_ready = readiness.get("retrieval_wired") is True
+    shield_available = bool(
+        installed
+        and version_supported
+        and readiness.get("all_records_shielded") is True
+    )
+    if local_ready:
+        state = "healthy"
+        remediation = "No remediation required."
+    elif degraded_ready:
+        state = "degraded_read_only"
+        remediation = (
+            "Restore the configured embedding service, then rerun /memory doctor. "
+            "Mutation remains blocked until semantic protection is healthy."
+        )
+    elif not installed or not enabled:
+        state = "unavailable"
+        remediation = (
+            "Install the qualified Echo Veil 0.7.x build and set "
+            "echo_veil_enabled=true with echo_veil_protection=required, then "
+            "rerun /memory doctor."
+            if not installed
+            else "Set echo_veil_enabled=true with echo_veil_protection=required, "
+            "then rerun /memory doctor."
+        )
+    elif not version_supported:
+        state = "misconfigured"
+        remediation = (
+            "Install the qualified pinned Echo Veil 0.7.x revision, then rerun "
+            "/memory doctor."
+        )
+    elif crypto_ready and (not index_ready or not retrieval_ready):
+        state = "index_stale"
+        remediation = (
+            "Repair the protected retrieval index or embedding service, then run "
+            "/memory reindex only after /memory doctor permits mutation."
+        )
+    elif not crypto_ready:
+        state = "locked"
+        remediation = (
+            "Unlock or initialize Echo Veil key material through the platform "
+            "secret store, then rerun /memory doctor."
+        )
+    else:
+        state = "misconfigured"
+        remediation = (
+            "Verify the scoped-v2 protected profile and four-layer shield "
+            "contract, then rerun /memory doctor."
+        )
+
+    semantic_recall = bool(
+        local_ready
+        and retrieval_ready
+        and readiness.get("semantic_available", True) is not False
+    )
+    conservative_recall = bool(
+        degraded_ready and readiness.get("semantic_available") is False
+    )
+    if semantic_recall:
+        retrieval_mode = "semantic"
+        recall_readiness = "ready"
+    elif conservative_recall:
+        retrieval_mode = "conservative_keyed_read_only"
+        recall_readiness = "degraded"
+    elif state == "unavailable":
+        retrieval_mode = "unavailable"
+        recall_readiness = "skipped"
+    else:
+        retrieval_mode = "blocked"
+        recall_readiness = "blocked"
+    layers_available = (
+        ["live", "short_term", "long_term", "contextual_logic"]
+        if shield_available
+        else []
+    )
+    mutation_permitted = bool(
+        state == "healthy"
+        and readiness.get("write_wired") is True
+        and readiness.get("writes_available", True) is not False
+    )
+    return {
+        "operational_state": state,
+        "shield_available": shield_available,
+        "semantic_recall_active": semantic_recall,
+        "retrieval_mode": retrieval_mode,
+        "layers_available": layers_available,
+        "recall_readiness": recall_readiness,
+        "last_recall_status": str(
+            readiness.get("last_recall_status") or "not_run"
+        ),
+        "mutation_permitted": mutation_permitted,
+        "remediation": remediation,
+    }
+
+
+def _with_echo_veil_operator_diagnostics(
+    readiness: dict[str, Any],
+) -> dict[str, Any]:
+    readiness.update(classify_echo_veil_operational_state(readiness))
+    return readiness
+
+
 def get_echo_veil_readiness(
     config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -1006,6 +1147,9 @@ def get_echo_veil_readiness(
         "shielded_read_only_ready": False,
         "production_ready": False,
         "degraded": False,
+        "semantic_available": False,
+        "writes_available": False,
+        "lifecycle_mutation_available": False,
         "host_profile_lease": "per-operation",
         "shared_profile_safe": True,
         "readiness_source": "algo_cli.ada_memory_echo_veil.get_echo_veil_readiness",
@@ -1014,9 +1158,10 @@ def get_echo_veil_readiness(
             ECHO_VEIL_INSTALLATION_KIND if _version_supported() else f"{ECHO_VEIL_INSTALLATION_KIND}-unsupported"
         ),
         "import_error": ECHO_VEIL_IMPORT_ERROR or _LAST_INITIALIZATION_ERROR,
+        "last_recall_status": _LAST_RECALL_STATUS,
     }
     if not base["enabled"] or not base["version_supported"]:
-        return base
+        return _with_echo_veil_operator_diagnostics(base)
     try:
         doctor = doctor_with_echo_veil(resolved)
         facts = doctor.get("readiness")
@@ -1043,6 +1188,15 @@ def get_echo_veil_readiness(
                 memory_layers.get("all_records_shielded", False)
             )
         base["degraded"] = bool(doctor.get("degraded", False))
+        base["semantic_available"] = bool(
+            doctor.get("semantic_available", not base["degraded"])
+        )
+        base["writes_available"] = bool(
+            doctor.get("writes_available", not base["degraded"])
+        )
+        base["lifecycle_mutation_available"] = bool(
+            doctor.get("lifecycle_mutation_available", not base["degraded"])
+        )
         base["key_id"] = doctor.get("key_id")
         base["security_schema"] = doctor.get("security_schema")
         base["quarantined_records"] = int(doctor.get("quarantined_records", 0) or 0)
@@ -1061,4 +1215,4 @@ def get_echo_veil_readiness(
         )
     except Exception as exc:
         base["import_error"] = type(exc).__name__
-    return base
+    return _with_echo_veil_operator_diagnostics(base)

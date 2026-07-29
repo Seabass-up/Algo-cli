@@ -56,6 +56,95 @@ def test_effective_action_specs_cover_runtime_tool_and_slash_surface() -> None:
     assert "generated" in slash_specs["/help"].tags
 
 
+def test_live_capability_registry_separates_presence_policy_and_callability(monkeypatch) -> None:
+    import sys
+
+    from algo_cli import action_registry, harness
+
+    monkeypatch.setattr(harness, "_EXTERNAL_SOURCES_ENABLED", False)
+    records = action_registry.capability_registry_snapshot(
+        verified_at="2026-07-29T00:00:00Z",
+    )
+    by_name = {record.name: record for record in records}
+
+    assert len(by_name) == len(action_registry.effective_action_specs(include_archived=True))
+    write = by_name["write_file"]
+    assert write.installed is True
+    assert write.enabled is True
+    assert write.policy_allowed is True
+    assert write.model_callable is True
+    assert write.authenticated is None
+    assert write.status == "ready"
+    assert "local_mutation" in write.write_effects
+    assert write.as_dict()["scope"] == {
+        "project": "algo-cli",
+        "platform": sys.platform,
+        "version": "0.18.0",
+    }
+
+    external = by_name["harness.external_agent_stores"]
+    assert external.installed is True
+    assert external.enabled is False
+    assert external.policy_allowed is False
+    assert external.model_callable is False
+    assert external.status == "disabled"
+    assert "installed but disabled" in external.reason
+    assert "explicitly configured roots" in external.reason
+
+    archived = by_name["ollama-cli-env"]
+    assert archived.enabled is False
+    assert archived.status == "archived"
+    assert archived.authority == "historical"
+
+
+def test_provider_tool_schema_description_comes_from_action_registry() -> None:
+    import json
+
+    from algo_cli import action_registry, tools
+    from algo_cli.tool_schema import serialized_tool_schemas
+
+    schema = json.loads(serialized_tool_schemas([tools.harness_search]))[0]
+
+    assert schema["function"]["description"] == action_registry.get_action_spec(
+        "harness_search"
+    ).description
+    assert schema["function"]["description"].startswith(
+        "Search only harness sources enabled"
+    )
+
+
+def test_external_store_capability_requires_enabled_current_index(monkeypatch) -> None:
+    from algo_cli import action_registry, harness
+
+    monkeypatch.setattr(
+        harness,
+        "source_roots_diagnostics",
+        lambda records=None: {
+            "built_in_adapter_roots": 4,
+            "available_adapter_roots": 2,
+            "indexed_records": len(records or []),
+        },
+    )
+    monkeypatch.setattr(
+        harness,
+        "_INDEX_CACHE",
+        {
+            "source_policy": {"external_agent_stores": True},
+            "records": [{"id": "codex:skill:one"}],
+        },
+    )
+    cfg = SimpleNamespace(external_harness_sources_enabled=True)
+
+    ready = action_registry._external_store_runtime_state(cfg)
+    harness._INDEX_CACHE["source_policy"]["external_agent_stores"] = False
+    stale = action_registry._external_store_runtime_state(cfg)
+
+    assert ready["status"] == "ready"
+    assert "1 records are indexed" in ready["reason"]
+    assert stale["status"] == "degraded"
+    assert "refresh is required" in stale["reason"]
+
+
 def test_doctor_degrades_direct_cloud_api_without_key(monkeypatch, tmp_path) -> None:
     from algo_cli.action_registry import build_doctor_report
 
@@ -155,6 +244,7 @@ def test_action_registry_runtime_audit_checks_tool_and_slash_existence(monkeypat
     assert "ActionSpec coverage:" in ready_messages
     assert "tools covered" in ready_messages
     assert "slash commands covered" in ready_messages
+    assert "unique live capability records expose the complete truth contract" in ready_messages
 
     fake_tool = action_registry._spec(
         "missing_tool_for_test",
