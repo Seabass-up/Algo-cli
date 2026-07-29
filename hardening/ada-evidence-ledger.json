@@ -1258,6 +1258,15 @@
           "timestamp": "2026-07-20T05:28:00Z",
           "scope": "source digest sha256:29c39337e16678a675a53d5b5dfda8522ae299ccbd4bd296352cc28fd6531005 binds the live/build anti-substitution checks and focused adversarial tests; the remote repository currently registers only the pre-hardening CI and release workflows",
           "limitations": "the hardening workflows remain only in the uncommitted local tree, so no GitHub-hosted native-amd64 run, attestation, registry provenance, selected-Chrome task, or hostile-network matrix has executed; HARD-050 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "https://github.com/Seabass-up/Algo-cli/actions/runs/30472290251/job/90645913251 plus push-only attestation job 90646244304 and artifact 8732267845",
+          "digest": "sha256:5bd7d8529b05959cc121ddd65cf037ed7e314b86ef243f92feb3afa73806ed86",
+          "result": "hosted pass: five of five fresh ephemeral native-amd64 browser and broker sessions completed with verified browser state, verified broker disposition, one request and connection per session, zero redirects, cancellations, or stderr bytes, and five unique topologies",
+          "timestamp": "2026-07-29T16:50:24Z",
+          "scope": "GitHub push run 30472290251 at source revision 9d44851fd21dbd79fc6fc9b1aa0e6681a147dd36; p50/p95 duration 1865/1877 ms; Chrome 150.0.7871.186 with measured update lag 0 ms; source digest sha256:aee288abd9a8ece2bba7aeb6bb160070b6768db6f027ff0c658fdcc85eccf575, report evidence digest sha256:0d00842449e072d27766a0592c7300b090ba144db83bd7864ac8fc49f8539c37, build evidence digest sha256:fbc062d260554a483045609922a6d8f2d6afb2be39ae893a5912f2a738280876, and artifact ZIP digest sha256:6c84928ce32608aab888f2086ea13d22e2b9925ffd145d8006285e82cb27ac62; the dependent GitHub attestation job succeeded and gh attestation verify accepted the downloaded report",
+          "limitations": "the report is public_claim_eligible false and native_browser_built/native_browser_fresh are false because upstream patch equivalence is unverified. Repeated isolated public GET evidence does not prove registry provenance, broad-site compatibility, selected-Chrome behavior, supported-task completion, model quality, token or screenshot reduction, interactive macOS permissions, hostile-network coverage, or product readiness; HARD-050 remains in progress"
         }
       ]
     },
