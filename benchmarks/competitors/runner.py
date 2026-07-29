@@ -218,8 +218,13 @@ def changed_paths(before: dict[str, str], after: dict[str, str]) -> list[str]:
 def resolve_executable(candidates: Iterable[str]) -> str | None:
     for candidate in candidates:
         expanded = Path(candidate).expanduser()
-        if "/" in candidate and expanded.is_file() and os.access(expanded, os.X_OK):
-            return str(expanded)
+        path_candidate = expanded.is_absolute() or "/" in candidate or "\\" in candidate
+        if path_candidate:
+            if expanded.is_file() and os.access(expanded, os.X_OK):
+                return str(expanded)
+            # An explicit path is exact.  Never let PATH resolution silently
+            # substitute a different executable when that path is missing.
+            continue
         resolved = shutil.which(candidate)
         if resolved:
             return resolved

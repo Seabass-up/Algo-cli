@@ -473,7 +473,11 @@ def _inline_python_source(command: str) -> str | None:
     """Return source for one standalone ``python -c`` command, if unambiguous."""
 
     try:
-        tokens = shlex.split(command, posix=os.name != "nt")
+        # Parse the command text consistently on every host.  ``posix=False``
+        # retains the outer quotes around a Windows ``python -c`` payload,
+        # which turns mutating source into a harmless-looking string literal
+        # and can also make verifier snippets fail closed incorrectly.
+        tokens = shlex.split(command, posix=True)
     except ValueError:
         return None
     while os.name != "nt" and tokens and re.fullmatch(
