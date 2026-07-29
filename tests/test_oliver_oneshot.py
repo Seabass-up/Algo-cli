@@ -39,6 +39,8 @@ def test_json_event_sink_session_start_and_done_frame(monkeypatch):
     events = _drain(buf)
     assert events[0]["type"] == "session_start"
     assert events[0]["approval_mode"] == "never"
+    assert events[0]["cwd"] == "<redacted>"
+    assert "/c" not in buf.getvalue()
     assert events[-1]["type"] == "done"
     assert events[-1]["status"] == "complete"
     assert events[-1]["tool_calls"] == 0
@@ -311,6 +313,7 @@ def test_run_oneshot_emits_framing_even_when_agent_loop_raises(monkeypatch):
 
 def test_run_oneshot_completes_cleanly_when_agent_loop_succeeds(monkeypatch):
     from algo_cli import display as display_module
+    from algo_cli import irene_privacy_views
     from algo_cli import main as main_module
 
     buf = io.StringIO()
@@ -323,6 +326,13 @@ def test_run_oneshot_completes_cleanly_when_agent_loop_succeeds(monkeypatch):
 
     monkeypatch.setattr(main_module, "agent_loop", _scripted_agent_loop)
     monkeypatch.setattr(main_module, "create_client", lambda _cfg: object())
+    monkeypatch.setattr(
+        irene_privacy_views,
+        "get_key_material",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("one-shot runtime must not consult the OS keyring")
+        ),
+    )
 
     exit_code = oneshot.run_oneshot(prompt="read main.py", approval_mode="never", stream=buf)
 
@@ -352,6 +362,32 @@ def test_run_oneshot_auto_mode_sets_cfg_auto_mode(monkeypatch):
     assert captured_cfg["auto_mode"] is True
     # Skill crystallization is always disabled in oneshot regardless of approval mode.
     assert captured_cfg["skill_crystallize_enabled"] is False
+
+
+def test_run_oneshot_workspace_mode_is_explicit_and_not_global_auto(
+    monkeypatch,
+) -> None:
+    from algo_cli import main as main_module
+
+    captured_cfg = {}
+
+    def _spy_agent_loop(_client, cfg, _msg):
+        captured_cfg["auto_mode"] = cfg.auto_mode
+        captured_cfg["approval_mode"] = cfg._nathan_approval_mode
+
+    monkeypatch.setattr(main_module, "agent_loop", _spy_agent_loop)
+    monkeypatch.setattr(main_module, "create_client", lambda _cfg: object())
+
+    oneshot.run_oneshot(
+        prompt="x",
+        approval_mode="workspace",
+        stream=io.StringIO(),
+    )
+
+    assert captured_cfg == {
+        "auto_mode": False,
+        "approval_mode": "workspace",
+    }
 
 
 def test_run_oneshot_uses_adaptive_thinking_and_allows_override(monkeypatch):

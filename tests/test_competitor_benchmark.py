@@ -51,6 +51,81 @@ def test_every_measured_product_has_an_adapter() -> None:
     }
 
 
+def test_algo_candidate_override_is_exact_and_fail_closed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    candidate = tmp_path / "candidate-algo"
+    candidate.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    candidate.chmod(0o755)
+    monkeypatch.setattr(runner, "version_receipt", lambda *_args: "candidate-version")
+
+    available = runner.product_availability(
+        "algo_cli",
+        executable_override=str(candidate),
+    )
+    missing = runner.product_availability(
+        "algo_cli",
+        executable_override=str(tmp_path / "missing-algo"),
+    )
+
+    assert available["status"] == "runnable"
+    assert available["executable"] == str(candidate)
+    assert available["version"] == "candidate-version"
+    assert missing["status"] == "blocked"
+    assert missing["executable"] is None
+
+
+def test_parser_accepts_exact_algo_candidate_executable() -> None:
+    parsed = runner.build_parser().parse_args(
+        ["--algo-executable", "/tmp/candidate-algo"]
+    )
+
+    assert parsed.algo_executable == "/tmp/candidate-algo"
+
+
+def test_algo_benchmark_uses_explicit_bounded_workspace_authority(
+    tmp_path: Path,
+) -> None:
+    command, _environment = runner.command_for(
+        "algo_cli",
+        "/tmp/candidate-algo",
+        tmp_path / "result",
+        tmp_path / "state",
+        "benchmark prompt",
+        "test-model",
+        30,
+    )
+
+    mode_index = command.index("--approval-mode")
+    assert command[mode_index + 1] == "workspace"
+
+
+def test_openclaw_benchmark_uses_explicit_native_coding_tools(
+    tmp_path: Path,
+) -> None:
+    result = tmp_path / "result"
+    state = tmp_path / "state"
+
+    command, environment = runner.command_for(
+        "openclaw",
+        "/tmp/openclaw",
+        result,
+        state,
+        "benchmark prompt",
+        "test-model",
+        30,
+    )
+    config = json.loads(
+        (state / "openclaw" / "openclaw.json").read_text(encoding="utf-8")
+    )
+
+    assert config["agents"]["defaults"]["workspace"] == str(result)
+    assert config["tools"]["profile"] == "coding"
+    assert environment["OPENCLAW_CONFIG_PATH"].endswith("openclaw.json")
+    assert command[1:3] == ["agent", "--local"]
+
+
 def test_rotating_order_is_deterministic_and_complete() -> None:
     harnesses = ["algo_cli", "codex_cli", "pi"]
     tasks = ["code_repair_small_repo", "tool_trap_misleading_state"]

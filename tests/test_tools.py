@@ -5,6 +5,7 @@ from __future__ import annotations
 from io import StringIO
 import json
 import os
+import shlex
 import subprocess
 import threading
 import time
@@ -31,6 +32,25 @@ def test_cap_truncates():
     long = tools._cap("x" * 50, limit=10)
     assert long.startswith("x" * 10)
     assert "truncated" in long
+
+
+def test_action_search_hides_runtime_owned_action_arguments(monkeypatch):
+    from algo_cli import tool_context
+
+    monkeypatch.setattr(
+        tool_context,
+        "rank_tools_for_prompt",
+        lambda _query, _tools: [tools.run_shell],
+    )
+
+    payload = json.loads(tools.action_search("run a shell command", limit=1))
+    parameters = payload["actions"][0]["schema"]["function"]["parameters"]
+
+    assert payload["actions"][0]["name"] == "run_shell"
+    assert {"cfg", "cwd", "safe_mode"}.isdisjoint(parameters["properties"])
+    assert {"cfg", "cwd", "safe_mode"}.isdisjoint(parameters.get("required", []))
+    assert "Omit outputs" in payload["next"]
+    assert "{'$ref':'step_id'}" in payload["next"]
 
 
 def test_deny_command_re():
@@ -186,6 +206,35 @@ def test_run_shell_safe_mode_blocks_git_inspection_output_write(tmp_path):
 
     assert output.startswith("Blocked by safe mode")
     assert not (tmp_path / "owned.txt").exists()
+
+
+def test_inline_python_verifier_ignores_quoted_comparison_and_arrow_text() -> None:
+    command = (
+        "python3 -c \"import sys\n"
+        "value = 3\n"
+        "print(f'value -> {value}')\n"
+        "sys.exit(0 if value > 2 else 1)\""
+    )
+
+    assert not tools.shell_mutates_workspace(command)
+    assert not tools.shell_is_dangerous(command)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "open('owned.txt', 'w').write('x')",
+        "from pathlib import Path; Path('owned.txt').write_text('x')",
+        "import os; os.remove('owned.txt')",
+        "import subprocess; subprocess.run(['touch', 'owned.txt'])",
+        "exec(\"open('owned.txt', 'w').write('x')\")",
+    ],
+)
+def test_inline_python_mutations_remain_dangerous(source) -> None:
+    command = f"python3 -c {shlex.quote(source)}"
+
+    assert tools.shell_mutates_workspace(command)
+    assert tools.shell_is_dangerous(command)
 
 
 @pytest.mark.parametrize(
@@ -947,6 +996,21 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
             "lock_private": True,
             "compaction_needed": False,
         },
+        "context_sources": {
+            "external_agent_stores": False,
+            "diagnostics": {
+                "available_adapter_roots": 2,
+                "indexed_records": 0,
+                "indexed_harnesses": [],
+                "extra_roots": {
+                    "status": "absent",
+                    "accepted": 0,
+                    "available": 0,
+                    "rejected": 0,
+                },
+                "privacy_default": "disabled; explicit opt-in required",
+            },
+        },
     }
     monkeypatch.setattr(tools.harness, "stats", lambda: stats_payload)
     monkeypatch.setattr(
@@ -969,16 +1033,51 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
             "performance": {"speedup": 2.5, "warm_mad_ratio": 0.01},
             "quality": {
                 "status": "pass",
+                "scope": "frozen offline retrieval",
                 "metrics": {
+                    "case_count": 2,
                     "recall_at_k": 1.0,
                     "mrr": 1.0,
                     "ndcg_at_k": 1.0,
                     "citation_precision": 1.0,
                 },
                 "fixture_digest": "quality123",
+                "cases": [
+                    {
+                        "name": "multilingual_query_english_record",
+                        "category": "multilingual",
+                    },
+                    {
+                        "name": "multi_hop_write_and_verify",
+                        "category": "complex",
+                    },
+                ],
             },
             "evidence": {"index_digest": "bench123"},
         },
+    )
+    external_probe = {
+        "schema_version": 1,
+        "probe": "harness-configured-external-roots-v1",
+        "status": "pass",
+        "scope": "isolated temporary configured roots",
+        "checks": {
+            "configuration_accepted": True,
+            "bounded_files_indexed": True,
+            "provenance_complete": True,
+            "cross_harness_conflict_preserved": True,
+            "secret_named_file_excluded": True,
+            "inline_secret_redacted": True,
+            "cross_root_retrieval": True,
+            "runtime_policy_unchanged": True,
+        },
+        "evidence": {"fixture_digest": "external123"},
+        "limitations": ["isolated qualification only"],
+    }
+    monkeypatch.setattr(
+        tools.harness,
+        "qualify_configured_external_roots",
+        lambda: external_probe,
     )
     monkeypatch.setattr(
         algorithm_effectiveness,
@@ -1022,6 +1121,26 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     assert payload["overall_status"] == "ready"
     assert payload["scored_gate_count"] == 10
     assert payload["validation_errors"] == []
+    assert payload["review_summary"]["retrieval_quality"]["case_counts"] == {
+        "complex": 1,
+        "multilingual": 1,
+    }
+    assert payload["review_summary"]["retrieval_quality"]["case_names"] == [
+        "multilingual_query_english_record",
+        "multi_hop_write_and_verify",
+    ]
+    assert (
+        payload["review_summary"][
+            "configured_external_root_qualification"
+        ]["status"]
+        == "pass"
+    )
+    assert (
+        payload["review_summary"]["live_external_source_state"][
+            "enabled"
+        ]
+        is False
+    )
     statuses = {check["name"]: check["status"] for check in payload["checks"]}
     assert statuses["index integrity"] == "pass"
     assert statuses["embedding readiness"] == "pass"
@@ -1038,6 +1157,33 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     assert capabilities["web tools"]["status"] == "pass"
     assert capabilities["google workspace wiring"]["status"] == "pass"
     assert all(item["scored"] is False for item in capabilities.values())
+
+    failed_external_probe = {
+        **external_probe,
+        "status": "fail",
+        "checks": {
+            **external_probe["checks"],
+            "cross_root_retrieval": False,
+        },
+    }
+    monkeypatch.setattr(
+        tools.harness,
+        "qualify_configured_external_roots",
+        lambda: failed_external_probe,
+    )
+    external_failure = json.loads(tools.harness_scorecard())
+    external_failure_statuses = {
+        check["name"]: check["status"]
+        for check in external_failure["checks"]
+    }
+    assert external_failure["score"] == 9.0
+    assert external_failure["overall_status"] == "blocked"
+    assert external_failure_statuses["retrieval benchmark"] == "fail"
+    monkeypatch.setattr(
+        tools.harness,
+        "qualify_configured_external_roots",
+        lambda: external_probe,
+    )
 
     stats_payload["echo_veil"]["enabled"] = True
     enabled_but_unwired = json.loads(tools.harness_scorecard())
@@ -1096,6 +1242,64 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     assert counterfeit_pass["overall_status"] == "blocked"
     assert counterfeit_statuses["retrieval benchmark"] == "fail"
     assert counterfeit_statuses["algorithm effectiveness"] == "fail"
+
+
+def test_harness_competitive_rating_fails_closed_on_external_probe(
+    monkeypatch,
+) -> None:
+    from algo_cli import git_evidence
+    from algo_cli.evals import algorithm_effectiveness, harness_retrieval_benchmark
+
+    monkeypatch.setattr(
+        harness_retrieval_benchmark,
+        "run_harness_retrieval_benchmark",
+        lambda: {
+            "benchmark_version": "retrieval-v1",
+            "status": "pass",
+            "performance": {"cold_sample_count": 5, "warm_sample_count": 5},
+        },
+    )
+    monkeypatch.setattr(
+        tools.harness,
+        "qualify_configured_external_roots",
+        lambda: {
+            "status": "fail",
+            "checks": {"cross_root_retrieval": False},
+        },
+    )
+    monkeypatch.setattr(
+        algorithm_effectiveness,
+        "run_algorithm_effectiveness_probe",
+        lambda: {
+            "probe": "algorithm-v1",
+            "status": "pass",
+            "required_checks": [],
+            "summary": {"passed": 0},
+            "checks": {},
+        },
+    )
+    monkeypatch.setattr(
+        git_evidence,
+        "capture_git_snapshot",
+        lambda: git_evidence.GitSnapshot(
+            True,
+            None,
+            "abcdef123456",
+            "## main",
+            "",
+            (),
+            "clean",
+            git_evidence._digest(""),
+        ),
+    )
+
+    report = json.loads(tools.harness_competitive_rating())
+
+    benchmark = report["local_probe_artifacts"]["retrieval_benchmark"]
+    assert benchmark["status"] == "fail"
+    assert benchmark["reason"] == (
+        "configured external-root qualification failed"
+    )
 
 
 def test_harness_index_integrity_rejects_duplicate_ids_and_nonfinite_vectors(monkeypatch):

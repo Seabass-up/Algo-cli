@@ -4,7 +4,7 @@
   "base_commit": "20bb879",
   "contract_digest": "sha256:26a6b34c3a7f09df4255f922ce0f12e9da68f291e56da54a6e32a64053cacb32",
   "freeze_id": "algo-cli-hardening-2026-07-18",
-  "ledger_digest": "sha256:a4a35dd5f65fa8e506c0cb213dfc44573f87a6bfeed0338a0530cd627b056c06",
+  "ledger_digest": "sha256:9fadd34a978cb79027732ede862c1892962c69a458e25dfbecbe541a2e8c5999",
   "ledger_status": "active",
   "limitations": "This deterministic audit proves contract and evidence completeness only. It does not independently authenticate external services, runner images, signing identities, TCC state, browser containment, or benchmark truth.",
   "milestones": [

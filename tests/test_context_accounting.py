@@ -62,6 +62,9 @@ def test_oneshot_prompt_defers_interactive_capability_tutorials(monkeypatch):
     assert "## Grok / xAI model compatibility" not in automated
     assert "## PDF Handling" not in automated
     assert "Prefer action_program" in automated
+    assert "reuse the exact paths from successful mutation receipts" in automated
+    assert "direct fail-on-mismatch assertions" in automated
+    assert "complete reread of every mutated file" in automated
     assert context_budget.estimate_text_tokens(automated) < (
         context_budget.estimate_text_tokens(interactive) * 0.45
     )

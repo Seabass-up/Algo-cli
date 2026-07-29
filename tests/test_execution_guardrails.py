@@ -341,13 +341,38 @@ def test_completion_requires_evidence_after_last_mutation(tmp_path: Path) -> Non
     assert guardrails.completion_decision().allowed is False
     reread = guardrails.record_read("second.py", success=True)
     assert reread is not None
-    assert guardrails.completion_decision().allowed is False
-    verifier = guardrails.record_verification("git_diff", success=True)
     decision = guardrails.completion_decision()
-    assert verifier is not None
     assert decision.allowed is True
-    assert decision.verifier_sequence == verifier.sequence
-    assert decision.verifier_kind == "git_diff"
+    assert decision.verifier_sequence == reread.sequence
+    assert decision.verifier_kind == "same_path_reread"
+    guardrails.end_execution_scope(scope)
+
+
+def test_readback_completion_covers_every_file_changed_since_verifier(
+    tmp_path: Path,
+) -> None:
+    scope = guardrails.begin_execution_scope(tmp_path)
+    guardrails.record_mutation("first.py", success=True, operation="write_file")
+    guardrails.record_mutation("second.py", success=True, operation="write_file")
+
+    guardrails.record_read("second.py", success=True)
+    assert guardrails.completion_decision().allowed is False
+    final_reread = guardrails.record_read("first.py", success=True)
+
+    decision = guardrails.completion_decision()
+    assert final_reread is not None
+    assert decision.allowed is True
+    assert decision.verifier_sequence == final_reread.sequence
+    assert decision.verifier_kind == "same_path_reread"
+    guardrails.end_execution_scope(scope)
+
+
+def test_file_readback_cannot_cover_workspace_shell_mutation(tmp_path: Path) -> None:
+    scope = guardrails.begin_execution_scope(tmp_path)
+    guardrails.record_workspace_mutation(success=True)
+    guardrails.record_read("changed.py", success=True)
+
+    assert guardrails.completion_decision().allowed is False
     guardrails.end_execution_scope(scope)
 
 

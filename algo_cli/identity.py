@@ -21,6 +21,7 @@ from typing import Any, Callable
 
 try:
     import numpy as _np
+
     _NUMPY = True
 except ImportError:
     _np = None  # type: ignore[assignment]
@@ -261,13 +262,15 @@ def _chunk_lessons(text: str) -> list[str]:
 def _cosine(a: list[float], b: list[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
-    dot = 0.0
-    na = 0.0
-    nb = 0.0
-    for x, y in zip(a, b):
-        dot += x * y
-        na += x * x
-        nb += y * y
+    scale_a = max(abs(value) for value in a)
+    scale_b = max(abs(value) for value in b)
+    if scale_a == 0.0 or scale_b == 0.0:
+        return 0.0
+    scaled_a = [value / scale_a for value in a]
+    scaled_b = [value / scale_b for value in b]
+    dot = math.fsum(x * y for x, y in zip(scaled_a, scaled_b))
+    na = math.fsum(value * value for value in scaled_a)
+    nb = math.fsum(value * value for value in scaled_b)
     if na == 0.0 or nb == 0.0:
         return 0.0
     return dot / (math.sqrt(na) * math.sqrt(nb))
@@ -450,10 +453,7 @@ def rebuild_lessons_index(
         "model": model,
         "embedding_model": model,
         "vector_dimensions": vector_dimensions,
-        "chunks": [
-            {"text": chunk, "vector": vector}
-            for chunk, vector in zip(chunks, normalised_vectors)
-        ],
+        "chunks": [{"text": chunk, "vector": vector} for chunk, vector in zip(chunks, normalised_vectors)],
     }
     _save_lessons_index(idx)
     _QUERY_VEC_CACHE.clear()
@@ -497,17 +497,39 @@ def retrieve_lessons(query: str, embed_fn: EmbedFn, model: str = DEFAULT_EMBED_M
     safe_vectors = [vector for vector in vectors if vector is not None]
     if _NUMPY and chunks:
         import numpy as np
-        mat = np.array(safe_vectors, dtype=np.float32)
-        qv = np.array(qvec, dtype=np.float32)
-        mat_norms = np.linalg.norm(mat, axis=1)
-        q_norm = float(np.linalg.norm(qv))
-        if q_norm <= 0.0:
+
+        mat = np.asarray(safe_vectors, dtype=np.float64)
+        qv = np.asarray(qvec, dtype=np.float64)
+        row_scales = np.max(np.abs(mat), axis=1)
+        q_scale = float(np.max(np.abs(qv)))
+        if not math.isfinite(q_scale) or q_scale <= 0.0:
+            return []
+        valid_rows = np.isfinite(row_scales) & (row_scales > 0.0)
+        scaled_mat = np.divide(
+            mat,
+            row_scales[:, None],
+            out=np.zeros_like(mat),
+            where=valid_rows[:, None],
+        )
+        scaled_qv = qv / q_scale
+        mat_norms = np.linalg.norm(scaled_mat, axis=1)
+        q_norm = float(np.linalg.norm(scaled_qv))
+        if not math.isfinite(q_norm) or q_norm <= 0.0:
             return []
         denom = mat_norms * q_norm
-        sims = np.divide(mat @ qv, denom, out=np.zeros_like(mat_norms), where=denom > 0).tolist()
-        scored: list[tuple[float, str]] = [
-            (float(s), chunks[i]["text"]) for i, s in enumerate(sims) if s > 0.0
-        ]
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            sims_array = np.divide(
+                scaled_mat @ scaled_qv,
+                denom,
+                out=np.zeros_like(mat_norms),
+                where=valid_rows & (denom > 0.0),
+            )
+        sims = np.clip(
+            np.nan_to_num(sims_array, nan=0.0, posinf=0.0, neginf=0.0),
+            -1.0,
+            1.0,
+        ).tolist()
+        scored: list[tuple[float, str]] = [(float(s), chunks[i]["text"]) for i, s in enumerate(sims) if s > 0.0]
     else:
         scored = []
         for chunk, vector in zip(chunks, safe_vectors):

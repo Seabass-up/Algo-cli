@@ -33,6 +33,7 @@ OPTIONAL_CONTEXT_MIN_TOKENS = 96
 OPTIONAL_CONTEXT_TRUNCATION_SUFFIX = "\n...[truncated by context budget]"
 
 _SMALL_MODEL_THRESHOLD_B = 70.0
+PROTECTED_PROMPT_TOP_K = 3
 
 _CALIBRATION_BLOCK = (
     "\n\n## Accuracy Constraints (small-model mode)\n"
@@ -50,6 +51,13 @@ CONTEXT_USAGE_CACHE: tuple[tuple[Any, ...], int] | None = None
 def _echo_veil_memory_items(cfg: Config) -> list[str]:
     """Return query-relevant durable memories, falling back to the legacy list."""
     fallback = [str(item) for item in cfg.memories]
+    try:
+        from .ada_memory_echo_veil import protection_required
+
+        if protection_required(cfg) and not cfg.echo_veil_enabled:
+            return []
+    except Exception:
+        return []
     if not cfg.echo_veil_enabled:
         return fallback
     try:
@@ -83,6 +91,81 @@ def _echo_veil_memory_items(cfg: Config) -> list[str]:
             return [] if protection_required(cfg) else fallback
         except Exception:
             return fallback
+
+
+def _protected_memory_prompt_section(cfg: Config) -> str:
+    """Render Echo memory metadata in required mode without legacy fallback."""
+
+    try:
+        from .ada_memory_echo_veil import (
+            get_echo_veil_readiness,
+            protected_memory_operating_contract,
+            protected_prompt_context,
+            protection_required,
+        )
+        from .deliberation import is_exact_response_task
+
+        if not protection_required(cfg):
+            return ""
+        contract = protected_memory_operating_contract(cfg)
+        query = next(
+            (
+                str(message.get("content", ""))
+                for message in reversed(cfg.messages)
+                if message.get("role") == "user"
+            ),
+            "",
+        )
+        if not query:
+            return contract
+        if is_exact_response_task(query):
+            readiness = get_echo_veil_readiness(cfg)
+            if (
+                readiness.get("healthy") is not True
+                or readiness.get("all_records_shielded") is not True
+                or readiness.get("local_protection_ready") is not True
+                or readiness.get("protection_policy") != "required"
+            ):
+                raise RuntimeError("required Echo Veil preflight is not healthy")
+            return (
+                f"{contract}\n\n## Protected Echo Veil Memory\n"
+                "Doctor-backed shield preflight passed. Semantic recall was "
+                "not consulted because this is a closed-form, wholly "
+                "self-contained response."
+            )
+        block = protected_prompt_context(
+            cfg,
+            query,
+            top_k=PROTECTED_PROMPT_TOP_K,
+        )
+        if block:
+            return f"{contract}\n\n## Protected Echo Veil Memory\n{block}"
+        return (
+            f"{contract}\n\n## Protected Echo Veil Memory\n"
+            "No answerable protected memory was returned. No legacy memory "
+            "fallback was consulted."
+        )
+    except Exception as exc:
+        logger = getattr(perf_telemetry, "logger", None)
+        if logger is not None:
+            logger.debug(
+                "Protected Echo Veil prompt recall unavailable: %s",
+                type(exc).__name__,
+            )
+        raise RuntimeError(
+            "required protected memory context is unavailable"
+        ) from exc
+
+
+def _memory_prompt_section(cfg: Config) -> str:
+    protected = _protected_memory_prompt_section(cfg)
+    if protected:
+        return protected
+    memory_items = _echo_veil_memory_items(cfg)
+    if not memory_items:
+        return ""
+    memories = "\n".join(f"- {item}" for item in memory_items)
+    return f"## Long-term Memories\n{memories}"
 
 
 def invalidate_context_usage_cache() -> None:
@@ -287,12 +370,14 @@ def build_system_prompt(
             "- Do not write identity, lessons, memory, credentials, or external systems unless the user explicitly requested it and runtime policy permits it.\n"
             "- Work silently through tools, batch independent reads, make the smallest required mutation, and preserve protected inputs.\n"
             "- Prefer action_program for a predictable multi-step workflow once targets and checks are known; failed verification returns control to the model.\n"
-            "- After one successful fail-on-mismatch verifier, give one concise final answer; do not reread, rediff, or rerun unchanged evidence."
+            "- For verification, reuse the exact paths from successful mutation receipts; do not shorten them or assume a nested task directory is the process working directory.\n"
+            "- Keep custom Python verification to direct fail-on-mismatch assertions; do not build a second ad hoc test framework.\n"
+            "- A complete reread of every mutated file is accepted as read-back verification; otherwise run one fail-on-mismatch verifier.\n"
+            "- Once verification passes, give one concise final answer; do not reread, rediff, or rerun unchanged evidence."
         )
-        memory_items = _echo_veil_memory_items(cfg)
-        if memory_items:
-            memories = "\n".join(f"- {item}" for item in memory_items)
-            prompt += f"\n\n## Long-term Memories\n{memories}"
+        memory_section = _memory_prompt_section(cfg)
+        if memory_section:
+            prompt += f"\n\n{memory_section}"
         if active_model_info:
             size_b = _model_info_module.parameter_size_billions(active_model_info)
             if size_b is not None and size_b < _SMALL_MODEL_THRESHOLD_B:
@@ -379,10 +464,9 @@ def build_system_prompt(
             "Only retry when the arguments materially change, new evidence appears, or the user asks.\n"
             + "\n".join(ledger_lines)
         )
-    memory_items = _echo_veil_memory_items(cfg)
-    if memory_items:
-        memories = "\n".join(f"- {item}" for item in memory_items)
-        prompt += f"\n\n## Long-term Memories\n{memories}"
+    memory_section = _memory_prompt_section(cfg)
+    if memory_section:
+        prompt += f"\n\n{memory_section}"
     if active_model_info:
         size_b = _model_info_module.parameter_size_billions(active_model_info)
         if size_b is not None and size_b < _SMALL_MODEL_THRESHOLD_B:
@@ -401,7 +485,10 @@ def build_system_prompt(
             "- Do not emit progress prose before or between tool calls; use tools silently, then provide one concise final answer.\n"
             "- Open explicitly named files directly and batch independent reads. Do not list directories merely to confirm named paths.\n"
             "- Make the smallest required changes and create only requested artifacts.\n"
-            "- After one successful fail-on-mismatch verifier, answer immediately; do not add redundant rereads, diffs, or reports."
+            "- For verification, reuse the exact paths from successful mutation receipts; do not shorten them or assume a nested task directory is the process working directory.\n"
+            "- Keep custom Python verification to direct fail-on-mismatch assertions.\n"
+            "- A complete reread of every mutated file is accepted as read-back verification; otherwise run one fail-on-mismatch verifier.\n"
+            "- Once verification passes, answer immediately; do not add redundant rereads, diffs, or reports."
         )
     if cfg.verify_mode:
         prompt += (

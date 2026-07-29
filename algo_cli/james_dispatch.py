@@ -20,6 +20,7 @@ from .arthur_outcomes import (
     normalize_action_outcome,
 )
 from .clara_effect_ledger import EffectLedger, EffectState, default_effect_ledger
+from . import execution_guardrails
 from .henry_effect_control import EffectLeaseError, TargetLease, TargetLeaseManager
 from .marcus_authority import EffectClass, ResolvedAction
 from . import nathan_runtime as runtime
@@ -34,6 +35,67 @@ TRUSTED_ADAPTER_ACTIONS = frozenset(
     {"x_account_post", "x_account_reply", "x_account_post_action"}
 )
 _SAFE_VERIFIER_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+def _trusted_known_failure(
+    name: str,
+    args: Mapping[str, Any],
+    result: str,
+) -> str:
+    """Return a code for terminal failures safe to retry without reconciliation."""
+
+    text = str(result).strip()
+    if not text:
+        return ""
+    if name == "run_shell":
+        command = str(args.get("command") or "")
+        verification = execution_guardrails.classify_verification_command(command)
+        if (
+            verification.qualifies
+            and re.search(r"\[exit code:\s*-?\d+\]", text, re.IGNORECASE)
+        ):
+            return "verification_failed"
+        return ""
+    if text.startswith("Error writing "):
+        # Atomic replacement may already have happened before a later fsync
+        # failure, so write errors remain unknown until reconciled.
+        return ""
+    if name == "write_file":
+        return (
+            "precondition_not_met"
+            if text.startswith("Error: ") and " already exists. " in text
+            else ""
+        )
+    if name == "edit_file":
+        known = text.startswith(
+            (
+                "Error: edit_file requires ",
+                "Error: file not found: ",
+                "Error reading ",
+                "Error: old_string not found ",
+                "Error: old_string matched ",
+                "Error: old_string and new_string are identical ",
+            )
+        ) or (
+            text.startswith("Error: ")
+            and " is a directory. edit_file only works on text files." in text
+        )
+        return "precondition_not_met" if known else ""
+    if name == "batch_edit":
+        known = text.startswith(
+            (
+                "Error: edits list is empty.",
+                "Error: file not found: ",
+                "Error reading ",
+                "Error: edit #",
+                "Error: batch contained only no-op edits.",
+            )
+        ) or (
+            text.startswith("Error: ")
+            and " is a directory." in text
+        )
+        return "precondition_not_met" if known else ""
+    return ""
 
 
 @dataclass
@@ -1022,14 +1084,35 @@ def dispatch_action(
                     )
                 else:
                     raw_status = runtime.classify_tool_status(raw_result, name=name)
+                    known_failure_code = (
+                        _trusted_known_failure(
+                            name,
+                            preflight.signature_args,
+                            raw_result,
+                        )
+                        if raw_status == "failed"
+                        else ""
+                    )
                     outcome = normalize_action_outcome(
                         action,
                         raw_result,
                         reported_status=raw_status,
-                        invoked=True,
+                        invoked=not known_failure_code,
                         fencing_token=lease.fencing_token if lease is not None else 0,
-                        error_code="tool_reported_failure" if raw_status == "failed" else "",
+                        error_code=(
+                            known_failure_code
+                            if known_failure_code
+                            else "tool_reported_failure"
+                            if raw_status == "failed"
+                            else ""
+                        ),
                     )
+                    if known_failure_code:
+                        outcome = replace(
+                            outcome,
+                            invoked=True,
+                            retry_allowed=True,
+                        )
     except Exception as exc:
         outcome = _preinvoke_outcome(
             action,

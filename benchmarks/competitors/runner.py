@@ -253,9 +253,14 @@ def version_receipt(product_id: str, executable: str) -> str | None:
     return text.splitlines()[0][:200] if text else None
 
 
-def product_availability(product_id: str) -> dict[str, Any]:
+def product_availability(
+    product_id: str,
+    *,
+    executable_override: str | None = None,
+) -> dict[str, Any]:
     spec = PRODUCTS[product_id]
-    executable = resolve_executable(spec.executable_candidates)
+    candidates = (executable_override,) if executable_override else spec.executable_candidates
+    executable = resolve_executable(candidates)
     if spec.fixed_blocker:
         return {
             "product": product_id,
@@ -455,7 +460,7 @@ def command_for(
             "--oneshot",
             "--json",
             "--approval-mode",
-            "auto",
+            "workspace",
             prompt,
         ], env
     if harness == "codex_cli":
@@ -763,7 +768,17 @@ def command_for(
         openclaw_state = state / "openclaw"
         openclaw_state.mkdir(parents=True, exist_ok=True)
         config_path = openclaw_state / "openclaw.json"
-        write_json(config_path, {"agents": {"defaults": {"workspace": str(result)}}})
+        write_json(
+            config_path,
+            {
+                "agents": {"defaults": {"workspace": str(result)}},
+                # A bare isolated config has not passed through OpenClaw's
+                # onboarding defaults. Declare the documented coding profile
+                # so native read/write/edit/exec tools are deterministic and
+                # node/gateway tools do not leak into this terminal lane.
+                "tools": {"profile": "coding"},
+            },
+        )
         env.update(
             {
                 "OPENCLAW_STATE_DIR": str(openclaw_state),
@@ -1410,6 +1425,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     parser.add_argument(
+        "--algo-executable",
+        help=(
+            "Exact Algo CLI candidate executable to benchmark. "
+            "If supplied, an invalid path fails closed instead of falling back "
+            "to another installed Algo CLI."
+        ),
+    )
+    parser.add_argument(
         "--warmup-model",
         action="store_true",
         help="Warm the shared Ollama model outside scored time before the first run.",
@@ -1425,7 +1448,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    product_matrix = [product_availability(product_id) for product_id in PRODUCTS]
+    product_matrix = [
+        product_availability(
+            product_id,
+            executable_override=(
+                args.algo_executable if product_id == "algo_cli" else None
+            ),
+        )
+        for product_id in PRODUCTS
+    ]
     if args.list:
         print(json.dumps(product_matrix, indent=2))
         return 0

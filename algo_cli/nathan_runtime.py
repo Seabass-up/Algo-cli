@@ -58,12 +58,18 @@ REFLECTION_RECENT_MESSAGES = 8
 TOOL_RESULT_CONTENT_LIMIT = 20_000
 FAILED_ATTEMPT_SKIP_SECONDS = 120.0
 _SHELL_EXIT_CODE_RE = re.compile(r"\[exit code:\s*(-?\d+)\]", re.IGNORECASE)
-_BASELINE_CAPABILITIES = CapabilityMask(Capability.READ.value | Capability.MODEL.value)
+_BASELINE_CAPABILITIES = CapabilityMask(
+    Capability.READ.value
+    | Capability.MODEL.value
+    | Capability.MEMORY.value
+)
 _BASELINE_ACTIONS = frozenset(
     {
         "action_search",
         "available_actions",
         "capability_mask_describe",
+        "echo_veil_doctor",
+        "echo_veil_list",
         "extensions_manifest_build",
         "find_unique_anchor",
         "git_diff",
@@ -143,6 +149,9 @@ def show_typed_tool_result(
 _BASELINE_GRANT_SECONDS = 30.0
 _INTERACTIVE_GRANT_SECONDS = 8 * 60 * 60.0
 _SESSION_GRANT_ACTIONS = 256
+_HEADLESS_WORKSPACE_ACTIONS = frozenset(
+    {"batch_edit", "edit_file", "write_file"}
+)
 _ATTEMPT_LEDGER_LOCK = threading.RLock()
 _AUTHORITY_SESSION_LOCK = threading.RLock()
 _POLICY_CEILING_REASONS = {
@@ -215,6 +224,48 @@ class RuntimeAuthoritySession:
         if action.target_scope is TargetScope.WORKSPACE:
             return self._workspace_target_allowed(action.target)
         return not action.target.endswith(":unresolved")
+
+    def headless_workspace_allows(
+        self,
+        action: ResolvedAction,
+        args: dict[str, Any],
+    ) -> bool:
+        """Allow contained edits and fail-on-error verification in headless mode."""
+
+        if (
+            action.confirmation_mode is not ConfirmationMode.ACTION_TIME
+            or action.target_scope is not TargetScope.WORKSPACE
+            or not self._workspace_target_allowed(action.target)
+        ):
+            return False
+        if action.name in _HEADLESS_WORKSPACE_ACTIONS:
+            return bool(
+                action.effect_class is EffectClass.LOCAL_MUTATION
+                and CapabilityMask(action.capability_mask)
+                == CapabilityMask(
+                    Capability.READ.value | Capability.WRITE.value
+                )
+            )
+        if action.name != "run_shell":
+            return False
+        if (
+            action.effect_class is not EffectClass.CODE_EXECUTION
+            or CapabilityMask(action.capability_mask)
+            != CapabilityMask(
+                Capability.READ.value
+                | Capability.WRITE.value
+                | Capability.SHELL.value
+            )
+        ):
+            return False
+        command = str(args.get("command") or "")
+        verification = execution_guardrails.classify_verification_command(
+            command
+        )
+        return bool(
+            verification.qualifies
+            and not tools_module.shell_is_dangerous(command)
+        )
 
     def issue(
         self,
@@ -291,7 +342,7 @@ def authority_session_for(cfg: Config) -> RuntimeAuthoritySession:
 
 def approval_mode_for_config(
     cfg: Config,
-) -> Literal["interactive", "never", "auto"]:
+) -> Literal["interactive", "never", "auto", "workspace"]:
     """Return the closed approval mode without changing legacy semantics."""
 
     value = str(getattr(cfg, "_nathan_approval_mode", "interactive")).casefold()
@@ -299,6 +350,8 @@ def approval_mode_for_config(
         return "interactive"
     if value == "auto":
         return "auto"
+    if value == "workspace":
+        return "workspace"
     return "never"
 
 
@@ -311,19 +364,41 @@ def _approval_mode(cfg: Config) -> str:
 def _prepared_grant(
     cfg: Config,
     action: ResolvedAction,
+    args: dict[str, Any],
     *,
     now: float,
 ) -> ConsentGrant | None:
     session = authority_session_for(cfg)
+    mode = _approval_mode(cfg)
+    baseline_allowed = session.baseline_allows(action)
+    headless_workspace_allowed = session.headless_workspace_allows(
+        action,
+        args,
+    )
+    if mode == "workspace" and not (
+        baseline_allowed or headless_workspace_allowed
+    ):
+        return None
     grant = session.matching_grant(action, now)
     if grant is not None:
         return grant
-    if session.baseline_allows(action):
+    if baseline_allowed:
         return session.issue(
             action,
             source="runtime-baseline",
             now=now,
+            maximum_action_count=_SESSION_GRANT_ACTIONS,
             ttl_seconds=_BASELINE_GRANT_SECONDS,
+        )
+    if (
+        mode == "workspace"
+        and headless_workspace_allowed
+    ):
+        return session.issue(
+            action,
+            source="trusted-headless-workspace",
+            now=now,
+            maximum_action_count=_SESSION_GRANT_ACTIONS,
         )
     auto_preapproved = _approval_mode(cfg) == "auto" or bool(cfg.auto_approve_active)
     if action.confirmation_mode is ConfirmationMode.SESSION_PREAPPROVAL and auto_preapproved:
@@ -334,6 +409,28 @@ def _prepared_grant(
             maximum_action_count=_SESSION_GRANT_ACTIONS,
         )
     return None
+
+
+def _headless_workspace_confirmation(
+    cfg: Config,
+    action: ResolvedAction,
+    args: dict[str, Any],
+    *,
+    now: float,
+) -> ConfirmationReceipt | None:
+    session = authority_session_for(cfg)
+    if (
+        _approval_mode(cfg) != "workspace"
+        or not session.headless_workspace_allows(action, args)
+    ):
+        return None
+    return ConfirmationReceipt(
+        receipt_id=f"headless-workspace-{uuid.uuid4().hex}",
+        action_digest=action.action_digest,
+        confirmation_mode=ConfirmationMode.ACTION_TIME,
+        confirmed_at=now,
+        expires_at=now + 120.0,
+    )
 
 
 @dataclass(frozen=True)
@@ -440,10 +537,38 @@ def preflight_runtime_tool(
             policy_ceiling_code,
             "Unrecognized caller policy ceiling",
         )
-    grant = None if ceiling_reason else _prepared_grant(cfg, action, now=now)
+    grant = (
+        None
+        if ceiling_reason
+        else _prepared_grant(cfg, action, signature_args, now=now)
+    )
+    confirmation = (
+        None
+        if ceiling_reason
+        else _headless_workspace_confirmation(
+            cfg,
+            action,
+            signature_args,
+            now=now,
+        )
+    )
     guardrail_reasons: list[str] = []
     if ceiling_reason:
         guardrail_reasons.append(ceiling_reason)
+    if (
+        not ceiling_reason
+        and _approval_mode(cfg) == "workspace"
+        and action.effect_class is not EffectClass.OBSERVE
+        and not authority_session_for(cfg).headless_workspace_allows(
+            action,
+            signature_args,
+        )
+    ):
+        guardrail_reasons.append(
+            "headless workspace mode permits only contained file edits and "
+            "recognized fail-on-error verification commands; use read_file "
+            "for inspection"
+        )
     if name == "run_shell" and execution_guardrails.masks_verification_exit_status(
         str(signature_args.get("command") or "")
     ):
@@ -485,6 +610,7 @@ def preflight_runtime_tool(
             safe_mode=bool(getattr(cfg, "safe_mode", True)),
             cwd=cfg.cwd,
             grant=grant,
+            confirmation=confirmation,
             now=now,
             auto_approve=_approval_mode(cfg) == "auto" or bool(cfg.auto_approve_active),
         ),
@@ -548,9 +674,17 @@ def ask_approval(
 
     session = authority_session_for(cfg)
     grant = session.grant_by_id(current.policy.grant_id, now) if current.policy.grant_id else None
-    confirmation: ConfirmationReceipt | None = None
+    confirmation = _headless_workspace_confirmation(
+        cfg,
+        action,
+        current_args,
+        now=now,
+    )
     mode = _approval_mode(cfg)
-    needs_prompt = grant is None or action.confirmation_mode is ConfirmationMode.ACTION_TIME
+    needs_prompt = grant is None or (
+        action.confirmation_mode is ConfirmationMode.ACTION_TIME
+        and confirmation is None
+    )
 
     if needs_prompt:
         if mode != "interactive":
@@ -623,7 +757,23 @@ def run_tool(name: str, args: dict[str, Any], cfg: Config) -> str:
         violation = reconciliation.structured_write_violation(name, call_args, cfg.messages)
         if violation:
             return f"Error: {violation}"
-    if name in ("remember", "append_lesson", "session_command", "action_program"):
+    if name in (
+        "remember",
+        "echo_veil_remember",
+        "echo_veil_refresh_live",
+        "echo_veil_promote",
+        "echo_veil_recall",
+        "echo_veil_context",
+        "echo_veil_list",
+        "echo_veil_forget",
+        "echo_veil_doctor",
+        "echo_veil_reindex",
+        "append_lesson",
+        "session_command",
+        "action_program",
+        "harness_search",
+        "harness_read",
+    ):
         call_args["cfg"] = cfg
     if name == "session_slash":
         from . import session_commands

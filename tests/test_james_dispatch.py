@@ -45,6 +45,115 @@ def test_dispatch_normalizes_observation_success(tmp_path) -> None:
     assert calls[0][0] == "read_file"
 
 
+def test_trusted_edit_precondition_failure_is_retryable_and_not_unknown(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from algo_cli import execution_guardrails
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    cfg = Config(cwd=str(tmp_path))
+    target = tmp_path / "settings.json"
+    target.write_text('{"value": "old"}\n', encoding="utf-8")
+    scope = execution_guardrails.begin_execution_scope(tmp_path)
+    try:
+        execution_guardrails.record_read(target, success=True)
+        result = dispatch_action(
+            "edit_file",
+            {
+                "path": str(target),
+                "old_string": '"missing": true',
+                "new_string": '"missing": false',
+            },
+            cfg,
+            dependencies=_dependencies(
+                tmp_path,
+                lambda _name, _args, _cfg: (
+                    f"Error: old_string not found in {target}. Re-read the file."
+                ),
+            ),
+            render=False,
+        )
+    finally:
+        execution_guardrails.end_execution_scope(scope)
+
+    assert result.outcome.status is OutcomeStatus.FAILED
+    assert result.outcome.invoked is True
+    assert result.outcome.retry_allowed is True
+    assert result.outcome.error_code == "precondition_not_met"
+    assert "Unknown outcome" not in result.result
+
+
+def test_trusted_identical_edit_failure_is_retryable_and_not_unknown(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from algo_cli import execution_guardrails
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    cfg = Config(cwd=str(tmp_path))
+    target = tmp_path / "settings.json"
+    target.write_text('{"value": "current"}\n', encoding="utf-8")
+    scope = execution_guardrails.begin_execution_scope(tmp_path)
+    try:
+        execution_guardrails.record_read(target, success=True)
+        result = dispatch_action(
+            "edit_file",
+            {
+                "path": str(target),
+                "old_string": '"value": "current"',
+                "new_string": '"value": "current"',
+            },
+            cfg,
+            dependencies=_dependencies(
+                tmp_path,
+                lambda _name, _args, _cfg: (
+                    "Error: old_string and new_string are identical at "
+                    f"lines 1-1 in {target}. No change would be made."
+                ),
+            ),
+            render=False,
+        )
+    finally:
+        execution_guardrails.end_execution_scope(scope)
+
+    assert result.outcome.status is OutcomeStatus.FAILED
+    assert result.outcome.retry_allowed is True
+    assert result.outcome.error_code == "precondition_not_met"
+    assert "Unknown outcome" not in result.result
+
+
+def test_failed_recognized_verifier_is_retryable_and_not_unknown(
+    tmp_path,
+) -> None:
+    from algo_cli import execution_guardrails
+
+    cfg = Config(cwd=str(tmp_path))
+    setattr(cfg, "_nathan_approval_mode", "workspace")
+    scope = execution_guardrails.begin_execution_scope(tmp_path)
+    try:
+        result = dispatch_action(
+            "run_shell",
+            {"command": "python -m pytest -q"},
+            cfg,
+            dependencies=_dependencies(
+                tmp_path,
+                lambda _name, _args, _cfg: (
+                    "FAILED tests/test_example.py::test_example\n[exit code: 1]"
+                ),
+            ),
+            render=False,
+        )
+    finally:
+        execution_guardrails.end_execution_scope(scope)
+
+    assert result.outcome.status is OutcomeStatus.FAILED
+    assert result.outcome.invoked is True
+    assert result.outcome.retry_allowed is True
+    assert result.outcome.error_code == "verification_failed"
+    assert "Unknown outcome" not in result.result
+
+
 def test_unknown_local_mutation_is_never_retried_automatically(monkeypatch, tmp_path) -> None:
     cfg = Config(cwd=str(tmp_path))
     prompts: list[str] = []

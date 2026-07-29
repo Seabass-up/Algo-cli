@@ -54,6 +54,7 @@ def test_resolve_auto_remains_local_with_or_without_key(monkeypatch):
 def test_resolve_caches_announcement_per_setting(monkeypatch):
     cfg = Config()
     cfg.embedding_backend = "auto"
+    cfg.show_runtime_details = True
     calls: list[str] = []
     monkeypatch.setattr(main, "show_info", lambda message: calls.append(message))
 
@@ -62,6 +63,20 @@ def test_resolve_caches_announcement_per_setting(monkeypatch):
     main.resolve_embed_backend(cfg)
 
     assert len([message for message in calls if "Embedding backend" in message]) == 1
+
+
+def test_resolve_is_quiet_without_runtime_details(monkeypatch):
+    cfg = Config()
+    cfg.embedding_backend = "auto"
+    calls: list[str] = []
+    monkeypatch.setattr(main, "show_info", lambda message: calls.append(message))
+
+    assert main.resolve_embed_backend(cfg) == (
+        "local",
+        "auto: local embeddings only",
+    )
+
+    assert calls == []
 
 
 def test_make_embed_fn_uses_local_model_for_cloud_fallback(monkeypatch):

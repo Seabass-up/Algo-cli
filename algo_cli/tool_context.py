@@ -13,6 +13,7 @@ import re
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from .deliberation import is_exact_response_task
 from .retrieval_algorithms import BM25Index, lexical_tokens, stable_top_k
 from .tool_schema import estimate_tool_schema_tokens
 
@@ -109,6 +110,25 @@ _SPECIALIZED_INTENT_GATES: tuple[tuple[str, frozenset[str], frozenset[str]], ...
     ("extensions_manifest_", frozenset(), frozenset({"extension", "manifest"})),
     ("credential_", frozenset(), frozenset({"credential", "keychain", "secret"})),
     ("google_", frozenset(), frozenset({"calendar", "docs", "drive", "gmail", "google", "sheets"})),
+    (
+        "echo_veil_",
+        frozenset({"echo"}),
+        frozenset(
+            {
+                "context",
+                "doctor",
+                "forget",
+                "inventory",
+                "list",
+                "memory",
+                "promote",
+                "recall",
+                "reindex",
+                "remember",
+                "refresh",
+            }
+        ),
+    ),
 )
 
 _QUERY_STOPWORDS = frozenset(
@@ -330,6 +350,8 @@ def select_tools_for_prompt(
         for tool_class in declared:
             allowed_names.update(_CLASS_TO_TOOLS.get(tool_class, ()))
         return [tool for tool in tools if getattr(tool, "__name__", "") in allowed_names]
+    if is_exact_response_task(prompt):
+        return []
 
     bounded_limit = max(1, int(limit))
     available_names = {str(getattr(tool, "__name__", "") or "") for tool in tools}
@@ -338,6 +360,26 @@ def select_tools_for_prompt(
     if "action_search" not in available_names and "available_actions" in available_names:
         selected_names.add("available_actions")
 
+    ranked_tools = rank_tools_for_prompt(prompt, tools)
+    ranked_names = {
+        str(getattr(tool, "__name__", "") or "") for tool in ranked_tools
+    }
+    mutation_bundle = {
+        "batch_edit",
+        "edit_file",
+        "write_file",
+    } & available_names
+    if mutation_bundle & ranked_names:
+        # A task that may edit an existing file can discover, after its first
+        # read, that it instead needs to create a file or make several atomic
+        # edits. Keep that small capability family complete while leaving
+        # runtime authority as the enforcement layer.
+        selected_names.update(mutation_bundle)
+    if "run_shell" in ranked_names and "run_shell" in available_names:
+        # Verification is part of a complete mutation workflow, and its schema
+        # must not be crowded out by the complementary edit schemas above.
+        selected_names.add("run_shell")
+
     effective_limit = max(bounded_limit, len(selected_names))
     effective_schema_budget = max(
         int(schema_token_budget),
@@ -345,7 +387,7 @@ def select_tools_for_prompt(
             [tool for tool in tools if getattr(tool, "__name__", "") in selected_names]
         ),
     )
-    for tool in rank_tools_for_prompt(prompt, tools):
+    for tool in ranked_tools:
         if len(selected_names) >= effective_limit:
             break
         name = str(getattr(tool, "__name__", "") or "")

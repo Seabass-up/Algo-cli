@@ -471,7 +471,11 @@ class Config:
     # Session-only auto-approve set by answering "a" at an approval prompt.
     # Never persisted: see save(); resets on every new session.
     session_auto_approve: bool = False
-    show_thinking: bool = True
+    show_thinking: bool = False
+    # Keep ordinary chat focused on the work. Operators can opt into routing,
+    # context-admission, backend, and full tool payload diagnostics.
+    show_runtime_details: bool = False
+    show_route_suggestions: bool = False
     # Per-model Codex reasoning effort. Empty entries use the provider default
     # (medium); keeping a map lets Sol, Terra, and Luna have independent knobs.
     chatgpt_reasoning_efforts: dict[str, str] = field(default_factory=dict)
@@ -486,13 +490,21 @@ class Config:
     cloud_embedding_model: str = "nomic-embed-text:latest"  # Reserved until cloud embeddings are supported.
     harness_embed_model: str = "qwen3-embedding:latest"  # Local Ollama embed model for harness + lessons RAG
     embed_dimensions: int | None = None  # Optional override; None lets the model decide (e.g. 4096 for qwen3-embedding)
+    # Never turn an ordinary prompt into a foreground batch-indexing job.
+    # Explicit /harness embed and /hsearch commands remain available.
+    harness_auto_embed_enabled: bool = False
     echo_veil_enabled: bool = False  # Enable Echo Veil tiered memory layer
     echo_veil_capacity: int = 400  # Maximum active Echo Veil memories before decay
     echo_veil_protection: str = "optional"  # optional | required; required blocks plaintext memory writes
-    echo_veil_profile: str = "algo-cli-qwen3"  # Stable encrypted Echo profile
-    echo_veil_scope: str = "algo-cli:user"  # Authorization scope bound into ciphertext
-    echo_veil_state_dir: str = ""  # Empty uses owner-only ~/.algo_cli/echo-veil
-    echo_veil_embedding_dimension: int = 4096
+    echo_veil_profile: str = "echo-universal-qwen3-v1"  # Shared local Echo authority
+    echo_veil_scope: str = "local-user"  # Authorization scope bound into ciphertext
+    echo_veil_state_dir: str = ""  # Empty uses Echo Veil's owner-only platform data root
+    echo_veil_embedding_dimension: int = 1024
+    # Keep protected recall on a bounded CPU runner so a large local agent
+    # model can remain resident on the GPU across memory operations.
+    echo_veil_embedding_keep_alive_seconds: int = 0
+    echo_veil_embedding_context_length: int = 16_384
+    echo_veil_embedding_gpu_layers: int = 0
     # Deprecated compatibility fields. They are ignored by the authoritative
     # adapter; raw key references in config are no longer accepted.
     echo_veil_production: bool = False
@@ -719,7 +731,10 @@ class Config:
         # system prompts are preserved verbatim.
         if cfg.system == LEGACY_DEFAULT_SYSTEM:
             cfg.system = DEFAULT_SYSTEM
-        if MEMORY_FILE.exists():
+        if (
+            cfg.echo_veil_protection.strip().casefold() != "required"
+            and MEMORY_FILE.exists()
+        ):
             loaded = _load_json_file(MEMORY_FILE, [])
             if isinstance(loaded, list):
                 cfg.memories = [str(item) for item in loaded]

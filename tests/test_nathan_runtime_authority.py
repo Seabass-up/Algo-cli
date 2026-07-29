@@ -58,6 +58,110 @@ def test_grant_consumption_is_atomic_under_race(tmp_path) -> None:
     assert outcomes.count(False) == 7
 
 
+def test_baseline_grant_supports_parallel_same_target_reads(tmp_path) -> None:
+    cfg = Config(cwd=str(tmp_path))
+    preflights = [
+        preflight_runtime_tool(
+            "list_directory",
+            {"path": path},
+            cfg,
+        )
+        for path in ("one", "two", "three")
+    ]
+
+    assert all(
+        ask_approval(
+            "list_directory",
+            {"path": path},
+            cfg,
+            preflight=preflight,
+        )
+        for path, preflight in zip(
+            ("one", "two", "three"),
+            preflights,
+        )
+    )
+
+
+def test_headless_workspace_mode_allows_only_contained_file_edits(
+    tmp_path,
+) -> None:
+    from algo_cli import execution_guardrails
+
+    inside = tmp_path / "inside.txt"
+    inside.write_text("old", encoding="utf-8")
+    outside = tmp_path.parent / "outside.txt"
+    cfg = Config(cwd=str(tmp_path))
+    setattr(cfg, "_nathan_approval_mode", "workspace")
+    scope = execution_guardrails.begin_execution_scope(tmp_path)
+    try:
+        execution_guardrails.record_read(inside, success=True)
+        allowed = preflight_runtime_tool(
+            "edit_file",
+            {
+                "path": str(inside),
+                "old_string": "old",
+                "new_string": "new",
+            },
+            cfg,
+        )
+        escaped = preflight_runtime_tool(
+            "write_file",
+            {"path": str(outside), "content": "no"},
+            cfg,
+        )
+
+        assert allowed.policy.disposition is PolicyDisposition.ALLOW
+        assert ask_approval(
+            "edit_file",
+            {
+                "path": str(inside),
+                "old_string": "old",
+                "new_string": "new",
+            },
+            cfg,
+            preflight=allowed,
+        ) is True
+        assert escaped.policy.disposition is PolicyDisposition.CONFIRM
+        assert ask_approval(
+            "write_file",
+            {"path": str(outside), "content": "no"},
+            cfg,
+            preflight=escaped,
+        ) is False
+        assert ask_approval(
+            "remember",
+            {"fact": "must not be auto-confirmed"},
+            cfg,
+        ) is False
+        assert ask_approval(
+            "run_shell",
+            {"command": "echo unsafe authority expansion"},
+            cfg,
+        ) is False
+        blocked_inspection = preflight_runtime_tool(
+            "run_shell",
+            {"command": "cat inside.txt"},
+            cfg,
+        )
+        assert blocked_inspection.allowed is False
+        assert "use read_file for inspection" in blocked_inspection.blocked_result
+        verifier = preflight_runtime_tool(
+            "run_shell",
+            {"command": "python -m pytest -q"},
+            cfg,
+        )
+        assert verifier.policy.disposition is PolicyDisposition.ALLOW
+        assert ask_approval(
+            "run_shell",
+            {"command": "python -m pytest -q"},
+            cfg,
+            preflight=verifier,
+        ) is True
+    finally:
+        execution_guardrails.end_execution_scope(scope)
+
+
 def test_interactive_auto_still_prompts_for_action_time(monkeypatch, tmp_path) -> None:
     cfg = Config(cwd=str(tmp_path), auto_mode=True)
     prompts: list[str] = []

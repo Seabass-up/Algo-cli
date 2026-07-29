@@ -67,6 +67,7 @@ from . import google_workspace_auth
 from . import google_workspace
 from . import x_account
 from . import updater
+from . import echo_veil_update
 from .display import (
     compact_path,
     _format_bytes,
@@ -87,6 +88,7 @@ from .display import (
     finish_streaming_response,
     theme_colors,
     set_theme,
+    set_runtime_details_visible,
     json_sink,
 )
 from . import tools as tools_module
@@ -1730,6 +1732,7 @@ def reload_runtime() -> Config:
         set_theme(cfg.theme)
     except ValueError:
         cfg.theme = current_theme_name()
+    set_runtime_details_visible(cfg.show_runtime_details)
     return cfg
 
 
@@ -1904,7 +1907,7 @@ _GEMINI_WORKAROUND_NOTICE_SHOWN: set[str] = set()
 READ_ONLY_TOOLS = frozenset({
     "read_file", "read_pdf", "render_pdf_pages", "list_directory",
     "search_files", "git_status", "git_diff", "harness_search", "harness_read", "harness_stats",
-    "available_actions", "action_search",
+    "available_actions", "action_search", "echo_veil_list", "echo_veil_doctor",
     "model_show",
 })
 
@@ -2041,7 +2044,7 @@ def resolve_embed_backend(cfg: Config) -> tuple[str, str]:
         result = ("local", "auto: local embeddings only")
 
     _EMBED_BACKEND_CACHE[setting] = result
-    if setting not in _EMBED_BACKEND_ANNOUNCED:
+    if setting not in _EMBED_BACKEND_ANNOUNCED and cfg.show_runtime_details:
         _EMBED_BACKEND_ANNOUNCED.add(setting)
         show_info(f"Embedding backend: {result[0]} ({result[1]})")
     return result
@@ -2623,6 +2626,31 @@ def ensure_lessons_index(cfg: Config) -> bool:
     return False
 
 
+def lessons_index_ready_for_chat(cfg: Config, model: str) -> bool:
+    """Use a valid lesson index without building one during an ordinary turn."""
+
+    if cfg.harness_auto_embed_enabled:
+        return ensure_lessons_index(cfg)
+    status = identity.lessons_index_status()
+    return bool(status.get("index")) and not identity.lessons_index_stale(
+        model,
+        configured_embed_dimensions(cfg),
+    )
+
+
+def harness_index_ready_for_chat(
+    cfg: Config,
+    model: str,
+    local_names: list[str] | None = None,
+) -> bool:
+    """Use existing harness vectors; batch embedding is explicit by default."""
+
+    if cfg.harness_auto_embed_enabled:
+        return ensure_harness_index(cfg, local_names)
+    matching, _total = harness.embedded_count(model)
+    return matching > 0
+
+
 
 
 def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
@@ -2687,38 +2715,44 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
         _turn_local_models = local_model_names(cfg)
 
     retrieved_lessons: list[str] | None = None
-    if ensure_lessons_index(cfg):
+    lessons_ready = lessons_index_ready_for_chat(cfg, _embed_model)
+    if lessons_ready:
         retrieved_lessons = identity.retrieve_lessons(
             context_query_message, _shared_embed, _embed_model, k=LESSONS_TOP_K
         )
     # Governed memory recall is independent from the optional Intuition layer.
     # Pinned facts are already injected by context_budget; only curated/history
     # records are retrieved here so the prompt does not contain duplicates.
-    try:
-        memory_catalog = memory_runtime.MemoryCatalog()
-        from .ada_memory_echo_veil import protection_required
+    from .ada_memory_echo_veil import protection_required
 
-        if not protection_required(cfg):
+    required_memory_protection = protection_required(cfg)
+    if not required_memory_protection:
+        try:
+            memory_catalog = memory_runtime.MemoryCatalog()
             memory_catalog.sync_legacy_facts(cfg.memories, authoritative=False)
-        memory_embed_fn = (
-            _shared_embed
-            if host_is_local(cfg.host) and ollama_server_ready(cfg.host)
-            else None
-        )
-        memory_hits = memory_catalog.search(
-            context_query_message,
-            embed_fn=memory_embed_fn,
-            embedding_model=_embed_model,
-            tiers={"curated", "history"},
-            scopes={memory_runtime.scope_for_workspace(cfg.cwd)},
-        )
-        memory_block = memory_runtime.format_prompt_hits(memory_hits)
-        if memory_block:
-            optional_context_blocks.append(
-                OptionalContextBlock("memory", "Relevant System Memory", memory_block)
+            memory_embed_fn = (
+                _shared_embed
+                if host_is_local(cfg.host) and ollama_server_ready(cfg.host)
+                else None
             )
-    except memory_runtime.MemorySystemError as exc:
-        logger.debug("Governed memory recall failed: %s", exc)
+            memory_hits = memory_catalog.search(
+                context_query_message,
+                embed_fn=memory_embed_fn,
+                embedding_model=_embed_model,
+                tiers={"curated", "history"},
+                scopes={memory_runtime.scope_for_workspace(cfg.cwd)},
+            )
+            memory_block = memory_runtime.format_prompt_hits(memory_hits)
+            if memory_block:
+                optional_context_blocks.append(
+                    OptionalContextBlock(
+                        "memory",
+                        "Relevant System Memory",
+                        memory_block,
+                    )
+                )
+        except memory_runtime.MemorySystemError as exc:
+            logger.debug("Governed memory recall failed: %s", exc)
     retrieved_context: list[dict[str, Any]] | None = None
     from .session_mode import normalize_mode
 
@@ -2726,13 +2760,24 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
     harness_tools_available = any(
         getattr(tool, "__name__", "").startswith("harness_") for tool in active_tools
     )
+    harness_ready = harness_index_ready_for_chat(
+        cfg,
+        _embed_model,
+        _turn_local_models,
+    )
     if (
         _session_mode != "execute"
         and (json_sink() is None or harness_tools_available)
-        and ensure_harness_index(cfg, _turn_local_models)
+        and harness_ready
     ):
         retrieved_context = harness.hybrid_search(
-            context_query_message, _shared_embed, _embed_model, k=HARNESS_TOP_K
+            context_query_message,
+            _shared_embed,
+            _embed_model,
+            k=HARNESS_TOP_K,
+            excluded_kinds=(
+                {"memory"} if required_memory_protection else None
+            ),
         )
         context_block = harness.format_retrieved_context(retrieved_context or [])
         if context_block:
@@ -2934,7 +2979,11 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
     # active model's size + provider, honoring any explicit user overrides.
     if getattr(cfg, "model_adaptive", True):
         _profile_params = model_profile.effective_params(cfg, _active_model_info)
-        if _profile_params.adapted_fields and json_sink() is None:
+        if (
+            _profile_params.adapted_fields
+            and json_sink() is None
+            and cfg.show_runtime_details
+        ):
             show_info(
                 f"↳ model-adaptive ({', '.join(_profile_params.adapted_fields)}): "
                 f"ctx={_profile_params.num_ctx} temp={_profile_params.temperature} "
@@ -3113,9 +3162,11 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
             context_build_started = (
                 agent_loop_started if iterations_used == 0 else time.perf_counter()
             )
-            finalization_turn = _ == max_iterations
+            round_start_completion = execution_guardrails.completion_decision()
+            budget_finalization_turn = _ == max_iterations
+            finalization_turn = budget_finalization_turn
             if finalization_turn:
-                completion = execution_guardrails.completion_decision()
+                completion = round_start_completion
                 if not completion.allowed:
                     show_error(
                         f"Max tool iterations reached ({max_iterations}) before successful "
@@ -3148,12 +3199,25 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 if msg.get("role") == "user":
                     last_user = str(msg.get("content") or persisted_user_message)
                     break
-            system_prompt = build_system_prompt(
-                cfg,
-                retrieved_lessons=retrieved_lessons,
-                active_model_info=_active_model_info,
-                user_message=last_user,
-            )
+            try:
+                system_prompt = build_system_prompt(
+                    cfg,
+                    retrieved_lessons=retrieved_lessons,
+                    active_model_info=_active_model_info,
+                    user_message=last_user,
+                )
+            except Exception as exc:
+                if not required_memory_protection:
+                    raise
+                logger.debug(
+                    "Required Echo Veil system context failed: %s",
+                    type(exc).__name__,
+                )
+                show_error(
+                    "This turn stopped before model execution because required "
+                    "protected memory is unavailable."
+                )
+                break
             request_user_message, precomputed_used, included_contexts, omitted_contexts = _fit_request_user_message(system_prompt)
             if maybe_compact_context(
                 client,
@@ -3162,12 +3226,25 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 model_info=_active_model_info,
             ):
                 invalidate_context_usage_cache()
-                system_prompt = build_system_prompt(
-                    cfg,
-                    retrieved_lessons=retrieved_lessons,
-                    active_model_info=_active_model_info,
-                    user_message=last_user,
-                )
+                try:
+                    system_prompt = build_system_prompt(
+                        cfg,
+                        retrieved_lessons=retrieved_lessons,
+                        active_model_info=_active_model_info,
+                        user_message=last_user,
+                    )
+                except Exception as exc:
+                    if not required_memory_protection:
+                        raise
+                    logger.debug(
+                        "Required Echo Veil compacted context failed: %s",
+                        type(exc).__name__,
+                    )
+                    show_error(
+                        "This turn stopped before model execution because "
+                        "required protected memory is unavailable."
+                    )
+                    break
                 request_user_message, precomputed_used, included_contexts, omitted_contexts = _fit_request_user_message(system_prompt)
             request_messages = [{"role": "system", "content": system_prompt}] + cfg.messages
             if request_user_message != persisted_user_message:
@@ -3177,7 +3254,12 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                         msg["content"] = request_user_message
                         request_messages[i] = msg
                         break
-            if optional_context_blocks and not context_selection_notified and json_sink() is None:
+            if (
+                optional_context_blocks
+                and not context_selection_notified
+                and json_sink() is None
+                and cfg.show_runtime_details
+            ):
                 if included_contexts:
                     show_info(f"↳ auto context attached: {', '.join(included_contexts)}")
                 if omitted_contexts:
@@ -3420,8 +3502,8 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                     optional_context_blocks.clear()
                     show_info(
                         "Unverified final text was withheld. Completion is deferred until the last "
-                        "workspace mutation has a passing "
-                        "test, lint/type check, or git diff verification."
+                        "workspace mutation has a complete file read-back or a passing test, "
+                        "lint/type check, or git diff verification."
                     )
                     cfg.messages.append(
                         {
@@ -3431,7 +3513,10 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                                 "workspace mutation has no successful post-mutation verifier. Run one "
                                 "appropriate non-mutating test, lint/type check, or git_diff tool now. "
                                 "Custom verification must fail on mismatch: run a healthcheck/check/verify "
-                                "script, or Python -c with one or more assertions; then give a concise "
+                                "script, or Python -c with direct assertions. Reuse the exact paths from "
+                                "successful mutation receipts; do not shorten them or assume a nested task "
+                                "directory is the process working directory. A complete reread of every "
+                                "mutated file also satisfies read-back verification. Then give a concise "
                                 "final answer grounded in that result."
                             ),
                         }
@@ -3807,7 +3892,20 @@ def print_harness_results(
         active_model = harness.DEFAULT_EMBED_MODEL
         matching, _total = harness.embedded_count(active_model)
     if cfg is not None and embed_fn is not None and matching > 0:
-        results = harness.hybrid_search(query, embed_fn, active_model, k=12, harness=harness_name, kind=kind)
+        from .ada_memory_echo_veil import protection_required
+
+        required_memory_protection = protection_required(cfg)
+        results = harness.hybrid_search(
+            query,
+            embed_fn,
+            active_model,
+            k=12,
+            harness=harness_name,
+            kind=kind,
+            excluded_kinds=(
+                {"memory"} if required_memory_protection else None
+            ),
+        )
         if results:
             lines = [f"[dim]hybrid (RRF) results for:[/] {query}", ""]
             for rec in results:
@@ -3819,7 +3917,15 @@ def print_harness_results(
             console.print("\n".join(lines))
             return
     from .tools import harness_search
-    console.print(harness_search(query=query, harness_name=harness_name, kind=kind, limit=12))
+    console.print(
+        harness_search(
+            query=query,
+            harness_name=harness_name,
+            kind=kind,
+            limit=12,
+            cfg=cfg,
+        )
+    )
 
 
 def build_rust_indexer() -> None:
@@ -3893,9 +3999,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--approval-mode",
-        choices=["never", "auto"],
+        choices=["never", "auto", "workspace"],
         default="never",
-        help="In --oneshot, control how approval-required tools are handled: never (default, deny + tool_denied event) or auto (auto-approve, equivalent to /auto).",
+        help=(
+            "In --oneshot, control approval-required tools: never (default), "
+            "auto (session-preapproval only), or workspace (contained file "
+            "edits with read-after-write verification; external and arbitrary "
+            "shell actions remain denied)."
+        ),
     )
     parser.add_argument(
         "--thinking",
@@ -3951,6 +4062,28 @@ def _run_update_entry() -> int:
     if result.returncode != 0 and result.details:
         console.print(result.details, markup=False)
     return result.returncode
+
+
+def _run_echo_veil_request(text: str, cfg: Config) -> tuple[bool, int]:
+    """Handle Echo package maintenance without model or generic-shell routing."""
+
+    command = echo_veil_update.classify_echo_request(text)
+    if command is None:
+        return False, 0
+    if command == "status":
+        status = echo_veil_update.collect_echo_status(cfg)
+        console.print(echo_veil_update.render_echo_status(status), markup=False)
+        return True, status.exit_code
+    with console.status(
+        "[muted]staging and verifying the Algo-qualified Echo Veil build...[/]",
+        spinner="dots",
+    ):
+        result = echo_veil_update.update_echo_veil(cfg)
+    style = "green" if result.returncode == 0 else "red"
+    console.print(f"[{style}]{result.message}[/{style}]")
+    if result.returncode != 0 and result.details:
+        console.print(result.details, markup=False)
+    return True, result.returncode
 
 
 def _force_utf8_console() -> None:
@@ -4030,6 +4163,7 @@ def main() -> None:
         _exit = _run_oneshot_entry(args)
         sys.exit(_exit)
     cfg = Config.load()
+    set_runtime_details_visible(cfg.show_runtime_details)
     harness.configure_context_sources(
         external=cfg.external_harness_sources_enabled,
         index_compute_lab=cfg.index_compute_lab_auto_inject,
@@ -4043,6 +4177,10 @@ def main() -> None:
         cfg.cloud = True
     if args.cwd:
         cfg.cwd = str(Path(args.cwd).expanduser().resolve())
+    if args.prompt and not args.oneshot:
+        echo_handled, echo_exit_code = _run_echo_veil_request(args.prompt, cfg)
+        if echo_handled:
+            raise SystemExit(echo_exit_code)
     if (args.prompt or "").strip().lower() == "doctor" and not args.oneshot:
         from .action_registry import build_doctor_report, render_doctor
 
@@ -4249,11 +4387,18 @@ def main() -> None:
             show_error(unknown_command_message(user_input))
             continue
         try:
+            echo_handled, _echo_exit_code = _run_echo_veil_request(
+                user_input,
+                cfg,
+            )
+            if echo_handled:
+                continue
             if cfg.cloud:
                 start_supplemental_gateway(cfg)
             elif not start_ollama_server(cfg):
                 continue
-            maybe_show_route_suggestion(user_input)
+            if cfg.show_route_suggestions:
+                maybe_show_route_suggestion(user_input)
             agent_loop(client, cfg, user_input)
             refresh_runtime_status(cfg, client)
             invalidate_prompt_toolbar(session)

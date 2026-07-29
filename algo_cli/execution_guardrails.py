@@ -22,7 +22,10 @@ VerificationKind = Literal["same_path_reread", "git_diff", "test", "lint"]
 _PATH_MUTATION_OPERATIONS = frozenset({"write_file", "edit_file", "batch_edit"})
 _MUTATION_OPERATIONS = frozenset({*_PATH_MUTATION_OPERATIONS, "run_shell"})
 _READ_OPERATIONS = frozenset({"read_file"})
-_VERIFICATION_KINDS = frozenset({"git_diff", "test", "lint"})
+_EXPLICIT_VERIFICATION_KINDS = frozenset({"git_diff", "test", "lint"})
+_VERIFICATION_KINDS = frozenset(
+    {*_EXPLICIT_VERIFICATION_KINDS, "same_path_reread"}
+)
 
 _SENSITIVE_COMPONENTS = frozenset(
     {
@@ -416,7 +419,12 @@ def record_read(
 ) -> EvidenceEvent | None:
     """Record only a successful, contained, non-sensitive file read."""
 
-    return _append_path_event("read", path, operation=operation, success=success)
+    return _append_path_event(
+        "read",
+        path,
+        operation=operation,
+        success=success,
+    )
 
 
 def record_mutation(
@@ -749,7 +757,7 @@ def record_verification(
 ) -> EvidenceEvent | None:
     """Record a successful recognized verifier without command/output data."""
 
-    if not success or verification_kind not in _VERIFICATION_KINDS:
+    if not success or verification_kind not in _EXPLICIT_VERIFICATION_KINDS:
         return None
     ledger = _ACTIVE_LEDGER.get()
     if ledger is None or ledger.closed:
@@ -780,13 +788,63 @@ def evaluate_completion(events: Sequence[EvidenceEvent]) -> CompletionDecision:
     for event in events:
         if event.sequence <= last_mutation.sequence:
             continue
-        if event.kind == "verification" and event.verification_kind in _VERIFICATION_KINDS:
+        if (
+            event.kind == "verification"
+            and event.verification_kind in _EXPLICIT_VERIFICATION_KINDS
+        ):
             return CompletionDecision(
                 True,
                 "last mutation was followed by successful verification",
                 last_mutation.sequence,
                 event.sequence,
                 event.verification_kind,
+            )
+
+    # A complete read-back of each file changed since the most recent explicit
+    # verifier is useful, bounded evidence for file-oriented agent work. It is
+    # stronger than merely trusting a write receipt and avoids forcing
+    # artifact-only tasks to invent shell tests. Workspace-wide shell
+    # mutations remain ineligible because a file reread cannot cover them.
+    prior_verifiers = [
+        event
+        for event in events
+        if event.kind == "verification"
+        and event.verification_kind in _EXPLICIT_VERIFICATION_KINDS
+        and event.sequence < last_mutation.sequence
+    ]
+    coverage_start = prior_verifiers[-1].sequence if prior_verifiers else 0
+    latest_file_mutations: dict[str, EvidenceEvent] = {}
+    for event in mutations:
+        if event.sequence <= coverage_start:
+            continue
+        if event.relative_path == ".":
+            latest_file_mutations.clear()
+            break
+        if event.relative_path:
+            latest_file_mutations[event.relative_path] = event
+    readback_events: list[EvidenceEvent] = []
+    for path, mutation in latest_file_mutations.items():
+        rereads = [
+            event
+            for event in events
+            if event.kind == "read"
+            and event.relative_path == path
+            and event.sequence > mutation.sequence
+        ]
+        if not rereads:
+            break
+        readback_events.append(rereads[-1])
+    else:
+        if latest_file_mutations and len(readback_events) == len(
+            latest_file_mutations
+        ):
+            verifier = max(readback_events, key=lambda event: event.sequence)
+            return CompletionDecision(
+                True,
+                "every changed file was reread after its latest mutation",
+                last_mutation.sequence,
+                verifier.sequence,
+                "same_path_reread",
             )
     return CompletionDecision(
         False,

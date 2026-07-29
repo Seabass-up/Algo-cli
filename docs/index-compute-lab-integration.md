@@ -1,6 +1,19 @@
-# index-compute-lab ↔ Algo CLI integration
+---
+title: Index Compute Lab Integration
+description: Opt-in retrieval and graph-context integration between index-compute-lab and Algo CLI.
+tags: [index-compute-lab, graph, retrieval, privacy, algo-cli]
+status: active
+updated: 2026-07-24
+last_reviewed: 2026-07-24
+runtime_version: "Algo CLI v0.18.0"
+concept: "concept:algo-cli"
+---
+
+# Index Compute Lab Integration
 
 **Lab path (default):** `~/index-compute-lab`; override it with `ALGO_CLI_INDEX_COMPUTE_LAB_ROOT`.
+
+> **Evidence boundary:** Graph context is retrieval evidence, not proof. Verify consequential claims against the cited source files or live system before acting.
 
 ## Seamless context (every model / provider)
 
@@ -28,5 +41,3 @@
 ## First run
 
 If a legacy `index-compute-lab` entry is present in `~/.algo_cli/harness_roots.json`, startup removes it (lab indexing is dynamic). Run `/harness refresh` once to drop any duplicate atom records, then `/harness embed` for vectors.
-
-**Last updated:** 2026-07

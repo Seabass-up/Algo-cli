@@ -97,6 +97,60 @@ def test_edit_file_no_match_reports_first_line(tmp_path):
     assert p.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
 
 
+def test_edit_file_recovers_whole_json_document_formatting_mismatch(
+    tmp_path,
+):
+    p = tmp_path / "settings.json"
+    p.write_text(
+        '{\n  "enabled": false,\n  "endpoint": "/old"\n}\n',
+        encoding="utf-8",
+    )
+
+    result = tools.edit_file(
+        str(p),
+        '{"endpoint":"/old","enabled":false}',
+        '{"endpoint":"/live","enabled":true}',
+    )
+
+    assert result.startswith("Edited ")
+    assert "semantically matching whole JSON document" in result
+    assert p.read_text(encoding="utf-8") == (
+        '{"endpoint":"/live","enabled":true}\n'
+    )
+
+
+def test_edit_file_json_fallback_requires_exact_semantic_old_document(
+    tmp_path,
+):
+    p = tmp_path / "settings.json"
+    original = '{\n  "enabled": false,\n  "endpoint": "/old"\n}\n'
+    p.write_text(original, encoding="utf-8")
+
+    result = tools.edit_file(
+        str(p),
+        '{"endpoint":"/different","enabled":false}',
+        '{"endpoint":"/live","enabled":true}',
+    )
+
+    assert "old_string not found" in result
+    assert p.read_text(encoding="utf-8") == original
+
+
+def test_edit_file_json_fallback_rejects_duplicate_keys(tmp_path):
+    p = tmp_path / "settings.json"
+    original = '{"enabled":false,"enabled":true}\n'
+    p.write_text(original, encoding="utf-8")
+
+    result = tools.edit_file(
+        str(p),
+        '{"enabled":true}',
+        '{"enabled":false}',
+    )
+
+    assert "old_string not found" in result
+    assert p.read_text(encoding="utf-8") == original
+
+
 def test_edit_file_empty_old_string_rejected(tmp_path):
     p = tmp_path / "note.txt"
     p.write_text("alpha\n", encoding="utf-8")

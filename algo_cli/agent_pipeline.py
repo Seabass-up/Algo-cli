@@ -473,6 +473,15 @@ def run_agent_block(
         include_external=cfg.external_harness_sources_enabled,
     )
     system_parts = [block.prompt]
+    from .ada_memory_echo_veil import (
+        protected_memory_operating_contract,
+        protection_required,
+    )
+
+    if protection_required(cfg):
+        system_parts.append(
+            f"\n\n{protected_memory_operating_contract(cfg)}"
+        )
     if inference_harness.should_inject(task):
         system_parts.append(f"\n\n{inference_harness.context_block()}")
     if block.requires_change:
@@ -480,7 +489,8 @@ def run_agent_block(
     system_parts.append(
         "\n\n## Session Workspace\n"
         "Relative tool paths resolve from the active session workspace. Use path '.' for its root; "
-        "do not guess or disclose the absolute workspace path.\n"
+        "do not guess or disclose the absolute workspace path. A complete reread of every mutated "
+        "file is accepted as read-back verification.\n"
         f"{session_commands.catalog_for_prompt()}"
     )
     if mercury:
@@ -780,8 +790,12 @@ def run_agent_block(
                                 "content": (
                                     "[Internal completion gate] The last workspace mutation is not "
                                     "verified. Run one appropriate non-mutating test, lint/type check, "
-                                    "or git_diff tool now. Then provide a final ## Block Output grounded "
-                                    "in that verifier."
+                                    "or git_diff tool now. Reuse the exact paths from successful mutation "
+                                    "receipts; do not shorten them or assume a nested task directory is the "
+                                    "process working directory. Keep custom Python verification to direct "
+                                    "fail-on-mismatch assertions. A complete reread of every mutated file "
+                                    "also satisfies read-back verification. Then provide a final "
+                                    "## Block Output grounded in that verifier."
                                 ),
                             }
                         )
@@ -1959,35 +1973,95 @@ def run_agent_pipeline(
         )
     from . import main as _main
 
-    try:
-        memory_catalog = memory_runtime.MemoryCatalog()
-        from .ada_memory_echo_veil import protection_required
+    from .ada_memory_echo_veil import (
+        protected_prompt_context,
+        protection_required,
+    )
 
-        if not protection_required(cfg):
-            memory_catalog.sync_legacy_facts(cfg.memories, authoritative=False)
-        memory_hits = memory_catalog.search(
-            task,
-            embed_fn=_main.intuition_embed_fn(cfg),
-            embedding_model=_main.harness.resolve_embed_model(cfg),
-            tiers={"curated", "history"},
-            scopes={memory_runtime.scope_for_workspace(cfg.cwd)},
-        )
-        memory_injection = memory_runtime.format_prompt_hits(memory_hits)
-        if memory_injection:
-            context_sources.append(
-                agent_context.AgentContextSource(
-                    name="governed_memory",
-                    title="Relevant System Memory",
-                    body=memory_injection,
-                    priority=80,
-                    trust="governed_memory",
-                    scope="workspace",
-                    freshness_rank=700,
-                    provenance="julia-memory-runtime",
+    if protection_required(cfg):
+        try:
+            memory_injection = protected_prompt_context(cfg, task, top_k=3)
+            if memory_injection:
+                context_sources.append(
+                    agent_context.AgentContextSource(
+                        name="protected_echo_memory",
+                        title="Protected Echo Veil Memory",
+                        body=memory_injection,
+                        priority=80,
+                        trust="governed_memory",
+                        scope="global",
+                        freshness_rank=700,
+                        provenance="echo-veil-scoped-v2",
+                    )
                 )
+        except Exception as exc:
+            logger.debug(
+                "Agent pipeline protected Echo recall failed: %s",
+                type(exc).__name__,
             )
-    except memory_runtime.MemorySystemError as exc:
-        logger.debug("Agent pipeline governed memory recall failed: %s", exc)
+            error = (
+                "Agent run stopped because required protected memory recall "
+                "is unavailable."
+            )
+            show_error(error)
+            block_records = [_block_record(block) for block in completed]
+            _finish_thread_record(
+                active_thread_id,
+                status="failed",
+                output=completed[-1].output if completed else "",
+                error=error,
+                blocks=block_records,
+                pipeline=record_pipeline,
+                workspace=_capture_thread_workspace(cfg),
+                contract=contract,
+                checkpoint=_checkpoint_payload(run_journal),
+            )
+            try:
+                state = run_journal.resume_state()
+                if not state.uncertain_mutation_steps:
+                    run_journal.run_finished(
+                        status="failed",
+                        last_verified_sequence=state.last_verified_sequence,
+                    )
+            except agent_run_journal.AgentRunJournalError:
+                pass
+            journal_lease.close()
+            return AgentRunResult(
+                thread_id=active_thread_id,
+                status="failed",
+                pipeline=record_pipeline,
+                error=error,
+                blocks=block_records,
+                contract_id=contract.contract_id,
+                contract_mode=contract.mode,
+            )
+    else:
+        try:
+            memory_catalog = memory_runtime.MemoryCatalog()
+            memory_catalog.sync_legacy_facts(cfg.memories, authoritative=False)
+            memory_hits = memory_catalog.search(
+                task,
+                embed_fn=_main.intuition_embed_fn(cfg),
+                embedding_model=_main.harness.resolve_embed_model(cfg),
+                tiers={"curated", "history"},
+                scopes={memory_runtime.scope_for_workspace(cfg.cwd)},
+            )
+            memory_injection = memory_runtime.format_prompt_hits(memory_hits)
+            if memory_injection:
+                context_sources.append(
+                    agent_context.AgentContextSource(
+                        name="governed_memory",
+                        title="Relevant System Memory",
+                        body=memory_injection,
+                        priority=80,
+                        trust="governed_memory",
+                        scope="workspace",
+                        freshness_rank=700,
+                        provenance="julia-memory-runtime",
+                    )
+                )
+        except memory_runtime.MemorySystemError as exc:
+            logger.debug("Agent pipeline governed memory recall failed: %s", exc)
 
     engine = _main._intuition_engine
     if engine is not None and cfg.intuition_recall_enabled:

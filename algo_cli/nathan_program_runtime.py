@@ -970,7 +970,7 @@ def compile_program(
 
     raw_outputs = plan_dict.get("outputs")
     if raw_outputs is None:
-        raw_outputs = [compiled_steps[-1].step_id]
+        raw_outputs = [{"$ref": compiled_steps[-1].step_id}]
     if not isinstance(raw_outputs, list) or not raw_outputs:
         raise ProgramValidationError("program outputs must be a non-empty list")
     if len(raw_outputs) > limits.max_outputs:

@@ -440,6 +440,40 @@ def test_source_root_diagnostics_distinguish_unreadable_adapter(tmp_path, monkey
     assert result["unavailable_adapter_roots"] == 0
 
 
+def test_configured_external_root_qualification_exercises_real_pipeline():
+    policy_before = harness._source_policy()
+
+    report = harness.qualify_configured_external_roots()
+
+    assert report["status"] == "pass"
+    assert report["probe"] == "harness-configured-external-roots-v1"
+    assert all(report["checks"].values())
+    assert report["metrics"] == {
+        "configured_roots": 2,
+        "records_indexed": 2,
+        "configuration_rejections": 0,
+        "retrieved_records": 2,
+    }
+    assert len(report["evidence"]["fixture_digest"]) == 64
+    assert len(report["evidence"]["ranking_digest"]) == 64
+    assert report["error_type"] is None
+    assert harness._source_policy() == policy_before
+    serialized = json.dumps(report)
+    assert "qualification-secret-token" not in serialized
+    assert "/private/" not in serialized
+    assert "/Users/" not in serialized
+
+
+def test_configured_external_root_qualification_fails_closed(monkeypatch):
+    monkeypatch.setattr(harness, "iter_files", lambda _root: [])
+
+    report = harness.qualify_configured_external_roots()
+
+    assert report["status"] == "fail"
+    assert report["checks"]["bounded_files_indexed"] is False
+    assert report["checks"]["cross_root_retrieval"] is False
+
+
 def test_superseded_records_are_excluded_from_automatic_retrieval():
     assert harness.is_excluded_from_retrieval({"status": "superseded"}) is True
 
@@ -922,6 +956,67 @@ def test_search_index_skips_excluded_records():
     hits = harness.search_index("harness", limit=5)
     assert hits
     assert all("archive/" not in h["id"] for h in hits)
+
+
+def test_protected_candidate_exclusion_applies_before_keyword_and_vector_ranking():
+    model = "fake-protected-model"
+    index = {
+        "generated": "2026-07-24T09:00",
+        "record_count": 2,
+        "roots": [],
+        "records": [
+            {
+                "id": "codex:memory:legacy.md",
+                "harness": "codex",
+                "kind": "memory",
+                "title": "Legacy memory",
+                "path": "__pytest__/legacy.md",
+                "summary": "release shield guidance",
+                "search_text": "release shield guidance",
+                "embedding": [1.0, 0.0],
+                "embedding_model": model,
+            },
+            {
+                "id": "codex:skill:shield.md",
+                "harness": "codex",
+                "kind": "skill",
+                "title": "Shield skill",
+                "path": "__pytest__/shield.md",
+                "summary": "release shield guidance",
+                "search_text": "release shield guidance",
+                "embedding": [1.0, 0.0],
+                "embedding_model": model,
+            },
+        ],
+    }
+    harness.INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    harness.INDEX_PATH.write_text(json.dumps(index), encoding="utf-8")
+    harness._INDEX_CACHE = None
+    harness._ID_LOOKUP = None
+
+    keyword = harness.search_index(
+        "release shield",
+        limit=5,
+        excluded_kinds={"memory"},
+    )
+    vector = harness.retrieve_for_query(
+        "release shield",
+        lambda _texts: [[1.0, 0.0]],
+        model,
+        k=5,
+        excluded_kinds={"memory"},
+    )
+    hybrid = harness.hybrid_search(
+        "release shield",
+        lambda _texts: [[1.0, 0.0]],
+        model,
+        k=5,
+        excluded_kinds={"memory"},
+    )
+
+    assert [item["id"] for item in keyword] == ["codex:skill:shield.md"]
+    assert [item["id"] for item in vector] == ["codex:skill:shield.md"]
+    assert [item["id"] for item in hybrid] == ["codex:skill:shield.md"]
 
 
 def test_resolve_embed_model_prefers_config():

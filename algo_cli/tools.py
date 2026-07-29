@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import logging
 import math
@@ -81,6 +82,64 @@ PYTHON_OPEN_WRITE_RE = re.compile(
     re.IGNORECASE,
 )
 NULL_REDIRECTION_RE = re.compile(r"\b\d?\s*>{1,2}\s*(?:\$null\b|nul\b|/dev/null\b)", re.IGNORECASE)
+_INLINE_PYTHON_MUTATING_METHODS = frozenset(
+    {
+        "chmod",
+        "chown",
+        "hardlink_to",
+        "mkdir",
+        "rename",
+        "rmdir",
+        "symlink_to",
+        "touch",
+        "unlink",
+        "write",
+        "write_bytes",
+        "write_text",
+    }
+)
+_INLINE_PYTHON_MUTATING_CALLS = frozenset(
+    {
+        "__import__",
+        "eval",
+        "exec",
+        "os.chmod",
+        "os.chown",
+        "os.execv",
+        "os.execve",
+        "os.makedirs",
+        "os.mkdir",
+        "os.open",
+        "os.popen",
+        "os.remove",
+        "os.removedirs",
+        "os.rename",
+        "os.renames",
+        "os.replace",
+        "os.rmdir",
+        "os.spawnl",
+        "os.spawnle",
+        "os.spawnlp",
+        "os.spawnlpe",
+        "os.spawnv",
+        "os.spawnve",
+        "os.spawnvp",
+        "os.spawnvpe",
+        "os.system",
+        "os.unlink",
+        "shutil.copy",
+        "shutil.copy2",
+        "shutil.copyfile",
+        "shutil.copytree",
+        "shutil.move",
+        "shutil.rmtree",
+        "subprocess.call",
+        "subprocess.check_call",
+        "subprocess.check_output",
+        "subprocess.Popen",
+        "subprocess.run",
+    }
+)
 
 _GIT_EXECUTABLE_RE = re.compile(r"(?:^|[\\/])git(?:\.exe)?$", re.IGNORECASE)
 _GIT_TEXT_RE = re.compile(r"(?<![\w-])git(?:\.exe)?(?:\s|$)", re.IGNORECASE)
@@ -410,10 +469,87 @@ def _git_command_mutates_workspace(command: str, *, _depth: int = 0) -> bool:
     return False
 
 
+def _inline_python_source(command: str) -> str | None:
+    """Return source for one standalone ``python -c`` command, if unambiguous."""
+
+    try:
+        tokens = shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        return None
+    while os.name != "nt" and tokens and re.fullmatch(
+        r"[A-Za-z_][A-Za-z0-9_]*=.*",
+        tokens[0],
+        re.DOTALL,
+    ):
+        tokens.pop(0)
+    if len(tokens) != 3:
+        return None
+    executable = Path(tokens[0].strip("\"'")).name.casefold()
+    if not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?|py", executable):
+        return None
+    if tokens[1].casefold() != "-c":
+        return None
+    return tokens[2]
+
+
+def _call_name(node: ast.expr) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _call_name(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    return ""
+
+
+def _open_call_mutates(call: ast.Call) -> bool:
+    name = _call_name(call.func)
+    if name not in {"open", "Path.open"} and not name.endswith(".open"):
+        return False
+    mode_node: ast.expr | None = call.args[1] if len(call.args) > 1 else None
+    for keyword in call.keywords:
+        if keyword.arg == "mode":
+            mode_node = keyword.value
+            break
+    if mode_node is None:
+        return False
+    if not isinstance(mode_node, ast.Constant) or not isinstance(mode_node.value, str):
+        return True
+    mode = mode_node.value.casefold()
+    return any(flag in mode for flag in "wax+")
+
+
+def _inline_python_mutates_workspace(source: str) -> bool:
+    """Fail closed on explicit mutation or dynamic execution in inline Python."""
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return True
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _call_name(node.func)
+        if _open_call_mutates(node):
+            return True
+        if (
+            name in _INLINE_PYTHON_MUTATING_CALLS
+            or name.startswith("subprocess.")
+            or (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in _INLINE_PYTHON_MUTATING_METHODS
+            )
+        ):
+            return True
+    return False
+
+
 def shell_mutates_workspace(command: str) -> bool:
     """Return whether a shell command appears to alter files or local/remote Git state."""
 
     without_null_redirection = NULL_REDIRECTION_RE.sub("", command or "")
+    inline_source = _inline_python_source(without_null_redirection)
+    if inline_source is not None:
+        return _inline_python_mutates_workspace(inline_source)
     return bool(
         _git_command_mutates_workspace(without_null_redirection)
         or REQUIRED_CHANGE_SHELL_MUTATION_RE.search(without_null_redirection)
@@ -428,6 +564,9 @@ def shell_is_dangerous(command: str) -> bool:
     disk formatting that are not necessarily workspace mutations.
     """
 
+    inline_source = _inline_python_source(command or "")
+    if inline_source is not None:
+        return _inline_python_mutates_workspace(inline_source)
     return bool(DENY_COMMAND_RE.search(command or "")) or shell_mutates_workspace(command)
 
 
@@ -441,6 +580,59 @@ def _resolve(path: str, cwd: str | None = None) -> Path:
 
 def _cap(text: str, limit: int = MAX_TOOL_RESULT) -> str:
     return text[:limit] + ("\n...[truncated]" if len(text) > limit else "")
+
+
+def _strict_json_document(text: str) -> dict[str, Any] | list[Any]:
+    def reject_duplicate_keys(
+        pairs: list[tuple[str, Any]],
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+
+    def reject_non_finite_number(_value: str) -> None:
+        raise ValueError("non-finite JSON number")
+
+    value = json.loads(
+        text,
+        object_pairs_hook=reject_duplicate_keys,
+        parse_constant=reject_non_finite_number,
+    )
+    if not isinstance(value, (dict, list)):
+        raise ValueError("JSON document must be an object or array")
+    return value
+
+
+def _semantic_json_replacement(
+    original: str,
+    old_string: str,
+    new_string: str,
+) -> str | None:
+    """Recover a whole-document JSON edit that differs only in formatting."""
+
+    try:
+        current = _strict_json_document(original)
+        expected = _strict_json_document(old_string)
+        replacement = _strict_json_document(new_string)
+    except (TypeError, ValueError):
+        return None
+    def canonical(value: dict[str, Any] | list[Any]) -> str:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    if canonical(current) != canonical(expected):
+        return None
+    if canonical(current) == canonical(replacement):
+        return None
+    if original.endswith("\n") and not new_string.endswith("\n"):
+        return f"{new_string}\n"
+    return new_string
 
 
 def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
@@ -773,6 +965,20 @@ def edit_file(
 
     occurrences = original.count(old_string)
     if occurrences == 0:
+        semantic_replacement = _semantic_json_replacement(
+            original,
+            old_string,
+            new_string,
+        )
+        if semantic_replacement is not None:
+            try:
+                _atomic_write_text(p, semantic_replacement)
+            except Exception as exc:
+                return f"Error writing {p}: {exc}"
+            return (
+                f"Edited {p}: replaced a semantically matching whole JSON "
+                "document despite formatting differences."
+            )
         # Give the model a helpful pointer: show the closest matching line if any
         first_line = old_string.splitlines()[0] if old_string.splitlines() else old_string
         snippet = first_line[:80] + ("..." if len(first_line) > 80 else "")
@@ -1559,6 +1765,377 @@ def remember(fact: str, cfg: Config | None = None) -> str:
     return f"Remembered: {fact} (no config provided - not persisted)"
 
 
+_ECHO_MEMORY_LAYERS = frozenset(
+    {"live", "short_term", "long_term", "contextual_logic"}
+)
+_ECHO_CREATION_LAYERS = frozenset({"live", "short_term", "contextual_logic"})
+
+
+def _require_protected_echo(cfg: Config | None) -> Config:
+    if cfg is None:
+        raise RuntimeError(
+            "Echo Veil tools require the live Algo runtime configuration"
+        )
+    from .ada_memory_echo_veil import protection_required
+
+    if not protection_required(cfg):
+        raise RuntimeError(
+            "Echo Veil tools require echo_veil_protection=required; "
+            "no legacy memory fallback was used"
+        )
+    return cfg
+
+
+def _echo_layers(value: str) -> list[str] | None:
+    requested = [
+        item.strip().casefold()
+        for item in str(value or "").split(",")
+        if item.strip()
+    ]
+    if not requested:
+        return None
+    if len(requested) > 4 or any(
+        item not in _ECHO_MEMORY_LAYERS for item in requested
+    ):
+        raise ValueError(
+            "layers must be a comma-separated subset of live, short_term, "
+            "long_term, contextual_logic"
+        )
+    return list(dict.fromkeys(requested))
+
+
+def _echo_tool_payload(
+    operation: str,
+    result: dict[str, Any],
+    *,
+    lifecycle_mutated: bool,
+) -> str:
+    return json.dumps(
+        {
+            "memory_authority": "echo_veil",
+            "operation": operation,
+            "plaintext_fallback": False,
+            "lifecycle_mutated": lifecycle_mutated,
+            **result,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def echo_veil_remember(
+    payload: str,
+    topic: str,
+    layer: str = "short_term",
+    expires_in_seconds: int = 3600,
+    promotion_reason: str = "",
+    logic_kind: str = "",
+    related_ids: str = "",
+    cfg: Config | None = None,
+) -> str:
+    """Store one compact, user-authorized seed crystal through Echo Veil.
+
+    This is the same governed operation exposed by Echo's MCP adapters. New
+    Long-Term records are intentionally prohibited: create Live or Short-Term
+    memory, then use echo_veil_promote with an explicit reason. Contextual Logic
+    requires a reason, one of causal_chain|contradiction_resolution|decision|
+    principle, and comma-separated related record IDs.
+
+    Args:
+        payload: Compact fact, intent, outcome, or logic statement to protect.
+        topic: Stable, non-secret classification for the memory.
+        layer: live, short_term, or contextual_logic.
+        expires_in_seconds: Live expiry from now, between 60 and 86400 seconds.
+        promotion_reason: Required rationale for Contextual Logic.
+        logic_kind: Contextual Logic kind.
+        related_ids: Comma-separated evidence record IDs for Contextual Logic.
+        cfg: Runtime-injected Algo configuration.
+    """
+
+    runtime_cfg = _require_protected_echo(cfg)
+    clean_layer = str(layer or "").strip().casefold()
+    if clean_layer not in _ECHO_CREATION_LAYERS:
+        raise ValueError(
+            "layer must be live, short_term, or contextual_logic; "
+            "Long-Term requires echo_veil_promote"
+        )
+    expires_at: float | None = None
+    if clean_layer == "live":
+        if (
+            isinstance(expires_in_seconds, bool)
+            or not isinstance(expires_in_seconds, int)
+            or not 60 <= expires_in_seconds <= 86_400
+        ):
+            raise ValueError(
+                "expires_in_seconds must be an integer from 60 through 86400"
+            )
+        expires_at = time.time() + expires_in_seconds
+    relation_ids = [
+        item.strip()
+        for item in str(related_ids or "").split(",")
+        if item.strip()
+    ]
+    if len(relation_ids) > 16:
+        raise ValueError("related_ids supports at most 16 record IDs")
+    from .ada_memory_echo_veil import remember_record_with_echo_veil
+
+    result = remember_record_with_echo_veil(
+        runtime_cfg,
+        payload,
+        topic=topic,
+        layer=clean_layer,
+        provenance=["algo-cli:model_tool"],
+        promotion_reason=promotion_reason or None,
+        expires_at=expires_at,
+        logic_kind=logic_kind or None,
+        related_ids=relation_ids or None,
+    )
+    return _echo_tool_payload("remember", result, lifecycle_mutated=True)
+
+
+def echo_veil_refresh_live(
+    vine_id: str,
+    payload: str,
+    expires_in_seconds: int = 3600,
+    cfg: Config | None = None,
+) -> str:
+    """Refresh protected Live memory, superseding changed content explicitly.
+
+    Args:
+        vine_id: Existing Live record ID.
+        payload: Current compact Live state.
+        expires_in_seconds: New expiry from now, between 60 and 86400 seconds.
+        cfg: Runtime-injected Algo configuration.
+    """
+
+    runtime_cfg = _require_protected_echo(cfg)
+    if (
+        isinstance(expires_in_seconds, bool)
+        or not isinstance(expires_in_seconds, int)
+        or not 60 <= expires_in_seconds <= 86_400
+    ):
+        raise ValueError(
+            "expires_in_seconds must be an integer from 60 through 86400"
+        )
+    from .ada_memory_echo_veil import refresh_live_with_echo_veil
+
+    result = refresh_live_with_echo_veil(
+        runtime_cfg,
+        vine_id,
+        payload,
+        source="model_tool",
+        expires_at=time.time() + expires_in_seconds,
+    )
+    return _echo_tool_payload("refresh_live", result, lifecycle_mutated=True)
+
+
+def echo_veil_promote(
+    vine_id: str,
+    target_layer: str,
+    reason: str,
+    cfg: Config | None = None,
+) -> str:
+    """Promote Live to Short-Term or Short-Term to Long-Term with evidence.
+
+    Args:
+        vine_id: Existing record ID.
+        target_layer: short_term or long_term.
+        reason: Explicit bounded reason for the promotion.
+        cfg: Runtime-injected Algo configuration.
+    """
+
+    runtime_cfg = _require_protected_echo(cfg)
+    clean_target = str(target_layer or "").strip().casefold()
+    if clean_target not in {"short_term", "long_term"}:
+        raise ValueError("target_layer must be short_term or long_term")
+    from .ada_memory_echo_veil import promote_with_echo_veil
+
+    result = promote_with_echo_veil(
+        runtime_cfg,
+        vine_id,
+        clean_target,
+        reason=reason,
+        source="model_tool",
+    )
+    return _echo_tool_payload("promote", result, lifecycle_mutated=True)
+
+
+def echo_veil_recall(
+    query: str,
+    top_k: int = 5,
+    layers: str = "",
+    cfg: Config | None = None,
+) -> str:
+    """Return minimal answerable protected memory with confidence and provenance.
+
+    Degraded results remain explicitly non-semantic and must never be portrayed
+    as authoritative semantic recall.
+
+    Args:
+        query: Natural-language retrieval question.
+        top_k: Maximum candidate count, from 1 through 8.
+        layers: Optional comma-separated memory-layer filter.
+        cfg: Runtime-injected Algo configuration.
+    """
+
+    runtime_cfg = _require_protected_echo(cfg)
+    if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 8:
+        raise ValueError("top_k must be an integer from 1 through 8")
+    from .ada_memory_echo_veil import recall_response_with_echo_veil
+
+    result = recall_response_with_echo_veil(
+        runtime_cfg,
+        query,
+        top_k=top_k,
+        layers=_echo_layers(layers),
+    )
+    return _echo_tool_payload(
+        "recall",
+        result,
+        lifecycle_mutated=bool(result.get("lifecycle_mutated", False)),
+    )
+
+
+def echo_veil_context(
+    query: str,
+    max_depth: int = 1,
+    max_records: int = 8,
+    cfg: Config | None = None,
+) -> str:
+    """Trace protected Contextual Logic roots to authenticated evidence.
+
+    The response performs no synthesis and does not assign query scores to
+    linked evidence.
+
+    Args:
+        query: Decision, principle, contradiction, or causal question.
+        max_depth: Maximum outgoing relationship depth, from 0 through 3.
+        max_records: Maximum returned roots and evidence, from 1 through 32.
+        cfg: Runtime-injected Algo configuration.
+    """
+
+    runtime_cfg = _require_protected_echo(cfg)
+    if (
+        isinstance(max_depth, bool)
+        or not isinstance(max_depth, int)
+        or not 0 <= max_depth <= 3
+    ):
+        raise ValueError("max_depth must be an integer from 0 through 3")
+    if (
+        isinstance(max_records, bool)
+        or not isinstance(max_records, int)
+        or not 1 <= max_records <= 32
+    ):
+        raise ValueError("max_records must be an integer from 1 through 32")
+    from .ada_memory_echo_veil import context_with_echo_veil
+
+    result = context_with_echo_veil(
+        runtime_cfg,
+        query,
+        max_depth=max_depth,
+        max_records=max_records,
+    )
+    return _echo_tool_payload(
+        "context",
+        result,
+        lifecycle_mutated=bool(result.get("lifecycle_mutated", False)),
+    )
+
+
+def echo_veil_list(
+    limit: int = 20,
+    layers: str = "",
+    topic_prefix: str = "",
+    active_only: bool = True,
+    cfg: Config | None = None,
+) -> str:
+    """List a bounded protected inventory without semantic retrieval or decay.
+
+    Args:
+        limit: Maximum records, from 1 through 100.
+        layers: Optional comma-separated memory-layer filter.
+        topic_prefix: Optional exact topic prefix filter.
+        active_only: Exclude explicitly superseded records when true.
+        cfg: Runtime-injected Algo configuration.
+    """
+
+    runtime_cfg = _require_protected_echo(cfg)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("limit must be an integer from 1 through 100")
+    if not isinstance(active_only, bool):
+        raise TypeError("active_only must be a boolean")
+    from .ada_memory_echo_veil import list_echo_veil_memories
+
+    records = list_echo_veil_memories(
+        runtime_cfg,
+        limit=limit,
+        layers=_echo_layers(layers),
+        topic_prefix=topic_prefix or None,
+        newest_first=True,
+    )
+    if active_only:
+        records = [
+            record for record in records if record.get("superseded_by") is None
+        ]
+    return _echo_tool_payload(
+        "list",
+        {
+            "inventory_only": True,
+            "semantic_retrieval_performed": False,
+            "count": len(records),
+            "records": records,
+        },
+        lifecycle_mutated=False,
+    )
+
+
+def echo_veil_forget(
+    vine_id: str,
+    cfg: Config | None = None,
+) -> str:
+    """Irreversibly forget one protected record and dependent logic.
+
+    Args:
+        vine_id: Exact Echo Veil record ID to erase.
+        cfg: Runtime-injected Algo configuration.
+    """
+
+    runtime_cfg = _require_protected_echo(cfg)
+    from .ada_memory_echo_veil import forget_with_echo_veil
+
+    result = forget_with_echo_veil(runtime_cfg, vine_id)
+    return _echo_tool_payload("forget", result, lifecycle_mutated=True)
+
+
+def echo_veil_doctor(cfg: Config | None = None) -> str:
+    """Report non-secret Echo Veil protection and lifecycle readiness.
+
+    Args:
+        cfg: Runtime-injected Algo configuration.
+    """
+
+    runtime_cfg = _require_protected_echo(cfg)
+    from .ada_memory_echo_veil import get_echo_veil_readiness
+
+    result = get_echo_veil_readiness(runtime_cfg.__dict__)
+    return _echo_tool_payload("doctor", result, lifecycle_mutated=False)
+
+
+def echo_veil_reindex(cfg: Config | None = None) -> str:
+    """Rebuild protected Echo retrieval indexes after explicit approval.
+
+    Args:
+        cfg: Runtime-injected Algo configuration.
+    """
+
+    runtime_cfg = _require_protected_echo(cfg)
+    from .ada_memory_echo_veil import reindex_with_echo_veil
+
+    result = reindex_with_echo_veil(runtime_cfg)
+    return _echo_tool_payload("reindex", result, lifecycle_mutated=True)
+
+
 def append_lesson(text: str, cfg: Config | None = None) -> str:
     """Append a lesson to lessons-learned.md so it is available in future turns.
 
@@ -1955,7 +2532,18 @@ def available_actions(topic: str | None = None) -> str:
             "x_account_reply",
             "x_account_post_action",
         ],
-        "memory": ["remember"],
+        "memory": [
+            "remember",
+            "echo_veil_remember",
+            "echo_veil_refresh_live",
+            "echo_veil_promote",
+            "echo_veil_recall",
+            "echo_veil_context",
+            "echo_veil_list",
+            "echo_veil_forget",
+            "echo_veil_doctor",
+            "echo_veil_reindex",
+        ],
         "multimodal": ["embed_text", "vision_describe"],
         "harness": [
             "available_actions",
@@ -2234,7 +2822,11 @@ def _captured_session_result(output: str, normalized: str, *, workspace: str = "
     return rendered
 
 
-def _direct_read_only_session_result(command_line: str) -> str | None:
+def _direct_read_only_session_result(
+    command_line: str,
+    *,
+    cfg: Any = None,
+) -> str | None:
     """Return source payloads for read-only routes that already expose strings.
 
     Sending JSON through ``Rich Console.print`` can insert display-width line
@@ -2250,7 +2842,11 @@ def _direct_read_only_session_result(command_line: str) -> str | None:
     if root == "/actions":
         return available_actions(arg or None)
     if root == "/hread":
-        return harness_read(arg) if arg else "Error: Usage: /hread <record-id>"
+        return (
+            harness_read(arg, cfg=cfg)
+            if arg
+            else "Error: Usage: /hread <record-id>"
+        )
     if root != "/harness":
         return None
     harness_parts = arg.split(maxsplit=1)
@@ -2323,7 +2919,7 @@ def session_command(command: str, cfg: Any = None) -> str:
             normalized,
             workspace=cfg.cwd,
         )
-    direct_result = _direct_read_only_session_result(normalized)
+    direct_result = _direct_read_only_session_result(normalized, cfg=cfg)
     if direct_result is not None:
         return _captured_session_result(direct_result, normalized, workspace=cfg.cwd)
     client = create_client(cfg)
@@ -2860,6 +3456,12 @@ def harness_scorecard() -> str:
 
     try:
         benchmark = run_harness_retrieval_benchmark()
+        external_root_qualification = (
+            harness.qualify_configured_external_roots()
+        )
+        benchmark["external_root_qualification"] = (
+            external_root_qualification
+        )
         status = str(benchmark.get("status") or "error")
         correctness_value = benchmark.get("correctness")
         performance_value = benchmark.get("performance")
@@ -2871,6 +3473,12 @@ def harness_scorecard() -> str:
         quality = quality_value if isinstance(quality_value, dict) else {}
         quality_metrics_value = quality.get("metrics")
         quality_metrics = quality_metrics_value if isinstance(quality_metrics_value, dict) else {}
+        external_checks_value = external_root_qualification.get("checks")
+        external_checks = (
+            external_checks_value
+            if isinstance(external_checks_value, dict)
+            else {}
+        )
         try:
             measured_speedup = float(str(performance.get("speedup")))
             measured_mad_ratio = float(str(performance.get("warm_mad_ratio")))
@@ -2891,6 +3499,9 @@ def harness_scorecard() -> str:
             and float(quality_metrics.get("citation_precision") or 0.0) >= MIN_CITATION_PRECISION
             and bool(quality.get("fixture_digest"))
             and bool(benchmark_evidence.get("index_digest"))
+            and external_root_qualification.get("status") == "pass"
+            and bool(external_checks)
+            and all(value is True for value in external_checks.values())
         )
         if status == "pass" and not benchmark_contract:
             status = "fail"
@@ -2991,7 +3602,112 @@ def harness_scorecard() -> str:
         )
     )
 
-    return json.dumps(finalize_scorecard(checks, capabilities=capabilities), indent=2)
+    scorecard = finalize_scorecard(checks, capabilities=capabilities)
+    benchmark_quality_value = benchmark.get("quality")
+    benchmark_quality = (
+        benchmark_quality_value
+        if isinstance(benchmark_quality_value, dict)
+        else {}
+    )
+    quality_cases_value = benchmark_quality.get("cases")
+    quality_cases = (
+        quality_cases_value
+        if isinstance(quality_cases_value, list)
+        else []
+    )
+    case_counts: dict[str, int] = {}
+    case_names: list[str] = []
+    for case in quality_cases:
+        if not isinstance(case, dict):
+            continue
+        category = str(case.get("category") or "uncategorized")
+        case_counts[category] = case_counts.get(category, 0) + 1
+        name = str(case.get("name") or "")
+        if name:
+            case_names.append(name)
+    context_sources_value = stats.get("context_sources")
+    context_sources = (
+        context_sources_value
+        if isinstance(context_sources_value, dict)
+        else {}
+    )
+    diagnostics_value = context_sources.get("diagnostics")
+    diagnostics = (
+        diagnostics_value if isinstance(diagnostics_value, dict) else {}
+    )
+    external_summary_value = benchmark.get(
+        "external_root_qualification"
+    )
+    external_summary = (
+        external_summary_value
+        if isinstance(external_summary_value, dict)
+        else {}
+    )
+    external_evidence_value = external_summary.get("evidence")
+    external_evidence = (
+        external_evidence_value
+        if isinstance(external_evidence_value, dict)
+        else {}
+    )
+    review_summary = {
+        "claim_boundary": (
+            "This score grades Algo's local-first readiness only. It is not "
+            "evidence of categorical cross-agent superiority."
+        ),
+        "retrieval_quality": {
+            "status": benchmark_quality.get("status"),
+            "scope": benchmark_quality.get("scope"),
+            "metrics": benchmark_quality.get("metrics", {}),
+            "fixture_digest": benchmark_quality.get("fixture_digest"),
+            "case_counts": dict(sorted(case_counts.items())),
+            "case_names": case_names,
+        },
+        "configured_external_root_qualification": {
+            "status": external_summary.get("status"),
+            "probe": external_summary.get("probe"),
+            "scope": external_summary.get("scope"),
+            "checks": external_summary.get("checks", {}),
+            "fixture_digest": external_evidence.get("fixture_digest"),
+            "limitations": external_summary.get("limitations", []),
+        },
+        "live_external_source_state": {
+            "enabled": context_sources.get("external_agent_stores"),
+            "available_adapter_roots": diagnostics.get(
+                "available_adapter_roots", 0
+            ),
+            "indexed_records": diagnostics.get("indexed_records", 0),
+            "indexed_harnesses": diagnostics.get(
+                "indexed_harnesses", []
+            ),
+            "extra_roots": diagnostics.get("extra_roots", {}),
+            "privacy_default": diagnostics.get("privacy_default"),
+        },
+        "memory_boundary": {
+            "policy": (
+                "Echo Veil is the mutable-memory authority when protection is "
+                "required; harness memory and wiki records are read-only "
+                "retrieval context."
+            ),
+            "echo_enabled": echo_enabled,
+            "echo_installed": bool(echo_readiness.get("installed")),
+            "echo_write_ready": echo_stages["write"],
+            "echo_retrieval_ready": echo_stages["retrieval"],
+            "echo_persistence_ready": echo_stages["persistence"],
+            "echo_production_ready": bool(
+                echo_readiness.get("production_ready")
+            ),
+        },
+    }
+    ordered_scorecard = {
+        "schema_version": scorecard.get("schema_version"),
+        "review_summary": review_summary,
+        **{
+            key: value
+            for key, value in scorecard.items()
+            if key != "schema_version"
+        },
+    }
+    return json.dumps(ordered_scorecard, indent=2)
 
 
 def harness_competitive_rating() -> str:
@@ -3016,6 +3732,15 @@ def harness_competitive_rating() -> str:
 
     try:
         benchmark = run_harness_retrieval_benchmark()
+        external_root_qualification = (
+            harness.qualify_configured_external_roots()
+        )
+        benchmark["external_root_qualification"] = external_root_qualification
+        if external_root_qualification.get("status") != "pass":
+            benchmark["status"] = "fail"
+            benchmark["reason"] = (
+                "configured external-root qualification failed"
+            )
     except Exception as exc:
         benchmark = {"status": "error", "reason": f"{type(exc).__name__}: {exc}"}
     benchmark_json = json.dumps(benchmark, sort_keys=True, default=str)
@@ -3096,7 +3821,13 @@ def harness_competitive_rating() -> str:
     return json.dumps(report, indent=2, sort_keys=True)
 
 
-def harness_search(query: str, harness_name: str | None = None, kind: str | None = None, limit: int = 10) -> str:
+def harness_search(
+    query: str,
+    harness_name: str | None = None,
+    kind: str | None = None,
+    limit: int = 10,
+    cfg: Any = None,
+) -> str:
     """Search local harness assets.
 
     Args:
@@ -3105,7 +3836,29 @@ def harness_search(query: str, harness_name: str | None = None, kind: str | None
         kind: Optional kind filter: skill, tool, prompt, memory, wiki, workflow, extension.
         limit: Maximum records.
     """
-    results = harness.search_index(query, harness_name, kind, limit)
+    required_protection = False
+    if cfg is not None:
+        from .ada_memory_echo_veil import protection_required
+
+        required_protection = protection_required(cfg)
+    if required_protection and str(kind or "").casefold() == "memory":
+        return (
+            "Protected memory search is available only through Echo Veil; "
+            "legacy harness memory records were not consulted."
+        )
+    results = harness.search_index(
+        query,
+        harness_name,
+        kind,
+        limit,
+        excluded_kinds={"memory"} if required_protection else None,
+    )
+    if required_protection:
+        results = [
+            record
+            for record in results
+            if str(record.get("kind") or "").casefold() != "memory"
+        ]
     if not results:
         return "No harness matches."
     lines = []
@@ -3119,14 +3872,34 @@ def harness_search(query: str, harness_name: str | None = None, kind: str | None
     return "\n".join(lines)
 
 
-def harness_read(record_id: str, max_chars: int = 20_000) -> str:
+def harness_read(
+    record_id: str,
+    max_chars: int = 20_000,
+    cfg: Any = None,
+) -> str:
     """Read one indexed harness asset by id from harness_search.
 
     Args:
         record_id: Exact record id returned by harness_search.
         max_chars: Maximum characters to return.
     """
-    return harness.read_record(record_id, _bounded_int(max_chars, 20_000, 1, 50_000))
+    if cfg is not None:
+        from .ada_memory_echo_veil import protection_required
+
+        record = harness.get_record(record_id)
+        if (
+            protection_required(cfg)
+            and isinstance(record, dict)
+            and str(record.get("kind") or "").casefold() == "memory"
+        ):
+            return (
+                "Protected memory records are available only through Echo Veil; "
+                "the legacy harness record was not read."
+            )
+    return harness.read_record(
+        record_id,
+        _bounded_int(max_chars, 20_000, 1, 50_000),
+    )
 
 
 _KG_HARNESS_META_TERMS = {
@@ -3435,10 +4208,10 @@ def model_show(name: str) -> str:
 def _hide_cfg_param(fn):
     """Remove the ``cfg`` parameter from the Ollama tool-call schema.
 
-    ``remember`` and ``append_lesson`` accept a runtime-injected ``cfg``
-    (Config instance) that the model should never pass.  Without this
-    wrapper the Ollama SDK tries to build a Pydantic model from
-    ``Config | None`` and crashes with "not fully defined".
+    Runtime-bound tools accept an injected ``cfg`` (Config instance) that the
+    model should never pass. Without this wrapper the Ollama SDK tries to build
+    a Pydantic model from ``Config | None`` and crashes with "not fully
+    defined".
     """
     original_sig = inspect.signature(fn)
     params = [p for name, p in original_sig.parameters.items() if name != "cfg"]
@@ -3603,6 +4376,21 @@ def action_search(query: str, limit: int = 6) -> str:
             wire_schema = json.loads(serialized_tool_schemas([fn]))[0]
         except (IndexError, TypeError, ValueError, json.JSONDecodeError):
             wire_schema = {"type": "function", "function": {"name": name}}
+        function_schema = wire_schema.get("function")
+        if isinstance(function_schema, dict):
+            parameters = function_schema.get("parameters")
+            if isinstance(parameters, dict):
+                properties = parameters.get("properties")
+                if isinstance(properties, dict):
+                    for runtime_arg in ("cfg", "cwd", "safe_mode"):
+                        properties.pop(runtime_arg, None)
+                required = parameters.get("required")
+                if isinstance(required, list):
+                    parameters["required"] = [
+                        item
+                        for item in required
+                        if item not in {"cfg", "cwd", "safe_mode"}
+                    ]
         try:
             spec = get_action_spec(name)
             policy: dict[str, Any] = {
@@ -3625,7 +4413,12 @@ def action_search(query: str, limit: int = 6) -> str:
             "query": normalized_query,
             "count": len(actions),
             "actions": actions,
-            "next": "Call action_program with a bounded typed plan; discovery does not bypass runtime policy or approval.",
+            "next": (
+                "Call action_program with a bounded typed plan. Omit outputs to "
+                "return the final step, or use {'$ref':'step_id'} references. "
+                "Never add runtime-owned cfg, cwd, or safe_mode arguments. "
+                "Discovery does not bypass runtime policy or approval."
+            ),
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -3639,6 +4432,9 @@ def action_program(plan: dict, cfg: Any = None) -> str:
     ``kind: action``, ``action``, and ``args``. A transform step has ``id``,
     ``kind: transform``, ``op``, ``input``, and optional ``args``. References
     use ``{"$ref": "earlier_step", "path": ["optional", "keys"]}``.
+    ``outputs`` may be omitted to return the final step; explicit outputs must
+    use reference objects, never bare step-id strings. Runtime-owned ``cfg``,
+    ``cwd``, and ``safe_mode`` arguments must not appear in a plan.
     Action arguments are static in version 1: observations may feed deterministic
     transforms and outputs, but may not become arguments to another action. All
     action schemas, exact effects, targets, and transform contracts are frozen
@@ -3698,6 +4494,15 @@ ALL_TOOLS = [
     x_account_reply,
     x_account_post_action,
     _hide_cfg_param(remember),
+    _hide_cfg_param(echo_veil_remember),
+    _hide_cfg_param(echo_veil_refresh_live),
+    _hide_cfg_param(echo_veil_promote),
+    _hide_cfg_param(echo_veil_recall),
+    _hide_cfg_param(echo_veil_context),
+    _hide_cfg_param(echo_veil_list),
+    _hide_cfg_param(echo_veil_forget),
+    _hide_cfg_param(echo_veil_doctor),
+    _hide_cfg_param(echo_veil_reindex),
     _hide_cfg_param(append_lesson),
     update_user_profile,
     embed_text,
@@ -3711,8 +4516,8 @@ ALL_TOOLS = [
     harness_stats,
     harness_scorecard,
     harness_competitive_rating,
-    harness_search,
-    harness_read,
+    _hide_cfg_param(harness_search),
+    _hide_cfg_param(harness_read),
     query_knowledge_graph,
     reindex_knowledge_graph,
     write_knowledge_graph_note,

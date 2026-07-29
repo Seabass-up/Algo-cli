@@ -73,7 +73,11 @@ def test_harness_read_short_alias_reads_record(monkeypatch):
             printed.append(str(value))
 
     monkeypatch.setattr(main_module, "console", _Console())
-    monkeypatch.setattr(tools, "harness_read", lambda record_id: f"read:{record_id}")
+    monkeypatch.setattr(
+        tools,
+        "harness_read",
+        lambda record_id, **_kwargs: f"read:{record_id}",
+    )
 
     handled, _client = main_module.handle_command("/hr algo-cli:skill:qol", cfg, None)
 

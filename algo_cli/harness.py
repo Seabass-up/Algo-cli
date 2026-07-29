@@ -7,6 +7,7 @@ executing external tools or reading obvious secret files.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import fnmatch
 import math
@@ -14,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from contextlib import contextmanager
 
@@ -163,12 +165,12 @@ class _LexicalCandidateIndex:
 
 
 _BM25_INDEX_CACHE: tuple[
-    tuple[tuple[str, ...], str, int, int, int],
+    tuple[tuple[str, ...], str, tuple[str, ...], int, int, int],
     list[dict[str, Any]],
     _LexicalCandidateIndex,
 ] | None = None
 _VECTOR_MATRIX_CACHE: tuple[
-    tuple[str, int, tuple[str, ...], str, int, int, int],
+    tuple[str, int, tuple[str, ...], str, tuple[str, ...], int, int, int],
     list[dict[str, Any]],
     Any,
 ] | None = None
@@ -1804,6 +1806,195 @@ def _dedup_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped
 
 
+def qualify_configured_external_roots() -> dict[str, Any]:
+    """Exercise the configured-root ingestion path without touching user state.
+
+    The probe owns two temporary roots and sends them through the same payload
+    parser, bounded file walk, record builder, provenance-preserving dedupe,
+    redaction, and lexical ranking used by explicitly configured roots. It does
+    not enable external sources or read any installed agent store.
+    """
+
+    probe = "harness-configured-external-roots-v1"
+    fixtures = {
+        "codex": (
+            "# Shared incident handoff\n"
+            "Codex provenance for the cross-source safety review. "
+            "Authorization: Bearer qualification-secret-token\n"
+        ),
+        "claude": (
+            "# Shared incident handoff\n"
+            "Claude provenance for the cross-source safety review.\n"
+        ),
+    }
+    fixture_digest = hashlib.sha256(
+        json.dumps(
+            fixtures,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    policy_before = dict(_source_policy())
+    checks = {
+        "configuration_accepted": False,
+        "bounded_files_indexed": False,
+        "provenance_complete": False,
+        "cross_harness_conflict_preserved": False,
+        "secret_named_file_excluded": False,
+        "inline_secret_redacted": False,
+        "cross_root_retrieval": False,
+        "runtime_policy_unchanged": False,
+    }
+    ranked_ids: list[str] = []
+    record_count = 0
+    rejected_count = 0
+    error_type: str | None = None
+
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="algo-harness-root-qualification-"
+        ) as temporary:
+            root_path = Path(temporary)
+            root_payload: list[dict[str, Any]] = []
+            for harness_name, content in fixtures.items():
+                source_path = root_path / harness_name
+                source_path.mkdir()
+                (source_path / "shared.md").write_text(content, encoding="utf-8")
+                (source_path / "credentials.md").write_text(
+                    "api_key=qualification-secret-token\n",
+                    encoding="utf-8",
+                )
+                root_payload.append(
+                    {
+                        "harness": harness_name,
+                        "kind": "skill",
+                        "root": str(source_path),
+                        "patterns": ["*.md"],
+                        "max_files": 4,
+                    }
+                )
+
+            roots, rejected_count = _parse_extra_source_roots_payload(
+                root_payload
+            )
+            checks["configuration_accepted"] = (
+                len(roots) == len(fixtures) and rejected_count == 0
+            )
+            records = [
+                make_record(root, path)
+                for root in roots
+                for path in iter_files(root)
+            ]
+            records = _dedup_records(records)
+            record_count = len(records)
+            record_ids = {str(record.get("id") or "") for record in records}
+            expected_ids = {
+                f"{harness_name}:skill:shared.md"
+                for harness_name in fixtures
+            }
+            checks["bounded_files_indexed"] = record_ids == expected_ids
+            checks["secret_named_file_excluded"] = not any(
+                "credentials.md" in record_id for record_id in record_ids
+            )
+            checks["provenance_complete"] = bool(records) and all(
+                all(record.get(field) for field in (
+                    "id",
+                    "harness",
+                    "kind",
+                    "path",
+                    "relative_path",
+                    "updated",
+                ))
+                for record in records
+            )
+            checks["cross_harness_conflict_preserved"] = (
+                len(records) == 2
+                and {str(record.get("harness") or "") for record in records}
+                == set(fixtures)
+                and {
+                    str(record.get("relative_path") or "")
+                    for record in records
+                }
+                == {"shared.md"}
+            )
+            serialized_records = json.dumps(
+                records,
+                ensure_ascii=True,
+                sort_keys=True,
+                default=str,
+            )
+            checks["inline_secret_redacted"] = (
+                "qualification-secret-token" not in serialized_records
+                and "Bearer <redacted>" in serialized_records
+            )
+
+            terms = lexical_tokens("cross source safety review provenance")
+            lexical = BM25Index(
+                [str(record.get("search_text") or "") for record in records]
+            )
+            scored = [
+                (
+                    lexical_score + float(score_record(record, terms)),
+                    record,
+                )
+                for lexical_score, record in zip(
+                    lexical.scores(terms),
+                    records,
+                )
+            ]
+            ranked = stable_top_k(
+                scored,
+                len(expected_ids),
+                score=lambda pair: pair[0],
+            )
+            ranked_ids = [
+                str(record.get("id") or "")
+                for score, record in ranked
+                if score > 0.0
+            ]
+            checks["cross_root_retrieval"] = set(ranked_ids) == expected_ids
+    except Exception as exc:
+        error_type = type(exc).__name__
+    finally:
+        checks["runtime_policy_unchanged"] = (
+            dict(_source_policy()) == policy_before
+        )
+
+    passed = all(checks.values()) and error_type is None
+    return {
+        "schema_version": 1,
+        "probe": probe,
+        "status": "pass" if passed else "fail",
+        "scope": (
+            "isolated temporary configured roots; user stores are not read "
+            "and runtime source policy is not changed"
+        ),
+        "checks": checks,
+        "metrics": {
+            "configured_roots": len(fixtures),
+            "records_indexed": record_count,
+            "configuration_rejections": rejected_count,
+            "retrieved_records": len(ranked_ids),
+        },
+        "evidence": {
+            "fixture_digest": fixture_digest,
+            "ranking_digest": hashlib.sha256(
+                json.dumps(
+                    ranked_ids,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        },
+        "error_type": error_type,
+        "limitations": [
+            "This qualifies Algo's configured-root ingestion path, not the availability or correctness of any installed external agent store.",
+            "External stores remain disabled by default and require explicit user opt-in.",
+        ],
+    }
+
+
 def harness_filter_names(harness: str | None) -> set[str] | None:
     if not harness:
         return None
@@ -1829,8 +2020,38 @@ def resolve_embed_model(cfg: Any | None = None) -> str:
     return DEFAULT_EMBED_MODEL
 
 
-def search_index(query: str, harness: str | None = None, kind: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
-    return [_display_record(record) for _score, record in _rank_keyword_records(query, harness, kind, limit)]
+def _normalized_excluded_kinds(
+    excluded_kinds: set[str] | frozenset[str] | None,
+) -> frozenset[str]:
+    if excluded_kinds is None:
+        return frozenset()
+    if not isinstance(excluded_kinds, (set, frozenset)):
+        raise TypeError("excluded_kinds must be a set or frozenset")
+    return frozenset(
+        str(value).strip().casefold()
+        for value in excluded_kinds
+        if str(value).strip()
+    )
+
+
+def search_index(
+    query: str,
+    harness: str | None = None,
+    kind: str | None = None,
+    limit: int = 10,
+    *,
+    excluded_kinds: set[str] | frozenset[str] | None = None,
+) -> list[dict[str, Any]]:
+    return [
+        _display_record(record)
+        for _score, record in _rank_keyword_records(
+            query,
+            harness,
+            kind,
+            limit,
+            excluded_kinds=excluded_kinds,
+        )
+    ]
 
 
 def _rank_keyword_records(
@@ -1838,6 +2059,8 @@ def _rank_keyword_records(
     harness: str | None = None,
     kind: str | None = None,
     limit: int = 10,
+    *,
+    excluded_kinds: set[str] | frozenset[str] | None = None,
 ) -> list[tuple[float, dict[str, Any]]]:
     """Rank filtered records with BM25 plus curated title/path/meta boosts."""
     index = load_index()
@@ -1845,16 +2068,24 @@ def _rank_keyword_records(
     if not terms:
         return []
     harness_names = harness_filter_names(harness)
+    excluded = _normalized_excluded_kinds(excluded_kinds)
     candidates: list[dict[str, Any]] = []
     for record in index.get("records", []):
         if harness_names and record.get("harness") not in harness_names:
             continue
         if kind and record.get("kind") != kind:
             continue
+        if str(record.get("kind") or "").casefold() in excluded:
+            continue
         if is_excluded_from_retrieval(record):
             continue
         candidates.append(record)
-    lexical_index = _candidate_bm25_index(candidates, harness_names=harness_names, kind=kind)
+    lexical_index = _candidate_bm25_index(
+        candidates,
+        harness_names=harness_names,
+        kind=kind,
+        excluded_kinds=excluded,
+    )
     lexical_scores = lexical_index.bm25.scores(terms)
     scored: list[tuple[float, dict[str, Any]]] = []
     for position, (lexical_score, record) in enumerate(zip(lexical_scores, candidates)):
@@ -1877,12 +2108,14 @@ def _candidate_bm25_index(
     *,
     harness_names: set[str] | None,
     kind: str | None,
+    excluded_kinds: frozenset[str],
 ) -> _LexicalCandidateIndex:
     """Return reusable corpus statistics for one filtered retrieval slice."""
     global _BM25_INDEX_CACHE
     key = (
         tuple(sorted(harness_names or ())),
         kind or "",
+        tuple(sorted(excluded_kinds)),
         len(candidates),
         id(candidates[0]) if candidates else 0,
         id(candidates[-1]) if candidates else 0,
@@ -2518,6 +2751,7 @@ def retrieve_for_query(
     k: int = 3,
     harness: str | None = None,
     kind: str | None = None,
+    excluded_kinds: set[str] | frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Cosine-rank harness records against the query. Returns up to k records as dicts
     with id/harness/kind/title/path/snippet. Empty list if no embeddings ready.
@@ -2548,10 +2782,12 @@ def retrieve_for_query(
         _QUERY_VEC_CACHE.put(cache_key, qvec)
 
     harness_names = harness_filter_names(harness)
+    excluded = _normalized_excluded_kinds(excluded_kinds)
     candidates = [
         r for r in records
         if (not harness_names or r.get("harness") in harness_names)
         and (not kind or r.get("kind") == kind)
+        and str(r.get("kind") or "").casefold() not in excluded
         and not is_excluded_from_retrieval(r)
         and r.get("embedding")
         and r.get("embedding_model") == model
@@ -2567,6 +2803,7 @@ def retrieve_for_query(
             dimensions=len(qvec),
             harness_names=harness_names,
             kind=kind,
+            excluded_kinds=excluded,
         )
         qv = _np.array(qvec, dtype=_np.float32)
         q_norm = float(_np.linalg.norm(qv))
@@ -2597,6 +2834,7 @@ def _normalized_candidate_matrix(
     dimensions: int,
     harness_names: set[str] | None,
     kind: str | None,
+    excluded_kinds: frozenset[str],
 ) -> tuple[list[dict[str, Any]], Any]:
     """Return a cached row-aligned L2-normalized NumPy matrix."""
     global _VECTOR_MATRIX_CACHE
@@ -2605,6 +2843,7 @@ def _normalized_candidate_matrix(
         dimensions,
         tuple(sorted(harness_names or ())),
         kind or "",
+        tuple(sorted(excluded_kinds)),
         len(candidates),
         id(candidates[0]) if candidates else 0,
         id(candidates[-1]) if candidates else 0,
@@ -2631,14 +2870,17 @@ def _retrieval_embedding_coverage(
     *,
     harness: str | None,
     kind: str | None,
+    excluded_kinds: set[str] | frozenset[str] | None = None,
 ) -> tuple[int, int]:
     """Return model-matching and total eligible records for a retrieval slice."""
     harness_names = harness_filter_names(harness)
+    excluded = _normalized_excluded_kinds(excluded_kinds)
     records = [
         record
         for record in (load_index().get("records", []) or [])
         if (not harness_names or record.get("harness") in harness_names)
         and (not kind or record.get("kind") == kind)
+        and str(record.get("kind") or "").casefold() not in excluded
         and not is_excluded_from_retrieval(record)
     ]
     matching = sum(
@@ -2686,6 +2928,7 @@ def hybrid_search(
     harness: str | None = None,
     kind: str | None = None,
     rrf_k: int = 60,
+    excluded_kinds: set[str] | frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Reciprocal Rank Fusion of keyword and vector rankings.
 
@@ -2694,9 +2937,24 @@ def hybrid_search(
     Falls back to keyword-only if embeddings are unavailable.
     """
     pool = k * 3
-    keyword_ranked = _rank_keyword_records(query, harness=harness, kind=kind, limit=pool)
+    excluded = _normalized_excluded_kinds(excluded_kinds)
+    keyword_ranked = _rank_keyword_records(
+        query,
+        harness=harness,
+        kind=kind,
+        limit=pool,
+        excluded_kinds=excluded,
+    )
     keyword_results = [record for _score, record in keyword_ranked]
-    vector_results = retrieve_for_query(query, embed_fn, model, k=pool, harness=harness, kind=kind)
+    vector_results = retrieve_for_query(
+        query,
+        embed_fn,
+        model,
+        k=pool,
+        harness=harness,
+        kind=kind,
+        excluded_kinds=excluded,
+    )
 
     raw_scores: dict[str, float] = {}
     ranker_counts: dict[str, int] = {}
@@ -2727,7 +2985,12 @@ def hybrid_search(
     if not raw_scores:
         return [{**_slim_record(r), "score": 0.0} for r in keyword_results[:k]]
 
-    embedded, eligible = _retrieval_embedding_coverage(model, harness=harness, kind=kind)
+    embedded, eligible = _retrieval_embedding_coverage(
+        model,
+        harness=harness,
+        kind=kind,
+        excluded_kinds=excluded,
+    )
     coverage_complete = eligible > 0 and embedded == eligible
     fusion_mode = "rrf" if coverage_complete else "coverage-neutral-rrf"
     # Ordinary RRF rewards agreement by summing ranker contributions. While the

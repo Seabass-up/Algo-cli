@@ -1410,7 +1410,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             "verification before completion",
         ):
             m.console.print(f"[bold]Search:[/] {query}")
-            m.console.print(harness_search(query=query, limit=5))
+            m.console.print(harness_search(query=query, limit=5, cfg=cfg))
             m.console.print()
     elif command == "/reload":
         reloaded_cfg = m.reload_runtime()
@@ -1437,7 +1437,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         else:
             from .tools import harness_read
 
-            m.console.print(harness_read(arg))
+            m.console.print(harness_read(arg, cfg=cfg))
     else:
         return False, client
     return True, client

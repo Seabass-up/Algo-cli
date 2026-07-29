@@ -301,6 +301,51 @@ def test_run_agent_pipeline_records_resumable_thread(monkeypatch):
     assert record["turns"][-1]["output"] == "## Block Output\nfinal"
 
 
+def test_run_agent_pipeline_fails_closed_when_required_echo_recall_fails(
+    monkeypatch,
+):
+    from algo_cli import ada_memory_echo_veil
+
+    cfg = Config(
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+    )
+    client = FakeClient(["## Block Output\nmust not run"])
+    errors: list[str] = []
+    _quiet_display(monkeypatch)
+    monkeypatch.setattr(
+        ada_memory_echo_veil,
+        "protected_prompt_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("sensitive backend detail")
+        ),
+    )
+    monkeypatch.setattr(
+        agent_pipeline,
+        "show_error",
+        lambda message: errors.append(message),
+    )
+
+    result = main.run_agent_pipeline(
+        "Review the protected runtime",
+        cfg,
+        client,
+        pipeline_name="review",
+    )
+    record = agent_threads.resolve_thread(result.thread_id)
+
+    assert result.status == "failed"
+    assert result.error == (
+        "Agent run stopped because required protected memory recall is "
+        "unavailable."
+    )
+    assert client.calls == []
+    assert errors == [result.error]
+    assert "sensitive backend detail" not in result.error
+    assert record["status"] == "failed"
+    assert record["turns"][-1]["error"] == result.error
+
+
 def test_run_agent_block_falls_back_to_active_model_when_block_client_falls_back(monkeypatch):
     cfg = Config()
     cfg.model = "qwen3:latest"
@@ -326,6 +371,35 @@ def test_run_agent_block_injects_inference_harness_contract_for_eosd_task(monkey
     assert "## Inference Harness Integration Contract" in system_prompt
     assert "EOSD: decode loop before each speculative draft round" in system_prompt
     assert "Do not claim these algorithms can be implemented through hosted Anthropic/OpenAI API calls alone." in system_prompt
+
+
+def test_run_agent_block_injects_required_echo_memory_contract(monkeypatch):
+    cfg = Config(
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+    )
+    client = FakeClient(contents=["## Block Output\ncomplete"])
+    block = agent_blocks.AgentBlock(
+        role="plan",
+        prompt="p",
+        allowed_tools=agent_blocks.NO_TOOLS,
+    )
+    _quiet_display(monkeypatch)
+
+    main.run_agent_block(
+        block,
+        task="Use the previous protected decision",
+        completed=[],
+        cfg=cfg,
+        client=client,
+    )
+
+    system_prompt = client.calls[0]["messages"][0]["content"]
+    assert "Echo Veil is the exclusive mutable agent-memory authority" in system_prompt
+    assert "echo_veil_context" in system_prompt
+    assert "ranking_ambiguous=true" in system_prompt
+    assert "competing_memory_detected=true" in system_prompt
+    assert "Never consult or write a host plaintext fallback" in system_prompt
 
 
 def test_run_agent_block_skips_inference_harness_contract_for_ordinary_task(monkeypatch):
@@ -1034,6 +1108,11 @@ def test_run_agent_block_nudges_then_completes_only_after_verifier(monkeypatch, 
     assert len(client.calls) == 4
     assert any(
         "[Internal completion gate]" in str(message.get("content") or "")
+        for message in client.calls[2]["messages"]
+    )
+    assert any(
+        "Reuse the exact paths from successful mutation receipts"
+        in str(message.get("content") or "")
         for message in client.calls[2]["messages"]
     )
 

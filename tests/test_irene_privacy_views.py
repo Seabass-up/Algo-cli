@@ -9,6 +9,7 @@ from algo_cli.irene_privacy_views import (
     PrivacyView,
     keyed_action_fingerprint,
     project_action_args,
+    volatile_privacy_key_scope,
 )
 
 
@@ -17,6 +18,25 @@ HMAC_KEY = b"k" * 32
 
 def _render(value) -> str:
     return json.dumps(value, sort_keys=True)
+
+
+def test_volatile_privacy_scope_never_consults_os_keyring(monkeypatch) -> None:
+    from algo_cli import irene_privacy_views as privacy
+
+    monkeypatch.setattr(
+        privacy,
+        "get_key_material",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("OS keyring must not be consulted")
+        ),
+    )
+
+    with volatile_privacy_key_scope():
+        first = keyed_action_fingerprint("read_file", {"path": "private.py"})
+        second = keyed_action_fingerprint("read_file", {"path": "private.py"})
+
+    assert first == second
+    assert "private.py" not in first
 
 
 def test_nested_secrets_are_removed_from_every_visible_projection() -> None:

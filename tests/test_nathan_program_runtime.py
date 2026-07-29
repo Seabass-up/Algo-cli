@@ -131,6 +131,18 @@ def test_compile_caps_plan_bytes_and_output_count() -> None:
         )
 
 
+def test_compile_defaults_output_to_final_step_reference(tmp_path) -> None:
+    compiled = compile_program(
+        _read_plan(),
+        authorization=_authorization("read_file"),
+        cwd=str(tmp_path),
+    )
+
+    assert len(compiled.outputs) == 1
+    assert compiled.outputs[0].step_id == "source"
+    assert compiled.outputs[0].path == ()
+
+
 def test_execute_dispatches_action_through_runtime_and_runs_deterministic_transforms(tmp_path) -> None:
     payload = {
         "rows": [

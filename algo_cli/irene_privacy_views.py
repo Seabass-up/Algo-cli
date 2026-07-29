@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
@@ -10,8 +12,9 @@ import hmac
 import json
 from pathlib import Path
 import re
+import secrets
 import threading
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
 from .grace_key_store import get_key_material
@@ -149,10 +152,34 @@ _ACTION_RULES: dict[str, tuple[FieldRule, ...]] = {
 
 _PRIVACY_KEY_LOCK = threading.Lock()
 _PRIVACY_KEY: bytes | None = None
+_SCOPED_PRIVACY_KEY: ContextVar[bytes | None] = ContextVar(
+    "algo_scoped_privacy_key",
+    default=None,
+)
+
+
+@contextmanager
+def volatile_privacy_key_scope() -> Iterator[None]:
+    """Use one process-local privacy key without consulting an OS keyring.
+
+    Headless and one-shot runtimes cannot service an interactive credential
+    prompt. Their state is already bounded to one invocation, so a scoped key
+    preserves stable redaction and attempt identities for that invocation
+    without allowing optional observability to block tool dispatch.
+    """
+
+    token = _SCOPED_PRIVACY_KEY.set(secrets.token_bytes(32))
+    try:
+        yield
+    finally:
+        _SCOPED_PRIVACY_KEY.reset(token)
 
 
 def _privacy_hmac_key() -> bytes:
     global _PRIVACY_KEY
+    scoped = _SCOPED_PRIVACY_KEY.get()
+    if scoped is not None:
+        return scoped
     with _PRIVACY_KEY_LOCK:
         if _PRIVACY_KEY is None:
             _PRIVACY_KEY = get_key_material(
@@ -454,4 +481,5 @@ __all__ = [
     "PRIVACY_KEY_LABEL",
     "keyed_action_fingerprint",
     "project_action_args",
+    "volatile_privacy_key_scope",
 ]
