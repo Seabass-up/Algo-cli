@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
-import stat
 import subprocess
 
 from cryptography import x509
@@ -25,7 +25,6 @@ from algo_cli.boron_browser_wrapper import (
     BoronPipeRejected,
     decode_boron_pipe_message,
     encode_boron_pipe_message,
-    install_boron_proxy_pac,
     install_ephemeral_xenon_ca,
     launch_boron_chrome,
 )
@@ -218,7 +217,11 @@ def test_plan_is_canonical_https_only_and_chrome_argv_has_no_escape_surface() ->
     argv = plan.chrome_argv()
     assert argv[0] == BORON_CHROME_PATH
     assert "--remote-debugging-pipe=JSON" in argv
-    assert "--proxy-pac-url=file:///algo-profile/xenon-session-proxy.pac" in argv
+    pac_arg = next(item for item in argv if item.startswith("--proxy-pac-url="))
+    assert pac_arg == "--proxy-pac-url=" + plan.proxy_pac_url()
+    assert pac_arg.startswith(
+        "--proxy-pac-url=data:application/x-javascript-config;base64,"
+    )
     assert not any(item.startswith("--proxy-server=") for item in argv)
     assert not any(item.startswith("--proxy-bypass-list=") for item in argv)
     assert "--disable-quic" in argv
@@ -228,7 +231,7 @@ def test_plan_is_canonical_https_only_and_chrome_argv_has_no_escape_surface() ->
     assert argv[-1] == "about:blank"
 
 
-def test_proxy_pac_routes_only_the_exact_permitted_https_host(tmp_path: Path) -> None:
+def test_proxy_pac_routes_only_the_exact_permitted_https_host() -> None:
     plan = _plan()
     payload = plan.proxy_pac()
     assert b'url.substring(0, 6) === "https:"' in payload
@@ -236,41 +239,8 @@ def test_proxy_pac_routes_only_the_exact_permitted_https_host(tmp_path: Path) ->
     assert b'"PROXY xenon-egress:3128"' in payload
     assert payload.count(b'"DIRECT"') == 1
     assert plan.proxy_pac_digest == "sha256:" + hashlib.sha256(payload).hexdigest()
-
-    profile = tmp_path / "profile"
-    assert install_boron_proxy_pac(plan, profile_path=profile) == plan.proxy_pac_digest
-    pac_path = profile / "xenon-session-proxy.pac"
-    assert pac_path.read_bytes() == payload
-    assert stat.S_IMODE(pac_path.stat().st_mode) == 0o600
-
-    with pytest.raises(BoronPipeRejected, match="proxy_pac_write"):
-        install_boron_proxy_pac(plan, profile_path=profile)
-    assert pac_path.read_bytes() == payload
-
-    target = tmp_path / "symlink-target"
-    target.mkdir()
-    symlink_profile = tmp_path / "symlink-profile"
-    symlink_profile.symlink_to(target, target_is_directory=True)
-    with pytest.raises(BoronPipeRejected, match="proxy_pac_path"):
-        install_boron_proxy_pac(plan, profile_path=symlink_profile)
-    assert not (target / pac_path.name).exists()
-
-
-def test_launch_rejects_proxy_pac_digest_drift_before_spawning(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        wrapper_module,
-        "install_boron_proxy_pac",
-        lambda _plan: "sha256:" + "0" * 64,
-    )
-    monkeypatch.setattr(
-        wrapper_module.os,
-        "posix_spawn",
-        lambda *_args, **_kwargs: pytest.fail("Chrome must not be spawned"),
-    )
-    with pytest.raises(BoronPipeRejected, match="proxy_pac_digest"):
-        launch_boron_chrome(_plan())
+    encoded = plan.proxy_pac_url().split(",", 1)[1]
+    assert base64.b64decode(encoded, validate=True) == payload
 
 
 @pytest.mark.parametrize(
@@ -511,11 +481,6 @@ def test_launch_uses_only_fixed_argv_and_fd_pipe_transport(monkeypatch) -> None:
         return 424242
 
     monkeypatch.setattr(wrapper_module.os, "posix_spawn", spawn)
-    monkeypatch.setattr(
-        wrapper_module,
-        "install_boron_proxy_pac",
-        lambda plan: plan.proxy_pac_digest,
-    )
     monkeypatch.setattr(
         wrapper_module.os,
         "waitpid",

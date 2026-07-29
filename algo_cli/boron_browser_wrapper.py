@@ -9,6 +9,7 @@ transport and reduces it to one navigation lifecycle.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
@@ -19,7 +20,6 @@ from pathlib import Path
 import re
 import select
 import signal
-import stat
 import subprocess
 import time
 from typing import Any, Callable, Iterable, Mapping, NoReturn, Sequence
@@ -46,8 +46,8 @@ BORON_CHROME_PATH = "/opt/algo/chrome/chrome"
 BORON_CERTUTIL_PATH = "/usr/bin/certutil"
 BORON_PROFILE_PATH = Path("/algo-profile")
 BORON_CA_PATH = BORON_PROFILE_PATH / "xenon-session-ca.pem"
-BORON_PROXY_PAC_PATH = BORON_PROFILE_PATH / "xenon-session-proxy.pac"
 BORON_NSS_DB_PATH = Path("/home/algo/.local/share/pki/nssdb")
+BORON_MAX_PROXY_PAC_URL_BYTES = 4_096
 
 _VERSION_RE = re.compile(r"^[1-9][0-9]{0,3}(?:\.[0-9]{1,6}){3}$")
 _HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")
@@ -375,6 +375,18 @@ class BoronNavigationPlan:
     def proxy_pac_digest(self) -> str:
         return "sha256:" + hashlib.sha256(self.proxy_pac()).hexdigest()
 
+    def proxy_pac_url(self) -> str:
+        """Return Chromium's network-free, immutable PAC data URL."""
+
+        # Chromium's ordinary PAC fetcher accepts data URLs; file URLs require
+        # a separately file-enabled fetcher and can otherwise fall back to a
+        # direct route.  Keep the exact-host policy inside the fixed argv.
+        encoded = base64.b64encode(self.proxy_pac()).decode("ascii")
+        pac_url = "data:application/x-javascript-config;base64," + encoded
+        if len(pac_url.encode("ascii")) > BORON_MAX_PROXY_PAC_URL_BYTES:
+            _reject("proxy_pac_url_size")
+        return pac_url
+
     def chrome_argv(self) -> tuple[str, ...]:
         """Return the complete fixed Chromium command; no extra flags exist."""
 
@@ -383,7 +395,7 @@ class BoronNavigationPlan:
             "--headless=new",
             "--remote-debugging-pipe=JSON",
             f"--user-data-dir={BORON_PROFILE_PATH}",
-            f"--proxy-pac-url={BORON_PROXY_PAC_PATH.as_uri()}",
+            f"--proxy-pac-url={self.proxy_pac_url()}",
             "--disable-quic",
             "--disable-background-networking",
             "--disable-background-mode",
@@ -407,65 +419,6 @@ class BoronNavigationPlan:
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
-
-
-def install_boron_proxy_pac(
-    plan: BoronNavigationPlan,
-    *,
-    profile_path: Path = BORON_PROFILE_PATH,
-) -> str:
-    """Install and read back the exact per-origin proxy policy."""
-
-    if (
-        type(plan) is not BoronNavigationPlan
-        or not isinstance(profile_path, Path)
-        or not profile_path.is_absolute()
-    ):
-        _reject("proxy_pac_config")
-    payload = plan.proxy_pac()
-    pac_path = profile_path / BORON_PROXY_PAC_PATH.name
-    created = False
-    try:
-        profile_path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if profile_path.is_symlink() or not profile_path.is_dir():
-            _reject("proxy_pac_path")
-        os.chmod(profile_path, 0o700)
-        descriptor = os.open(
-            pac_path,
-            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-            0o600,
-        )
-        created = True
-        with os.fdopen(descriptor, "w+b", closefd=True) as handle:
-            os.fchmod(handle.fileno(), 0o600)
-            info = os.fstat(handle.fileno())
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or info.st_nlink != 1
-                or stat.S_IMODE(info.st_mode) != 0o600
-            ):
-                _reject("proxy_pac_identity")
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-            handle.seek(0)
-            if handle.read(len(payload) + 1) != payload:
-                _reject("proxy_pac_readback")
-    except BoronPipeRejected:
-        if created:
-            try:
-                pac_path.unlink()
-            except OSError:
-                pass
-        raise
-    except OSError:
-        if created:
-            try:
-                pac_path.unlink()
-            except OSError:
-                pass
-        _reject("proxy_pac_write")
-    return plan.proxy_pac_digest
 
 
 def install_ephemeral_xenon_ca(
@@ -1073,8 +1026,6 @@ def launch_boron_chrome(
         _reject("navigation_plan")
     if fcntl is None or not hasattr(os, "posix_spawn"):
         _reject("browser_platform_unsupported")
-    if install_boron_proxy_pac(plan) != plan.proxy_pac_digest:
-        _reject("proxy_pac_digest")
     controller_to_chrome_read, controller_to_chrome_write = os.pipe()
     chrome_to_controller_read, chrome_to_controller_write = os.pipe()
     null_fd = os.open(os.devnull, os.O_RDWR | os.O_CLOEXEC)
@@ -1189,7 +1140,6 @@ __all__ = [
     "BoronPipeRejected",
     "decode_boron_pipe_message",
     "encode_boron_pipe_message",
-    "install_boron_proxy_pac",
     "install_ephemeral_xenon_ca",
     "launch_boron_chrome",
     "run_boron_navigation",

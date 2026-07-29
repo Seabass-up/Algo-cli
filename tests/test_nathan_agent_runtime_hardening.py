@@ -29,11 +29,11 @@ SPEC.loader.exec_module(SCRIPT)
 @pytest.fixture(scope="module")
 def report() -> dict[str, object]:
     return benchmark.run_benchmark(
-        contract_repetitions=3,
-        context_repetitions=3,
-        checkpoint_repetitions=3,
-        workload_repetitions=3,
-        warmups=0,
+        contract_repetitions=21,
+        context_repetitions=21,
+        checkpoint_repetitions=21,
+        workload_repetitions=21,
+        warmups=2,
         generated_at="2026-07-23T12:00:00Z",
     )
 
