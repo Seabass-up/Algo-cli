@@ -39,6 +39,7 @@ BORON_MAX_PIPE_BUFFER_BYTES = 2 * BORON_MAX_PIPE_MESSAGE_BYTES
 BORON_MAX_JSON_DEPTH = 8
 BORON_MAX_JSON_ITEMS = 512
 BORON_MAX_STRING_BYTES = 65_536
+BORON_MAX_CDP_FLOAT_TOKEN_BYTES = 64
 BORON_MAX_NAVIGATION_MS = 120_000
 BORON_CHROME_PATH = "/opt/algo/chrome/chrome"
 BORON_CERTUTIL_PATH = "/usr/bin/certutil"
@@ -47,6 +48,9 @@ BORON_CA_PATH = BORON_PROFILE_PATH / "xenon-session-ca.pem"
 
 _VERSION_RE = re.compile(r"^[1-9][0-9]{0,3}(?:\.[0-9]{1,6}){3}$")
 _HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")
+_JSON_FLOAT_RE = re.compile(
+    r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+(?:[eE][+-]?[0-9]+)?|[eE][+-]?[0-9]+)$"
+)
 
 _ALLOWED_METHODS = frozenset(
     {
@@ -84,6 +88,11 @@ class BoronPipeRejected(ValueError):
         super().__init__(reason_code)
 
 
+@dataclass(frozen=True, slots=True)
+class _BoronCdpFloatToken:
+    """Opaque finite JSON decimal admitted only on Chromium's response pipe."""
+
+
 class BoronNavigationState(str, Enum):
     STARTING = "starting"
     CONFIGURING = "configuring"
@@ -111,7 +120,23 @@ def _constant(_value: str) -> NoReturn:
     _reject("json_constant")
 
 
-def _bound_tree(value: Any, *, depth: int = 0, count: list[int] | None = None) -> None:
+def _cdp_float(value: str) -> _BoronCdpFloatToken:
+    if (
+        type(value) is not str
+        or not 1 <= len(value) <= BORON_MAX_CDP_FLOAT_TOKEN_BYTES
+        or _JSON_FLOAT_RE.fullmatch(value) is None
+    ):
+        _reject("cdp_json_float")
+    return _BoronCdpFloatToken()
+
+
+def _bound_tree(
+    value: Any,
+    *,
+    depth: int = 0,
+    count: list[int] | None = None,
+    allow_cdp_float: bool = False,
+) -> None:
     if count is None:
         count = [0]
     if depth > BORON_MAX_JSON_DEPTH:
@@ -121,6 +146,8 @@ def _bound_tree(value: Any, *, depth: int = 0, count: list[int] | None = None) -
         _reject("json_items")
     if value is None or type(value) in {bool, int}:
         return
+    if allow_cdp_float and type(value) is _BoronCdpFloatToken:
+        return
     if type(value) is float:
         _reject("json_float")
     if type(value) is str:
@@ -129,12 +156,27 @@ def _bound_tree(value: Any, *, depth: int = 0, count: list[int] | None = None) -
         return
     if type(value) is list:
         for item in value:
-            _bound_tree(item, depth=depth + 1, count=count)
+            _bound_tree(
+                item,
+                depth=depth + 1,
+                count=count,
+                allow_cdp_float=allow_cdp_float,
+            )
         return
     if type(value) is dict:
         for key, item in value.items():
-            _bound_tree(key, depth=depth + 1, count=count)
-            _bound_tree(item, depth=depth + 1, count=count)
+            _bound_tree(
+                key,
+                depth=depth + 1,
+                count=count,
+                allow_cdp_float=allow_cdp_float,
+            )
+            _bound_tree(
+                item,
+                depth=depth + 1,
+                count=count,
+                allow_cdp_float=allow_cdp_float,
+            )
         return
     _reject("json_type")
 
@@ -155,6 +197,28 @@ def decode_boron_pipe_message(payload: bytes) -> dict[str, Any]:
     if type(value) is not dict:
         _reject("pipe_message_object")
     _bound_tree(value)
+    return value
+
+
+def _decode_boron_cdp_message(payload: bytes) -> dict[str, Any]:
+    """Decode one browser-originated CDP frame without widening control JSON."""
+
+    if type(payload) is not bytes or not payload or len(payload) > BORON_MAX_PIPE_MESSAGE_BYTES:
+        _reject("pipe_frame_size")
+    try:
+        value = json.loads(
+            payload.decode("utf-8", errors="strict"),
+            object_pairs_hook=_pairs,
+            parse_constant=_constant,
+            parse_float=_cdp_float,
+        )
+    except UnicodeDecodeError:
+        _reject("pipe_frame_utf8")
+    except json.JSONDecodeError:
+        _reject("pipe_frame_json")
+    if type(value) is not dict:
+        _reject("pipe_message_object")
+    _bound_tree(value, allow_cdp_float=True)
     return value
 
 
@@ -205,7 +269,7 @@ class BoronPipeDecoder:
                 _reject("pipe_frame_size")
             payload = bytes(self._buffer[:end])
             del self._buffer[: end + 1]
-            messages.append(decode_boron_pipe_message(payload))
+            messages.append(_decode_boron_cdp_message(payload))
         return messages
 
     def finish(self) -> None:
@@ -763,7 +827,7 @@ class BoronNavigationMachine:
     def handle(self, message: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
         if type(message) is not dict:
             _reject("pipe_message_object")
-        _bound_tree(message)
+        _bound_tree(message, allow_cdp_float=True)
         if self.state in {
             BoronNavigationState.VERIFIED,
             BoronNavigationState.FAILED,

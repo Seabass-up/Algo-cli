@@ -388,6 +388,13 @@ blocking, unexpected-WebSocket detection, and post-navigation origin checks.
 Neither layer exposes raw CDP, arbitrary JavaScript, a debugger port, a generic
 proxy, or caller-supplied Chrome flags to the model.
 
+Chromium's response-only CDP stream is decoded separately from the external
+control protocol. Bounded JSON decimal telemetry is reduced to a private
+content-free sentinel before the lifecycle machine sees it; external frames,
+outbound commands, and evidence continue to reject floats. Known CDP identity
+and count fields keep exact type checks, so a decimal cannot substitute for an
+integer or opaque identifier.
+
 This split is necessary because Chromium's current proxy contract permits
 `http`, `https`, `ws`, and `wss` through an HTTP proxy, while HTTPS `CONNECT`
 normally hides the application request. A tunnel-only proxy therefore cannot

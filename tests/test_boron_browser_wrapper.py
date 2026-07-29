@@ -184,6 +184,32 @@ def test_pipe_decoder_bounds_frames_buffers_and_truncation() -> None:
         encode_boron_pipe_message({"x": ["a" * 65_000 for _ in range(17)]})
 
 
+def test_cdp_decoder_accepts_bounded_decimal_telemetry_without_widening_control_json() -> None:
+    decoder = BoronPipeDecoder()
+    messages = decoder.feed(
+        b'{"method":"Page.loadEventFired","params":{"timestamp":12345.6789}}\x00'
+    )
+    assert len(messages) == 1
+    assert messages[0]["method"] == "Page.loadEventFired"
+    with pytest.raises(BoronPipeRejected, match="json_type"):
+        encode_boron_pipe_message(messages[0])
+    with pytest.raises(BoronPipeRejected, match="json_float"):
+        decode_boron_pipe_message(
+            b'{"method":"Page.loadEventFired","params":{"timestamp":12345.6789}}'
+        )
+
+
+def test_cdp_decoder_rejects_oversized_decimal_tokens() -> None:
+    decoder = BoronPipeDecoder()
+    payload = (
+        b'{"method":"Page.loadEventFired","params":{"timestamp":0.'
+        + b"1" * 65
+        + b"}}\x00"
+    )
+    with pytest.raises(BoronPipeRejected, match="cdp_json_float"):
+        decoder.feed(payload)
+
+
 def test_plan_is_canonical_https_only_and_chrome_argv_has_no_escape_surface() -> None:
     plan = _plan()
     argv = plan.chrome_argv()
@@ -229,6 +255,21 @@ def test_machine_verifies_only_after_ack_commit_and_matching_load() -> None:
     assert evidence.command_count == 12
     assert evidence.origin_digest.startswith("sha256:")
     assert "example.com" not in repr(evidence)
+
+
+def test_machine_accepts_bounded_decimal_lifecycle_timestamp() -> None:
+    machine = BoronNavigationMachine(_plan())
+    navigate = _bootstrap(machine)
+    _navigate_ack(machine, navigate)
+    machine.handle(_frame_event())
+    decoder = BoronPipeDecoder()
+    message = decoder.feed(
+        b'{"method":"Page.lifecycleEvent","sessionId":"session-a",'
+        b'"params":{"frameId":"frame-a","loaderId":"loader-a","name":"load",'
+        b'"timestamp":12345.6789}}\x00'
+    )[0]
+    machine.handle(message)
+    assert machine.evidence().state is BoronNavigationState.VERIFIED
 
 
 def test_blank_page_and_reordered_events_cannot_false_verify() -> None:

@@ -38,6 +38,15 @@ Docker inspect evidence rather than trusting launch arguments.
 `algo_cli/xenon_browser_egress.py` owns URL, DNS, redirect, rebinding, and peer
 policy. Neither module is imported by the normal action registry.
 
+The browser's DevTools response pipe and Algo's external control protocol use
+separate decoders. External control frames reject every float. Chromium CDP
+frames may contain legitimate decimal telemetry such as lifecycle timestamps;
+those tokens are accepted only when they match the JSON decimal grammar and
+fit a 64-byte bound, then replaced with a content-free private sentinel.
+Recognized identity and count fields retain exact type checks, and the sentinel
+is rejected by command and evidence encoders. This admits no caller-supplied
+decimal value into Algo's control or evidence surfaces.
+
 ### Freshness semantics
 
 The public gate measures **security update lag**, not the age of the current
