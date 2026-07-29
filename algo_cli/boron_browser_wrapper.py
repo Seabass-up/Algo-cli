@@ -45,9 +45,11 @@ BORON_CHROME_PATH = "/opt/algo/chrome/chrome"
 BORON_CERTUTIL_PATH = "/usr/bin/certutil"
 BORON_PROFILE_PATH = Path("/algo-profile")
 BORON_CA_PATH = BORON_PROFILE_PATH / "xenon-session-ca.pem"
+BORON_NSS_DB_PATH = Path("/home/algo/.local/share/pki/nssdb")
 
 _VERSION_RE = re.compile(r"^[1-9][0-9]{0,3}(?:\.[0-9]{1,6}){3}$")
 _HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")
+_NET_ERROR_RE = re.compile(r"^net::ERR_([A-Z0-9_]{1,48})$")
 _JSON_FLOAT_RE = re.compile(
     r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+(?:[eE][+-]?[0-9]+)?|[eE][+-]?[0-9]+)$"
 )
@@ -387,6 +389,7 @@ def install_ephemeral_xenon_ca(
     *,
     now_ms: int,
     profile_path: Path = BORON_PROFILE_PATH,
+    nss_db_path: Path = BORON_NSS_DB_PATH,
     certutil_path: str = BORON_CERTUTIL_PATH,
     runner: Runner = subprocess.run,
 ) -> str:
@@ -396,7 +399,12 @@ def install_ephemeral_xenon_ca(
         _reject("ca_size")
     if type(now_ms) is not int or not 1 <= now_ms <= (1 << 53) - 1:
         _reject("ca_clock")
-    if not isinstance(profile_path, Path) or not profile_path.is_absolute():
+    if (
+        not isinstance(profile_path, Path)
+        or not profile_path.is_absolute()
+        or not isinstance(nss_db_path, Path)
+        or not nss_db_path.is_absolute()
+    ):
         _reject("profile_path")
     if type(certutil_path) is not str or certutil_path != BORON_CERTUTIL_PATH:
         _reject("certutil_path")
@@ -415,10 +423,11 @@ def install_ephemeral_xenon_ca(
         _reject("ca_validity")
 
     try:
-        profile_path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if profile_path.is_symlink() or not profile_path.is_dir():
-            _reject("profile_path")
-        os.chmod(profile_path, 0o700)
+        for directory in (profile_path, nss_db_path):
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if directory.is_symlink() or not directory.is_dir():
+                _reject("profile_path")
+            os.chmod(directory, 0o700)
         ca_path = profile_path / BORON_CA_PATH.name
         descriptor = os.open(ca_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         try:
@@ -438,12 +447,12 @@ def install_ephemeral_xenon_ca(
         _reject("ca_write")
 
     commands: Sequence[Sequence[str]] = (
-        (certutil_path, "-N", "-d", f"sql:{profile_path}", "--empty-password"),
+        (certutil_path, "-N", "-d", f"sql:{nss_db_path}", "--empty-password"),
         (
             certutil_path,
             "-A",
             "-d",
-            f"sql:{profile_path}",
+            f"sql:{nss_db_path}",
             "-n",
             "algo-xenon-session",
             "-t",
@@ -455,7 +464,7 @@ def install_ephemeral_xenon_ca(
             certutil_path,
             "-L",
             "-d",
-            f"sql:{profile_path}",
+            f"sql:{nss_db_path}",
             "-n",
             "algo-xenon-session",
             "-a",
@@ -701,8 +710,19 @@ class BoronNavigationMachine:
             return ()
 
         if method == "Page.navigate":
-            if result.get("errorText") not in (None, ""):
-                self._terminal(BoronNavigationState.FAILED, "navigation_failed")
+            navigation_error = result.get("errorText")
+            if navigation_error not in (None, ""):
+                match = (
+                    _NET_ERROR_RE.fullmatch(navigation_error)
+                    if type(navigation_error) is str
+                    else None
+                )
+                reason = (
+                    "navigation_net_" + match.group(1).casefold()
+                    if match is not None
+                    else "navigation_failed"
+                )
+                self._terminal(BoronNavigationState.FAILED, reason)
                 return ()
             if result.get("isDownload") is True:
                 self._terminal(BoronNavigationState.HANDOFF, "download_denied")
@@ -1006,6 +1026,7 @@ def launch_boron_chrome(
         "LC_ALL": "C.UTF-8",
         "PATH": "/usr/bin:/bin",
         "TZ": "UTC",
+        "XDG_DATA_HOME": "/home/algo/.local/share",
     }
     try:
         pid = os.posix_spawn(

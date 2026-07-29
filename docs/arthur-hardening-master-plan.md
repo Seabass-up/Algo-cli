@@ -395,6 +395,11 @@ outbound commands, and evidence continue to reject floats. Known CDP identity
 and count fields keep exact type checks, so a decimal cannot substitute for an
 integer or opaque identifier.
 
+The managed Chrome 150 path also pins `XDG_DATA_HOME` and imports the ephemeral
+Xenon authority into the M146-and-later Linux NSS location under that tmpfs
+home. `/algo-profile` remains the Chrome user-data directory but is not
+misrepresented as the NSS trust database.
+
 This split is necessary because Chromium's current proxy contract permits
 `http`, `https`, `ws`, and `wss` through an HTTP proxy, while HTTPS `CONNECT`
 normally hides the application request. A tunnel-only proxy therefore cannot

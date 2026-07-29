@@ -47,6 +47,14 @@ Recognized identity and count fields retain exact type checks, and the sentinel
 is rejected by command and evidence encoders. This admits no caller-supplied
 decimal value into Algo's control or evidence surfaces.
 
+Chrome 150 is launched with a fixed
+`XDG_DATA_HOME=/home/algo/.local/share`, and the ephemeral Xenon CA is imported
+and read back from `/home/algo/.local/share/pki/nssdb`. This follows
+[Chromium's Linux certificate-store contract](https://chromium.googlesource.com/chromium/src/+/master/docs/linux/cert_management.md),
+which moved fresh NSS databases to the XDG path in M146. Both the NSS database
+and browser home are tmpfs-only and disappear with the container; the CA PEM is
+deleted immediately after exact certificate readback.
+
 ### Freshness semantics
 
 The public gate measures **security update lag**, not the age of the current

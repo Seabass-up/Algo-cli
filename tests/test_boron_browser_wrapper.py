@@ -341,6 +341,30 @@ def test_origin_frame_loader_and_lifecycle_drift_reject() -> None:
     assert machine.evidence().reason_code == "lifecycle_drift"
 
 
+@pytest.mark.parametrize(
+    ("error_text", "reason"),
+    [
+        (
+            "net::ERR_CERT_AUTHORITY_INVALID",
+            "navigation_net_cert_authority_invalid",
+        ),
+        ("unbounded detail must not escape", "navigation_failed"),
+        (7, "navigation_failed"),
+    ],
+)
+def test_navigation_errors_are_reduced_to_finite_content_free_reasons(
+    error_text: object,
+    reason: str,
+) -> None:
+    machine = BoronNavigationMachine(_plan())
+    navigate = _bootstrap(machine)
+    assert machine.handle(_response(navigate, {"errorText": error_text})) == ()
+    evidence = machine.evidence()
+    assert evidence.state is BoronNavigationState.FAILED
+    assert evidence.reason_code == reason
+    assert "unbounded" not in evidence.reason_code
+
+
 def test_version_error_and_replayed_response_fail_closed() -> None:
     machine = BoronNavigationMachine(_plan())
     command = machine.start()[0]
@@ -372,10 +396,15 @@ def test_ephemeral_ca_import_is_exact_read_back_and_pem_is_removed(tmp_path: Pat
         pem,
         now_ms=int(now.timestamp() * 1000),
         profile_path=tmp_path / "profile",
+        nss_db_path=tmp_path / "home/.local/share/pki/nssdb",
         runner=runner,
     )
     assert digest == "sha256:" + certificate.fingerprint(hashes.SHA256()).hex()
     assert [call[1] for call in calls] == ["-N", "-A", "-L"]
+    assert {
+        call[call.index("-d") + 1]
+        for call in calls
+    } == {f"sql:{tmp_path / 'home/.local/share/pki/nssdb'}"}
     assert not (tmp_path / "profile" / "xenon-session-ca.pem").exists()
 
 
@@ -393,6 +422,7 @@ def test_ca_rejects_non_ca_expired_and_readback_mismatch(tmp_path: Path) -> None
             pem,
             now_ms=int(now.timestamp() * 1000),
             profile_path=tmp_path / "mismatch",
+            nss_db_path=tmp_path / "mismatch-home/.local/share/pki/nssdb",
             runner=mismatch,
         )
 
@@ -415,6 +445,7 @@ def test_ca_rejects_non_ca_expired_and_readback_mismatch(tmp_path: Path) -> None
             leaf,
             now_ms=int(now.timestamp() * 1000),
             profile_path=tmp_path / "leaf",
+            nss_db_path=tmp_path / "leaf-home/.local/share/pki/nssdb",
             runner=mismatch,
         )
 
@@ -445,6 +476,7 @@ def test_launch_uses_only_fixed_argv_and_fd_pipe_transport(monkeypatch) -> None:
             "LC_ALL": "C.UTF-8",
             "PATH": "/usr/bin:/bin",
             "TZ": "UTC",
+            "XDG_DATA_HOME": "/home/algo/.local/share",
         }
         actions = captured["kwargs"]["file_actions"]
         assert any(action[0] == os.POSIX_SPAWN_DUP2 and action[2] == 3 for action in actions)
