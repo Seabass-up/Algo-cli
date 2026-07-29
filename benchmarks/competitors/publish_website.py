@@ -109,6 +109,7 @@ def _recomputed_aggregates(
 
 
 def _validate(raw: dict[str, Any], source_revision: str) -> None:
+    source = raw.get("source") or {}
     protocol = raw.get("protocol") or {}
     runs = raw.get("runs") or []
     aggregates = raw.get("aggregate") or []
@@ -136,6 +137,12 @@ def _validate(raw: dict[str, Any], source_revision: str) -> None:
         failures.append(f"expected {expected} complete runs")
     if not re.fullmatch(r"[0-9a-f]{40}", source_revision):
         failures.append("source revision must be a full Git SHA")
+    if source.get("revision") != source_revision:
+        failures.append("source revision does not match the benchmark receipt")
+    if source.get("tracked_worktree_clean") is not True:
+        failures.append("benchmark source worktree was not clean")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(source.get("runner_sha256") or "")):
+        failures.append("benchmark runner digest is missing")
 
     warmup = protocol.get("model_warmup") or {}
     if not warmup.get("performed") or not warmup.get("success"):

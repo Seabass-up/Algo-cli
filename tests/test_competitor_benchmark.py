@@ -84,6 +84,52 @@ def test_parser_accepts_exact_algo_candidate_executable() -> None:
     assert parsed.algo_executable == "/tmp/candidate-algo"
 
 
+def test_source_provenance_binds_clean_revision_and_runner(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner_path = tmp_path / "runner.py"
+    runner_path.write_text("benchmark runner\n", encoding="utf-8")
+    revision = "a" * 40
+    receipts = iter(
+        (
+            subprocess.CompletedProcess([], 0, revision + "\n", ""),
+            subprocess.CompletedProcess([], 0, "", ""),
+        )
+    )
+    monkeypatch.setattr(runner.subprocess, "run", lambda *_args, **_kwargs: next(receipts))
+
+    receipt = runner.source_provenance(tmp_path, runner_path)
+
+    assert receipt == {
+        "revision": revision,
+        "tracked_worktree_clean": True,
+        "runner_sha256": runner.sha256_file(runner_path),
+    }
+
+
+def test_source_provenance_rejects_tracked_changes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner_path = tmp_path / "runner.py"
+    runner_path.write_text("benchmark runner\n", encoding="utf-8")
+    receipts = iter(
+        (
+            subprocess.CompletedProcess([], 0, "a" * 40 + "\n", ""),
+            subprocess.CompletedProcess([], 0, " M algo_cli/main.py\n", ""),
+        )
+    )
+    monkeypatch.setattr(runner.subprocess, "run", lambda *_args, **_kwargs: next(receipts))
+
+    try:
+        runner.source_provenance(tmp_path, runner_path)
+    except RuntimeError as error:
+        assert "tracked changes" in str(error)
+    else:
+        raise AssertionError("dirty source worktree was accepted")
+
+
 def test_algo_benchmark_uses_explicit_bounded_workspace_authority(
     tmp_path: Path,
 ) -> None:
@@ -385,6 +431,11 @@ def publication_fixture() -> dict:
     return {
         "schema_version": 1,
         "created_at": "2026-07-15T00:00:00+00:00",
+        "source": {
+            "revision": "b" * 40,
+            "tracked_worktree_clean": True,
+            "runner_sha256": "d" * 64,
+        },
         "protocol": {
             "id": "algo-cli-cross-harness-v3-draft",
             "harnesses": harnesses,
@@ -449,6 +500,17 @@ def test_website_publisher_rejects_unwarmed_cell() -> None:
         assert "warmup did not succeed" in str(error)
     else:
         raise AssertionError("unwarmed benchmark cell was accepted")
+
+
+def test_website_publisher_rejects_mismatched_source_revision() -> None:
+    raw = publication_fixture()
+
+    try:
+        publisher._validate(raw, "e" * 40)
+    except ValueError as error:
+        assert "does not match the benchmark receipt" in str(error)
+    else:
+        raise AssertionError("mismatched source revision was accepted")
 
 
 def test_website_publisher_preserves_protected_input_failure_as_a_score() -> None:

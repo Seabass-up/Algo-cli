@@ -173,6 +173,56 @@ def sha256_file(path: Path) -> str:
     return sha256_bytes(path.read_bytes())
 
 
+def source_provenance(
+    repo_root: Path = REPO_ROOT,
+    runner_path: Path = Path(__file__).resolve(),
+) -> dict[str, Any]:
+    """Bind a benchmark cell to one clean, immutable source revision."""
+
+    commands = (
+        ("revision", ("git", "rev-parse", "--verify", "HEAD^{commit}")),
+        (
+            "status",
+            (
+                "git",
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=no",
+            ),
+        ),
+    )
+    results: dict[str, subprocess.CompletedProcess[str]] = {}
+    try:
+        for label, command in commands:
+            results[label] = subprocess.run(
+                command,
+                cwd=repo_root,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("benchmark source provenance is unavailable") from exc
+
+    revision_result = results["revision"]
+    revision = revision_result.stdout.strip()
+    if revision_result.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise RuntimeError("benchmark source revision is invalid")
+    status_result = results["status"]
+    if status_result.returncode != 0:
+        raise RuntimeError("benchmark source worktree status is unavailable")
+    if status_result.stdout.strip():
+        raise RuntimeError("benchmark source worktree has tracked changes")
+    if not runner_path.is_file():
+        raise RuntimeError("benchmark runner source is unavailable")
+    return {
+        "revision": revision,
+        "tracked_worktree_clean": True,
+        "runner_sha256": sha256_file(runner_path),
+    }
+
+
 def is_generated(relative: str) -> bool:
     parts = Path(relative).parts
     return (
@@ -1478,6 +1528,10 @@ def main(argv: list[str] | None = None) -> int:
     if blocked:
         reasons = "; ".join(f"{item}: {by_product[item]['reason']}" for item in blocked)
         raise SystemExit(f"selected harnesses are blocked: {reasons}")
+    try:
+        source = source_provenance()
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
     output_root = (args.output or (REPO_ROOT / "benchmark-results" / f"{utc_stamp()}-{args.model.replace('/', '-')}")).resolve()
     output_root.mkdir(parents=True, exist_ok=False)
     warmup_receipt: dict[str, Any] | None = None
@@ -1523,6 +1577,7 @@ def main(argv: list[str] | None = None) -> int:
         "schema_version": SCHEMA_VERSION,
         "status": "draft_same_model_comparison",
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "source": source,
         "protocol": {
             "id": PROTOCOL,
             "harnesses": harnesses,

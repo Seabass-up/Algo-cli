@@ -163,6 +163,8 @@
     "algo_cli/resources/neon_extension/neon_popup.html",
     "algo_cli/resources/neon_extension/neon_popup.js",
     "algo_cli/resources/neon_extension/neon_service_worker.js",
+    "benchmarks/competitors/README.md",
+    "benchmarks/competitors/publish_website.py",
     "benchmarks/competitors/runner.py",
     "docs/arthur-hardening-master-plan.md",
     "docs/ALGO.md",
