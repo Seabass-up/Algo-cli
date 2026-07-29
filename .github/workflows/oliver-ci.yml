@@ -219,10 +219,11 @@ jobs:
           docker buildx version
           uv run --frozen --no-editable --extra dev pytest -q tests/test_boron_browser_isolation.py tests/test_boron_browser_images.py tests/test_xenon_browser_egress.py tests/test_xenon_browser_broker.py tests/test_boron_browser_wrapper.py tests/test_boron_browser_entry.py tests/test_henry_boron_hosted_qualification.py
       - name: Run repeated source-bound hosted qualification
-        run: >-
-          uv run --frozen --no-editable --extra dev python
-          scripts/henry_boron_hosted_qualification.py --repetitions 5
-          | tee "${RUNNER_TEMP}/grace-boron-hosted-qualification.json"
+        run: |
+          set -o pipefail
+          uv run --frozen --no-editable --extra dev python \
+            scripts/henry_boron_hosted_qualification.py --repetitions 5 \
+            | tee "${RUNNER_TEMP}/grace-boron-hosted-qualification.json"
       - name: Retain Boron evidence
         if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5

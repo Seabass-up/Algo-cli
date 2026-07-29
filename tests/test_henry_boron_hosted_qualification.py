@@ -60,12 +60,12 @@ def _build_evidence() -> dict[str, object]:
         "browser_tag": "algo-cli/boron-browser:m5-local",
         "browser_image_id": _digest("1"),
         "browser_code_digest": _digest("2"),
-        "browser_version": "150.0.7871.128",
+        "browser_version": "150.0.7871.186",
         "browser_security_update_lag_ms": 0,
         "browser_security_max_update_lag_ms": 72 * 60 * 60 * 1000,
-        "browser_security_latest_version": "150.0.7871.128",
-        "browser_security_latest_release_at_ms": 1_784_235_227_785,
-        "browser_security_evidence_observed_at_ms": 1_784_235_228_000,
+        "browser_security_latest_version": "150.0.7871.186",
+        "browser_security_latest_release_at_ms": 1_784_840_063_085,
+        "browser_security_evidence_observed_at_ms": 1_784_840_064_000,
         "browser_security_source": "google_version_history",
         "browser_security_source_digest": _digest("3"),
         "native_browser_built": False,
@@ -304,5 +304,6 @@ def test_ci_runs_repeated_cell_and_attests_push_evidence() -> None:
         1,
     )[0]
     assert "id-token: write" not in browser_job
+    assert "set -o pipefail" in browser_job
     assert "if: ${{ github.event_name == 'push' }}" in attestation_job
     assert "id-token: write" in attestation_job

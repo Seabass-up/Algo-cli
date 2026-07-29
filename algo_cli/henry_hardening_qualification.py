@@ -904,7 +904,7 @@ def build_qualification_report(
             "managed_browser_completion",
             "at least 95% supported-task completion over at least five cold/warm rotated repetitions",
             "Production managed-browser task matrix with frozen fixtures and independent checkers.",
-            "A current image is locally attested, but no native-platform live broker session or repeated task matrix satisfies M5.",
+            "This local report does not build the pinned image or run a native-platform live broker session or repeated task matrix.",
         ),
         blocked_metric(
             "selected_chrome_completion",
@@ -928,7 +928,7 @@ def build_qualification_report(
             "browser_security_freshness",
             "browser security update lag no more than 72 hours",
             "Exact pinned production version versus a current authoritative stable-release observation.",
-            "The matching Linux image has local zero-lag evidence, but this report has no current hosted native-platform or registry-provenance result.",
+            "This local report contains no live release observation, current image build, hosted native-platform session, or registry-provenance result.",
         ),
     ]
     metrics = [*local_metrics, *blocked]

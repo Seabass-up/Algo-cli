@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1.7
 FROM --platform=linux/amd64 debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e
 
-ARG CHROME_VERSION=150.0.7871.128-1
-ARG CHROME_DEB_URL=https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_150.0.7871.128-1_amd64.deb
-ARG CHROME_DEB_SHA256=83ed59c85878ebb8fa53915ebe7066cafc58d1c04c1c95449486e6f9d99a1efb
+ARG CHROME_VERSION=150.0.7871.186-1
+ARG CHROME_DEB_URL=https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_150.0.7871.186-1_amd64.deb
+ARG CHROME_DEB_SHA256=4193e00b6d5d5969ee63f7a69596868f546aa0e8cb077b3e0bf9cc1e2c719d00
 ARG CRYPTOGRAPHY_WHEEL_URL=https://files.pythonhosted.org/packages/e6/8b/43011f7ebe515a8aa20d61f290a326cd890c2e738e16e59eaff8d9c3a412/cryptography-49.0.0-cp311-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
 ARG CRYPTOGRAPHY_WHEEL_SHA256=0e959b578856a3924bc0cbb710fc12c387b9412a951389f3ca61704a9e25f325
 ARG CFFI_WHEEL_URL=https://files.pythonhosted.org/packages/fb/d2/4398416cd699b35167947c6e22aca52c47e69ad5695073c9f1f2c52e04aa/cffi-2.1.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
@@ -50,9 +50,9 @@ LABEL org.opencontainers.image.title="Algo CLI Boron managed browser" \
       org.opencontainers.image.base.digest="sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e" \
       com.algo-cli.role="managed-browser" \
       com.algo-cli.protocol="1" \
-      com.algo-cli.browser.version="150.0.7871.128" \
-      com.algo-cli.browser.release-at-ms="1784235227785" \
-      com.algo-cli.browser.deb.sha256="sha256:83ed59c85878ebb8fa53915ebe7066cafc58d1c04c1c95449486e6f9d99a1efb" \
+      com.algo-cli.browser.version="150.0.7871.186" \
+      com.algo-cli.browser.release-at-ms="1784840063085" \
+      com.algo-cli.browser.deb.sha256="sha256:4193e00b6d5d5969ee63f7a69596868f546aa0e8cb077b3e0bf9cc1e2c719d00" \
       com.algo-cli.cryptography.version="49.0.0" \
       com.algo-cli.code.sha256="${BORON_CODE_DIGEST}"
 

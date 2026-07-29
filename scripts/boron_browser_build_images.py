@@ -30,8 +30,8 @@ from algo_cli.boron_browser_isolation import (
 ROOT = Path(__file__).resolve().parents[1]
 RESOURCE = ROOT / "algo_cli" / "resources" / "boron_browser"
 PLATFORM = "linux/amd64"
-CHROME_VERSION = "150.0.7871.128"
-CHROME_RELEASE_AT_MS = 1_784_235_227_785
+CHROME_VERSION = "150.0.7871.186"
+CHROME_RELEASE_AT_MS = 1_784_840_063_085
 NATIVE_CHROMIUM_VERSION = "150.0.7871.124"
 NATIVE_CHROMIUM_RELEASE_AT_MS = 1_784_186_325_000
 BROWSER_TAG = "algo-cli/boron-browser:m5-local"

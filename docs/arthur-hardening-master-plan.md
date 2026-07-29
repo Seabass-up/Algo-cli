@@ -405,11 +405,12 @@ managed-route limitation. Chrome for Testing remains fixture-only. Until a
 current-stable digest-pinned public image, the dual-homed broker, the finite
 wrapper, and a live end-to-end session all pass, HARD-050 stays in progress.
 
-The 2026-07-19 local cells prove the exact digest-pinned browser and broker
-builds plus the isolated topology, but not a complete public-browser session.
+The 2026-07-19 local cells proved the then-pinned browser and broker builds plus
+the isolated topology, but not a complete public-browser session. Every browser
+pin refresh must be qualified again by the native hosted cell described below.
 The freshness gate now correctly distinguishes release age from update lag: a
 fresh, bounded Google VersionHistory observation identifies Linux stable
-`150.0.7871.128`, so the matching public image has zero update lag. The prior
+`150.0.7871.186`, so the matching public image has zero update lag. The prior
 release-age calculation was a real logic bug because it would reject even the
 latest browser whenever vendors went more than 72 hours without a release.
 
@@ -423,9 +424,9 @@ browser/broker sessions on native amd64 Linux. Its bounded report reconstructs
 the exact build and live schemas, rejects image changes or reused topologies,
 binds the workflow and relevant source, publishes denominators, Wilson 95%
 intervals and p50/p95 duration, and is provenance-attested on push. It remains
-explicitly ineligible for public product or benchmark claims. The cell has not
-executed on a hosted revision yet, so M5 stays in progress until that real run
-and its attestation are reviewed.
+explicitly ineligible for public product or benchmark claims. M5 stays in
+progress until the current-pin hosted run and attestation are reviewed alongside
+the remaining browser requirements.
 
 ### M6 — Signed macOS computer-use foundation
 

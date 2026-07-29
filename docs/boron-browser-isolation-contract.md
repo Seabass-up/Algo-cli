@@ -54,9 +54,9 @@ regressed-version, or release-timestamp-mismatched observation fails closed.
 The image still pins the exact package checksum, installed version, image
 identity, platform, and release timestamp independently.
 
-On 2026-07-19 the official Linux stable feed and Google package repository both
-identified `150.0.7871.128`; VersionHistory recorded its serving start as
-`2026-07-16T20:53:47.785001Z`. The local public image therefore attested an
+On 2026-07-29 the official Linux stable feed and Google package repository both
+identified `150.0.7871.186`; VersionHistory recorded its serving start as
+`2026-07-23T20:54:23.085000Z`. The pinned public image therefore has an
 update lag of zero. Chrome for Testing is not consulted or accepted for this
 route. The optional arm64 Debian Chromium image remains ineligible because no
 authoritative evidence currently proves patch equivalence with that upstream

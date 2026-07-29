@@ -53,9 +53,9 @@ def _version_payload(
             {
                 "name": (
                     "chrome/platforms/linux/channels/stable/versions/"
-                    "150.0.7871.128"
+                    "150.0.7871.186"
                 ),
-                "version": "150.0.7871.128",
+                "version": "150.0.7871.186",
             }
         ],
         "nextPageToken": next_page_token,
@@ -68,7 +68,7 @@ def _version_payload(
 def _release_payload(
     *,
     fraction: object = 1,
-    start_time: object = "2026-07-16T20:53:47.785001Z",
+    start_time: object = "2026-07-23T20:54:23.085000Z",
 ) -> bytes:
     return json.dumps(
         {
@@ -76,11 +76,11 @@ def _release_payload(
                 {
                     "name": (
                         "chrome/platforms/linux/channels/stable/versions/"
-                        "150.0.7871.128/releases/1784235227"
+                        "150.0.7871.186/releases/1784840063"
                     ),
                     "serving": {"startTime": start_time},
                     "fraction": fraction,
-                    "version": "150.0.7871.128",
+                    "version": "150.0.7871.186",
                     "fractionGroup": "1",
                     "pinnable": True,
                     "rolloutData": [],
@@ -110,8 +110,8 @@ def test_dockerfiles_pin_base_downloads_users_and_narrow_copy_surface() -> None:
         assert ":latest" not in source
         assert "ADD " not in source
         assert "pip install" not in source
-    assert "google-chrome-stable_150.0.7871.128-1_amd64.deb" in browser
-    assert 'com.algo-cli.browser.release-at-ms="1784235227785"' in browser
+    assert "google-chrome-stable_150.0.7871.186-1_amd64.deb" in browser
+    assert 'com.algo-cli.browser.release-at-ms="1784840063085"' in browser
     assert "dpkg-query -W -f='${Version}' google-chrome-stable" in browser
     assert "boron_browser_wrapper.py" in browser
     assert "xenon_browser_broker.py" not in browser
@@ -294,7 +294,7 @@ def test_build_update_lag_gate_rejects_before_docker(monkeypatch) -> None:
     release_evidence = module.BoronBrowserReleaseEvidence(
         module.BoronReleaseEvidenceSource.GOOGLE_VERSION_HISTORY,
         module.BoronBrowserFamily.CHROME_STABLE,
-        "150.0.7871.129",
+        "150.0.7871.187",
         module.PLATFORM,
         now_ms - module.BORON_MAX_SECURITY_LAG_MS - 1,
         now_ms,
