@@ -93,6 +93,89 @@ _BUILD_EVIDENCE_KEYS = frozenset(
         "non_root_defaults",
     }
 )
+_BROKER_RESULT_KEYS = frozenset(
+    {
+        "schema_version",
+        "protocol_version",
+        "type",
+        "disposition",
+        "connection_count",
+        "active_peak",
+        "request_count",
+        "redirect_count",
+        "bytes_to_browser",
+        "target_decision_digest",
+        "ca_certificate_digest",
+        "reason_code",
+    }
+)
+_BROKER_DISPOSITIONS = frozenset(
+    {
+        "verified",
+        "blocked",
+        "handoff",
+        "failed",
+        "unknown",
+    }
+)
+_BROKER_CONTENT_FREE_REASONS = frozenset(
+    {
+        "active_connection_limit",
+        "auth_handoff",
+        "browser_tls",
+        "chunk_framing",
+        "chunk_line",
+        "chunk_size",
+        "connect_authority",
+        "connect_header",
+        "connect_host",
+        "connect_method",
+        "connect_origin",
+        "connect_pipelining",
+        "connect_port",
+        "connection_accounting",
+        "connection_limit",
+        "connection_unknown",
+        "download_handoff",
+        "http_header",
+        "http_header_count",
+        "http_header_name",
+        "http_header_size",
+        "http_header_value",
+        "http_line_ending",
+        "http_start_line",
+        "pdf_handoff",
+        "ready",
+        "redirect_origin",
+        "request_body",
+        "request_connection",
+        "request_host",
+        "request_method",
+        "request_pipelining",
+        "request_target",
+        "request_verified",
+        "response_byte_limit",
+        "response_connection",
+        "response_framing",
+        "response_length",
+        "response_location",
+        "response_pipelining",
+        "response_status",
+        "response_truncated",
+        "response_unexpected_body",
+        "socket_eof",
+        "socket_read",
+        "total_byte_limit",
+        "trailer_size",
+        "upgrade_denied",
+        "upstream_alpn",
+        "upstream_connect",
+        "upstream_connector",
+        "upstream_read",
+        "upstream_socket",
+        "websocket_denied",
+    }
+)
 
 
 class LiveSessionRejected(RuntimeError):
@@ -490,6 +573,72 @@ def _assert_build_image_binding(
         _reject("live_broker_binary_changed")
 
 
+def _validated_broker_result(
+    value: Mapping[str, Any],
+    *,
+    expected_ca_certificate_digest: Any,
+) -> dict[str, Any]:
+    """Reconstruct terminal broker evidence and expose only finite diagnostics."""
+
+    if type(value) is not dict or set(value) != _BROKER_RESULT_KEYS:
+        _reject("broker_result_shape")
+    result = dict(value)
+    if (
+        type(result["schema_version"]) is not int
+        or result["schema_version"] != XENON_BROKER_SCHEMA_VERSION
+        or type(result["protocol_version"]) is not int
+        or result["protocol_version"] != XENON_BROKER_PROTOCOL_VERSION
+        or result["type"] != "xenon.result"
+    ):
+        _reject("broker_result_identity")
+    disposition = result["disposition"]
+    reason_code = result["reason_code"]
+    if type(disposition) is not str or disposition not in _BROKER_DISPOSITIONS:
+        _reject("broker_result_disposition")
+    if type(reason_code) is not str:
+        _reject("broker_result_reason")
+    if disposition != "verified":
+        if reason_code in _BROKER_CONTENT_FREE_REASONS:
+            _reject("broker_result_" + disposition + "_" + reason_code)
+        _reject("broker_result_" + disposition)
+    if reason_code != "request_verified":
+        _reject("broker_result_verified_reason")
+
+    connection_count = result["connection_count"]
+    active_peak = result["active_peak"]
+    request_count = result["request_count"]
+    redirect_count = result["redirect_count"]
+    bytes_to_browser = result["bytes_to_browser"]
+    if (
+        type(connection_count) is not int
+        or not 1 <= connection_count <= 16
+        or type(active_peak) is not int
+        or not 1 <= active_peak <= min(connection_count, 8)
+    ):
+        _reject("broker_result_connection_count")
+    if (
+        type(request_count) is not int
+        or not 1 <= request_count <= connection_count
+        or type(redirect_count) is not int
+        or not 0 <= redirect_count <= min(request_count, 2)
+    ):
+        _reject("broker_result_request_count")
+    if type(bytes_to_browser) is not int or not 1 <= bytes_to_browser <= 16 * 1024 * 1024:
+        _reject("broker_result_byte_count")
+    target_digest = result["target_decision_digest"]
+    ca_digest = result["ca_certificate_digest"]
+    if (
+        type(target_digest) is not str
+        or _DIGEST_RE.fullmatch(target_digest) is None
+        or type(ca_digest) is not str
+        or _DIGEST_RE.fullmatch(ca_digest) is None
+    ):
+        _reject("broker_result_digest")
+    if ca_digest != expected_ca_certificate_digest:
+        _reject("broker_result_ca_identity")
+    return result
+
+
 def run_live_session(
     *, build_evidence: Mapping[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -698,19 +847,10 @@ def run_live_session(
             )
         )
         broker_attach.wait(timeout=15, stage="broker_attach_exit")
-        if (
-            broker_result.get("type") != "xenon.result"
-            or broker_result.get("disposition") != "verified"
-            or type(broker_result.get("connection_count")) is not int
-            or broker_result["connection_count"] < 1
-            or type(broker_result.get("request_count")) is not int
-            or broker_result["request_count"] < 1
-            or type(broker_result.get("bytes_to_browser")) is not int
-            or broker_result["bytes_to_browser"] < 1
-            or broker_result.get("ca_certificate_digest")
-            != ready.get("ca_certificate_digest")
-        ):
-            _reject("broker_result_invariant")
+        broker_result = _validated_broker_result(
+            broker_result,
+            expected_ca_certificate_digest=ready.get("ca_certificate_digest"),
+        )
         completed = True
         cleanup["browser"] = True
         browser_started = False

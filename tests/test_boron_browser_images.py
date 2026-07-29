@@ -496,6 +496,107 @@ def test_live_driver_close_terminates_a_hung_process() -> None:
     assert driver.process.poll() is not None
 
 
+def _broker_result(module) -> dict[str, object]:
+    return {
+        "schema_version": module.XENON_BROKER_SCHEMA_VERSION,
+        "protocol_version": module.XENON_BROKER_PROTOCOL_VERSION,
+        "type": "xenon.result",
+        "disposition": "verified",
+        "connection_count": 1,
+        "active_peak": 1,
+        "request_count": 1,
+        "redirect_count": 0,
+        "bytes_to_browser": 1024,
+        "target_decision_digest": "sha256:" + "8" * 64,
+        "ca_certificate_digest": "sha256:" + "9" * 64,
+        "reason_code": "request_verified",
+    }
+
+
+def test_live_broker_result_reconstructs_exact_terminal_evidence() -> None:
+    module = _live_module()
+    result = _broker_result(module)
+    assert (
+        module._validated_broker_result(
+            result,
+            expected_ca_certificate_digest=result["ca_certificate_digest"],
+        )
+        == result
+    )
+
+
+@pytest.mark.parametrize(
+    ("disposition", "reason_code", "expected"),
+    [
+        ("failed", "socket_eof", "broker_result_failed_socket_eof"),
+        ("unknown", "connection_unknown", "broker_result_unknown_connection_unknown"),
+        ("blocked", "websocket_denied", "broker_result_blocked_websocket_denied"),
+        ("handoff", "auth_handoff", "broker_result_handoff_auth_handoff"),
+        ("failed", "untrusted_detail", "broker_result_failed"),
+    ],
+)
+def test_live_broker_result_emits_only_finite_content_free_diagnostics(
+    disposition: str,
+    reason_code: str,
+    expected: str,
+) -> None:
+    module = _live_module()
+    result = _broker_result(module)
+    result["disposition"] = disposition
+    result["reason_code"] = reason_code
+    with pytest.raises(module.LiveSessionRejected, match=expected):
+        module._validated_broker_result(
+            result,
+            expected_ca_certificate_digest=result["ca_certificate_digest"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement", "expected"),
+    [
+        ("schema_version", True, "broker_result_identity"),
+        ("connection_count", 0, "broker_result_connection_count"),
+        ("active_peak", 2, "broker_result_connection_count"),
+        ("request_count", 2, "broker_result_request_count"),
+        ("redirect_count", 2, "broker_result_request_count"),
+        ("bytes_to_browser", 0, "broker_result_byte_count"),
+        ("target_decision_digest", "invalid", "broker_result_digest"),
+        ("reason_code", "ready", "broker_result_verified_reason"),
+    ],
+)
+def test_live_broker_result_rejects_invalid_structural_evidence(
+    field: str,
+    replacement: object,
+    expected: str,
+) -> None:
+    module = _live_module()
+    result = _broker_result(module)
+    result[field] = replacement
+    with pytest.raises(module.LiveSessionRejected, match=expected):
+        module._validated_broker_result(
+            result,
+            expected_ca_certificate_digest=result["ca_certificate_digest"],
+        )
+
+
+def test_live_broker_result_rejects_schema_or_ca_substitution() -> None:
+    module = _live_module()
+    result = _broker_result(module)
+    result["extra"] = "untrusted"
+    with pytest.raises(module.LiveSessionRejected, match="broker_result_shape"):
+        module._validated_broker_result(
+            result,
+            expected_ca_certificate_digest=result["ca_certificate_digest"],
+        )
+
+    result = _broker_result(module)
+    with pytest.raises(module.LiveSessionRejected, match="broker_result_ca_identity"):
+        module._validated_broker_result(
+            result,
+            expected_ca_certificate_digest="sha256:" + "a" * 64,
+        )
+
+
 def test_live_evidence_limitation_matches_native_architecture_gate() -> None:
     module = _live_module()
     assert module.LIVE_EVIDENCE_LIMITATION == (
