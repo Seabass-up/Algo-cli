@@ -319,6 +319,7 @@ def main(
                 "disposition": evidence.disposition.value,
                 "connection_count": evidence.connection_count,
                 "active_peak": evidence.active_peak,
+                "cancelled_connection_count": evidence.cancelled_connection_count,
                 "request_count": evidence.request_count,
                 "redirect_count": evidence.redirect_count,
                 "bytes_to_browser": evidence.bytes_to_browser,

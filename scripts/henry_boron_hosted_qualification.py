@@ -82,6 +82,7 @@ _LIVE_EVIDENCE_KEYS = frozenset(
         "browser_event_count",
         "broker_disposition",
         "broker_connection_count",
+        "broker_cancelled_connection_count",
         "broker_request_count",
         "broker_redirect_count",
         "broker_bytes_to_browser",
@@ -368,9 +369,16 @@ def _validated_live_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
         _reject("hosted_browser_major")
     lag = evidence["browser_security_update_lag_ms"]
     redirects = evidence["broker_redirect_count"]
+    cancelled_connections = evidence["broker_cancelled_connection_count"]
     if (
         type(lag) is not int
         or not 0 <= lag <= BORON_MAX_SECURITY_LAG_MS
+        or type(cancelled_connections) is not int
+        or not 0
+        <= cancelled_connections
+        < evidence["broker_connection_count"]
+        or evidence["broker_request_count"] + cancelled_connections
+        != evidence["broker_connection_count"]
         or type(redirects) is not int
         or not 0 <= redirects <= 2
     ):

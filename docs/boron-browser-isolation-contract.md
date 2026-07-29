@@ -77,6 +77,15 @@ does not provide a repository manifest digest. It rereads each tag's exact
 by that raw content address. A tag replacement or runtime-ID mismatch rejects
 before launch; this is local image identity, not registry provenance.
 
+Chrome may open a proxy connection and cancel it before sending any CONNECT or
+HTTP request bytes. Xenon records those zero-byte cancellations separately;
+they do not open an unapproved route or downgrade an already verified request.
+Any partial CONNECT/request frame, TLS failure, policy violation, incomplete
+upstream response, or unclassified socket failure still fails closed. Terminal
+hosted evidence requires every accepted connection to equal exactly one
+verified request or one counted zero-byte cancellation, with at least one
+verified request.
+
 On 2026-07-29 the official Linux stable feed and Google package repository both
 identified `150.0.7871.186`; VersionHistory recorded its serving start as
 `2026-07-23T20:54:23.085000Z`. The pinned public image therefore has an

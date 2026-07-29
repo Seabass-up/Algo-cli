@@ -99,6 +99,13 @@ _WEBSOCKET_HEADERS = frozenset(
         "sec-websocket-version",
     }
 )
+_EMPTY_EOF_REASONS = frozenset(
+    {
+        "socket_eof",
+        "connect_cancelled",
+        "request_cancelled",
+    }
+)
 
 
 class XenonBrokerRejected(ValueError):
@@ -784,8 +791,18 @@ class SocketLike(Protocol):
     def close(self) -> None: ...
 
 
-def _read_head(connection: SocketLike, *, initial: bytes = b"") -> tuple[bytes, bytes]:
-    if type(initial) is not bytes or len(initial) > XENON_MAX_HEADER_BYTES:
+def _read_head(
+    connection: SocketLike,
+    *,
+    initial: bytes = b"",
+    empty_eof_reason: str = "socket_eof",
+) -> tuple[bytes, bytes]:
+    if (
+        type(initial) is not bytes
+        or len(initial) > XENON_MAX_HEADER_BYTES
+        or type(empty_eof_reason) is not str
+        or empty_eof_reason not in _EMPTY_EOF_REASONS
+    ):
         _reject("http_header_size")
     buffer = bytearray(initial)
     while True:
@@ -800,6 +817,8 @@ def _read_head(connection: SocketLike, *, initial: bytes = b"") -> tuple[bytes, 
         except (OSError, TimeoutError):
             _reject("socket_read")
         if not chunk:
+            if not buffer and empty_eof_reason != "socket_eof":
+                _reject(empty_eof_reason)
             _reject("socket_eof")
         buffer.extend(chunk)
 
@@ -865,6 +884,7 @@ class XenonBrokerEvidence:
     disposition: XenonBrokerDisposition
     connection_count: int
     active_peak: int
+    cancelled_connection_count: int
     request_count: int
     redirect_count: int
     bytes_to_browser: int
@@ -902,6 +922,7 @@ class XenonBrokerSession:
         self._connections = 0
         self._active = 0
         self._active_peak = 0
+        self._cancelled_connections = 0
         self._requests = 0
         self._redirects = 0
         self._bytes = 0
@@ -931,6 +952,17 @@ class XenonBrokerSession:
             if self._active <= 0:
                 _reject("connection_accounting")
             self._active -= 1
+
+    def cancel_empty_connection(self) -> None:
+        """Count a zero-byte browser cancellation without masking partial frames."""
+
+        with self._lock:
+            if (
+                self._active <= 0
+                or self._cancelled_connections >= self._connections
+            ):
+                _reject("connection_accounting")
+            self._cancelled_connections += 1
 
     def add_request(self) -> None:
         self.assert_live()
@@ -978,6 +1010,7 @@ class XenonBrokerSession:
                 disposition=self._disposition,
                 connection_count=self._connections,
                 active_peak=self._active_peak,
+                cancelled_connection_count=self._cancelled_connections,
                 request_count=self._requests,
                 redirect_count=self._redirects,
                 bytes_to_browser=self._bytes,
@@ -1162,7 +1195,10 @@ def handle_xenon_connection(
         session.begin_connection()
         begun = True
         client.settimeout(XENON_SOCKET_TIMEOUT_SECONDS)
-        connect_head, connect_extra = _read_head(client)
+        connect_head, connect_extra = _read_head(
+            client,
+            empty_eof_reason="connect_cancelled",
+        )
         if connect_extra:
             _reject("connect_pipelining")
         parse_xenon_connect_request(connect_head, expected_host=session.target.host)
@@ -1181,7 +1217,10 @@ def handle_xenon_connection(
         except (OSError, ssl.SSLError):
             _reject("browser_tls")
         client = browser_tls
-        request_head, request_extra = _read_head(browser_tls)
+        request_head, request_extra = _read_head(
+            browser_tls,
+            empty_eof_reason="request_cancelled",
+        )
         if request_extra:
             _reject("request_pipelining")
         request = parse_xenon_http_request(
@@ -1218,6 +1257,9 @@ def handle_xenon_connection(
             _relay_to_eof(upstream, browser_tls, initial=response_extra, session=session)
         session.mark(XenonBrokerDisposition.VERIFIED, "request_verified")
     except XenonBrokerRejected as error:
+        if error.reason_code in {"connect_cancelled", "request_cancelled"}:
+            session.cancel_empty_connection()
+            return
         session.mark(_error_disposition(error.reason_code), error.reason_code)
         if browser_tls is None:
             _send_error(client, 403)

@@ -382,6 +382,61 @@ def test_session_enforces_active_total_byte_expiry_and_redirect_budgets() -> Non
         expired.assert_live()
 
 
+def test_empty_preconnect_is_counted_without_masking_partial_frames() -> None:
+    session = _verified_session()
+    browser, broker = socket.socketpair()
+    browser.close()
+    connector_called = False
+
+    def connector(_target, _egress):
+        nonlocal connector_called
+        connector_called = True
+        raise AssertionError("Empty preconnect must not open an upstream socket")
+
+    handle_xenon_connection(broker, session, connector=connector)
+    evidence = session.evidence()
+    assert connector_called is False
+    assert evidence.disposition is XenonBrokerDisposition.VERIFIED
+    assert evidence.reason_code == "ready"
+    assert evidence.connection_count == 1
+    assert evidence.cancelled_connection_count == 1
+    assert evidence.request_count == 0
+
+    partial_session = _verified_session()
+    partial_browser, partial_broker = socket.socketpair()
+    partial_browser.sendall(b"CONN")
+    partial_browser.close()
+    with pytest.raises(XenonBrokerRejected, match="socket_eof"):
+        handle_xenon_connection(
+            partial_broker,
+            partial_session,
+            connector=connector,
+        )
+    partial_evidence = partial_session.evidence()
+    assert partial_evidence.disposition is XenonBrokerDisposition.FAILED
+    assert partial_evidence.cancelled_connection_count == 0
+
+
+def test_empty_request_cancellation_is_distinct_from_partial_request() -> None:
+    class Connection:
+        def __init__(self, chunks: list[bytes]) -> None:
+            self.chunks = iter(chunks)
+
+        def recv(self, _size: int) -> bytes:
+            return next(self.chunks)
+
+    with pytest.raises(XenonBrokerRejected, match="request_cancelled"):
+        broker_module._read_head(
+            Connection([b""]),
+            empty_eof_reason="request_cancelled",
+        )
+    with pytest.raises(XenonBrokerRejected, match="socket_eof"):
+        broker_module._read_head(
+            Connection([b"GET / HTTP/1.1\r\n", b""]),
+            empty_eof_reason="request_cancelled",
+        )
+
+
 def test_disposition_severity_never_downgrades_and_evidence_is_structural() -> None:
     session = _verified_session()
     session.mark(XenonBrokerDisposition.BLOCKED, "websocket_denied")
@@ -389,6 +444,7 @@ def test_disposition_severity_never_downgrades_and_evidence_is_structural() -> N
     evidence = session.evidence()
     assert evidence.disposition is XenonBrokerDisposition.BLOCKED
     assert evidence.reason_code == "websocket_denied"
+    assert evidence.cancelled_connection_count == 0
     assert "example.com" not in repr(evidence)
     assert evidence.target_decision_digest.startswith("sha256:")
     assert evidence.ca_digest.startswith("sha256:")

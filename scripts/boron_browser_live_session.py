@@ -101,6 +101,7 @@ _BROKER_RESULT_KEYS = frozenset(
         "disposition",
         "connection_count",
         "active_peak",
+        "cancelled_connection_count",
         "request_count",
         "redirect_count",
         "bytes_to_browser",
@@ -606,6 +607,7 @@ def _validated_broker_result(
 
     connection_count = result["connection_count"]
     active_peak = result["active_peak"]
+    cancelled_connection_count = result["cancelled_connection_count"]
     request_count = result["request_count"]
     redirect_count = result["redirect_count"]
     bytes_to_browser = result["bytes_to_browser"]
@@ -614,11 +616,14 @@ def _validated_broker_result(
         or not 1 <= connection_count <= 16
         or type(active_peak) is not int
         or not 1 <= active_peak <= min(connection_count, 8)
+        or type(cancelled_connection_count) is not int
+        or not 0 <= cancelled_connection_count < connection_count
     ):
         _reject("broker_result_connection_count")
     if (
         type(request_count) is not int
         or not 1 <= request_count <= connection_count
+        or request_count + cancelled_connection_count != connection_count
         or type(redirect_count) is not int
         or not 0 <= redirect_count <= min(request_count, 2)
     ):
@@ -873,6 +878,9 @@ def run_live_session(
             "browser_event_count": browser_result["event_count"],
             "broker_disposition": broker_result["disposition"],
             "broker_connection_count": broker_result["connection_count"],
+            "broker_cancelled_connection_count": broker_result[
+                "cancelled_connection_count"
+            ],
             "broker_request_count": broker_result["request_count"],
             "broker_redirect_count": broker_result["redirect_count"],
             "broker_bytes_to_browser": broker_result["bytes_to_browser"],

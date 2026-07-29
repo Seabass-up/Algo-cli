@@ -286,5 +286,6 @@ def test_main_emits_terminal_structural_evidence_after_clean_stop(monkeypatch) -
     assert result["type"] == "xenon.result"
     assert result["disposition"] == "verified"
     assert result["connection_count"] == 0
+    assert result["cancelled_connection_count"] == 0
     assert result["ca_certificate_digest"] == ready["ca_certificate_digest"]
     assert URL not in output.getvalue().decode("ascii")

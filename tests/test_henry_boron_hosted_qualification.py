@@ -97,6 +97,7 @@ def _live_evidence(serial: int) -> dict[str, object]:
         "browser_event_count": 7,
         "broker_disposition": "verified",
         "broker_connection_count": 2,
+        "broker_cancelled_connection_count": 1,
         "broker_request_count": 1,
         "broker_redirect_count": 0,
         "broker_bytes_to_browser": 1024,
