@@ -643,6 +643,8 @@ def run_live_session(
             plan,
             browser_image,
             broker_image,
+            browser_runtime_image_id=browser_runtime_id,
+            broker_runtime_image_id=broker_runtime_id,
             internal_network_json=internal_inspect,
             egress_network_json=egress_inspect,
             browser_inspect_json=browser_inspect,

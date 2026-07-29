@@ -267,11 +267,16 @@ def _verify(
     browser: list[dict[str, Any]],
     broker: list[dict[str, Any]],
     egress: list[dict[str, Any]] | None = None,
+    *,
+    browser_runtime_image_id: str | None = None,
+    broker_runtime_image_id: str | None = None,
 ):
     return verify_docker_topology(
         _plan(),
         _public_image(),
         _broker_image(),
+        browser_runtime_image_id=browser_runtime_image_id,
+        broker_runtime_image_id=broker_runtime_image_id,
         internal_network_json=json.dumps(network),
         egress_network_json=json.dumps(egress or _egress_rows()),
         browser_inspect_json=json.dumps(browser),
@@ -524,6 +529,25 @@ def test_observed_topology_passes_and_returns_structural_evidence() -> None:
     assert evidence.image_digest == _public_image().digest
     assert evidence.broker_image_digest == _broker_image().digest
     assert evidence.evidence_digest.startswith("sha256:")
+
+
+def test_observed_topology_cross_binds_exact_local_runtime_image_ids() -> None:
+    network, browser, broker = _topology_rows()
+    browser_runtime_id = _public_image().digest
+    broker_runtime_id = _broker_image().digest
+    browser[0]["Image"] = browser_runtime_id
+    browser[0]["Config"]["Image"] = browser_runtime_id
+    broker[0]["Image"] = broker_runtime_id
+    broker[0]["Config"]["Image"] = broker_runtime_id
+    evidence = _verify(
+        network,
+        browser,
+        broker,
+        browser_runtime_image_id=browser_runtime_id,
+        broker_runtime_image_id=broker_runtime_id,
+    )
+    assert evidence.image_digest == browser_runtime_id
+    assert evidence.broker_image_digest == broker_runtime_id
 
 
 @pytest.mark.parametrize(

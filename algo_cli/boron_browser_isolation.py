@@ -701,6 +701,8 @@ def verify_docker_topology(
     image: BoronImagePin,
     broker_image: BoronBrokerImagePin,
     *,
+    browser_runtime_image_id: str | None = None,
+    broker_runtime_image_id: str | None = None,
     internal_network_json: str,
     egress_network_json: str,
     browser_inspect_json: str,
@@ -714,6 +716,18 @@ def verify_docker_topology(
         or type(broker_image) is not BoronBrokerImagePin
     ):
         _reject("topology_type")
+    if browser_runtime_image_id is not None and (
+        type(browser_runtime_image_id) is not str
+        or not _DIGEST_RE.fullmatch(browser_runtime_image_id)
+        or browser_runtime_image_id != image.digest
+    ):
+        _reject("image_identity_mismatch")
+    if broker_runtime_image_id is not None and (
+        type(broker_runtime_image_id) is not str
+        or not _DIGEST_RE.fullmatch(broker_runtime_image_id)
+        or broker_runtime_image_id != broker_image.digest
+    ):
+        _reject("broker_image_identity_mismatch")
     try:
         network = _first_inspect(json.loads(internal_network_json), "network_evidence")
         egress_network = _first_inspect(json.loads(egress_network_json), "egress_evidence")
@@ -779,9 +793,17 @@ def verify_docker_topology(
     image_ref = config.get("Image")
     image_id = browser.get("Image")
     labels = _mapping(config.get("Labels"), "browser_labels")
-    if image_ref != image.reference or labels.get("com.algo-cli.image") != image.digest:
+    expected_image_ref = browser_runtime_image_id or image.reference
+    if image_ref != expected_image_ref or labels.get("com.algo-cli.image") != image.digest:
         _reject("image_identity_mismatch")
-    if type(image_id) is not str or not _DIGEST_RE.fullmatch(image_id):
+    if (
+        type(image_id) is not str
+        or not _DIGEST_RE.fullmatch(image_id)
+        or (
+            browser_runtime_image_id is not None
+            and image_id != browser_runtime_image_id
+        )
+    ):
         _reject("image_identity_mismatch")
     if config.get("Path") is not None:
         # Some Docker API versions place Path at the container root only.
@@ -814,8 +836,9 @@ def verify_docker_topology(
 
     broker_config = _mapping(broker.get("Config"), "broker_config")
     broker_labels = _mapping(broker_config.get("Labels"), "broker_labels")
+    expected_broker_image_ref = broker_runtime_image_id or broker_image.reference
     if (
-        broker_config.get("Image") != broker_image.reference
+        broker_config.get("Image") != expected_broker_image_ref
         or broker_labels.get("com.algo-cli.image") != broker_image.digest
         or broker_labels.get("com.algo-cli.binary") != broker_image.binary_digest
         or broker.get("Path") != "/opt/algo/bin/xenon-egress-broker"
@@ -823,7 +846,14 @@ def verify_docker_topology(
     ):
         _reject("broker_image_identity_mismatch")
     broker_image_id = broker.get("Image")
-    if type(broker_image_id) is not str or not _DIGEST_RE.fullmatch(broker_image_id):
+    if (
+        type(broker_image_id) is not str
+        or not _DIGEST_RE.fullmatch(broker_image_id)
+        or (
+            broker_runtime_image_id is not None
+            and broker_image_id != broker_runtime_image_id
+        )
+    ):
         _reject("broker_image_identity_mismatch")
     raw_broker_env = broker_config.get("Env")
     if type(raw_broker_env) is not list or any(type(item) is not str for item in raw_broker_env):
