@@ -179,6 +179,26 @@ def test_native_package_is_fully_covered_by_source_fingerprint() -> None:
     assert native_files <= covered
 
 
+def test_boron_boundary_is_fully_covered_by_source_fingerprint_and_suite() -> None:
+    assert {
+        "algo_cli/boron_browser_entry.py",
+        "algo_cli/boron_browser_isolation.py",
+        "algo_cli/boron_browser_wrapper.py",
+        "algo_cli/xenon_browser_broker.py",
+        "algo_cli/xenon_browser_egress.py",
+        "algo_cli/xenon_browser_entry.py",
+    } <= set(SCRIPT.SOURCE_PATHS)
+    assert {
+        "tests/test_boron_browser_entry.py",
+        "tests/test_boron_browser_images.py",
+        "tests/test_boron_browser_isolation.py",
+        "tests/test_boron_browser_wrapper.py",
+        "tests/test_xenon_browser_broker.py",
+        "tests/test_xenon_browser_egress.py",
+        "tests/test_xenon_browser_entry.py",
+    } <= set(SCRIPT.FOCUSED_TESTS)
+
+
 def test_operator_script_help_runs_from_outside_checkout(tmp_path: Path) -> None:
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
