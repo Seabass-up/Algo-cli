@@ -215,6 +215,8 @@ def test_plan_is_canonical_https_only_and_chrome_argv_has_no_escape_surface() ->
     argv = plan.chrome_argv()
     assert argv[0] == BORON_CHROME_PATH
     assert "--remote-debugging-pipe=JSON" in argv
+    assert "--proxy-server=https=http://xenon-egress:3128" in argv
+    assert "--proxy-server=http://xenon-egress:3128" not in argv
     assert "--proxy-bypass-list=<-loopback>" in argv
     assert "--disable-quic" in argv
     assert not any("remote-debugging-port" in item for item in argv)

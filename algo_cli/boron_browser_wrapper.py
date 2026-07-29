@@ -357,7 +357,12 @@ class BoronNavigationPlan:
             "--headless=new",
             "--remote-debugging-pipe=JSON",
             f"--user-data-dir={BORON_PROFILE_PATH}",
-            f"--proxy-server=http://{self.proxy_host}:{self.proxy_port}",
+            # Xenon is deliberately CONNECT-only.  A single proxy identifier
+            # applies to every URL scheme in Chromium, including cleartext HTTP
+            # background probes.  Bind only HTTPS URLs to the HTTP CONNECT
+            # proxy; every direct route remains trapped by Docker's internal
+            # network.
+            f"--proxy-server=https=http://{self.proxy_host}:{self.proxy_port}",
             "--proxy-bypass-list=<-loopback>",
             "--disable-quic",
             "--disable-background-networking",

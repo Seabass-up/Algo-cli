@@ -196,8 +196,8 @@ def _topology_rows() -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[d
                     "com.algo-cli.image": image.digest,
                 },
                 "Env": [
-                    f"HTTP_PROXY=http://{plan.broker_alias}:{plan.broker_port}",
-                    f"HTTPS_PROXY=http://{plan.broker_alias}:{plan.broker_port}",
+                    "HTTP_PROXY=",
+                    "HTTPS_PROXY=",
                     "ALL_PROXY=",
                     "NO_PROXY=",
                 ],
@@ -417,7 +417,10 @@ def test_launch_argv_has_no_host_mount_port_root_or_floating_image() -> None:
     assert ("--ip", _plan().browser_internal_ip) == argv[
         argv.index("--ip") : argv.index("--ip") + 2
     ]
-    assert "NO_PROXY=" in argv and "ALL_PROXY=" in argv
+    assert all(
+        f"{name}=" in argv
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+    )
     assert sum("uid=1000,gid=1000" in item for item in argv) == 4
     assert _public_image().reference in argv
     assert ":latest" not in rendered

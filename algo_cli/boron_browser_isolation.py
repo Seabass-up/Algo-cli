@@ -382,7 +382,6 @@ class BoronBrowserLaunch:
     def browser_argv(self) -> tuple[str, ...]:
         """Return a fixed Docker launch; no caller-supplied command is accepted."""
 
-        proxy = f"http://{self.network.broker_alias}:{self.network.broker_port}"
         tmpfs_options = "rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000"
         return (
             "docker",
@@ -426,9 +425,9 @@ class BoronBrowserLaunch:
             "--tmpfs",
             f"/algo-downloads:{tmpfs_options},size=16777216",
             "--env",
-            f"HTTP_PROXY={proxy}",
+            "HTTP_PROXY=",
             "--env",
-            f"HTTPS_PROXY={proxy}",
+            "HTTPS_PROXY=",
             "--env",
             "ALL_PROXY=",
             "--env",
@@ -825,10 +824,9 @@ def verify_docker_topology(
         if not separator or name in browser_env:
             _reject("browser_proxy_environment")
         browser_env[name] = value
-    proxy = f"http://{plan.broker_alias}:{plan.broker_port}"
     if (
-        browser_env.get("HTTP_PROXY") != proxy
-        or browser_env.get("HTTPS_PROXY") != proxy
+        browser_env.get("HTTP_PROXY") != ""
+        or browser_env.get("HTTPS_PROXY") != ""
         or browser_env.get("ALL_PROXY") != ""
         or browser_env.get("NO_PROXY") != ""
     ):
