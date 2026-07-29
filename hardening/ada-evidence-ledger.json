@@ -3016,6 +3016,15 @@
           "timestamp": "2026-07-24T02:29:24Z",
           "scope": "model-free workload p50/p95 are 25.283/28.853 ms total and 3.521/3.790 ms to first Agent event; contract p50/p95 are 0.253/0.292 ms, broker p50/p95 are 0.045/0.052 ms, checkpoint-resume p50/p95 are 8.844/9.215 ms, and context used 2356 of 31744 available fixture tokens",
           "limitations": "deterministic local fixtures measure harness coordination rather than model intelligence, live provider latency, production power-loss behavior, or superiority over OpenClaw, Hermes, or another harness; production browser and signed native gates remain blocked, HARD-081 stays in progress, and the active freeze forbids public benchmark claims"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "python3 benchmarks/competitors/runner.py --harness algo_cli,codex_cli,claude_code,opencode,pi,copilot_cli,droid,goose,oh_my_pi,hermes_agent,openclaw --repetitions 3 --warmup-model --algo-executable .venv/bin/algo-cli",
+          "digest": "sha256:2b474d5247884c88237655b9a90ee557864cb6a008ad6f2e7e7a9c6592ccf299",
+          "result": "completed source-bound same-model draft cell: Algo ranks first with 12 of 12 checker passes, clean processes, and scope passes; overall median is 17.333 seconds and p95 is 45.776 seconds",
+          "timestamp": "2026-07-29T16:31:59Z",
+          "scope": "132 scored runs across 11 current terminal harnesses, four frozen tasks, and three rotated repetitions on qwen3.6:35b-mlx; source edfe82f8ee6984aee6bebf6d029e958c44c34aca and runner sha256:be447b8881a34d67f6106bbcfcffafd8e981f7d6587b689741dd2b78442be110 are bound in the raw receipt; task digest is sha256:1e0b9ee182c7599ea5d45166fea0b6f257ec01598bb35b2eff57c104be5c3f45; all 132 protected-input receipts pass; Algo memory-conflict completion is 3 of 3 at 20.515-second median versus Hermes 3 of 3 at 32.161 seconds and OpenClaw 3 of 3 at 30.902 seconds",
+          "limitations": "one local machine, one model, four tasks, and three repetitions do not establish broad harness or model superiority and have not been independently reproduced; raw artifacts remain outside the repository because they may contain prompts, process output, and local paths; hosted browser, selected Chrome, signed native, and other M8 gates remain blocked, HARD-081 stays in progress, public_claim_eligible remains false, and the active freeze forbids website publication"
         }
       ]
     },
