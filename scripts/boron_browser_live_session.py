@@ -129,27 +129,19 @@ def _resolver(host: str, port: int) -> tuple[str, ...]:
     return tuple(str(row[4][0]) for row in rows)
 
 
-def _repo_digest(tag: str) -> str:
+def _local_image_id(tag: str) -> str:
     raw = _run(
-        ["docker", "image", "inspect", tag, "--format", "{{json .RepoDigests}}"],
-        stage="repo_digest",
+        ["docker", "image", "inspect", tag, "--format", "{{json .Id}}"],
+        stage="image_id",
         timeout=30,
     )
     try:
-        values = json.loads(raw)
+        value = json.loads(raw)
     except json.JSONDecodeError:
-        _reject("repo_digest_json")
-    repository = tag.rsplit(":", 1)[0]
-    if type(values) is not list:
-        _reject("repo_digest_shape")
-    matching = [
-        value
-        for value in values
-        if type(value) is str and value.startswith(repository + "@sha256:")
-    ]
-    if len(matching) != 1:
-        _reject("repo_digest_shape")
-    return matching[0]
+        _reject("image_id_json")
+    if type(value) is not str or _DIGEST_RE.fullmatch(value) is None:
+        _reject("image_id_shape")
+    return value
 
 
 def _write_frame(stream: IO[bytes], row: Mapping[str, Any]) -> None:
@@ -505,8 +497,10 @@ def run_live_session(
     build = _validated_build_evidence(
         build_images() if build_evidence is None else build_evidence
     )
-    browser_reference = _repo_digest(BROWSER_TAG)
-    broker_reference = _repo_digest(BROKER_TAG)
+    browser_runtime_id = _local_image_id(BROWSER_TAG)
+    broker_runtime_id = _local_image_id(BROKER_TAG)
+    browser_reference = BROWSER_TAG.rsplit(":", 1)[0] + "@" + browser_runtime_id
+    broker_reference = BROKER_TAG.rsplit(":", 1)[0] + "@" + broker_runtime_id
     now_ms = int(time.time() * 1000)
     try:
         release_evidence = BoronBrowserReleaseEvidence(
@@ -554,8 +548,18 @@ def run_live_session(
         browser_image=browser_image,
         broker_image=broker_image,
     )
-    browser_launch = BoronBrowserLaunch(browser_image, plan, SECCOMP)
-    broker_launch = BoronBrokerLaunch(broker_image, plan, SECCOMP)
+    browser_launch = BoronBrowserLaunch(
+        browser_image,
+        plan,
+        SECCOMP,
+        runtime_image_id=browser_runtime_id,
+    )
+    broker_launch = BoronBrokerLaunch(
+        broker_image,
+        plan,
+        SECCOMP,
+        runtime_image_id=broker_runtime_id,
+    )
     browser_image.assert_fresh(
         now_ms=now_ms,
         release_evidence=release_evidence,

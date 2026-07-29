@@ -419,6 +419,27 @@ def test_launch_argv_has_no_host_mount_port_root_or_floating_image() -> None:
     assert argv[-1] == "/opt/algo/bin/boron-browser-wrapper"
 
 
+def test_launch_can_use_only_the_same_exact_local_image_id() -> None:
+    seccomp = (ROOT / "algo_cli/resources/boron_browser/boron_seccomp_profile.json").resolve()
+    image = _public_image()
+    launch = BoronBrowserLaunch(
+        image,
+        _plan(),
+        seccomp,
+        runtime_image_id=image.digest,
+    )
+    argv = launch.browser_argv()
+    assert image.digest in argv
+    assert image.reference not in argv
+    with pytest.raises(BoronIsolationRejected, match="runtime_image_identity"):
+        BoronBrowserLaunch(
+            image,
+            _plan(),
+            seccomp,
+            runtime_image_id="sha256:" + "9" * 64,
+        )
+
+
 def test_internal_network_creation_has_no_host_or_attachable_route() -> None:
     launch = BoronBrowserLaunch(
         _public_image(),
@@ -469,6 +490,30 @@ def test_broker_launch_is_digest_pinned_private_and_has_no_host_surface() -> Non
     assert foreground[:3] == ("docker", "run", "--interactive")
     assert foreground[-1] == "/opt/algo/bin/xenon-egress-broker"
     assert set(foreground) == set(argv) - {"--detach"}
+
+
+def test_broker_launch_can_use_only_the_same_exact_local_image_id() -> None:
+    seccomp = (ROOT / "algo_cli/resources/boron_browser/boron_seccomp_profile.json").resolve()
+    image = _broker_image()
+    launch = BoronBrokerLaunch(
+        image,
+        _plan(),
+        seccomp,
+        runtime_image_id=image.digest,
+    )
+    argv = launch.broker_argv()
+    assert image.digest in argv
+    assert image.reference not in argv
+    with pytest.raises(
+        BoronIsolationRejected,
+        match="broker_runtime_image_identity",
+    ):
+        BoronBrokerLaunch(
+            image,
+            _plan(),
+            seccomp,
+            runtime_image_id="sha256:" + "9" * 64,
+        )
 
 
 def test_observed_topology_passes_and_returns_structural_evidence() -> None:

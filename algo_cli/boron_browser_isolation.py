@@ -330,6 +330,7 @@ class BoronBrowserLaunch:
     pids_limit: int = 192
     cpu_count: float = 2.0
     profile_tmpfs_bytes: int = 512 * 1024 * 1024
+    runtime_image_id: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.image) is not BoronImagePin or type(self.network) is not BoronNetworkPlan:
@@ -350,6 +351,12 @@ class BoronBrowserLaunch:
             64 * 1024 * 1024,
             1024 * 1024 * 1024,
         )
+        if self.runtime_image_id is not None and (
+            type(self.runtime_image_id) is not str
+            or not _DIGEST_RE.fullmatch(self.runtime_image_id)
+            or self.runtime_image_id != self.image.digest
+        ):
+            _reject("runtime_image_identity")
 
     def create_internal_network_argv(self) -> tuple[str, ...]:
         return (
@@ -434,7 +441,7 @@ class BoronBrowserLaunch:
             f"com.algo-cli.image={self.image.digest}",
             "--platform",
             self.image.platform,
-            self.image.reference,
+            self.runtime_image_id or self.image.reference,
             "/opt/algo/bin/boron-browser-wrapper",
         )
 
@@ -447,6 +454,7 @@ class BoronBrokerLaunch:
     memory_bytes: int = 256 * 1024 * 1024
     pids_limit: int = 48
     cpu_count: float = 1.0
+    runtime_image_id: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.image) is not BoronBrokerImagePin or type(self.network) is not BoronNetworkPlan:
@@ -466,6 +474,12 @@ class BoronBrokerLaunch:
         _integer(self.pids_limit, "broker_pids_limit", 8, BORON_MAX_BROKER_PIDS)
         if type(self.cpu_count) is not float or not 0.25 <= self.cpu_count <= 4.0:
             _reject("broker_cpu_count")
+        if self.runtime_image_id is not None and (
+            type(self.runtime_image_id) is not str
+            or not _DIGEST_RE.fullmatch(self.runtime_image_id)
+            or self.runtime_image_id != self.image.digest
+        ):
+            _reject("broker_runtime_image_identity")
 
     def create_egress_network_argv(self) -> tuple[str, ...]:
         return (
@@ -531,7 +545,7 @@ class BoronBrokerLaunch:
             f"com.algo-cli.binary={self.image.binary_digest}",
             "--platform",
             self.image.platform,
-            self.image.reference,
+            self.runtime_image_id or self.image.reference,
             "/opt/algo/bin/xenon-egress-broker",
         )
 

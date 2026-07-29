@@ -359,6 +359,28 @@ def test_live_browser_evidence_accepts_only_native_amd64(
     assert module._assert_native_amd64_docker() == "linux/amd64"
 
 
+def test_live_image_identity_uses_the_exact_local_content_address(monkeypatch) -> None:
+    module = _live_module()
+    image_id = "sha256:" + "1" * 64
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda *_args, **_kwargs: json.dumps(image_id),
+    )
+    assert module._local_image_id(module.BROWSER_TAG) == image_id
+
+
+@pytest.mark.parametrize("value", ["not-json", "null", '"sha256:short"', "[]"])
+def test_live_image_identity_rejects_malformed_daemon_evidence(
+    monkeypatch,
+    value: str,
+) -> None:
+    module = _live_module()
+    monkeypatch.setattr(module, "_run", lambda *_args, **_kwargs: value)
+    with pytest.raises(module.LiveSessionRejected, match=r"image_id_(?:json|shape)"):
+        module._local_image_id(module.BROWSER_TAG)
+
+
 def test_live_browser_cross_binds_loaded_images_to_build_evidence() -> None:
     module = _live_module()
     build = {

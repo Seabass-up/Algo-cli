@@ -54,6 +54,12 @@ regressed-version, or release-timestamp-mismatched observation fails closed.
 The image still pins the exact package checksum, installed version, image
 identity, platform, and release timestamp independently.
 
+The hosted cell builds locally rather than pulling from a registry, so Docker
+does not provide a repository manifest digest. It rereads each tag's exact
+`sha256:` image ID, cross-binds that ID to the single build receipt, and launches
+by that raw content address. A tag replacement or runtime-ID mismatch rejects
+before launch; this is local image identity, not registry provenance.
+
 On 2026-07-29 the official Linux stable feed and Google package repository both
 identified `150.0.7871.186`; VersionHistory recorded its serving start as
 `2026-07-23T20:54:23.085000Z`. The pinned public image therefore has an
