@@ -187,6 +187,7 @@
     "hardening/alice-native-capture-crash-qualification.json",
     "hardening/grace-baseline-evidence.json",
     "hardening/grace-m8-local-qualification.json",
+    "hardening/nathan-cross-harness-qualification.json",
     "hardening/nathan-agent-runtime-qualification.json",
     "hardening/ada-m9-completion-audit.json",
     "hardening/ada-signing-lifecycle-authorities.json",
@@ -481,6 +482,7 @@
       "status": "in_progress",
       "evidence": [
         "hardening/grace-m8-local-qualification.json",
+        "hardening/nathan-cross-harness-qualification.json",
         "algo_cli/henry_hardening_qualification.py",
         "scripts/henry_m8_qualification.py",
         "tests/test_henry_hardening_qualification.py",
@@ -3093,6 +3095,15 @@
           "timestamp": "2026-07-29T21:58:05Z",
           "scope": "exact and paraphrased known items, misspelling, multilingual and code-switched requests, multi-hop write-plus-verify, cross-source reconciliation, temporal supersession, runtime-versus-static conflict, two no-answer cases, stable canaries, and live reusable-BM25 speedup 36.672x with warm MAD ratio 0.023",
           "limitations": "the frozen fixture and one-machine live-corpus microbenchmark do not measure answer generation, model intelligence, provider latency, broad language coverage, independent reproduction, or superiority over OpenClaw, Hermes, or another harness; HARD-081 stays in progress and public publication remains blocked"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-cross-harness-qualification.json from the completed benchmarks/competitors/runner.py draft protocol",
+          "digest": "sha256:964c75687940552ab867bdc4c7a3501be3037160aa98a17da385e9128785e04f",
+          "result": "local validated draft: all 132 scored runs completed with zero timeouts; the publisher validator and aggregate recomputation pass; Algo ranks first with 12 of 12 checker, clean-process, and workspace-scope passes",
+          "timestamp": "2026-07-30T18:51:19Z",
+          "scope": "source 84d3358d80f6154cafce1688bcd970679391cc2d, runner sha256:95f800c8f99b28f00039ee78463cce0e0286bce920d6a34ab4b9af1aaa9619f2, raw receipt sha256:5e88a744735c50103da26e181f3560daba1695da7157b0130ad0e3ef82be5209, and frozen task digest sha256:1e0b9ee182c7599ea5d45166fea0b6f257ec01598bb35b2eff57c104be5c3f45 bind 11 current terminal harnesses, four tasks, three rotated repetitions, 132 expected baseline failures, and 132 unchanged protected-input receipts; Algo's memory-conflict cell passes 3 of 3 at 28.271-second median versus Hermes 3 of 3 at 144.448 seconds and OpenClaw 2 of 3 at 39.201 seconds",
+          "limitations": "one local machine, one model, four tasks, and three repetitions do not establish broad superiority and have not been independently reproduced; raw artifacts remain ignored because they may contain prompts, process output, and local paths; six additional product lanes lack a deterministic runnable adapter; hosted browser, selected Chrome, production signing, notarization, Gatekeeper, and live TCC gates remain blocked, HARD-081 stays in progress, public_claim_eligible remains false, and the active freeze forbids tagging, release, and website publication"
         }
       ]
     },

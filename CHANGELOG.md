@@ -26,6 +26,10 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
   verbose scorecard checks, and made both local readiness reports require an
   isolated configured-root provenance, redaction, conflict, and retrieval
   qualification without reading installed external agent stores.
+- Made Agent review routing typo-aware, bounded model-facing tool evidence and
+  action catalogs without discarding the full local transcript, and imposed
+  role-specific output ceilings so concise review work does not inflate into a
+  mutation pipeline.
 
 ### Fixed
 
@@ -38,6 +42,9 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 - Kept tools available after a verified mutation until the model actually
   finishes the whole task, preventing JSON-mode runs from confusing a safe
   intermediate state with task completion and skipping later deliverables.
+- Stopped the Agent pipeline when a run-contract prompt budget is exhausted,
+  propagated upstream partial evidence into the final status, and prevented
+  evidence-free final blocks from reporting successful completion.
 
 ### Security
 
@@ -51,6 +58,9 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 - Redacted the process working directory from one-shot session events and made
   similarity scoring numerically stable for very large finite vectors so
   runtime warnings cannot disclose local source paths.
+- Added verifier-first mutation completion and bounded evidence projection
+  regressions covering typo-routed reviews, prompt exhaustion, oversized tool
+  payloads, and unsupported completion claims.
 
 ## [0.18.0] - 2026-07-17
 
