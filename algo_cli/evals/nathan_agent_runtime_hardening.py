@@ -36,10 +36,11 @@ from .. import git_evidence
 from .. import nathan_provider_protocol
 from .. import run_contract
 from .. import task_router
+from .. import tools as tools_module
 from ..config import Config
 
 
-BENCHMARK_ID = "nathan-agent-runtime-hardening-v2"
+BENCHMARK_ID = "nathan-agent-runtime-hardening-v3"
 SCHEMA_VERSION = 2
 FIXED_TIME = "2026-07-23T12:00:00+00:00"
 MAX_SOURCE_BYTES = 4 * 1024 * 1024
@@ -52,6 +53,7 @@ _UTC_RE = re.compile(
 )
 
 SOURCE_PATHS = (
+    "algo_cli/agent_blocks.py",
     "algo_cli/agent_context.py",
     "algo_cli/agent_pipeline.py",
     "algo_cli/agent_run_journal.py",
@@ -64,6 +66,7 @@ SOURCE_PATHS = (
     "algo_cli/samuel_policy.py",
     "algo_cli/spawn_budget.py",
     "algo_cli/task_router.py",
+    "algo_cli/tools.py",
     "scripts/nathan_agent_runtime_qualification.py",
     "tests/test_agent_context.py",
     "tests/test_agent_pipeline.py",
@@ -72,6 +75,7 @@ SOURCE_PATHS = (
     "tests/test_nathan_agent_runtime_hardening.py",
     "tests/test_run_contract.py",
     "tests/test_task_router.py",
+    "tests/test_tools.py",
 )
 
 LATENCY_THRESHOLDS_MS = {
@@ -1103,6 +1107,111 @@ def _probe_output_verifier(root: Path) -> None:
         )
 
 
+def _probe_upstream_partial_propagation(root: Path) -> None:
+    del root
+    review = agent_blocks.AgentBlock(
+        role="review",
+        prompt="review",
+        status="partial",
+        status_code="max_iterations",
+        status_reason="Review evidence is incomplete.",
+        output="## Block Output\nPartial finding.",
+    )
+    final = agent_blocks.AgentBlock(
+        role="final",
+        prompt="final",
+        status="complete",
+        output=(
+            "## Block Output\n"
+            "Partial evidence was noted, but the run is complete."
+        ),
+    )
+    agent_pipeline._enforce_block_output_verification(
+        final,
+        [review],
+    )
+    if (
+        final.status != "partial"
+        or final.status_code != "upstream_partial"
+        or "PARTIAL" not in final.output
+    ):
+        raise AgentRuntimeBenchmarkError(
+            "final output converted incomplete evidence into completion"
+        )
+
+
+def _probe_bounded_tool_projection(root: Path) -> None:
+    del root
+    full_result = "begin\n" + ("evidence-line\n" * 2_000) + "end"
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "Review grounded evidence."},
+        {
+            "role": "assistant",
+            "content": "",
+            "thinking": "private reasoning",
+            "tool_calls": [
+                {
+                    "id": "read-1",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": {"path": "runtime.py"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "read-1",
+            "content": full_result,
+        },
+    ]
+    projected = agent_pipeline._project_agent_request_messages(
+        messages,
+        [],
+        240,
+    )
+    options = agent_pipeline._model_chat_options(
+        "qwen3",
+        Config(num_ctx=8_192),
+        role="plan",
+    )
+    if (
+        agent_pipeline._estimate_agent_request_tokens(
+            projected,
+            [],
+        )
+        > 240
+        or messages[2]["content"] != full_result
+        or messages[1].get("thinking") != "private reasoning"
+        or "thinking" in projected[1]
+        or "tool result projected from"
+        not in str(projected[2].get("content", ""))
+        or options.get("num_predict") != 768
+    ):
+        raise AgentRuntimeBenchmarkError(
+            "tool projection or role output cap is not bounded"
+        )
+
+
+def _probe_bounded_action_catalog(root: Path) -> None:
+    del root
+    overview_text = tools_module.available_actions()
+    harness_text = tools_module.available_actions("harness")
+    overview = json.loads(overview_text)
+    harness = json.loads(harness_text)
+    if (
+        len(overview_text) > 12_000
+        or len(harness_text) > 12_000
+        or overview.get("catalog_scope") != "overview"
+        or harness.get("catalog_scope") != "focused"
+        or "/harness status"
+        not in harness.get("commands", {}).get("harness", [])
+    ):
+        raise AgentRuntimeBenchmarkError(
+            "action discovery catalog exceeded its bounded focus contract"
+        )
+
+
 def _probe_verifier_first_write_completion(root: Path) -> None:
     del root
     unavailable = git_evidence.GitSnapshot(
@@ -1154,6 +1263,21 @@ def _probe_multi_signal_routing(root: Path) -> None:
         )
 
 
+def _probe_typo_aware_review_routing(root: Path) -> None:
+    del root
+    route = task_router.route_task(
+        "reveiw this harness and look for voerbilites"
+    )
+    if (
+        route.task_type != "review"
+        or route.suggested_pipeline != "review"
+        or "typo_normalized" not in route.signals
+    ):
+        raise AgentRuntimeBenchmarkError(
+            "obvious review intent typo was not routed safely"
+        )
+
+
 PROBES: tuple[
     tuple[str, Callable[[Path], None]],
     ...,
@@ -1174,10 +1298,17 @@ PROBES: tuple[
     ("balanced_provider_tool_protocol", _probe_provider_tool_protocol),
     ("structured_output_verifier", _probe_output_verifier),
     (
+        "upstream_partial_propagation",
+        _probe_upstream_partial_propagation,
+    ),
+    ("bounded_tool_projection", _probe_bounded_tool_projection),
+    ("bounded_action_catalog", _probe_bounded_action_catalog),
+    (
         "verifier_first_write_completion",
         _probe_verifier_first_write_completion,
     ),
     ("multi_signal_risk_routing", _probe_multi_signal_routing),
+    ("typo_aware_review_routing", _probe_typo_aware_review_routing),
 )
 
 

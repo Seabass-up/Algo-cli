@@ -13,7 +13,7 @@ try:
     import tomllib  # type: ignore[import-not-found]
 except ImportError:  # Python 3.10: fall back to the tomli backport.
     try:
-        import tomli as tomllib  # type: ignore[no-redef]
+        import tomli as tomllib  # type: ignore[no-redef, import-not-found]
     except ImportError:  # pragma: no cover - tomli is a declared 3.10 dependency.
         tomllib = None  # type: ignore[assignment]
 
@@ -89,10 +89,21 @@ def _prompt(role: str, body: str) -> str:
         "You may use only the tools allowed for this block. "
         "If no tools are available, reason from the supplied context only."
     )
+    output_guidance = {
+        "plan": "Use at most 5 bullets and 250 words.",
+        "research": "Use at most 800 words.",
+        "implement": "Use at most 800 words.",
+        "review": "Use at most 700 words and lead with concrete findings.",
+        "final": "Use at most 400 words.",
+    }.get(role, "Use at most 700 words.")
     return (
         f"You are the {role} block in a sequential terminal-agent pipeline.\n"
         f"{tools}\n"
-        "Keep the output concise and directly useful to the next block.\n"
+        "Resolve obvious spelling mistakes to the nearest ordinary term "
+        "supported by context; do not invent terminology. State a material "
+        "ambiguity once if it would change the action.\n"
+        "Keep the output concise and directly useful to the next block. "
+        f"{output_guidance}\n"
         "When you are done, return Markdown starting with exactly:\n"
         "## Block Output\n\n"
         f"{body}"

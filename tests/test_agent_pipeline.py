@@ -243,6 +243,61 @@ def test_final_claim_grounding_accepts_verified_mutation_claim() -> None:
     )
 
 
+def test_agent_request_projection_bounds_tool_results_without_mutating_transcript() -> None:
+    full_result = "begin\n" + ("evidence-line\n" * 2_000) + "end"
+    messages = [
+        {"role": "system", "content": "Review only grounded evidence."},
+        {
+            "role": "assistant",
+            "content": "",
+            "thinking": "private chain",
+            "tool_calls": [
+                {
+                    "id": "read-1",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": {"path": "notes.md"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "read-1",
+            "content": full_result,
+        },
+    ]
+
+    projected = agent_pipeline._project_agent_request_messages(
+        messages,
+        [],
+        240,
+    )
+
+    assert agent_pipeline._estimate_agent_request_tokens(projected, []) <= 240
+    assert messages[1]["thinking"] == "private chain"
+    assert messages[2]["content"] == full_result
+    assert "thinking" not in projected[1]
+    assert "tool result projected from" in projected[2]["content"]
+    assert projected[2]["content"].startswith("begin")
+    assert projected[2]["content"].endswith("end")
+
+
+def test_agent_model_options_cap_role_output() -> None:
+    cfg = Config(num_ctx=32_768)
+
+    assert agent_pipeline._model_chat_options(
+        "qwen3",
+        cfg,
+        role="plan",
+    )["num_predict"] == 768
+    assert agent_pipeline._model_chat_options(
+        "qwen3",
+        cfg,
+        role="research",
+    )["num_predict"] == 1_536
+
+
 def _quiet_display(monkeypatch):
     def noop(*_args, **_kwargs):
         return None
@@ -764,6 +819,101 @@ def test_run_contract_prompt_budget_stops_provider_dispatch(
     assert block.status_code == "run_contract_prompt_budget"
     assert tracker.model_rounds == 0
     assert tracker.prompt_tokens == 0
+
+
+def test_run_contract_projects_large_tool_result_before_next_dispatch(
+    monkeypatch,
+    tmp_path,
+):
+    cfg = Config(cwd=str(tmp_path), num_ctx=4_096)
+    block = agent_blocks.AgentBlock(
+        role="review",
+        prompt="Review the evidence and report concrete findings.",
+        allowed_tools=frozenset({"read_file"}),
+        max_iterations=2,
+    )
+    task = "Review notes.md for vulnerabilities"
+    contract = run_contract.compile_agent_run_contract(
+        task=task,
+        route=task_router.route_task(task),
+        pipeline_name="review",
+        blocks=[block],
+        cfg=cfg,
+        approval_mode="interactive",
+        snapshot=git_evidence.GitSnapshot(
+            False,
+            "not git",
+            None,
+            "",
+            "",
+            (),
+        ),
+    )
+    tracker = run_contract.RunContractTracker(contract)
+    tracker.start_block(0)
+    client = ScriptedClient(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "read-1",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": {"path": "notes.md"},
+                        },
+                    }
+                ]
+            },
+            {
+                "content": (
+                    "## Block Output\n\n"
+                    "No concrete vulnerability found."
+                )
+            },
+        ]
+    )
+    full_result = "header\n" + ("evidence\n" * 3_000) + "footer"
+    _quiet_display(monkeypatch)
+    monkeypatch.setattr(
+        agent_pipeline,
+        "execute_tool_call_for_pipeline",
+        lambda *_args, **_kwargs: (
+            {
+                "role": "tool",
+                "tool_call_id": "read-1",
+                "content": full_result,
+            },
+            full_result,
+        ),
+    )
+
+    main.run_agent_block(
+        block,
+        task=task,
+        completed=[],
+        cfg=cfg,
+        client=client,
+        route=task_router.route_task(task),
+        run_contract=contract,
+        block_contract=contract.block(0),
+        contract_tracker=tracker,
+    )
+
+    assert block.status == "complete"
+    assert len(client.calls) == 2
+    assert tracker.model_rounds == 2
+    projected_tool = next(
+        message
+        for message in client.calls[1]["messages"]
+        if message["role"] == "tool"
+    )
+    original_tool = next(
+        message
+        for message in block.messages
+        if message["role"] == "tool"
+    )
+    assert "tool result projected from" in projected_tool["content"]
+    assert original_tool["content"] == full_result
 
 
 def test_run_agent_block_prompt_does_not_disclose_absolute_workspace(monkeypatch, tmp_path):
@@ -1627,7 +1777,7 @@ def test_run_agent_block_synthesizes_partial_output_at_iteration_limit(monkeypat
     assert client.calls[1]["tools"] == []
 
 
-def test_partial_block_allows_pipeline_finalizer_to_run(monkeypatch):
+def test_partial_block_allows_truthful_pipeline_finalizer_to_run(monkeypatch):
     cfg = Config()
     review = agent_blocks.AgentBlock(
         role="review",
@@ -1651,13 +1801,54 @@ def test_partial_block_allows_pipeline_finalizer_to_run(monkeypatch):
         lambda *_args, **_kwargs: ({"role": "tool", "content": "read evidence"}, "read evidence"),
     )
 
-    main.run_agent_pipeline("Review the wiki", cfg, client, pipeline_name="review")
+    result = main.run_agent_pipeline(
+        "Review the wiki",
+        cfg,
+        client,
+        pipeline_name="review",
+    )
 
     assert review.status == "partial"
-    assert final.status == "complete"
+    assert final.status == "partial"
+    assert final.status_code == "upstream_partial"
+    assert result.status == "partial"
+    assert "PARTIAL" in final.output
     assert "Partial evidence summary." in client.calls[2]["messages"][1]["content"]
     assert "## Block Status\nStatus: PARTIAL" in client.calls[2]["messages"][1]["content"]
     assert "Iteration budget exhausted" in client.calls[2]["messages"][1]["content"]
+    assert "must say PARTIAL" in client.calls[2]["messages"][0]["content"]
+
+
+def test_prompt_budget_partial_stops_downstream_pipeline_blocks(
+    monkeypatch,
+    tmp_path,
+):
+    cfg = Config(cwd=str(tmp_path), num_ctx=1_024)
+    review = agent_blocks.AgentBlock(
+        role="review",
+        prompt="x" * 8_000,
+    )
+    final = agent_blocks.AgentBlock(role="final", prompt="final")
+    client = FakeClient(["## Block Output\nmust not run"])
+    _quiet_display(monkeypatch)
+    monkeypatch.setattr(
+        agent_pipeline,
+        "resolve_pipeline_for_cli",
+        lambda _name: ([review, final], "test"),
+    )
+
+    result = main.run_agent_pipeline(
+        "Review the runtime",
+        cfg,
+        client,
+        pipeline_name="review",
+    )
+
+    assert client.calls == []
+    assert review.status == "partial"
+    assert review.status_code == "run_contract_prompt_budget"
+    assert final.status == "pending"
+    assert result.status == "partial"
 
 
 def test_pipeline_recovery_runs_one_replan_and_reduced_budget_retry(monkeypatch):
@@ -1983,6 +2174,52 @@ def test_execute_agent_memory_seam_uses_original_task_and_completion_status(monk
             "source": "agent",
         },
     ]
+
+
+def test_execute_agent_auto_routes_typoed_review_but_respects_explicit_default(
+    monkeypatch,
+):
+    pipelines: list[str] = []
+
+    def fake_run_pipeline(
+        _task,
+        _cfg,
+        _client,
+        pipeline_name="default",
+        **_kwargs,
+    ):
+        pipelines.append(pipeline_name)
+        return agent_pipeline.AgentRunResult(
+            thread_id="thread-1",
+            status="complete",
+            pipeline=pipeline_name,
+            output="done",
+        )
+
+    monkeypatch.setattr(
+        agent_pipeline,
+        "run_agent_pipeline",
+        fake_run_pipeline,
+    )
+    monkeypatch.setattr(
+        agent_pipeline.memory_runtime,
+        "capture_completed_user_turn",
+        lambda *_args, **_kwargs: {"status": "rejected"},
+    )
+    cfg = Config()
+
+    agent_pipeline.execute_agent_command(
+        "reveiw this harness and look for voerbilites",
+        cfg,
+        object(),
+    )
+    agent_pipeline.execute_agent_command(
+        "--pipeline default reveiw this harness",
+        cfg,
+        object(),
+    )
+
+    assert pipelines == ["review", "default"]
 
 
 def test_agent_resume_and_fork_pass_prior_thread_handoff(monkeypatch):

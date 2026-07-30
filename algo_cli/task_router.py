@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -135,15 +136,35 @@ _QUESTION_PREFIXES = (
     "tell me ",
 )
 
+_COMMON_INTENT_TYPOS = {
+    "reveiw": "review",
+    "reivew": "review",
+    "reviwe": "review",
+    "voerbilites": "vulnerabilities",
+    "vunerabilities": "vulnerabilities",
+    "vulnerabilites": "vulnerabilities",
+}
+_COMMON_INTENT_TYPO_RE = re.compile(
+    r"\b(" + "|".join(map(re.escape, _COMMON_INTENT_TYPOS)) + r")\b"
+)
+
 
 def _has_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term in text for term in terms)
 
 
+def _normalize_routing_text(text: str) -> str:
+    return _COMMON_INTENT_TYPO_RE.sub(
+        lambda match: _COMMON_INTENT_TYPOS[match.group(0)],
+        text,
+    )
+
+
 def route_task(prompt: str) -> TaskRoute:
     """Classify a prompt with explicit precedence and auditable signals."""
     text = (prompt or "").strip()
-    lowered = text.lower()
+    raw_lowered = text.lower()
+    lowered = _normalize_routing_text(raw_lowered)
     read_only = _has_any(lowered, _READ_ONLY_TERMS)
     review = _has_any(lowered, _REVIEW_TERMS)
     research = _has_any(lowered, _RESEARCH_TERMS)
@@ -170,6 +191,7 @@ def route_task(prompt: str) -> TaskRoute:
             ("mutation", mutation_intent),
             ("external_side_effect", external_side_effect),
             ("high_risk", high_risk),
+            ("typo_normalized", lowered != raw_lowered),
         )
         if present
     )

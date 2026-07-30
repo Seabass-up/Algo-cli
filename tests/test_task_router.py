@@ -29,6 +29,16 @@ def test_route_review_task_wins_before_coding_terms():
     assert route.suggested_pipeline == "review"
 
 
+def test_route_normalizes_common_review_and_vulnerability_typos():
+    route = task_router.route_task(
+        "reveiw this harness and look for voerbilites"
+    )
+
+    assert route.task_type == "review"
+    assert route.suggested_pipeline == "review"
+    assert "typo_normalized" in route.signals
+
+
 def test_route_research_task_recommends_research_pipeline():
     route = task_router.route_task("Research the latest Ollama embedding models")
 

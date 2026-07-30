@@ -2657,6 +2657,7 @@ def available_actions(topic: str | None = None) -> str:
             or focus in " ".join(record.spec.tags).casefold()
         )
     ]
+    capability_record_limit = 12 if focus else 10
     payload: dict[str, Any] = {
         "topic": focus or "all",
         "commands": commands,
@@ -2698,23 +2699,104 @@ def available_actions(topic: str | None = None) -> str:
                     "model_callable": record.model_callable,
                     "reason": record.reason,
                 }
-                for record in capability_matches[:40]
+                for record in capability_matches[
+                    :capability_record_limit
+                ]
             ],
-            "truncated": len(capability_matches) > 40,
+            "truncated": (
+                len(capability_matches) > capability_record_limit
+            ),
         },
     }
     if focus:
         slash_focus = focus in {"slash", "slashes", "command", "commands", "session-command", "session_command"}
         reason_focus = focus in {"reason", "reasoning", "reason-engine", "reasoning-engine"}
+        tool_focus = focus in {
+            "tool",
+            "tools",
+            "model-callable",
+            "model_callable",
+        }
         matching: dict[str, Any] = {
             "commands": commands if slash_focus else {key: value for key, value in commands.items() if reason_focus and key == "reasoning" or focus in key or any(focus in item.lower() for item in value)},
-            "model_callable_tools": {key: value for key, value in tool_groups.items() if slash_focus and key == "session" or focus in key or any(focus in item.lower() for item in value)},
+            "model_callable_tools": (
+                tool_groups
+                if tool_focus
+                else {
+                    key: value
+                    for key, value in tool_groups.items()
+                    if slash_focus and key == "session"
+                    or focus in key
+                    or any(focus in item.lower() for item in value)
+                }
+            ),
         }
         if slash_focus:
             matching["when_to_use"] = slash_guidance
         if reason_focus:
             matching["reasoning_mode_guidance"] = reasoning_guidance
+        verification_terms = (
+            (
+                "edit_file",
+                "write_file",
+                "read_pdf",
+                "run_shell",
+                "requires_change",
+            )
+            if focus in {"file", "files", "tool", "tools", "verification"}
+            else ("harness", "docs/algo.md")
+            if focus == "harness"
+            else (focus,)
+        )
+        payload["commands"] = matching["commands"]
+        payload["model_callable_tools"] = matching[
+            "model_callable_tools"
+        ]
+        payload["slash_command_guidance"] = (
+            slash_guidance
+            if slash_focus
+            else [
+                item
+                for item in slash_guidance
+                if focus in item.casefold()
+            ]
+        )
+        payload["reasoning_mode_guidance"] = (
+            reasoning_guidance if reason_focus else []
+        )
+        payload["verification_layer"] = [
+            item
+            for item in verification_layer
+            if any(
+                term in item.casefold()
+                for term in verification_terms
+            )
+        ]
+        payload["catalog_scope"] = "focused"
+        payload["catalog_hint"] = (
+            "Call available_actions with another topic only when the task "
+            "needs a different capability area."
+        )
         payload["focused"] = matching
+    else:
+        payload["commands"] = {
+            key: value[:2]
+            for key, value in commands.items()
+        }
+        payload["model_callable_tools"] = {
+            key: value[:3]
+            for key, value in tool_groups.items()
+        }
+        payload["slash_command_guidance"] = slash_guidance[:3]
+        payload["reasoning_mode_guidance"] = reasoning_guidance[:2]
+        payload["verification_layer"] = verification_layer[:4]
+        payload["catalog_scope"] = "overview"
+        payload["catalog_truncated"] = True
+        payload["catalog_hint"] = (
+            "Call available_actions(topic) for focused details. Useful "
+            "topics: agent, files, shell, web, memory, harness, google, "
+            "models, slash, and reason."
+        )
     return json.dumps(payload, indent=2)
 
 

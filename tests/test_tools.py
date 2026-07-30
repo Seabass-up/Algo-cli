@@ -788,6 +788,16 @@ def test_available_actions_exposes_runtime_agent_threads():
     assert any("2-4" in item and "read-only" in item for item in payload["slash_command_guidance"])
 
 
+def test_available_actions_bounds_overview_and_focused_catalogs():
+    overview = tools.available_actions()
+    harness = tools.available_actions("harness")
+
+    assert len(overview) <= 12_000
+    assert len(harness) <= 12_000
+    assert json.loads(overview)["catalog_scope"] == "overview"
+    assert json.loads(harness)["catalog_scope"] == "focused"
+
+
 def test_plugin_tool_wrappers_serialize_and_load_discovered_manifests(monkeypatch, tmp_path):
     from algo_cli import william_plugins as plugins
 

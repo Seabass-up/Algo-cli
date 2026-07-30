@@ -71,6 +71,27 @@ from .samuel_policy_engine import resolve_action
 TOOL_MAP = tools_module.TOOL_MAP
 logger = logging.getLogger(__name__)
 
+AGENT_TOOL_RESULT_SOFT_LIMIT_CHARS = 4_096
+AGENT_TOOL_RESULT_MIN_LIMIT_CHARS = 384
+AGENT_ROLE_OUTPUT_TOKEN_CAPS = {
+    "plan": 768,
+    "research": 1_536,
+    "implement": 1_536,
+    "implement-retry": 1_536,
+    "review": 1_280,
+    "final": 768,
+    "recovery-plan": 512,
+}
+TERMINAL_PIPELINE_STATUS_CODES = frozenset(
+    {
+        "run_contract_prompt_budget",
+        "run_contract_tool_budget",
+        "run_contract_violation",
+        "run_journal_unavailable",
+        "verification_missing",
+    }
+)
+
 
 def _pipeline_outcome_status(execution: Any, result: str) -> str:
     """Prefer the canonical typed outcome; parse text only for legacy adapters."""
@@ -104,6 +125,18 @@ _UNCERTAINTY_DISCLOSURE_RE = re.compile(
     r"\b(blocked|incomplete|partial|uncertain|unverified)\b",
     re.IGNORECASE,
 )
+
+
+def _upstream_evidence_issues(
+    prior_blocks: list[agent_blocks.AgentBlock],
+) -> list[str]:
+    issues: list[str] = []
+    for prior in prior_blocks:
+        if prior.status == "complete" and not prior.verification_warning:
+            continue
+        code = prior.status_code or "verification_warning"
+        issues.append(f"{prior.role}={prior.status} ({code})")
+    return issues
 
 
 def _final_output_claims_are_grounded(
@@ -159,6 +192,29 @@ def _enforce_block_output_verification(
             "'## Block Output' evidence contract."
         )
         block.verification_warning = block.status_reason
+    elif (
+        block.status == "complete"
+        and block.role == "final"
+        and (upstream_issues := _upstream_evidence_issues(prior_blocks))
+    ):
+        issue_summary = ", ".join(upstream_issues[:4])
+        if len(upstream_issues) > 4:
+            issue_summary += f", +{len(upstream_issues) - 4} more"
+        block.status = "partial"
+        block.status_code = "upstream_partial"
+        block.status_reason = (
+            "Final completion was withheld because upstream evidence is "
+            f"incomplete: {issue_summary}."
+        )
+        block.verification_warning = block.status_reason
+        remainder = block.output[
+            len("## Block Output")
+        :].lstrip()
+        block.output = (
+            "## Block Output\n\n"
+            f"PARTIAL — {block.status_reason}\n\n"
+            f"{remainder}"
+        ).rstrip()
     elif block.status == "complete" and not claim_grounded:
         block.status = "partial"
         block.status_code = "claim_grounding_failed"
@@ -185,8 +241,95 @@ def _estimate_agent_request_tokens(
     return total
 
 
-def _model_chat_options(model: str, cfg: Config) -> dict[str, Any]:
-    options: dict[str, Any] = {"temperature": cfg.temperature, "num_ctx": cfg.num_ctx}
+def _project_tool_result(text: str, limit_chars: int) -> str:
+    """Bound one tool result while retaining useful evidence at both ends."""
+
+    if len(text) <= limit_chars:
+        return text
+    marker = (
+        "\n\n[tool result projected from "
+        f"{len(text)} chars for bounded model context]\n\n"
+    )
+    available = max(0, limit_chars - len(marker))
+    if available <= 0:
+        return marker[:limit_chars]
+    head_chars = max(1, (available * 2) // 3)
+    tail_chars = max(0, available - head_chars)
+    head = text[:head_chars].rstrip()
+    tail = text[-tail_chars:].lstrip() if tail_chars else ""
+    return f"{head}{marker}{tail}"[:limit_chars]
+
+
+def _project_agent_request_messages(
+    messages: list[dict[str, Any]],
+    tools: list[Any],
+    max_prompt_tokens: int,
+) -> list[dict[str, Any]]:
+    """Return a bounded provider view without mutating the block transcript."""
+
+    projected = copy.deepcopy(messages)
+    tool_contents: dict[int, str] = {}
+    limits: dict[int, int] = {}
+    for index, message in enumerate(projected):
+        if message.get("role") == "assistant":
+            message.pop("thinking", None)
+        content = message.get("content")
+        if message.get("role") != "tool" or not isinstance(content, str):
+            continue
+        tool_contents[index] = content
+        limits[index] = min(
+            len(content),
+            AGENT_TOOL_RESULT_SOFT_LIMIT_CHARS,
+        )
+        if len(content) > limits[index]:
+            message["content"] = _project_tool_result(
+                content,
+                limits[index],
+            )
+
+    while (
+        _estimate_agent_request_tokens(projected, tools)
+        > max_prompt_tokens
+    ):
+        reducible = [
+            index
+            for index, limit in limits.items()
+            if limit > AGENT_TOOL_RESULT_MIN_LIMIT_CHARS
+        ]
+        if not reducible:
+            break
+        index = max(reducible, key=lambda item: (limits[item], -item))
+        excess_tokens = (
+            _estimate_agent_request_tokens(projected, tools)
+            - max_prompt_tokens
+        )
+        limits[index] = max(
+            AGENT_TOOL_RESULT_MIN_LIMIT_CHARS,
+            limits[index] - max(64, excess_tokens * 4),
+        )
+        projected[index]["content"] = _project_tool_result(
+            tool_contents[index],
+            limits[index],
+        )
+    return projected
+
+
+def _model_chat_options(
+    model: str,
+    cfg: Config,
+    *,
+    role: str = "",
+) -> dict[str, Any]:
+    role_cap = AGENT_ROLE_OUTPUT_TOKEN_CAPS.get(role, 1_280)
+    output_cap = min(
+        role_cap,
+        max(256, int(cfg.num_ctx) // 4),
+    )
+    options: dict[str, Any] = {
+        "temperature": cfg.temperature,
+        "num_ctx": cfg.num_ctx,
+        "num_predict": output_cap,
+    }
     if _model_info_module.is_chatgpt_model(model):
         options["reasoning_effort"] = chatgpt_client.reasoning_effort_for_model(
             model, cfg.chatgpt_reasoning_efforts
@@ -495,6 +638,20 @@ def run_agent_block(
     )
     if mercury:
         system_parts.append(f"\n\n## Mercury gates\n{mercury}")
+    if block.role == "final":
+        system_parts.append(
+            "\n\n## Final evidence gate\n"
+            "Use only the supplied typed block outputs and verification "
+            "evidence for findings or completion claims. Contextual memory "
+            "is background, not proof. Do not introduce new facts."
+        )
+        upstream_issues = _upstream_evidence_issues(completed)
+        if upstream_issues:
+            system_parts.append(
+                "\nUpstream evidence is incomplete. Your summary must say "
+                "PARTIAL, identify the incomplete checks, and must not "
+                "represent the run as complete."
+            )
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
@@ -546,7 +703,11 @@ def run_agent_block(
                 stream=True,
                 think=cfg.show_thinking,
                 keep_alive=cfg.keep_alive,
-                options=_model_chat_options(block_model, cfg),
+                options=_model_chat_options(
+                    block_model,
+                    cfg,
+                    role=block.role,
+                ),
             )
             for chunk in stream:
                 record_chat_metrics(cfg, chunk)
@@ -658,6 +819,11 @@ def run_agent_block(
             if _model_info_module.is_gemini_model(block_model):
                 request_messages = collapse_tool_history_for_gemini(request_messages)
             if run_contract is not None:
+                request_messages = _project_agent_request_messages(
+                    request_messages,
+                    allowed_tools,
+                    run_contract.budget.max_prompt_tokens_per_round,
+                )
                 try:
                     prompt_tokens = _estimate_agent_request_tokens(
                         request_messages,
@@ -706,7 +872,11 @@ def run_agent_block(
                     stream=True,
                     think=cfg.show_thinking,
                     keep_alive=cfg.keep_alive,
-                    options=_model_chat_options(block_model, cfg),
+                    options=_model_chat_options(
+                        block_model,
+                        cfg,
+                        role=block.role,
+                    ),
                 )
                 for chunk in stream:
                     record_chat_metrics(cfg, chunk)
@@ -2529,9 +2699,10 @@ def run_agent_pipeline(
                         f"{block.status_reason}"
                     )
                     break
-                if block.status_code == "verification_missing":
+                if block.status_code in TERMINAL_PIPELINE_STATUS_CODES:
                     show_error(
-                        f"Agent pipeline stopped at {block.role}: post-mutation verification is missing."
+                        f"Agent pipeline stopped at {block.role}: "
+                        f"{block.status_reason or block.status_code}."
                     )
                     break
             if (
@@ -3477,6 +3648,31 @@ def execute_agent_command(arg: str, cfg: Config, client: Any) -> str:
     if error:
         show_error(error)
         return f"Error: {error}"
+    try:
+        invocation_parts = shlex.split(text)
+    except ValueError:
+        invocation_parts = []
+    explicit_pipeline = bool(
+        invocation_parts
+        and (
+            invocation_parts[0] == "--pipeline"
+            or invocation_parts[0].startswith("--pipeline=")
+        )
+    )
+    if pipeline_name == "default" and not explicit_pipeline:
+        route = task_router.route_task(task)
+        suggested = route.suggested_pipeline
+        if (
+            route.recommended_mode == "agent"
+            and suggested != "default"
+            and suggested in agent_blocks.pipeline_names()
+        ):
+            pipeline_name = suggested
+            show_info(
+                f"Auto-routed {route.task_type} task to the "
+                f"'{pipeline_name}' pipeline. Use --pipeline default to "
+                "override."
+            )
     return _completed_agent_result_for_tool(
         run_agent_pipeline(task, cfg, client, pipeline_name=pipeline_name),
         task=task,
