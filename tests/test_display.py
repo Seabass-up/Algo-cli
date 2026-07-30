@@ -233,6 +233,30 @@ def test_agent_recovery_start_renders_reason_and_budget(monkeypatch):
     assert "at most 8" in rendered and "iterations" in rendered
 
 
+def test_tool_rendering_is_concise_by_default_and_verbose_by_opt_in(monkeypatch):
+    console = Console(record=True, width=120, theme=display.THEME_MAP["tokyo-night"])
+    monkeypatch.setattr(display, "console", console)
+    display.set_runtime_details_visible(False)
+    try:
+        display.show_tool_call("read_file", {"path": "private.py"})
+        display.show_tool_result("read_file", "secret payload\nsecond line", duration_ms=7)
+        concise = console.export_text()
+        assert "read_file" in concise
+        assert "private.py" not in concise
+        assert "secret payload" not in concise
+
+        console = Console(record=True, width=120, theme=display.THEME_MAP["tokyo-night"])
+        monkeypatch.setattr(display, "console", console)
+        display.set_runtime_details_visible(True)
+        display.show_tool_call("read_file", {"path": "visible.py"})
+        display.show_tool_result("read_file", "visible payload", duration_ms=7)
+        verbose = console.export_text()
+        assert "visible.py" in verbose
+        assert "visible payload" in verbose
+    finally:
+        display.set_runtime_details_visible(False)
+
+
 def test_thinking_stream_disables_auto_refresh_and_flushes_pending(monkeypatch):
     _FakeLive.instances.clear()
     ticks = iter([1.0, 1.0, 1.0, 1.0, 1.01, 2.0])

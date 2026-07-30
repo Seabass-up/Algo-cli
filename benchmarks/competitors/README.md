@@ -102,7 +102,9 @@ python3 benchmarks/competitors/publish_website.py \
 
 The publisher requires the full warmed 11-harness, four-task, three-repetition
 v3 cell and rechecks baseline failures, protected-input receipts, cell completeness,
-and the task digest. It writes the website summary and CSV without exporting
+the task digest, and the runner-recorded clean source revision. The supplied
+`--source-revision` must match that raw receipt; it cannot relabel a run from a
+different build. The publisher writes the website summary and CSV without exporting
 raw prompts, model output, executable paths, or local workspace metadata.
 
 ## Competitor classification

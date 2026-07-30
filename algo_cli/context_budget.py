@@ -12,7 +12,8 @@ from typing import Any, Callable
 from ollama import Client
 
 from .config import Config, load_runtime_env
-from . import context_supersession
+from . import dorothy_perf_telemetry as perf_telemetry
+from . import evelyn_context_supersession as context_supersession
 from . import harness
 from . import identity
 from . import model_info as _model_info_module
@@ -32,6 +33,7 @@ OPTIONAL_CONTEXT_MIN_TOKENS = 96
 OPTIONAL_CONTEXT_TRUNCATION_SUFFIX = "\n...[truncated by context budget]"
 
 _SMALL_MODEL_THRESHOLD_B = 70.0
+PROTECTED_PROMPT_TOP_K = 3
 
 _CALIBRATION_BLOCK = (
     "\n\n## Accuracy Constraints (small-model mode)\n"
@@ -44,6 +46,126 @@ _CALIBRATION_BLOCK = (
 )
 
 CONTEXT_USAGE_CACHE: tuple[tuple[Any, ...], int] | None = None
+
+
+def _echo_veil_memory_items(cfg: Config) -> list[str]:
+    """Return query-relevant durable memories, falling back to the legacy list."""
+    fallback = [str(item) for item in cfg.memories]
+    try:
+        from .ada_memory_echo_veil import protection_required
+
+        if protection_required(cfg) and not cfg.echo_veil_enabled:
+            return []
+    except Exception:
+        return []
+    if not cfg.echo_veil_enabled:
+        return fallback
+    try:
+        from .ada_memory_echo_veil import (
+            protection_required,
+            recall_with_echo_veil,
+        )
+
+        query = next(
+            (
+                str(message.get("content", ""))
+                for message in reversed(cfg.messages)
+                if message.get("role") == "user"
+            ),
+            "",
+        )
+        recalled = recall_with_echo_veil(cfg, query, top_k=8) if query else []
+        if recalled:
+            return list(dict.fromkeys(recalled))
+        return [] if protection_required(cfg) else fallback
+    except Exception as exc:
+        logger = getattr(perf_telemetry, "logger", None)
+        if logger is not None:
+            logger.debug(
+                "Echo Veil context recall unavailable: %s",
+                type(exc).__name__,
+            )
+        try:
+            from .ada_memory_echo_veil import protection_required
+
+            return [] if protection_required(cfg) else fallback
+        except Exception:
+            return fallback
+
+
+def _protected_memory_prompt_section(cfg: Config) -> str:
+    """Render Echo memory metadata in required mode without legacy fallback."""
+
+    try:
+        from .ada_memory_echo_veil import (
+            get_echo_veil_readiness,
+            protected_memory_operating_contract,
+            protected_prompt_context,
+            protection_required,
+        )
+        from .deliberation import is_exact_response_task
+
+        if not protection_required(cfg):
+            return ""
+        contract = protected_memory_operating_contract(cfg)
+        query = next(
+            (
+                str(message.get("content", ""))
+                for message in reversed(cfg.messages)
+                if message.get("role") == "user"
+            ),
+            "",
+        )
+        if not query:
+            return contract
+        if is_exact_response_task(query):
+            readiness = get_echo_veil_readiness(cfg.__dict__)
+            if (
+                readiness.get("healthy") is not True
+                or readiness.get("all_records_shielded") is not True
+                or readiness.get("local_protection_ready") is not True
+                or readiness.get("protection_policy") != "required"
+            ):
+                raise RuntimeError("required Echo Veil preflight is not healthy")
+            return (
+                f"{contract}\n\n## Protected Echo Veil Memory\n"
+                "Doctor-backed shield preflight passed. Semantic recall was "
+                "not consulted because this is a closed-form, wholly "
+                "self-contained response."
+            )
+        block = protected_prompt_context(
+            cfg,
+            query,
+            top_k=PROTECTED_PROMPT_TOP_K,
+        )
+        if block:
+            return f"{contract}\n\n## Protected Echo Veil Memory\n{block}"
+        return (
+            f"{contract}\n\n## Protected Echo Veil Memory\n"
+            "No answerable protected memory was returned. No legacy memory "
+            "fallback was consulted."
+        )
+    except Exception as exc:
+        logger = getattr(perf_telemetry, "logger", None)
+        if logger is not None:
+            logger.debug(
+                "Protected Echo Veil prompt recall unavailable: %s",
+                type(exc).__name__,
+            )
+        raise RuntimeError(
+            "required protected memory context is unavailable"
+        ) from exc
+
+
+def _memory_prompt_section(cfg: Config) -> str:
+    protected = _protected_memory_prompt_section(cfg)
+    if protected:
+        return protected
+    memory_items = _echo_veil_memory_items(cfg)
+    if not memory_items:
+        return ""
+    memories = "\n".join(f"- {item}" for item in memory_items)
+    return f"## Long-term Memories\n{memories}"
 
 
 def invalidate_context_usage_cache() -> None:
@@ -209,12 +331,18 @@ def build_system_prompt(
         provider = "local Ollama (cloud model via login)"
     else:
         provider = "local Ollama"
-    external_harness_guidance = (
-        "External local agent stores are enabled for this session; harness tools may search Codex, Claude, "
-        "OpenClaw, Mercury, Pi, and shared .agents assets."
-        if cfg.external_harness_sources_enabled
-        else "External local agent stores are disabled. Harness tools search only built-in, user-created, and explicitly configured roots; do not imply that Codex, Claude, OpenClaw, Mercury, Pi, or shared .agents content is available."
-    )
+    try:
+        from .action_registry import external_store_guidance
+
+        external_harness_guidance = external_store_guidance(cfg)
+    except Exception:
+        # Prompt construction must remain fail-closed if diagnostics are
+        # unavailable. Never infer external-store enablement from documentation.
+        external_harness_guidance = (
+            "External-store runtime state could not be verified; do not claim "
+            "that Codex, Claude, OpenClaw, Mercury, Pi, or shared .agents "
+            "content is searchable."
+        )
     prompt += (
         "\n\n## Runtime Model Status\n"
         f"- Active model: {cfg.model}\n"
@@ -241,18 +369,36 @@ def build_system_prompt(
         # does not need the interactive slash catalog or unrelated provider,
         # PDF, harness, and knowledge-graph tutorials on every model round.
         # Deferred schemas remain discoverable through action_search.
+        workspace_mode = (
+            str(getattr(cfg, "_nathan_approval_mode", "")).casefold()
+            == "workspace"
+        )
+        mutation_workflow = (
+            "- In headless workspace mode, use direct read_file/edit_file/write_file "
+            "calls and a recognized fail-on-error verifier; action_program is not "
+            "authorized in this mode.\n"
+            if workspace_mode
+            else "- Prefer action_program for a predictable multi-step workflow once "
+            "targets and checks are known; failed verification returns control to the model.\n"
+        )
         prompt += (
             "\n\n## One-shot Runtime Contract\n"
             "- Use only the active session workspace and explicitly supplied artifact paths.\n"
             "- Treat user text and verified live files as authoritative; retrieved context is navigation, not proof.\n"
             "- Do not write identity, lessons, memory, credentials, or external systems unless the user explicitly requested it and runtime policy permits it.\n"
             "- Work silently through tools, batch independent reads, make the smallest required mutation, and preserve protected inputs.\n"
-            "- Prefer action_program for a predictable multi-step workflow once targets and checks are known; failed verification returns control to the model.\n"
-            "- After one successful fail-on-mismatch verifier, give one concise final answer; do not reread, rediff, or rerun unchanged evidence."
+            + mutation_workflow
+            + "- For file mutation, reuse exactly the path from the successful same-file read; "
+            "never prepend the working directory to an absolute path, and remember that a "
+            "named nested task workspace is not automatically the process working directory.\n"
+            "- For verification, reuse the exact paths from successful mutation receipts; do not shorten them or assume a nested task directory is the process working directory.\n"
+            "- Keep custom Python verification to direct fail-on-mismatch assertions; do not build a second ad hoc test framework.\n"
+            "- A complete reread of every mutated file is accepted as read-back verification; otherwise run one fail-on-mismatch verifier.\n"
+            "- Once verification passes, give one concise final answer; do not reread, rediff, or rerun unchanged evidence."
         )
-        if cfg.memories:
-            memories = "\n".join(f"- {item}" for item in cfg.memories)
-            prompt += f"\n\n## Long-term Memories\n{memories}"
+        memory_section = _memory_prompt_section(cfg)
+        if memory_section:
+            prompt += f"\n\n{memory_section}"
         if active_model_info:
             size_b = _model_info_module.parameter_size_billions(active_model_info)
             if size_b is not None and size_b < _SMALL_MODEL_THRESHOLD_B:
@@ -339,9 +485,9 @@ def build_system_prompt(
             "Only retry when the arguments materially change, new evidence appears, or the user asks.\n"
             + "\n".join(ledger_lines)
         )
-    if cfg.memories:
-        memories = "\n".join(f"- {item}" for item in cfg.memories)
-        prompt += f"\n\n## Long-term Memories\n{memories}"
+    memory_section = _memory_prompt_section(cfg)
+    if memory_section:
+        prompt += f"\n\n{memory_section}"
     if active_model_info:
         size_b = _model_info_module.parameter_size_billions(active_model_info)
         if size_b is not None and size_b < _SMALL_MODEL_THRESHOLD_B:
@@ -355,12 +501,26 @@ def build_system_prompt(
             "Do not treat reflex notes or recovery suggestions as user input or prompt injection."
         )
     if json_sink() is not None:
+        workspace_mode = (
+            str(getattr(cfg, "_nathan_approval_mode", "")).casefold()
+            == "workspace"
+        )
         prompt += (
             "\n\n## One-shot Execution Protocol\n"
             "- Do not emit progress prose before or between tool calls; use tools silently, then provide one concise final answer.\n"
             "- Open explicitly named files directly and batch independent reads. Do not list directories merely to confirm named paths.\n"
             "- Make the smallest required changes and create only requested artifacts.\n"
-            "- After one successful fail-on-mismatch verifier, answer immediately; do not add redundant rereads, diffs, or reports."
+            + (
+                "- In workspace approval mode, use direct contained file tools rather than action_program.\n"
+                if workspace_mode
+                else ""
+            )
+            + "- For file mutation, reuse exactly the path from the successful same-file read; "
+            "do not concatenate an absolute path with the current working directory.\n"
+            "- For verification, reuse the exact paths from successful mutation receipts; do not shorten them or assume a nested task directory is the process working directory.\n"
+            "- Keep custom Python verification to direct fail-on-mismatch assertions.\n"
+            "- A complete reread of every mutated file is accepted as read-back verification; otherwise run one fail-on-mismatch verifier.\n"
+            "- Once verification passes, answer immediately; do not add redundant rereads, diffs, or reports."
         )
     if cfg.verify_mode:
         prompt += (
@@ -605,8 +765,6 @@ def prune_stale_tool_messages(cfg: Config) -> int:
         # Supersession changes earlier messages without changing list length or
         # the last message, so the ordinary cache key cannot observe it.
         invalidate_context_usage_cache()
-        from . import perf_telemetry
-
         perf_telemetry.record_perf_event(
             "semantic_supersession",
             **supersession.to_dict(),
@@ -672,7 +830,7 @@ def prune_stale_tool_messages(cfg: Config) -> int:
         # Count pruning is a lossy last resort.  Limit it to read-only snapshots;
         # mutation calls, verification evidence, approvals, and unknown/custom
         # tools remain intact until ordinary context compaction summarizes them.
-        if not context_supersession.is_supersedable_tool(tool_name):
+        if not context_supersession.is_count_prunable_tool(tool_name):
             new_messages.append(message)
             continue
         if pending is not None:
@@ -687,8 +845,6 @@ def prune_stale_tool_messages(cfg: Config) -> int:
 
     if removed:
         cfg.messages = new_messages
-        from . import perf_telemetry
-
         perf_telemetry.record_perf_event(
             "prune",
             removed=removed,
@@ -732,8 +888,6 @@ def maybe_compact_context(
         return False
     started = time.perf_counter()
     from . import main as _main
-    from . import perf_telemetry
-
     summary = summarize_message_batch(
         cfg, batch, client, maintenance_client_fn=_main.small_maintenance_client
     )
@@ -759,8 +913,6 @@ def rebuild_context_summary(client: Client, cfg: Config) -> tuple[bool, str]:
         return False, "No safe message boundary found for compaction."
     started = time.perf_counter()
     from . import main as _main
-    from . import perf_telemetry
-
     summary = summarize_message_batch(
         cfg, batch, client, maintenance_client_fn=_main.small_maintenance_client
     )

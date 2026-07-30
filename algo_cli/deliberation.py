@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 
 _DEEP_CUES = (
     "deep analysis",
@@ -18,6 +20,14 @@ _DEEP_CUES = (
     "ambiguous requirements",
 )
 
+_EXACT_RESPONSE_TASK = re.compile(
+    r"\A\s*(?:reply|respond|return|output|say)\s+"
+    r"(?:with\s+)?exactly\s*:?\s*"
+    r"[A-Za-z0-9][A-Za-z0-9_.:/+-]{0,127}"
+    r"[.!]?\s*\Z",
+    re.IGNORECASE,
+)
+
 
 def needs_deliberation(prompt: str) -> bool:
     """Enable model reasoning only when a one-shot task signals depth."""
@@ -26,4 +36,10 @@ def needs_deliberation(prompt: str) -> bool:
     return any(cue in lowered for cue in _DEEP_CUES)
 
 
-__all__ = ["needs_deliberation"]
+def is_exact_response_task(prompt: str) -> bool:
+    """Recognize a closed-form response that cannot benefit from tools or recall."""
+
+    return _EXACT_RESPONSE_TASK.fullmatch(prompt or "") is not None
+
+
+__all__ = ["is_exact_response_task", "needs_deliberation"]

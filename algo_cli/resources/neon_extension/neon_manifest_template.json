@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Algo CLI Neon Selected-Tab Bridge",
+  "version": "0.0.0",
+  "description": "Observe-only hardening foundation for one user-selected Chrome tab.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "nativeMessaging",
+    "storage"
+  ],
+  "incognito": "not_allowed",
+  "background": {
+    "service_worker": "neon_service_worker.js"
+  },
+  "action": {
+    "default_popup": "neon_popup.html",
+    "default_title": "Algo CLI selected-tab bridge"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'"
+  }
+}

@@ -3,7 +3,7 @@ from __future__ import annotations
 from algo_cli import tool_runtime
 from algo_cli.config import Config
 from algo_cli import main as main_module
-from algo_cli import slash_dispatch
+from algo_cli import oliver_slash_dispatch as slash_dispatch
 from algo_cli import session_commands
 from algo_cli import tools
 

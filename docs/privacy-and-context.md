@@ -2,12 +2,18 @@
 title: Privacy and local context
 description: How Algo CLI discovers, stores, and sends local context.
 status: active
+updated: 2026-07-24
+last_reviewed: 2026-07-24
+runtime_version: "Algo CLI v0.18.0"
+verification_revision: "215d7cb044fd530809af7c9d0a375e1d3bb792d5"
 tags: [privacy, harness, cloud, context, consent]
 ---
 
 # Privacy and local context
 
 Algo CLI starts with repository-provided documentation, skills, and files that the user creates under `~/.algo_cli`. It does not index other agent stores by default.
+
+> **Runtime check:** Privacy defaults and enabled context sources are runtime state. Run `/harness status`, `/memory-auto status`, `/icl`, and `/code-rag status` in the active Algo CLI process before describing them as enabled. The 2026-07-24 v0.18.0 configured-runtime review found external agent stores disabled with zero indexed external records, while index-compute-lab auto-inject was enabled.
 
 ## Always-sent model context
 

@@ -16,13 +16,16 @@ from pathlib import Path
 from typing import Callable, Iterable, Literal, Sequence
 
 
-EvidenceKind = Literal["read", "mutation", "verification"]
+EvidenceKind = Literal["read", "mutation", "mutation_attempt", "verification"]
 VerificationKind = Literal["same_path_reread", "git_diff", "test", "lint"]
 
 _PATH_MUTATION_OPERATIONS = frozenset({"write_file", "edit_file", "batch_edit"})
 _MUTATION_OPERATIONS = frozenset({*_PATH_MUTATION_OPERATIONS, "run_shell"})
 _READ_OPERATIONS = frozenset({"read_file"})
-_VERIFICATION_KINDS = frozenset({"git_diff", "test", "lint"})
+_EXPLICIT_VERIFICATION_KINDS = frozenset({"git_diff", "test", "lint"})
+_VERIFICATION_KINDS = frozenset(
+    {*_EXPLICIT_VERIFICATION_KINDS, "same_path_reread"}
+)
 
 _SENSITIVE_COMPONENTS = frozenset(
     {
@@ -342,6 +345,13 @@ def _valid_evidence(events: Sequence[EvidenceEvent]) -> bool:
             elif event.kind == "mutation":
                 if event.operation not in _MUTATION_OPERATIONS or not event.relative_path or event.verification_kind:
                     return False
+            elif event.kind == "mutation_attempt":
+                if (
+                    event.operation not in _MUTATION_OPERATIONS
+                    or event.relative_path
+                    or event.verification_kind
+                ):
+                    return False
             elif event.kind == "verification":
                 if (
                     event.operation != "verification"
@@ -387,6 +397,77 @@ def read_before_edit_decision(path: str | Path) -> ReadBeforeEditDecision:
     return evaluate_read_before_edit(path_decision.relative_path, evidence_snapshot())
 
 
+def successful_read_path_hints(
+    path: str | Path,
+    *,
+    limit: int = 3,
+) -> tuple[str, ...]:
+    """Return bounded exact-path hints from successful reads in this scope.
+
+    Hints are advisory only: callers must still submit the path through normal
+    containment, read-before-edit, and authority checks. Matching uses a
+    common path suffix so a mistaken ``/workspace/...`` alias or duplicated
+    working-directory prefix can recover the already-read canonical target
+    without silently rewriting a model-controlled path.
+    """
+
+    ledger = _ACTIVE_LEDGER.get()
+    if ledger is None or ledger.closed or isinstance(limit, bool) or limit < 1:
+        return ()
+    try:
+        requested_parts = tuple(
+            part
+            for part in Path(path).expanduser().parts
+            if part not in {"", ".", os.sep}
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return ()
+    if not requested_parts:
+        return ()
+
+    scored: dict[str, int] = {}
+    for event in ledger.events:
+        if event.kind != "read" or not event.relative_path:
+            continue
+        relative = Path(event.relative_path)
+        relative_parts = relative.parts
+        if not relative_parts or relative_parts[-1] != requested_parts[-1]:
+            continue
+        score = 0
+        for requested, observed in zip(
+            reversed(requested_parts),
+            reversed(relative_parts),
+        ):
+            if requested != observed:
+                break
+            score += 1
+        if score < 1:
+            continue
+        decision = assess_write_path(ledger.workspace, relative)
+        if not decision.allowed or decision.resolved_path is None:
+            continue
+        exact = str(decision.resolved_path)
+        scored[exact] = max(score, scored.get(exact, 0))
+
+    ordered = sorted(scored, key=lambda candidate: (-scored[candidate], candidate))
+    return tuple(ordered[:limit])
+
+
+def record_failed_mutation_attempt(
+    *,
+    operation: str,
+    failed: bool,
+) -> EvidenceEvent | None:
+    """Record a content-free mutation failure for completion gating."""
+
+    if not failed or operation not in _MUTATION_OPERATIONS:
+        return None
+    ledger = _ACTIVE_LEDGER.get()
+    if ledger is None or ledger.closed:
+        return None
+    return ledger.append("mutation_attempt", operation)
+
+
 def _append_path_event(
     kind: Literal["read", "mutation"],
     path: str | Path,
@@ -416,7 +497,12 @@ def record_read(
 ) -> EvidenceEvent | None:
     """Record only a successful, contained, non-sensitive file read."""
 
-    return _append_path_event("read", path, operation=operation, success=success)
+    return _append_path_event(
+        "read",
+        path,
+        operation=operation,
+        success=success,
+    )
 
 
 def record_mutation(
@@ -749,7 +835,7 @@ def record_verification(
 ) -> EvidenceEvent | None:
     """Record a successful recognized verifier without command/output data."""
 
-    if not success or verification_kind not in _VERIFICATION_KINDS:
+    if not success or verification_kind not in _EXPLICIT_VERIFICATION_KINDS:
         return None
     ledger = _ACTIVE_LEDGER.get()
     if ledger is None or ledger.closed:
@@ -775,18 +861,73 @@ def evaluate_completion(events: Sequence[EvidenceEvent]) -> CompletionDecision:
         return CompletionDecision(False, "execution evidence is invalid")
     mutations = [event for event in events if event.kind == "mutation"]
     if not mutations:
+        if any(event.kind == "mutation_attempt" for event in events):
+            return CompletionDecision(
+                False,
+                "workspace mutation was attempted but no mutation succeeded",
+            )
         return CompletionDecision(True, "no successful file mutation requires verification")
     last_mutation = mutations[-1]
     for event in events:
         if event.sequence <= last_mutation.sequence:
             continue
-        if event.kind == "verification" and event.verification_kind in _VERIFICATION_KINDS:
+        if (
+            event.kind == "verification"
+            and event.verification_kind in _EXPLICIT_VERIFICATION_KINDS
+        ):
             return CompletionDecision(
                 True,
                 "last mutation was followed by successful verification",
                 last_mutation.sequence,
                 event.sequence,
                 event.verification_kind,
+            )
+
+    # A complete read-back of each file changed since the most recent explicit
+    # verifier is useful, bounded evidence for file-oriented agent work. It is
+    # stronger than merely trusting a write receipt and avoids forcing
+    # artifact-only tasks to invent shell tests. Workspace-wide shell
+    # mutations remain ineligible because a file reread cannot cover them.
+    prior_verifiers = [
+        event
+        for event in events
+        if event.kind == "verification"
+        and event.verification_kind in _EXPLICIT_VERIFICATION_KINDS
+        and event.sequence < last_mutation.sequence
+    ]
+    coverage_start = prior_verifiers[-1].sequence if prior_verifiers else 0
+    latest_file_mutations: dict[str, EvidenceEvent] = {}
+    for event in mutations:
+        if event.sequence <= coverage_start:
+            continue
+        if event.relative_path == ".":
+            latest_file_mutations.clear()
+            break
+        if event.relative_path:
+            latest_file_mutations[event.relative_path] = event
+    readback_events: list[EvidenceEvent] = []
+    for path, mutation in latest_file_mutations.items():
+        rereads = [
+            event
+            for event in events
+            if event.kind == "read"
+            and event.relative_path == path
+            and event.sequence > mutation.sequence
+        ]
+        if not rereads:
+            break
+        readback_events.append(rereads[-1])
+    else:
+        if latest_file_mutations and len(readback_events) == len(
+            latest_file_mutations
+        ):
+            verifier = max(readback_events, key=lambda event: event.sequence)
+            return CompletionDecision(
+                True,
+                "every changed file was reread after its latest mutation",
+                last_mutation.sequence,
+                verifier.sequence,
+                "same_path_reread",
             )
     return CompletionDecision(
         False,

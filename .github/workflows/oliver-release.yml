@@ -1,0 +1,118 @@
+name: Publish release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Verify and build distributions
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Reject publication while the hardening freeze is active
+        run: python scripts/david_hardening_gate.py --release-event
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.26"
+          enable-cache: true
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Install locked project and release tooling
+        run: uv sync --frozen --no-editable --extra dev --extra release --extra supply-chain --reinstall-package algo-cli-runtime
+      - name: Installed-source parity
+        run: uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python -I scripts/oliver_installed_source_parity.py
+      - name: Verify source-bound Agent runtime qualification
+        run: >-
+          uv run --frozen --no-editable --extra dev --extra release
+          --extra supply-chain
+          python scripts/nathan_agent_runtime_qualification.py --quiet
+      - name: Verify source, version, and tests
+        run: |
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python scripts/check_release_version.py --tag "${{ github.event.release.tag_name }}"
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python scripts/check_public_release.py
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python scripts/check_public_history.py --allow-contributor-identities
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain ruff check algo_cli tests scripts
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain pip-audit --local --strict --progress-spinner off
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain pytest tests
+      - name: Verify website
+        working-directory: website
+        run: |
+          npm ci
+          npm test
+          npm run lint
+          npm audit
+      - name: Build and inspect distributions
+        run: |
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python -m build
+          uv export --frozen --no-dev --format cyclonedx1.5 --preview-features sbom-export --output-file "${RUNNER_TEMP}/ada-runtime-sbom.raw.json"
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python scripts/ada_supply_chain_manifest.py sbom --source "${RUNNER_TEMP}/ada-runtime-sbom.raw.json" --output "${GITHUB_WORKSPACE}/dist/algo-cli-runtime.lock.cdx.json"
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python scripts/ada_supply_chain_manifest.py checksums --output "${GITHUB_WORKSPACE}/dist/SHA256SUMS" dist/*.whl dist/*.tar.gz dist/*.cdx.json
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python -m twine check dist/*.whl dist/*.tar.gz
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python scripts/check_public_release.py --artifacts-only --artifact dist/*.whl --artifact dist/*.tar.gz
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python scripts/oliver_smoke_wheel_install.py dist
+      - name: Attest release provenance
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: |
+            ${{ github.workspace }}/dist/*.whl
+            ${{ github.workspace }}/dist/*.tar.gz
+          create-storage-record: false
+      - name: Attest release SBOM
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: |
+            ${{ github.workspace }}/dist/*.whl
+            ${{ github.workspace }}/dist/*.tar.gz
+          sbom-path: ${{ github.workspace }}/dist/algo-cli-runtime.lock.cdx.json
+          create-storage-record: false
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: python-package-distributions
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: release-supply-chain-evidence
+          path: |
+            dist/algo-cli-runtime.lock.cdx.json
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/algo-cli-runtime
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: python-package-distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1

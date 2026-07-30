@@ -175,7 +175,7 @@ def test_batch_edit_registered_in_all_tools():
 
 
 def test_batch_edit_in_mutating_tools():
-    from algo_cli.tool_policy import MUTATING_TOOLS, WRITE_TOOLS
+    from algo_cli.samuel_policy import MUTATING_TOOLS, WRITE_TOOLS
 
     assert "batch_edit" in MUTATING_TOOLS
     assert "batch_edit" in WRITE_TOOLS

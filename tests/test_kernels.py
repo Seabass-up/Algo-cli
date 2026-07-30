@@ -191,7 +191,7 @@ def test_kernel_check_reports_full_and_single_kernel_readiness(monkeypatch) -> N
 
 def test_kernel_actions_are_registered_and_read_only() -> None:
     from algo_cli.action_registry import get_action_spec, list_action_specs
-    from algo_cli.tool_runtime import session_command_requires_approval
+    from algo_cli.nathan_runtime import session_command_requires_approval
 
     names = {spec.name for spec in list_action_specs()}
 

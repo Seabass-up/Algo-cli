@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from algo_cli import agent_threads
@@ -131,6 +133,89 @@ def test_version_one_thread_store_migrates_without_losing_records(tmp_path):
 
     assert records[0]["id"] == "legacy01"
     assert records[0]["workspace"] == {}
+    assert records[0]["run_contract"] == {}
+    assert records[0]["checkpoint"] == {}
+
+
+def test_version_two_thread_store_migrates_without_losing_records(tmp_path):
+    path = tmp_path / "threads.json"
+    path.write_text(
+        '{"version": 2, "threads": [{"id": "legacy02", "status": "partial", '
+        '"task": "old task", "turns": [], "blocks": [], "children": [], '
+        '"workspace": {"available": true, "head": "' + ("a" * 40) + '"}}]}',
+        encoding="utf-8",
+    )
+
+    records = agent_threads.load_threads(path)
+
+    assert records[0]["id"] == "legacy02"
+    assert records[0]["workspace"]["head"] == "a" * 40
+    assert records[0]["run_contract"] == {}
+    assert records[0]["checkpoint"] == {}
+
+
+def test_run_contract_checkpoint_and_block_context_round_trip_bounded(tmp_path):
+    path = tmp_path / "threads.json"
+    record = agent_threads.create_thread(
+        "Sensitive original task",
+        run_contract={
+            "contract_id": "run-contract-v1:" + ("a" * 64),
+            "digest": "a" * 64,
+            "run_nonce": "nonce1234",
+            "mode": "enforced",
+            "approval_mode": "never",
+            "journal_file": "nonce1234.jsonl",
+            "task": "must not be copied",
+        },
+        checkpoint={
+            "next_block_ordinal": 1,
+            "last_verified_sequence": 7,
+            "uncertain_mutation_steps": ["b1-r0-t0"],
+            "terminal": False,
+        },
+        path=path,
+    )
+    context = "x" * (agent_threads.MAX_BLOCK_CONTEXT_CHARS + 100)
+
+    finished = agent_threads.finish_turn(
+        record["id"],
+        status="partial",
+        blocks=[
+            {
+                "role": "plan",
+                "status": "complete",
+                "context_output": context,
+                "tool_calls": 3,
+            }
+        ],
+        run_contract=record["run_contract"],
+        checkpoint={
+            "next_block_ordinal": 1,
+            "last_verified_sequence": 9,
+            "uncertain_mutation_steps": [],
+            "terminal": True,
+            "terminal_status": "partial",
+        },
+        path=path,
+    )
+    raw = json.loads(path.read_text(encoding="utf-8"))
+
+    assert raw["version"] == agent_threads.THREADS_SCHEMA_VERSION
+    assert finished["run_contract"] == {
+        "contract_id": "run-contract-v1:" + ("a" * 64),
+        "digest": "a" * 64,
+        "run_nonce": "nonce1234",
+        "mode": "enforced",
+        "approval_mode": "never",
+        "journal_file": "nonce1234.jsonl",
+    }
+    assert "task" not in finished["run_contract"]
+    assert finished["checkpoint"]["next_block_ordinal"] == 1
+    assert finished["checkpoint"]["last_verified_sequence"] == 9
+    assert finished["checkpoint"]["terminal"] is True
+    assert len(finished["blocks"][0]["context_output"]) == (
+        agent_threads.MAX_BLOCK_CONTEXT_CHARS
+    )
 
 
 def test_missing_clean_evidence_stays_unknown_instead_of_false(tmp_path):

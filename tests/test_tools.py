@@ -5,6 +5,7 @@ from __future__ import annotations
 from io import StringIO
 import json
 import os
+import shlex
 import subprocess
 import threading
 import time
@@ -13,9 +14,9 @@ from types import SimpleNamespace
 import pytest
 from rich.console import Console
 
-from algo_cli import tool_runtime, tools
+from algo_cli import nathan_runtime as tool_runtime, tools
 from algo_cli.config import Config
-from algo_cli.runtime_services import scoped_tool_runtime_env
+from algo_cli.theodore_runtime_services import scoped_tool_runtime_env
 
 
 def test_resolve_absolute_and_relative(tmp_path):
@@ -31,6 +32,25 @@ def test_cap_truncates():
     long = tools._cap("x" * 50, limit=10)
     assert long.startswith("x" * 10)
     assert "truncated" in long
+
+
+def test_action_search_hides_runtime_owned_action_arguments(monkeypatch):
+    from algo_cli import tool_context
+
+    monkeypatch.setattr(
+        tool_context,
+        "rank_tools_for_prompt",
+        lambda _query, _tools: [tools.run_shell],
+    )
+
+    payload = json.loads(tools.action_search("run a shell command", limit=1))
+    parameters = payload["actions"][0]["schema"]["function"]["parameters"]
+
+    assert payload["actions"][0]["name"] == "run_shell"
+    assert {"cfg", "cwd", "safe_mode"}.isdisjoint(parameters["properties"])
+    assert {"cfg", "cwd", "safe_mode"}.isdisjoint(parameters.get("required", []))
+    assert "Omit outputs" in payload["next"]
+    assert "{'$ref':'step_id'}" in payload["next"]
 
 
 def test_deny_command_re():
@@ -188,6 +208,35 @@ def test_run_shell_safe_mode_blocks_git_inspection_output_write(tmp_path):
     assert not (tmp_path / "owned.txt").exists()
 
 
+def test_inline_python_verifier_ignores_quoted_comparison_and_arrow_text() -> None:
+    command = (
+        "python3 -c \"import sys\n"
+        "value = 3\n"
+        "print(f'value -> {value}')\n"
+        "sys.exit(0 if value > 2 else 1)\""
+    )
+
+    assert not tools.shell_mutates_workspace(command)
+    assert not tools.shell_is_dangerous(command)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "open('owned.txt', 'w').write('x')",
+        "from pathlib import Path; Path('owned.txt').write_text('x')",
+        "import os; os.remove('owned.txt')",
+        "import subprocess; subprocess.run(['touch', 'owned.txt'])",
+        "exec(\"open('owned.txt', 'w').write('x')\")",
+    ],
+)
+def test_inline_python_mutations_remain_dangerous(source) -> None:
+    command = f"python3 -c {shlex.quote(source)}"
+
+    assert tools.shell_mutates_workspace(command)
+    assert tools.shell_is_dangerous(command)
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -325,18 +374,23 @@ def test_web_fetch_timeout_returns_without_waiting_for_worker(monkeypatch):
 
 def test_web_fetch_honors_fractional_timeout(monkeypatch):
     monkeypatch.setenv("OLLAMA_API_KEY", "token")
+    release = threading.Event()
 
     class SlowClient:
         def web_fetch(self, _url):
-            time.sleep(0.2)
+            release.wait(1)
             return {"content": "late"}
 
     monkeypatch.setattr(tools, "active_ollama_client", lambda cloud=False: SlowClient())
     started = time.perf_counter()
 
-    out = tools.web_fetch("https://example.test", timeout=0.02)
+    try:
+        out = tools.web_fetch("https://example.test", timeout=0.02)
+        elapsed = time.perf_counter() - started
+    finally:
+        release.set()
 
-    assert time.perf_counter() - started < 0.15
+    assert 0.01 <= elapsed < 0.5
     assert "timed out after 0.02 seconds" in out
 
 
@@ -455,6 +509,16 @@ def test_classify_tool_status_marks_tool_errors_failed():
     assert tool_runtime.classify_tool_status("Tool error for read_file: boom") == "failed"
     assert tool_runtime.classify_tool_status("tests failed\n[exit code: 1]") == "failed"
     assert tool_runtime.classify_tool_status("tests passed\n[exit code: 0]") == "worked"
+    assert tool_runtime.classify_tool_status('{"ok": false, "message": "denied"}') == "failed"
+    assert tool_runtime.classify_tool_status('{"error": {"code": "boom"}}') == "failed"
+    assert tool_runtime.classify_tool_status('{"status": "timed_out"}') == "failed"
+    assert (
+        tool_runtime.classify_tool_status(
+            '{"error": "this is file content"}',
+            name="read_file",
+        )
+        == "worked"
+    )
 
 
 @pytest.mark.parametrize("command", ["shutdown -h now", "format C:", "diskpart /s wipe.txt"])
@@ -480,7 +544,7 @@ def test_session_command_requires_approval(monkeypatch):
     assert prompted["called"] is True
 
 
-def test_approve_all_this_session_does_not_persist(monkeypatch, config_dir):
+def test_action_time_approval_cannot_be_promoted_to_session(monkeypatch, config_dir):
     from algo_cli.config import CONFIG_FILE
 
     cfg = Config()
@@ -491,10 +555,10 @@ def test_approve_all_this_session_does_not_persist(monkeypatch, config_dir):
 
     approved = tool_runtime.ask_approval("run_shell", {"command": "echo hi"}, cfg)
 
-    assert approved is True
+    assert approved is False
     assert cfg.auto_mode is False
-    assert cfg.session_auto_approve is True
-    assert cfg.auto_approve_active is True
+    assert cfg.session_auto_approve is False
+    assert cfg.auto_approve_active is False
 
     # agent_loop saves cfg at the end of every turn; the flag must survive that.
     cfg.save()
@@ -508,17 +572,36 @@ def test_approve_all_this_session_does_not_persist(monkeypatch, config_dir):
     assert reloaded.session_auto_approve is False
 
 
-def test_approve_all_skips_prompt_for_rest_of_session(monkeypatch):
+def test_action_time_tools_require_a_fresh_confirmation(monkeypatch):
     cfg = Config()
-    answers = iter(["a"])
+    answers = iter(["y", "y"])
+    prompts: list[str] = []
 
-    def fake_input(_prompt):
+    def fake_input(prompt):
+        prompts.append(prompt)
         return next(answers)  # raises StopIteration if prompted again
 
     monkeypatch.setattr("builtins.input", fake_input)
 
     assert tool_runtime.ask_approval("run_shell", {"command": "echo hi"}, cfg) is True
-    assert tool_runtime.ask_approval("write_file", {"path": "x", "content": "y"}, cfg) is True
+    assert tool_runtime.ask_approval("run_shell", {"command": "echo again"}, cfg) is True
+    assert len(prompts) == 2
+
+
+def test_session_preapproval_is_scoped_to_action_and_target(monkeypatch):
+    cfg = Config()
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt: prompts.append(prompt) or "a",
+    )
+
+    args = {"query": "bounded authority"}
+    assert tool_runtime.ask_approval("web_search", args, cfg) is True
+    assert tool_runtime.ask_approval("web_search", args, cfg) is True
+    assert len(prompts) == 1
+    assert tool_runtime.ask_approval("web_fetch", {"url": "https://example.com"}, cfg) is True
+    assert len(prompts) == 2
 
 
 def test_repeated_failed_tool_call_is_skipped_after_runtime_defaults(tmp_path, monkeypatch):
@@ -561,6 +644,7 @@ def test_attempt_signature_excludes_config_and_conversation(monkeypatch, config_
     monkeypatch.setattr(tool_runtime, "show_tool_call", lambda *a, **k: None)
     monkeypatch.setattr(tool_runtime, "show_tool_result", lambda *a, **k: None)
     monkeypatch.setattr(tool_runtime, "record_perf_event", lambda *a, **k: None)
+    monkeypatch.setattr(tool_runtime, "ask_approval", lambda *a, **k: True)
 
     runtime_args = tool_runtime.tool_runtime_args("remember", {"fact": "user likes tea"}, cfg)
     assert "cfg" not in runtime_args
@@ -684,6 +768,16 @@ def test_available_actions_exposes_harness_maintenance_loop():
     assert any("harness_stats" in item and "harness_refresh" in item for item in payload["verification_layer"])
 
 
+def test_available_actions_presents_know_act_verify_surface():
+    payload = json.loads(tools.available_actions())
+
+    assert set(payload["conceptual_surface"]) == {"KNOW", "ACT", "VERIFY"}
+    assert "harness_search" in payload["conceptual_surface"]["KNOW"]["routes"]
+    assert "Agent Blocks" in payload["conceptual_surface"]["ACT"]["routes"]
+    assert "live capability registry" in payload["conceptual_surface"]["VERIFY"]["routes"]
+    assert "/route TASK" in payload["route_observability"]
+
+
 def test_available_actions_exposes_runtime_agent_threads():
     payload = json.loads(tools.available_actions("agent"))
 
@@ -694,8 +788,18 @@ def test_available_actions_exposes_runtime_agent_threads():
     assert any("2-4" in item and "read-only" in item for item in payload["slash_command_guidance"])
 
 
+def test_available_actions_bounds_overview_and_focused_catalogs():
+    overview = tools.available_actions()
+    harness = tools.available_actions("harness")
+
+    assert len(overview) <= 12_000
+    assert len(harness) <= 12_000
+    assert json.loads(overview)["catalog_scope"] == "overview"
+    assert json.loads(harness)["catalog_scope"] == "focused"
+
+
 def test_plugin_tool_wrappers_serialize_and_load_discovered_manifests(monkeypatch, tmp_path):
-    from algo_cli import plugins
+    from algo_cli import william_plugins as plugins
 
     root = tmp_path / "plugins"
     plugin_dir = root / "demo"
@@ -703,10 +807,12 @@ def test_plugin_tool_wrappers_serialize_and_load_discovered_manifests(monkeypatc
     (plugin_dir / "plugin.json").write_text(
         json.dumps(
             {
+                "schema_version": 1,
                 "name": "demo",
                 "version": "1.2.3",
                 "description": "Demo plugin",
                 "enabled": True,
+                "entry_points": [],
             }
         ),
         encoding="utf-8",
@@ -719,10 +825,28 @@ def test_plugin_tool_wrappers_serialize_and_load_discovered_manifests(monkeypatc
 
     assert discovered[0]["name"] == "demo"
     assert discovered[0]["version"] == "1.2.3"
-    assert loaded["loaded"] is True
+    assert loaded["loaded"] is False
     assert loaded["name"] == "demo"
     assert loaded["path"] == "plugins/demo"
+    assert loaded["error_code"] == "code_loading_disabled"
+    assert loaded["code_loading"] is False
+    assert loaded["security_boundary"] is False
     assert str(tmp_path) not in json.dumps(loaded)
+
+
+def test_plugin_load_rejects_invalid_names_without_echoing_them() -> None:
+    hostile = "../../private-token-value\x1b[31m"
+
+    result = json.loads(tools.plugins_load(hostile))
+    serialized = json.dumps(result)
+
+    assert result == {
+        "loaded": False,
+        "error_code": "invalid_plugin_name",
+        "error": "Plugin name is invalid.",
+    }
+    assert "private-token-value" not in serialized
+    assert ".." not in serialized
 
 
 def test_version_manifest_tool_uses_manifest_as_dict(monkeypatch):
@@ -808,7 +932,7 @@ def test_sensitive_tool_args_are_redacted_from_attempt_metadata():
 
     assert "super-secret" not in signature
     assert "super-secret" not in preview
-    assert "redacted" in signature
+    assert signature.startswith("hmac-sha256:")
 
 
 def test_plugin_load_and_credential_store_require_approval(monkeypatch, capsys):
@@ -822,8 +946,10 @@ def test_plugin_load_and_credential_store_require_approval(monkeypatch, capsys):
         {"helper": "env", "key": "TOKEN", "value": "super-secret"},
         cfg,
     ) is False
-    assert len(prompts) == 2
-    assert "super-secret" not in capsys.readouterr().out
+    assert len(prompts) == 1
+    output = capsys.readouterr().out
+    assert "trusted user handoff" in output
+    assert "super-secret" not in output
 
 
 def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
@@ -879,7 +1005,7 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
             "write_wired": False,
             "retrieval_wired": False,
             "persistence_wired": False,
-            "readiness_source": "algo_cli.memory_echo_veil.get_echo_veil_readiness",
+            "readiness_source": "algo_cli.ada_memory_echo_veil.get_echo_veil_readiness",
             "runtime": "cpython-test",
         },
         "runtime_event_store": {
@@ -889,6 +1015,21 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
             "file_private": True,
             "lock_private": True,
             "compaction_needed": False,
+        },
+        "context_sources": {
+            "external_agent_stores": False,
+            "diagnostics": {
+                "available_adapter_roots": 2,
+                "indexed_records": 0,
+                "indexed_harnesses": [],
+                "extra_roots": {
+                    "status": "absent",
+                    "accepted": 0,
+                    "available": 0,
+                    "rejected": 0,
+                },
+                "privacy_default": "disabled; explicit opt-in required",
+            },
         },
     }
     monkeypatch.setattr(tools.harness, "stats", lambda: stats_payload)
@@ -902,26 +1043,67 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     )
     monkeypatch.setattr(tools, "query_knowledge_graph", lambda _query: "project:algo-cli  (187 edges)")
     monkeypatch.setattr(
-        harness_retrieval_benchmark,
-        "run_harness_retrieval_benchmark",
-        lambda: {
-            "benchmark_version": "harness-retrieval-v2",
+            harness_retrieval_benchmark,
+            "run_harness_retrieval_benchmark",
+            lambda: {
+                "benchmark_version": "harness-retrieval-v3",
             "status": "pass",
             "reason": "canaries and reusable-index benchmark passed",
             "correctness": {"passed": True, "stable_rankings": True},
             "performance": {"speedup": 2.5, "warm_mad_ratio": 0.01},
             "quality": {
                 "status": "pass",
+                "scope": "frozen offline retrieval",
                 "metrics": {
+                    "case_count": 2,
                     "recall_at_k": 1.0,
                     "mrr": 1.0,
-                    "ndcg_at_k": 1.0,
-                    "citation_precision": 1.0,
+                        "ndcg_at_k": 1.0,
+                        "citation_precision": 1.0,
+                        "false_positive_rate": 0.0,
+                        "no_answer_accuracy": 1.0,
+                        "stale_record_preference_rate": 0.0,
+                        "provenance_accuracy": 1.0,
+                        "context_tokens_per_successful_answer": 100.0,
+                        "conflict_resolution_accuracy": 1.0,
                 },
                 "fixture_digest": "quality123",
+                "cases": [
+                    {
+                        "name": "multilingual_query_english_record",
+                        "category": "multilingual",
+                    },
+                    {
+                        "name": "multi_hop_write_and_verify",
+                        "category": "complex",
+                    },
+                ],
             },
             "evidence": {"index_digest": "bench123"},
         },
+    )
+    external_probe = {
+        "schema_version": 1,
+        "probe": "harness-configured-external-roots-v1",
+        "status": "pass",
+        "scope": "isolated temporary configured roots",
+        "checks": {
+            "configuration_accepted": True,
+            "bounded_files_indexed": True,
+            "provenance_complete": True,
+            "cross_harness_conflict_preserved": True,
+            "secret_named_file_excluded": True,
+            "inline_secret_redacted": True,
+            "cross_root_retrieval": True,
+            "runtime_policy_unchanged": True,
+        },
+        "evidence": {"fixture_digest": "external123"},
+        "limitations": ["isolated qualification only"],
+    }
+    monkeypatch.setattr(
+        tools.harness,
+        "qualify_configured_external_roots",
+        lambda: external_probe,
     )
     monkeypatch.setattr(
         algorithm_effectiveness,
@@ -965,6 +1147,26 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     assert payload["overall_status"] == "ready"
     assert payload["scored_gate_count"] == 10
     assert payload["validation_errors"] == []
+    assert payload["review_summary"]["retrieval_quality"]["case_counts"] == {
+        "complex": 1,
+        "multilingual": 1,
+    }
+    assert payload["review_summary"]["retrieval_quality"]["case_names"] == [
+        "multilingual_query_english_record",
+        "multi_hop_write_and_verify",
+    ]
+    assert (
+        payload["review_summary"][
+            "configured_external_root_qualification"
+        ]["status"]
+        == "pass"
+    )
+    assert (
+        payload["review_summary"]["live_external_source_state"][
+            "enabled"
+        ]
+        is False
+    )
     statuses = {check["name"]: check["status"] for check in payload["checks"]}
     assert statuses["index integrity"] == "pass"
     assert statuses["embedding readiness"] == "pass"
@@ -981,6 +1183,33 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     assert capabilities["web tools"]["status"] == "pass"
     assert capabilities["google workspace wiring"]["status"] == "pass"
     assert all(item["scored"] is False for item in capabilities.values())
+
+    failed_external_probe = {
+        **external_probe,
+        "status": "fail",
+        "checks": {
+            **external_probe["checks"],
+            "cross_root_retrieval": False,
+        },
+    }
+    monkeypatch.setattr(
+        tools.harness,
+        "qualify_configured_external_roots",
+        lambda: failed_external_probe,
+    )
+    external_failure = json.loads(tools.harness_scorecard())
+    external_failure_statuses = {
+        check["name"]: check["status"]
+        for check in external_failure["checks"]
+    }
+    assert external_failure["score"] == 9.0
+    assert external_failure["overall_status"] == "blocked"
+    assert external_failure_statuses["retrieval benchmark"] == "fail"
+    monkeypatch.setattr(
+        tools.harness,
+        "qualify_configured_external_roots",
+        lambda: external_probe,
+    )
 
     stats_payload["echo_veil"]["enabled"] = True
     enabled_but_unwired = json.loads(tools.harness_scorecard())
@@ -1039,6 +1268,64 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     assert counterfeit_pass["overall_status"] == "blocked"
     assert counterfeit_statuses["retrieval benchmark"] == "fail"
     assert counterfeit_statuses["algorithm effectiveness"] == "fail"
+
+
+def test_harness_competitive_rating_fails_closed_on_external_probe(
+    monkeypatch,
+) -> None:
+    from algo_cli import git_evidence
+    from algo_cli.evals import algorithm_effectiveness, harness_retrieval_benchmark
+
+    monkeypatch.setattr(
+        harness_retrieval_benchmark,
+        "run_harness_retrieval_benchmark",
+        lambda: {
+            "benchmark_version": "retrieval-v1",
+            "status": "pass",
+            "performance": {"cold_sample_count": 5, "warm_sample_count": 5},
+        },
+    )
+    monkeypatch.setattr(
+        tools.harness,
+        "qualify_configured_external_roots",
+        lambda: {
+            "status": "fail",
+            "checks": {"cross_root_retrieval": False},
+        },
+    )
+    monkeypatch.setattr(
+        algorithm_effectiveness,
+        "run_algorithm_effectiveness_probe",
+        lambda: {
+            "probe": "algorithm-v1",
+            "status": "pass",
+            "required_checks": [],
+            "summary": {"passed": 0},
+            "checks": {},
+        },
+    )
+    monkeypatch.setattr(
+        git_evidence,
+        "capture_git_snapshot",
+        lambda: git_evidence.GitSnapshot(
+            True,
+            None,
+            "abcdef123456",
+            "## main",
+            "",
+            (),
+            "clean",
+            git_evidence._digest(""),
+        ),
+    )
+
+    report = json.loads(tools.harness_competitive_rating())
+
+    benchmark = report["local_probe_artifacts"]["retrieval_benchmark"]
+    assert benchmark["status"] == "fail"
+    assert benchmark["reason"] == (
+        "configured external-root qualification failed"
+    )
 
 
 def test_harness_index_integrity_rejects_duplicate_ids_and_nonfinite_vectors(monkeypatch):
@@ -1118,7 +1405,7 @@ def test_harness_index_integrity_allows_dimensions_to_differ_by_model(monkeypatc
 
 def test_show_help_contains_current_slash_commands(monkeypatch):
     from algo_cli import display
-    from algo_cli import slash_dispatch
+    from algo_cli import oliver_slash_dispatch as slash_dispatch
 
     output = StringIO()
     theme_name = getattr(display, "_active_theme_name", "tokyo-night")
@@ -1304,6 +1591,126 @@ def test_embed_text_accepts_object_response_from_current_ollama_client(monkeypat
     assert payload["preview"] == [0.25, 0.75]
 
 
+@pytest.mark.parametrize(
+    "url",
+    (
+        "https://example.com:8765",
+        "http://localhost",
+        "http://user:secret@localhost:8765",
+        "http://localhost:8765/unexpected-path",
+        "file:///tmp/algo-gateway",
+    ),
+)
+def test_gateway_functions_never_open_remote_or_ambiguous_endpoints(monkeypatch, url):
+    opened: list[str] = []
+
+    def fail_open(request, *, timeout):
+        opened.append(request.full_url)
+        raise AssertionError(f"unexpected request with timeout {timeout}")
+
+    monkeypatch.setattr(tools, "_open_local_gateway", fail_open)
+
+    assert tools.gateway_ready(url) is False
+    assert tools.gateway_embed("hello", "embeddinggemma", True, None, url) is None
+    assert tools.gateway_embed_batch(["hello"], "embeddinggemma", True, None, url) is None
+    assert opened == []
+
+
+def test_gateway_embed_is_bounded_strict_and_uses_validated_loopback(monkeypatch):
+    opened: list[tuple[str, float, dict]] = []
+
+    class Response:
+        status = 200
+
+        def __init__(self, raw: bytes):
+            self.raw = raw
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, limit: int) -> bytes:
+            return self.raw[:limit]
+
+    def open_gateway(request, *, timeout):
+        opened.append((request.full_url, timeout, json.loads(request.data)))
+        return Response(b'{"model":"m1","embeddings":[[1.0,0.0]]}')
+
+    monkeypatch.setattr(tools, "_open_local_gateway", open_gateway)
+
+    result = tools.gateway_embed(
+        "hello",
+        "m1",
+        True,
+        2,
+        "http://127.0.0.1:8765",
+    )
+
+    assert result == {"model": "m1", "embeddings": [[1.0, 0.0]]}
+    assert opened == [
+        (
+            "http://127.0.0.1:8765/supplemental/embed",
+            60,
+            {"model": "m1", "input": "hello", "truncate": True, "dimensions": 2},
+        )
+    ]
+
+    monkeypatch.setattr(
+        tools,
+        "_open_local_gateway",
+        lambda *_args, **_kwargs: Response(b'{"model":"first","model":"second"}'),
+    )
+    assert tools.gateway_embed("hello", "m1", True, None) is None
+
+    oversized = b"{" + b"x" * tools.MAX_GATEWAY_RESPONSE_BYTES + b"}"
+    monkeypatch.setattr(
+        tools,
+        "_open_local_gateway",
+        lambda *_args, **_kwargs: Response(oversized),
+    )
+    assert tools.gateway_embed("hello", "m1", True, None) is None
+
+
+def test_gateway_payload_limits_fail_closed_before_open(monkeypatch):
+    monkeypatch.setattr(
+        tools,
+        "_open_local_gateway",
+        lambda *_args, **_kwargs: pytest.fail("invalid payload reached transport"),
+    )
+
+    assert tools.gateway_embed_batch(
+        ["x"] * (tools.MAX_GATEWAY_BATCH_ITEMS + 1),
+        "m1",
+        True,
+        None,
+    ) is None
+    assert tools.gateway_embed("x", " m1 ", True, None) is None
+    assert tools.gateway_embed("x", "m1", True, 0) is None
+    assert tools.gateway_embed("x" * tools.MAX_GATEWAY_REQUEST_BYTES, "m1", True, None) is None
+
+
+def test_local_gateway_transport_ignores_proxy_environment(monkeypatch):
+    captured: list[object] = []
+    sentinel = object()
+
+    class Opener:
+        def open(self, request, *, timeout):
+            captured.extend((request, timeout))
+            return sentinel
+
+    def build(handler):
+        assert handler.proxies == {}
+        return Opener()
+
+    monkeypatch.setattr(tools, "build_opener", build)
+    request = tools.Request("http://127.0.0.1:8765/healthz")
+
+    assert tools._open_local_gateway(request, timeout=1.0) is sentinel
+    assert captured == [request, 1.0]
+
+
 def test_model_create_translates_modelfile_to_current_ollama_api(monkeypatch):
     calls: list[dict[str, object]] = []
 
@@ -1434,12 +1841,12 @@ def test_search_files_reports_rg_error_as_error(tmp_path, monkeypatch):
 
 
 def test_session_command_allows_runtime_agent_delegation(monkeypatch):
-    from algo_cli import agent_pipeline, runtime_services
+    from algo_cli import agent_pipeline, theodore_runtime_services
 
     cfg = Config()
     calls: list[tuple[str, object, object]] = []
     client = object()
-    monkeypatch.setattr(runtime_services, "create_client", lambda _cfg: client)
+    monkeypatch.setattr(theodore_runtime_services, "create_client", lambda _cfg: client)
     monkeypatch.setattr(
         agent_pipeline,
         "execute_agent_command",
@@ -1453,10 +1860,10 @@ def test_session_command_allows_runtime_agent_delegation(monkeypatch):
 
 
 def test_model_invoked_agent_output_redacts_workspace_path(monkeypatch, tmp_path):
-    from algo_cli import agent_pipeline, runtime_services
+    from algo_cli import agent_pipeline, theodore_runtime_services
 
     cfg = Config(cwd=str(tmp_path))
-    monkeypatch.setattr(runtime_services, "create_client", lambda _cfg: object())
+    monkeypatch.setattr(theodore_runtime_services, "create_client", lambda _cfg: object())
     monkeypatch.setattr(
         agent_pipeline,
         "execute_agent_command",
@@ -1728,7 +2135,7 @@ def test_x_account_post_tool_blocks_without_confirm(monkeypatch):
     from ollama_cli import x_account
 
     monkeypatch.setattr(x_account, "_run_xurl", lambda *args, **kwargs: pytest.fail("should not run xurl"))
-    out = tools.x_account_post("hello", confirm=False)
+    out = tools.x_account_post("hello")
     assert "Blocked write" in out
 
 
@@ -1736,5 +2143,5 @@ def test_x_account_post_action_tool_blocks_without_confirm(monkeypatch):
     from ollama_cli import x_account
 
     monkeypatch.setattr(x_account, "_run_xurl", lambda *args, **kwargs: pytest.fail("should not run xurl"))
-    out = tools.x_account_post_action("like", "123", confirm=False)
+    out = tools.x_account_post_action("like", "123")
     assert "Blocked write" in out

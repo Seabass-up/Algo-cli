@@ -34,7 +34,7 @@ only when automatic installation detection needs an explicit override.
 To install a reviewed source checkout instead, clone the repository and run
 `pipx install .` from its root.
 
-Optional extras are available for PDF rendering (`algo-cli-runtime[pdf]`) and experimental vector quantization (`algo-cli-runtime[quantization]`). The distribution installs the `algo-cli` command. Run `algo-cli doctor` for a side-effect-free readiness report.
+Optional extras are available for protected Echo Veil memory (`algo-cli-runtime[echo-veil]`), PDF rendering (`algo-cli-runtime[pdf]`), and experimental vector quantization (`algo-cli-runtime[quantization]`). The Echo Veil extra is pinned to the qualified full source revision and remains local-development evidence rather than a production-readiness claim. The distribution installs the `algo-cli` command. Run `algo-cli doctor` for a side-effect-free readiness report.
 
 ## Quick Start
 
@@ -259,7 +259,7 @@ The CLI retrieves relevant records from a local index. The public built-in corpu
 /harness external status
 /harness build-rust
 /hsearch retrieval benchmark
-/hread algo-cli:memory:algo-cli-memory-lifecycle-contract.md
+/hread algo-cli:memory:ada-algo-cli-memory-lifecycle-contract.md
 ```
 
 `/harness score` grades Algo CLI's internal retrieval/runtime readiness.

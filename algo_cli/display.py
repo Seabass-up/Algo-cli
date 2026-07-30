@@ -187,6 +187,7 @@ _THINKING_VISIBLE_CHARS = 1200
 # One-shot JSON event sink. When set, display helpers route to it instead of
 # rendering Rich panels. Installed by algo_cli.oneshot.run_oneshot().
 _json_sink: Any = None
+_runtime_details_visible = False
 _console_capture_active: ContextVar[bool] = ContextVar(
     "algo_cli_console_capture_active",
     default=False,
@@ -205,6 +206,13 @@ def uninstall_json_sink() -> None:
 
 def json_sink() -> Any:
     return _json_sink
+
+
+def set_runtime_details_visible(visible: bool) -> None:
+    """Control verbose Rich diagnostics without changing JSON event fidelity."""
+
+    global _runtime_details_visible
+    _runtime_details_visible = bool(visible)
 
 
 def json_mode_active() -> bool:
@@ -718,15 +726,14 @@ def _short_value(value: Any, limit: int = 80) -> str:
 
 
 def redact_tool_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
-    """Remove secret-bearing values before display, JSON events, or audit previews."""
+    """Return the recursive confirmation-safe view used by display bridges."""
 
-    sensitive_keys = {"api_key", "access_token", "refresh_token", "password", "secret", "token"}
-    if name == "credential_helpers_store":
-        sensitive_keys.add("value")
-    return {
-        key: "<redacted>" if key.lower() in sensitive_keys else value
-        for key, value in args.items()
-    }
+    from .irene_privacy_views import PrivacyProjectionError, PrivacyView, project_action_args
+
+    try:
+        return project_action_args(name, args, PrivacyView.CONFIRMATION)
+    except (PrivacyProjectionError, TypeError, ValueError):
+        return {"privacy_error": "arguments unavailable"}
 
 
 def show_tool_call(name: str, args: dict, *, call_id: str | None = None) -> None:
@@ -737,6 +744,12 @@ def show_tool_call(name: str, args: dict, *, call_id: str | None = None) -> None
     if _json_sink is not None:
         cid = call_id or _json_sink.next_call_id()
         _json_sink.tool_call(call_id=cid, name=name, args=visible_args)
+        return
+    if not _runtime_details_visible:
+        console.print(
+            f"[accent]{glyph(AIState.DOING).plain}[/] [bold]{name}[/]",
+            highlight=False,
+        )
         return
     rendered = " ".join(f"[secondary]{key}[/]={_short_value(value)}" for key, value in visible_args.items())
     suffix = f" {rendered}" if rendered else ""
@@ -759,9 +772,20 @@ def show_tool_result(
             _json_sink.tool_result(call_id=call_id, name=name, result=result, duration_ms=duration_ms)
         return
     status = "[success]OK[/]" if approved else "[error]ERR[/]"
+    duration = f"  {duration_ms:.0f}ms" if duration_ms is not None else ""
+    if not _runtime_details_visible:
+        console.print(f"{status} [bold]{name}[/]{duration}")
+        if not approved:
+            result_lines = str(result).splitlines()
+            first_line = result_lines[0] if result_lines else str(result)
+            if first_line:
+                console.print(
+                    f"  [muted]{_short_value(first_line, 180)}[/]",
+                    highlight=False,
+                )
+        return
     lines = str(result).splitlines()
     byte_count = len(str(result).encode("utf-8", errors="replace"))
-    duration = f"  {duration_ms:.0f}ms" if duration_ms is not None else ""
     console.print(f"{status} [bold]{name}[/]{duration}  {_format_bytes(byte_count)}  {len(lines)} lines")
     preview = lines[:5] or [str(result)[:160]]
     for line in preview:
@@ -1325,7 +1349,7 @@ def show_help() -> None:
     table.add_column(style="primary", no_wrap=True)
     table.add_column(style="text")
 
-    from . import slash_dispatch
+    from . import oliver_slash_dispatch as slash_dispatch
 
     def _group(command: str) -> str:
         if command in {

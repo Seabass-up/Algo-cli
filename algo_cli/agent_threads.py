@@ -12,11 +12,12 @@ from . import config
 
 
 THREADS_FILE_NAME = "agent_threads.json"
-THREADS_SCHEMA_VERSION = 2
-_COMPATIBLE_SCHEMA_VERSIONS = frozenset({1, THREADS_SCHEMA_VERSION})
+THREADS_SCHEMA_VERSION = 3
+_COMPATIBLE_SCHEMA_VERSIONS = frozenset({1, 2, THREADS_SCHEMA_VERSION})
 MAX_THREAD_RECORDS = 100
 MAX_THREAD_TURNS = 16
 MAX_THREAD_OUTPUT_CHARS = 12_000
+MAX_BLOCK_CONTEXT_CHARS = 3_000
 _VALID_STATUSES = frozenset({"queued", "running", "complete", "partial", "failed", "cancelled"})
 
 
@@ -89,6 +90,97 @@ def _merge_workspace(previous: Any, current: Any) -> dict[str, Any]:
     return after
 
 
+def _normalize_run_contract(raw: Any) -> dict[str, Any]:
+    """Persist only the private structural link to the immutable contract."""
+
+    if not isinstance(raw, dict):
+        return {}
+    value = {
+        "contract_id": _clean_text(raw.get("contract_id"), 96),
+        "digest": _clean_text(raw.get("digest"), 64),
+        "run_nonce": _clean_text(raw.get("run_nonce"), 64),
+        "mode": _clean_text(raw.get("mode"), 16),
+        "approval_mode": _clean_text(raw.get("approval_mode"), 16),
+        "journal_file": _clean_text(raw.get("journal_file"), 128),
+    }
+    return {key: item for key, item in value.items() if item}
+
+
+def _normalize_checkpoint(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    try:
+        next_block = int(raw.get("next_block_ordinal") or 0)
+        last_verified = int(raw.get("last_verified_sequence", -1))
+    except (TypeError, ValueError):
+        return {}
+    uncertain = raw.get("uncertain_mutation_steps", [])
+    return {
+        "next_block_ordinal": max(0, min(next_block, 32)),
+        "last_verified_sequence": max(-1, last_verified),
+        "uncertain_mutation_steps": [
+            _clean_text(item, 128)
+            for item in uncertain[:64]
+            if str(item).strip()
+        ]
+        if isinstance(uncertain, list)
+        else [],
+        "terminal": bool(raw.get("terminal", False)),
+        "terminal_status": _clean_text(raw.get("terminal_status"), 24),
+    }
+
+
+def _normalize_block(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    value: dict[str, Any] = {
+        "role": _clean_text(raw.get("role"), 80),
+        "status": _clean_text(raw.get("status"), 24),
+        "status_code": _clean_text(raw.get("status_code"), 80),
+        "status_reason": _clean_text(raw.get("status_reason"), 2_000),
+        "context_output": _clean_text(
+            raw.get("context_output"),
+            MAX_BLOCK_CONTEXT_CHARS,
+        ),
+        "verification_warning": _clean_text(
+            raw.get("verification_warning"),
+            2_000,
+        ),
+        "git_head": _clean_text(raw.get("git_head"), 64),
+        "git_status": _clean_text(raw.get("git_status"), 4_000),
+        "status_digest": _clean_text(raw.get("status_digest"), 64),
+        "tracked_diff_digest": _clean_text(
+            raw.get("tracked_diff_digest"),
+            64,
+        ),
+        "untracked_digest": _clean_text(raw.get("untracked_digest"), 64),
+        "git_clean": bool(raw.get("git_clean", False)),
+    }
+    try:
+        value["tool_calls"] = max(
+            0,
+            min(int(raw.get("tool_calls") or 0), 100_000),
+        )
+        value["duration_ms"] = max(
+            0.0,
+            min(float(raw.get("duration_ms") or 0.0), 86_400_000.0),
+        )
+    except (TypeError, ValueError):
+        value["tool_calls"] = 0
+        value["duration_ms"] = 0.0
+    writes = raw.get("successful_writes", [])
+    value["successful_writes"] = (
+        [
+            _clean_text(item, 2_000)
+            for item in writes[:64]
+            if str(item).strip()
+        ]
+        if isinstance(writes, list)
+        else []
+    )
+    return value
+
+
 def _normalize_record(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
@@ -120,10 +212,16 @@ def _normalize_record(raw: Any) -> dict[str, Any] | None:
         "turns": [item for item in turns[-MAX_THREAD_TURNS:] if isinstance(item, dict)]
         if isinstance(turns, list)
         else [],
-        "blocks": [item for item in blocks if isinstance(item, dict)]
+        "blocks": [
+            normalized
+            for item in blocks
+            if (normalized := _normalize_block(item)) is not None
+        ]
         if isinstance(blocks, list)
         else [],
         "workspace": _normalize_workspace(raw.get("workspace")),
+        "run_contract": _normalize_run_contract(raw.get("run_contract")),
+        "checkpoint": _normalize_checkpoint(raw.get("checkpoint")),
     }
 
 
@@ -173,6 +271,8 @@ def create_thread(
     status: str = "queued",
     start_turn: bool = False,
     workspace: dict[str, Any] | None = None,
+    run_contract: dict[str, Any] | None = None,
+    checkpoint: dict[str, Any] | None = None,
     path: Path | None = None,
 ) -> dict[str, Any]:
     if status not in _VALID_STATUSES:
@@ -204,6 +304,8 @@ def create_thread(
             ),
             "blocks": [],
             "workspace": _normalize_workspace(workspace),
+            "run_contract": _normalize_run_contract(run_contract),
+            "checkpoint": _normalize_checkpoint(checkpoint),
         }
         records.append(record)
         if parent_id:
@@ -218,7 +320,20 @@ def create_thread(
 
 
 def update_thread(thread_id: str, *, path: Path | None = None, **changes: Any) -> dict[str, Any]:
-    allowed = {"title", "task", "role", "pipeline", "model", "status", "output", "error", "blocks", "workspace"}
+    allowed = {
+        "title",
+        "task",
+        "role",
+        "pipeline",
+        "model",
+        "status",
+        "output",
+        "error",
+        "blocks",
+        "workspace",
+        "run_contract",
+        "checkpoint",
+    }
     unknown = set(changes) - allowed
     if unknown:
         raise ValueError(f"Unsupported agent thread fields: {', '.join(sorted(unknown))}")
@@ -235,9 +350,21 @@ def update_thread(thread_id: str, *, path: Path | None = None, **changes: Any) -
                 elif key == "error":
                     record[key] = _clean_text(value, 2_000)
                 elif key == "blocks":
-                    record[key] = [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+                    record[key] = (
+                        [
+                            normalized
+                            for item in value
+                            if (normalized := _normalize_block(item)) is not None
+                        ]
+                        if isinstance(value, list)
+                        else []
+                    )
                 elif key == "workspace":
                     record[key] = _merge_workspace(record.get("workspace"), value)
+                elif key == "run_contract":
+                    record[key] = _normalize_run_contract(value)
+                elif key == "checkpoint":
+                    record[key] = _normalize_checkpoint(value)
                 else:
                     record[key] = _clean_text(value, 8_000 if key == "task" else 120)
             record["updated_at"] = _now()
@@ -254,6 +381,8 @@ def begin_turn(
     pipeline: str | None = None,
     model: str | None = None,
     workspace: dict[str, Any] | None = None,
+    run_contract: dict[str, Any] | None = None,
+    checkpoint: dict[str, Any] | None = None,
     path: Path | None = None,
 ) -> dict[str, Any]:
     def begin(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -271,6 +400,10 @@ def begin_turn(
                 record["model"] = _clean_text(model, 120)
             if workspace is not None:
                 record["workspace"] = _merge_workspace(record.get("workspace"), workspace)
+            if run_contract is not None:
+                record["run_contract"] = _normalize_run_contract(run_contract)
+            if checkpoint is not None:
+                record["checkpoint"] = _normalize_checkpoint(checkpoint)
             record["turns"].append(
                 {"task": _clean_text(task, 8_000), "status": "running", "started_at": now, "output": ""}
             )
@@ -290,6 +423,8 @@ def finish_turn(
     blocks: list[dict[str, Any]] | None = None,
     pipeline: str | None = None,
     workspace: dict[str, Any] | None = None,
+    run_contract: dict[str, Any] | None = None,
+    checkpoint: dict[str, Any] | None = None,
     path: Path | None = None,
 ) -> dict[str, Any]:
     if status not in _VALID_STATUSES - {"queued", "running"}:
@@ -305,11 +440,19 @@ def finish_turn(
             record["output"] = _clean_text(output, MAX_THREAD_OUTPUT_CHARS)
             record["error"] = _clean_text(error, 2_000)
             if blocks is not None:
-                record["blocks"] = [item for item in blocks if isinstance(item, dict)]
+                record["blocks"] = [
+                    normalized
+                    for item in blocks
+                    if (normalized := _normalize_block(item)) is not None
+                ]
             if pipeline:
                 record["pipeline"] = _clean_text(pipeline, 80)
             if workspace is not None:
                 record["workspace"] = _merge_workspace(record.get("workspace"), workspace)
+            if run_contract is not None:
+                record["run_contract"] = _normalize_run_contract(run_contract)
+            if checkpoint is not None:
+                record["checkpoint"] = _normalize_checkpoint(checkpoint)
             if record["turns"]:
                 turn = record["turns"][-1]
                 if turn.get("status") == "running":

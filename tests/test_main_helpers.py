@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import threading
 import time
 
 import pytest
@@ -14,7 +15,9 @@ from algo_cli import main
 from algo_cli import model_routing
 from algo_cli import action_registry
 from algo_cli import context_budget
+from algo_cli import execution_guardrails
 from algo_cli import updater
+from algo_cli import echo_veil_update
 
 
 def test_imports_ok():
@@ -23,6 +26,115 @@ def test_imports_ok():
     import algo_cli.harness  # noqa: F401
     import algo_cli.identity  # noqa: F401
     import algo_cli.skills  # noqa: F401
+
+
+def test_runtime_defaults_are_quiet_and_never_batch_embed_foreground() -> None:
+    cfg = Config()
+
+    assert cfg.show_thinking is False
+    assert cfg.show_runtime_details is False
+    assert cfg.show_route_suggestions is False
+    assert cfg.harness_auto_embed_enabled is False
+
+
+def test_chat_index_readiness_does_not_build_embeddings_by_default(monkeypatch):
+    cfg = Config(harness_auto_embed_enabled=False)
+    monkeypatch.setattr(
+        main,
+        "ensure_lessons_index",
+        lambda _cfg: (_ for _ in ()).throw(
+            AssertionError("ordinary chat must not rebuild lesson embeddings")
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "ensure_harness_index",
+        lambda _cfg, _local=None: (_ for _ in ()).throw(
+            AssertionError("ordinary chat must not batch-embed harness records")
+        ),
+    )
+    monkeypatch.setattr(
+        main.identity,
+        "lessons_index_status",
+        lambda: {"index": False},
+    )
+    monkeypatch.setattr(main.harness, "embedded_count", lambda _model: (0, 32))
+
+    assert main.lessons_index_ready_for_chat(cfg, "embed-model") is False
+    assert main.harness_index_ready_for_chat(cfg, "embed-model") is False
+
+
+def test_explicit_auto_embedding_opt_in_uses_index_builders(monkeypatch):
+    cfg = Config(harness_auto_embed_enabled=True)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        main,
+        "ensure_lessons_index",
+        lambda _cfg: calls.append("lessons") or True,
+    )
+    monkeypatch.setattr(
+        main,
+        "ensure_harness_index",
+        lambda _cfg, _local=None: calls.append("harness") or True,
+    )
+
+    assert main.lessons_index_ready_for_chat(cfg, "embed-model") is True
+    assert main.harness_index_ready_for_chat(cfg, "embed-model", []) is True
+    assert calls == ["lessons", "harness"]
+
+
+def test_echo_status_request_bypasses_model_and_shell(monkeypatch) -> None:
+    status = echo_veil_update.EchoStatus(
+        installed=True,
+        installed_version="0.7.0",
+        source_version="0.7.0",
+        installation_kind="vcs-pinned",
+        source_url=echo_veil_update.ECHO_VEIL_REPOSITORY_GIT,
+        source_commit=echo_veil_update.QUALIFIED_ECHO_VEIL_COMMIT,
+        api_contract_ready=True,
+        adapter_supported=True,
+        enabled=True,
+        protection_policy="required",
+        healthy=True,
+        local_protection_ready=True,
+        qualified=True,
+        upstream_version="0.7.0",
+        upstream_error=None,
+    )
+    rendered: list[str] = []
+    monkeypatch.setattr(
+        main.echo_veil_update,
+        "collect_echo_status",
+        lambda _cfg: status,
+    )
+    monkeypatch.setattr(
+        main.console,
+        "print",
+        lambda value, **_kwargs: rendered.append(str(value)),
+    )
+    monkeypatch.setattr(
+        main,
+        "agent_loop",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Echo status must not enter the model loop")
+        ),
+    )
+    monkeypatch.setattr(
+        main.tools_module,
+        "run_shell",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Echo status must not enter generic shell execution")
+        ),
+    )
+
+    handled, exit_code = main._run_echo_veil_request(
+        "do a review of echo-veil to see if it is updated",
+        Config(),
+    )
+
+    assert handled is True
+    assert exit_code == 0
+    assert rendered and "Echo Veil status" in rendered[0]
 
 
 def test_update_command_exits_before_runtime_state_initialization(monkeypatch):
@@ -166,6 +278,17 @@ def test_system_prompt_does_not_disclose_absolute_workspace_or_identity_paths(tm
     assert str(private_workspace) not in prompt
     assert str(main.identity.IDENTITY_DIR) not in prompt
     assert "Relative tool paths resolve from the active session workspace" in prompt
+
+
+def test_system_prompt_uses_live_capability_registry_for_external_sources(monkeypatch):
+    cfg = Config(external_harness_sources_enabled=False)
+    monkeypatch.setattr(main.harness, "_EXTERNAL_SOURCES_ENABLED", False)
+
+    prompt = context_budget.build_system_prompt(cfg)
+
+    assert "External-store support is installed but disabled" in prompt
+    assert "only algo-cli and explicitly configured roots are searchable" in prompt
+    assert "External local agent stores are enabled for this session" not in prompt
 
 
 def test_chatgpt_login_device_code_flag_uses_codex_device_flow(monkeypatch):
@@ -579,7 +702,7 @@ def test_create_client_applies_configured_chat_stream_timeout(monkeypatch):
         captured.update(kwargs)
         return object()
 
-    from algo_cli import runtime_services
+    from algo_cli import theodore_runtime_services as runtime_services
 
     monkeypatch.setattr(runtime_services, "Client", fake_client)
     monkeypatch.setattr(runtime_services, "load_runtime_env", lambda **_kwargs: {})
@@ -782,6 +905,51 @@ def test_agent_loop_auto_memory_runs_only_at_normal_completion(monkeypatch):
     assert infos == ["Saved 1 durable memory automatically; review it with /memories."]
 
 
+def test_required_echo_prompt_failure_stops_before_model_execution(monkeypatch):
+    class ForbiddenClient:
+        calls = 0
+
+        def chat(self, **_kwargs):
+            self.calls += 1
+            raise AssertionError("model execution must remain blocked")
+
+    _patch_agent_loop_for_tool_policy_test(monkeypatch)
+    errors: list[str] = []
+    captures: list[bool] = []
+    monkeypatch.setattr(
+        main,
+        "build_system_prompt",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("sensitive protected backend detail")
+        ),
+    )
+    monkeypatch.setattr(main, "show_error", errors.append)
+    monkeypatch.setattr(
+        main.memory_runtime,
+        "capture_completed_user_turn",
+        lambda _cfg, _text, *, completed, **_kwargs: (
+            captures.append(completed) or {"status": "skipped"}
+        ),
+    )
+    cfg = Config(
+        model="test-model",
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+        skill_crystallize_enabled=False,
+    )
+    client = ForbiddenClient()
+
+    main.agent_loop(client, cfg, "Use the previous protected decision")  # type: ignore[arg-type]
+
+    assert client.calls == 0
+    assert errors == [
+        "This turn stopped before model execution because required protected "
+        "memory is unavailable."
+    ]
+    assert "sensitive protected backend detail" not in errors[0]
+    assert captures == [False]
+
+
 def test_agent_loop_reports_session_save_failure_without_masking_completion(monkeypatch):
     class ScriptedClient:
         def chat(self, **_kwargs):
@@ -864,7 +1032,7 @@ def test_normal_chat_serial_policy_matches_pipeline_and_blocks_unsafe_shell(monk
 
     tool_results = [str(message.get("content") or "") for message in cfg.messages if message.get("role") == "tool"]
     assert tool_results == [pipeline_result]
-    assert "Blocked by runtime policy chain" in pipeline_result
+    assert "Blocked by runtime authority" in pipeline_result
 
 
 def test_agent_loop_withholds_unverified_final_and_requires_later_verifier(
@@ -925,6 +1093,7 @@ def test_agent_loop_withholds_unverified_final_and_requires_later_verifier(
     monkeypatch.setattr(main, "show_stream_text", streamed.append)
     monkeypatch.setattr(main, "show_info", infos.append)
     monkeypatch.setattr(main, "record_perf_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main, "ask_approval", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         main,
         "run_tool",
@@ -952,6 +1121,7 @@ def test_agent_loop_withholds_unverified_final_and_requires_later_verifier(
     main.agent_loop(client, cfg, "create and verify a file")  # type: ignore[arg-type]
 
     assert len(client.calls) == 4
+    assert client.calls[-1]["tools"]
     assert "Premature completion claim." not in streamed
     assert "Verified completion." in streamed
     assert any("Unverified final text was withheld" in message for message in infos)
@@ -960,6 +1130,148 @@ def test_agent_loop_withholds_unverified_final_and_requires_later_verifier(
         "[Internal completion gate]" in str(message.get("content") or "")
         for message in third_request
     )
+    assert any(
+        "Reuse the exact paths from successful mutation receipts"
+        in str(message.get("content") or "")
+        for message in third_request
+    )
+
+
+def test_agent_loop_keeps_tools_after_readback_for_remaining_work(
+    monkeypatch,
+    tmp_path,
+):
+    class ScriptedClient:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def chat(self, **kwargs):
+            self.calls.append(json.loads(json.dumps(kwargs, default=str)))
+            turn = len(self.calls)
+            if turn == 1:
+                return iter(
+                    [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "id": "write",
+                                        "function": {
+                                            "name": "write_file",
+                                            "arguments": {
+                                                "path": "created.py",
+                                                "content": "x = 1\n",
+                                            },
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                )
+            if turn == 2:
+                return iter(
+                    [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "id": "reread",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": {"path": "created.py"},
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                )
+            if turn == 3:
+                return iter(
+                    [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "id": "write-summary",
+                                        "function": {
+                                            "name": "write_file",
+                                            "arguments": {
+                                                "path": "summary.md",
+                                                "content": "verified\n",
+                                            },
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                )
+            if turn == 4:
+                return iter(
+                    [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "id": "reread-summary",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": {"path": "summary.md"},
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                )
+            return iter([{"message": {"content": "Both files verified."}}])
+
+    _patch_agent_loop_for_tool_policy_test(monkeypatch)
+    streamed: list[str] = []
+    infos: list[str] = []
+    monkeypatch.setattr(main, "start_streaming_response", lambda: None)
+    monkeypatch.setattr(main, "show_stream_text", streamed.append)
+    monkeypatch.setattr(main, "show_info", infos.append)
+    monkeypatch.setattr(main, "record_perf_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main, "ask_approval", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        main,
+        "run_tool",
+        lambda name, args, _cfg: (
+            f"Wrote file: {args['path']}"
+            if name == "write_file"
+            else "verified file contents\n"
+        ),
+    )
+    monkeypatch.setattr(
+        main.memory_runtime,
+        "capture_completed_user_turn",
+        lambda *_args, **_kwargs: {"status": "skipped"},
+    )
+    cfg = Config(
+        model="test-model",
+        cwd=str(tmp_path),
+        auto_mode=True,
+        skill_crystallize_enabled=False,
+        code_rag_enabled=False,
+        index_compute_lab_auto_inject=False,
+    )
+    client = ScriptedClient()
+
+    main.agent_loop(client, cfg, "create and inspect a file")  # type: ignore[arg-type]
+
+    assert len(client.calls) == 5
+    assert client.calls[2]["tools"]
+    assert client.calls[-1]["tools"]
+    assert not any(
+        "[Internal finalization turn]" in str(message.get("content") or "")
+        for call in client.calls
+        for message in call["messages"]
+    )
+    assert "Both files verified." in streamed
+    assert not any("Unverified final text was withheld" in message for message in infos)
 
 
 @pytest.mark.parametrize("iteration_cap", [1, 8])
@@ -1076,6 +1388,274 @@ def test_normal_chat_parallel_path_preflights_every_call(monkeypatch):
     assert len(tool_results) == 2
     assert all("unknown runtime tool: stale_read_tool" in result for result in tool_results)
     assert [entry["status"] for entry in cfg.attempt_ledger[-2:]] == ["denied", "denied"]
+
+
+@pytest.mark.parametrize(
+    "tool_calls",
+    [
+        [
+            {
+                "id": "safe-first",
+                "function": {"name": "read_file", "arguments": {"path": "README.md"}},
+            },
+            {
+                "id": "bad-second",
+                "function": {"name": "unclassified_action", "arguments": {}},
+            },
+        ],
+        [
+            {
+                "id": "duplicate-id",
+                "function": {"name": "read_file", "arguments": {"path": "one.txt"}},
+            },
+            {
+                "id": "duplicate-id",
+                "function": {"name": "read_file", "arguments": {"path": "two.txt"}},
+            },
+        ],
+    ],
+)
+def test_normal_chat_quarantines_malformed_batch_before_any_sibling_executes(
+    monkeypatch,
+    tmp_path,
+    tool_calls,
+):
+    class ScriptedClient:
+        calls = 0
+
+        def chat(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return iter([{"message": {"tool_calls": tool_calls}}])
+            return iter([{"message": {"content": "done"}}])
+
+    _patch_agent_loop_for_tool_policy_test(monkeypatch)
+    monkeypatch.setattr(
+        main,
+        "run_tool",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("quarantined sibling executed")
+        ),
+    )
+    cfg = Config(model="test-model", cwd=str(tmp_path), skill_crystallize_enabled=False)
+
+    main.agent_loop(ScriptedClient(), cfg, "inspect safely")  # type: ignore[arg-type]
+
+    tool_results = [
+        str(message.get("content") or "")
+        for message in cfg.messages
+        if message.get("role") == "tool"
+    ]
+    assert len(tool_results) == 2
+    assert all("Blocked by runtime authority" in result for result in tool_results)
+    assert [entry["status"] for entry in cfg.attempt_ledger[-2:]] == ["denied", "denied"]
+
+
+def test_normal_chat_serial_path_uses_canonical_dispatcher(monkeypatch, tmp_path):
+    class ScriptedClient:
+        calls = 0
+
+        def chat(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return iter(
+                    [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "id": "canonical-serial",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": {"path": "README.md"},
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                )
+            return iter([{"message": {"content": "done"}}])
+
+    _patch_agent_loop_for_tool_policy_test(monkeypatch)
+    monkeypatch.setattr(main, "run_tool", lambda *_args, **_kwargs: "README contents")
+    original_dispatch = main.dispatch_action
+    calls: list[tuple[str, str | None]] = []
+
+    def spy_dispatch(name, args, cfg, **kwargs):
+        calls.append((name, kwargs.get("tool_call_id")))
+        return original_dispatch(name, args, cfg, **kwargs)
+
+    monkeypatch.setattr(main, "dispatch_action", spy_dispatch)
+    cfg = Config(model="test-model", cwd=str(tmp_path), skill_crystallize_enabled=False)
+
+    main.agent_loop(ScriptedClient(), cfg, "read the project")  # type: ignore[arg-type]
+
+    assert calls == [("read_file", "canonical-serial")]
+    assert cfg.attempt_ledger[-1]["status"] == "worked"
+
+
+def test_normal_chat_uses_shared_protocol_without_prompting_never_mode(
+    monkeypatch,
+    tmp_path,
+):
+    class ScriptedClient:
+        calls = 0
+
+        def chat(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return iter(
+                    [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": {
+                                                "path": "README.md"
+                                            },
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                )
+            return iter([{"message": {"content": "done"}}])
+
+    _patch_agent_loop_for_tool_policy_test(monkeypatch)
+    (tmp_path / "README.md").write_text(
+        "README contents",
+        encoding="utf-8",
+    )
+    states = []
+    protocol_type = (
+        main.nathan_provider_protocol.ProviderToolLoopState
+    )
+
+    def make_protocol_state():
+        state = protocol_type(loop_id="ordinary-chat")
+        states.append(state)
+        return state
+
+    monkeypatch.setattr(
+        main.nathan_provider_protocol,
+        "ProviderToolLoopState",
+        make_protocol_state,
+    )
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("never mode read must not prompt")
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "run_tool",
+        lambda *_args, **_kwargs: "README contents",
+    )
+    monkeypatch.setattr(
+        main.memory_runtime,
+        "capture_completed_user_turn",
+        lambda *_args, **_kwargs: {"status": "skipped"},
+    )
+    cfg = Config(
+        model="test-model",
+        cwd=str(tmp_path),
+        skill_crystallize_enabled=False,
+    )
+    setattr(cfg, "_nathan_approval_mode", "never")
+
+    main.agent_loop(
+        ScriptedClient(),
+        cfg,
+        "read the project",
+    )  # type: ignore[arg-type]
+
+    assert len(states) == 1
+    assert states[0].phase == "ready"
+    assistant_call = next(
+        message["tool_calls"][0]
+        for message in cfg.messages
+        if message.get("tool_calls")
+    )
+    assert assistant_call["id"].startswith(
+        "algo-ordinary-chat-r0000-c0000"
+    )
+    tool_message = next(
+        message
+        for message in cfg.messages
+        if message.get("role") == "tool"
+    )
+    assert tool_message["tool_call_id"] == assistant_call["id"]
+
+
+def test_normal_chat_parallel_dispatch_preserves_scope_and_order(monkeypatch, tmp_path):
+    class ScriptedClient:
+        calls = 0
+
+        def chat(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return iter(
+                    [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "id": f"canonical-parallel-{index}",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": {"path": f"file-{index}.txt"},
+                                        },
+                                    }
+                                    for index in range(2)
+                                ]
+                            }
+                        }
+                    ]
+                )
+            return iter([{"message": {"content": "done"}}])
+
+    _patch_agent_loop_for_tool_policy_test(monkeypatch)
+    barrier = threading.Barrier(2)
+    worker_ids: set[int] = set()
+    active_workspaces: list[str] = []
+
+    def parallel_read(_name, args, _cfg):
+        worker_ids.add(threading.get_ident())
+        active = execution_guardrails.active_workspace()
+        active_workspaces.append(str(active) if active is not None else "")
+        barrier.wait(timeout=2)
+        return f"contents:{args['path']}"
+
+    monkeypatch.setattr(main, "run_tool", parallel_read)
+    original_dispatch = main.dispatch_action
+    queue_positions: list[int | None] = []
+
+    def spy_dispatch(name, args, cfg, **kwargs):
+        queue_positions.append(kwargs.get("queue_position"))
+        return original_dispatch(name, args, cfg, **kwargs)
+
+    monkeypatch.setattr(main, "dispatch_action", spy_dispatch)
+    cfg = Config(model="test-model", cwd=str(tmp_path), skill_crystallize_enabled=False)
+
+    main.agent_loop(ScriptedClient(), cfg, "read both files")  # type: ignore[arg-type]
+
+    assert len(worker_ids) == 2
+    assert active_workspaces == [str(tmp_path.resolve()), str(tmp_path.resolve())]
+    assert sorted(queue_positions) == [0, 1]
+    tool_messages = [
+        message
+        for message in cfg.messages
+        if message.get("role") == "tool"
+    ]
+    assert [message.get("tool_call_id") for message in tool_messages[-2:]] == [
+        "canonical-parallel-0",
+        "canonical-parallel-1",
+    ]
 
 
 def test_client_for_xai_model_without_token_falls_back(monkeypatch):
@@ -1800,7 +2380,7 @@ def test_parse_benchmark_embed_args_defaults_and_overrides():
 
 
 def test_log_embed_perf_writes_private_bounded_event(monkeypatch, tmp_path):
-    from algo_cli import perf_telemetry
+    from algo_cli import dorothy_perf_telemetry as perf_telemetry
 
     perf_path = tmp_path / "perf_history.jsonl"
     monkeypatch.setattr(perf_telemetry, "PERF_HISTORY_FILE", perf_path)

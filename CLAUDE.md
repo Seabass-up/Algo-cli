@@ -16,7 +16,7 @@
 
 Ordered by leverage, smallest viable slice first. Each item should be its own contained slice; do not stack.
 
-1. **~~One-shot non-interactive JSON mode (`--oneshot --json`)~~ — SHIPPED.** `algo-cli --oneshot --json [--approval-mode never|auto] [PROMPT]` emits one JSON event per line to stdout (NDJSON), framed by `session_start` / `done`. Event types: `session_start`, `thinking`, `content`, `tool_call`, `tool_result`, `tool_denied`, `error`, `done`. `--approval-mode never` (default) denies approval-required tools; `--approval-mode auto` grants them. Skill crystallization is disabled in oneshot. Implementation in `algo_cli/oneshot.py` + display sink hooks in `display.py`; agent loop, policy, contracts, and safe-mode regex are unchanged.
+1. **~~One-shot non-interactive JSON mode (`--oneshot --json`)~~ — SHIPPED.** `algo-cli --oneshot --json [--approval-mode never|auto] [PROMPT]` emits one JSON event per line to stdout (NDJSON), framed by `session_start` / `done`. Event types: `session_start`, `thinking`, `content`, `tool_call`, `tool_result`, `tool_denied`, `error`, `done`. `--approval-mode never` (default) denies protected tools; `--approval-mode auto` preapproves only session-preapproval actions and cannot bypass action-time confirmation or handoff. Skill crystallization is disabled in oneshot. Implementation is in `algo_cli/oliver_oneshot.py`, with scoped grants enforced by `algo_cli/nathan_runtime.py`.
 
 2. **Embedding model / hardware fit (local infrastructure shipped; cloud blocked by platform).** `make_embed_fn`, model-aware index accounting, and backend telemetry are implemented. Ollama Cloud authentication was verified for model listing and web search, but its catalog exposes no embedding models and direct `embed()` requests fail; embedding routing therefore remains local-only with a visible fallback from a configured cloud backend. Local `all-minilm:latest` is now the default and was verified at 125.6 ms/record. Earlier benchmark results:
    - `nomic-embed-text-v2-moe:latest` (retired default): single-record 1,475 ms; batch 12,138 ms/rec. MoE batches catastrophically on CPU.
@@ -68,7 +68,7 @@ algo-cli/
 ├── algo-cli.cmd        # Windows CMD launcher
 ├── pyproject.toml        # Build system (hatchling), deps, ruff + pytest config
 ├── AGENTS.md             # Repository guidelines
-└── .github/workflows/ci.yml
+└── .github/workflows/oliver-ci.yml
 ```
 
 ---
@@ -116,7 +116,7 @@ algo-cli --cloud --model qwen3            # Ollama Cloud
 
 ---
 
-## CI Pipeline (`.github/workflows/ci.yml`)
+## CI Pipeline (`.github/workflows/oliver-ci.yml`)
 
 Three parallel jobs run on every push and PR to `main`:
 
@@ -202,7 +202,7 @@ Four files in `~/.algo_cli/identity/` are mtime-cached and prepended to the syst
 
 Lessons RAG: chunks lessons on `## ` headings, embeds with local model, injects top-5 cosine-nearest chunks based on the user message. Falls back to full inline when embeddings unavailable.
 
-### `memory_candidates.py` / `memory_runtime.py` — Automatic Memory Admission
+### `memory_candidates.py` / `julia_memory_runtime.py` — Automatic Memory Admission
 
 After a normal chat completion or a completed `/agent` pipeline, the runtime evaluates only the original user-authored text. Explicit durable markers pass through privacy, task/transience, code/quotation, length, exact/Jaccard duplicate, daily-write, fingerprint, and total-character gates. At most one entry is written per turn. Partial streams, exhausted tool loops, failed agents, and turns with a successful explicit `remember`/`append_lesson` tool call are skipped. The sidecar stores UTC days and SHA-256 fingerprints only; telemetry contains aggregate counts only. Use `/memory-auto status|on|off` to inspect or change the persisted setting.
 

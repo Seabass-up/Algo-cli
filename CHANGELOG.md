@@ -4,6 +4,64 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Changed
+
+- Bound the governed memory bridge to Echo Veil's four-layer 0.7 API and exact
+  reviewed VCS revision, added deterministic `echo status` / `update echo`
+  maintenance with staged lifecycle verification and rollback, and
+  canonicalized Algo's credential-free `localhost` Ollama default to an
+  IP-literal loopback before Echo validation.
+- Replaced the duplicate in-memory Echo wrapper with one authoritative bridge
+  to `echo_veil.agent_memory`, enforced matching supported source/distribution
+  versions plus pinned non-editable installation identity, and separated
+  installation, crypto, write, index, retrieval, persistence, restart,
+  rotation, and health readiness facts.
+- Routed ordinary remember, automatic capture, context recall, listing, and
+  deletion through Echo when protection is required; curated/history mutations
+  are explicitly prohibited instead of creating a plaintext shadow.
+- Made ordinary chat quiet by default and prevented it from starting
+  foreground harness/lesson batch embedding; detailed route, context, backend,
+  thinking, and tool payload output remains explicit opt-in behavior.
+- Surfaced the frozen multilingual and multi-hop retrieval metrics before the
+  verbose scorecard checks, and made both local readiness reports require an
+  isolated configured-root provenance, redaction, conflict, and retrieval
+  qualification without reading installed external agent stores.
+- Made Agent review routing typo-aware, bounded model-facing tool evidence and
+  action catalogs without discarding the full local transcript, and imposed
+  role-specific output ceilings so concise review work does not inflate into a
+  mutation pipeline.
+
+### Fixed
+
+- Fixed omitted `action_program.outputs` producing an invalid bare step ID and
+  removed runtime-owned `cfg`, `cwd`, and `safe_mode` fields from discovered
+  action schemas.
+- Routed Echo review/update wording directly through the runtime instead of a
+  model-authored shell plan, eliminating false update claims, repeated
+  approvals, and installed-source patching.
+- Kept tools available after a verified mutation until the model actually
+  finishes the whole task, preventing JSON-mode runs from confusing a safe
+  intermediate state with task completion and skipping later deliverables.
+- Stopped the Agent pipeline when a run-contract prompt budget is exhausted,
+  propagated upstream partial evidence into the final status, and prevented
+  evidence-free final blocks from reporting successful completion.
+
+### Security
+
+- Rejected incompatible or source-unqualified Echo Veil builds instead of
+  reporting them as supported, and replaced raw initialization exception
+  classes in optional-mode warnings with bounded operational failure codes.
+- Added fail-closed required protection, non-leaking diagnostics, scoped profile
+  configuration without raw key material, and a fresh-process black-box test
+  proving ordinary write → confidential disk state → restart → authorized
+  recall while rejecting a mismatched scope.
+- Redacted the process working directory from one-shot session events and made
+  similarity scoring numerically stable for very large finite vectors so
+  runtime warnings cannot disclose local source paths.
+- Added verifier-first mutation completion and bounded evidence projection
+  regressions covering typo-routed reviews, prompt exhaustion, oversized tool
+  payloads, and unsupported completion claims.
+
 ## [0.18.0] - 2026-07-17
 
 ### Added

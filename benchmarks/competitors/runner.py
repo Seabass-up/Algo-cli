@@ -173,6 +173,56 @@ def sha256_file(path: Path) -> str:
     return sha256_bytes(path.read_bytes())
 
 
+def source_provenance(
+    repo_root: Path = REPO_ROOT,
+    runner_path: Path = Path(__file__).resolve(),
+) -> dict[str, Any]:
+    """Bind a benchmark cell to one clean, immutable source revision."""
+
+    commands = (
+        ("revision", ("git", "rev-parse", "--verify", "HEAD^{commit}")),
+        (
+            "status",
+            (
+                "git",
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=no",
+            ),
+        ),
+    )
+    results: dict[str, subprocess.CompletedProcess[str]] = {}
+    try:
+        for label, command in commands:
+            results[label] = subprocess.run(
+                command,
+                cwd=repo_root,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("benchmark source provenance is unavailable") from exc
+
+    revision_result = results["revision"]
+    revision = revision_result.stdout.strip()
+    if revision_result.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise RuntimeError("benchmark source revision is invalid")
+    status_result = results["status"]
+    if status_result.returncode != 0:
+        raise RuntimeError("benchmark source worktree status is unavailable")
+    if status_result.stdout.strip():
+        raise RuntimeError("benchmark source worktree has tracked changes")
+    if not runner_path.is_file():
+        raise RuntimeError("benchmark runner source is unavailable")
+    return {
+        "revision": revision,
+        "tracked_worktree_clean": True,
+        "runner_sha256": sha256_file(runner_path),
+    }
+
+
 def is_generated(relative: str) -> bool:
     parts = Path(relative).parts
     return (
@@ -218,8 +268,13 @@ def changed_paths(before: dict[str, str], after: dict[str, str]) -> list[str]:
 def resolve_executable(candidates: Iterable[str]) -> str | None:
     for candidate in candidates:
         expanded = Path(candidate).expanduser()
-        if "/" in candidate and expanded.is_file() and os.access(expanded, os.X_OK):
-            return str(expanded)
+        path_candidate = expanded.is_absolute() or "/" in candidate or "\\" in candidate
+        if path_candidate:
+            if expanded.is_file() and os.access(expanded, os.X_OK):
+                return str(expanded.resolve(strict=True))
+            # An explicit path is exact.  Never let PATH resolution silently
+            # substitute a different executable when that path is missing.
+            continue
         resolved = shutil.which(candidate)
         if resolved:
             return resolved
@@ -253,9 +308,14 @@ def version_receipt(product_id: str, executable: str) -> str | None:
     return text.splitlines()[0][:200] if text else None
 
 
-def product_availability(product_id: str) -> dict[str, Any]:
+def product_availability(
+    product_id: str,
+    *,
+    executable_override: str | None = None,
+) -> dict[str, Any]:
     spec = PRODUCTS[product_id]
-    executable = resolve_executable(spec.executable_candidates)
+    candidates = (executable_override,) if executable_override else spec.executable_candidates
+    executable = resolve_executable(candidates)
     if spec.fixed_blocker:
         return {
             "product": product_id,
@@ -455,7 +515,7 @@ def command_for(
             "--oneshot",
             "--json",
             "--approval-mode",
-            "auto",
+            "workspace",
             prompt,
         ], env
     if harness == "codex_cli":
@@ -763,7 +823,17 @@ def command_for(
         openclaw_state = state / "openclaw"
         openclaw_state.mkdir(parents=True, exist_ok=True)
         config_path = openclaw_state / "openclaw.json"
-        write_json(config_path, {"agents": {"defaults": {"workspace": str(result)}}})
+        write_json(
+            config_path,
+            {
+                "agents": {"defaults": {"workspace": str(result)}},
+                # A bare isolated config has not passed through OpenClaw's
+                # onboarding defaults. Declare the documented coding profile
+                # so native read/write/edit/exec tools are deterministic and
+                # node/gateway tools do not leak into this terminal lane.
+                "tools": {"profile": "coding"},
+            },
+        )
         env.update(
             {
                 "OPENCLAW_STATE_DIR": str(openclaw_state),
@@ -1410,6 +1480,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     parser.add_argument(
+        "--algo-executable",
+        help=(
+            "Exact Algo CLI candidate executable to benchmark. "
+            "If supplied, an invalid path fails closed instead of falling back "
+            "to another installed Algo CLI."
+        ),
+    )
+    parser.add_argument(
         "--warmup-model",
         action="store_true",
         help="Warm the shared Ollama model outside scored time before the first run.",
@@ -1425,7 +1503,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    product_matrix = [product_availability(product_id) for product_id in PRODUCTS]
+    product_matrix = [
+        product_availability(
+            product_id,
+            executable_override=(
+                args.algo_executable if product_id == "algo_cli" else None
+            ),
+        )
+        for product_id in PRODUCTS
+    ]
     if args.list:
         print(json.dumps(product_matrix, indent=2))
         return 0
@@ -1442,6 +1528,10 @@ def main(argv: list[str] | None = None) -> int:
     if blocked:
         reasons = "; ".join(f"{item}: {by_product[item]['reason']}" for item in blocked)
         raise SystemExit(f"selected harnesses are blocked: {reasons}")
+    try:
+        source = source_provenance()
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
     output_root = (args.output or (REPO_ROOT / "benchmark-results" / f"{utc_stamp()}-{args.model.replace('/', '-')}")).resolve()
     output_root.mkdir(parents=True, exist_ok=False)
     warmup_receipt: dict[str, Any] | None = None
@@ -1487,6 +1577,7 @@ def main(argv: list[str] | None = None) -> int:
         "schema_version": SCHEMA_VERSION,
         "status": "draft_same_model_comparison",
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "source": source,
         "protocol": {
             "id": PROTOCOL,
             "harnesses": harnesses,

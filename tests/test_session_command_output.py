@@ -6,8 +6,8 @@ import pytest
 
 from algo_cli import main
 from algo_cli import display
-from algo_cli import runtime_services
-from algo_cli import slash_dispatch
+from algo_cli import theodore_runtime_services as runtime_services
+from algo_cli import oliver_slash_dispatch as slash_dispatch
 from algo_cli import tools
 from algo_cli.config import Config
 

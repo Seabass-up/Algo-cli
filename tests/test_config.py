@@ -29,7 +29,7 @@ def test_defaults():
     assert cfg.skill_crystallize_enabled is False
     assert cfg.skill_crystallize_every >= 1
     assert cfg.runs_since_crystallize == 0
-    assert cfg.algorithmic_tool_policy_enabled is False
+    assert cfg.algorithmic_tool_policy_enabled is True
     assert cfg.echo_veil_capacity == 400
     assert cfg.echo_veil_production is False
     assert cfg.memory_auto_capture_enabled is True

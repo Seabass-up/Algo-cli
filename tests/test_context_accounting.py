@@ -7,7 +7,7 @@ truncated history long before compaction ever fired.
 
 from algo_cli import context_budget, model_info
 from algo_cli.config import Config
-from algo_cli.tool_runtime import tool_result_message
+from algo_cli.nathan_runtime import tool_result_message
 from algo_cli.tool_schema import estimate_tool_schema_tokens
 from algo_cli import tools
 
@@ -62,9 +62,25 @@ def test_oneshot_prompt_defers_interactive_capability_tutorials(monkeypatch):
     assert "## Grok / xAI model compatibility" not in automated
     assert "## PDF Handling" not in automated
     assert "Prefer action_program" in automated
+    assert "reuse the exact paths from successful mutation receipts" in automated
+    assert "direct fail-on-mismatch assertions" in automated
+    assert "complete reread of every mutated file" in automated
     assert context_budget.estimate_text_tokens(automated) < (
         context_budget.estimate_text_tokens(interactive) * 0.45
     )
+
+
+def test_workspace_oneshot_prompt_uses_direct_bounded_mutations(monkeypatch):
+    cfg = Config(model="test-model")
+    setattr(cfg, "_nathan_approval_mode", "workspace")
+    monkeypatch.setattr(context_budget.identity, "build_identity_block", lambda **_kwargs: "")
+    monkeypatch.setattr(context_budget, "json_sink", lambda: object())
+
+    automated = context_budget.build_system_prompt(cfg, user_message="fix the tests")
+
+    assert "action_program is not authorized in this mode" in automated
+    assert "reuse exactly the path from the successful same-file read" in automated
+    assert "Prefer action_program" not in automated
 
 
 def test_adaptive_window_feeds_accounting():

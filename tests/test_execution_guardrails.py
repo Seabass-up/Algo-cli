@@ -341,13 +341,38 @@ def test_completion_requires_evidence_after_last_mutation(tmp_path: Path) -> Non
     assert guardrails.completion_decision().allowed is False
     reread = guardrails.record_read("second.py", success=True)
     assert reread is not None
-    assert guardrails.completion_decision().allowed is False
-    verifier = guardrails.record_verification("git_diff", success=True)
     decision = guardrails.completion_decision()
-    assert verifier is not None
     assert decision.allowed is True
-    assert decision.verifier_sequence == verifier.sequence
-    assert decision.verifier_kind == "git_diff"
+    assert decision.verifier_sequence == reread.sequence
+    assert decision.verifier_kind == "same_path_reread"
+    guardrails.end_execution_scope(scope)
+
+
+def test_readback_completion_covers_every_file_changed_since_verifier(
+    tmp_path: Path,
+) -> None:
+    scope = guardrails.begin_execution_scope(tmp_path)
+    guardrails.record_mutation("first.py", success=True, operation="write_file")
+    guardrails.record_mutation("second.py", success=True, operation="write_file")
+
+    guardrails.record_read("second.py", success=True)
+    assert guardrails.completion_decision().allowed is False
+    final_reread = guardrails.record_read("first.py", success=True)
+
+    decision = guardrails.completion_decision()
+    assert final_reread is not None
+    assert decision.allowed is True
+    assert decision.verifier_sequence == final_reread.sequence
+    assert decision.verifier_kind == "same_path_reread"
+    guardrails.end_execution_scope(scope)
+
+
+def test_file_readback_cannot_cover_workspace_shell_mutation(tmp_path: Path) -> None:
+    scope = guardrails.begin_execution_scope(tmp_path)
+    guardrails.record_workspace_mutation(success=True)
+    guardrails.record_read("changed.py", success=True)
+
+    assert guardrails.completion_decision().allowed is False
     guardrails.end_execution_scope(scope)
 
 
@@ -419,6 +444,71 @@ def test_failed_mutation_is_not_success_evidence_or_a_completion_obligation(tmp_
     guardrails.record_mutation("module.py", success=False, operation="write_file")
     assert guardrails.evidence_snapshot() == ()
     assert guardrails.completion_decision().allowed is True
+    guardrails.end_execution_scope(scope)
+
+
+def test_recorded_failed_mutation_blocks_false_completion_until_success(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "module.py"
+    target.write_text("old", encoding="utf-8")
+    scope = guardrails.begin_execution_scope(tmp_path)
+
+    failed = guardrails.record_failed_mutation_attempt(
+        operation="edit_file",
+        failed=True,
+    )
+    blocked = guardrails.completion_decision()
+    assert failed is not None
+    assert blocked.allowed is False
+    assert "no mutation succeeded" in blocked.reason
+
+    guardrails.record_read(target, success=True)
+    guardrails.record_mutation(target, success=True, operation="edit_file")
+    guardrails.record_shell_verification("pytest -q", returncode=0)
+    assert guardrails.completion_decision().allowed is True
+    guardrails.end_execution_scope(scope)
+
+
+def test_denied_tool_attempt_reaches_completion_gate(tmp_path: Path) -> None:
+    cfg = Config(cwd=str(tmp_path))
+    scope = guardrails.begin_execution_scope(tmp_path)
+
+    tool_runtime.record_tool_attempt(
+        cfg,
+        name="edit_file",
+        args={
+            "path": str(tmp_path / "module.py"),
+            "old_string": "old",
+            "new_string": "new",
+            "cwd": str(tmp_path),
+        },
+        result="Blocked by runtime authority",
+        status="denied",
+    )
+
+    decision = guardrails.completion_decision()
+    assert decision.allowed is False
+    assert "no mutation succeeded" in decision.reason
+    guardrails.end_execution_scope(scope)
+
+
+def test_successful_read_path_hints_recover_nested_workspace_alias(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    target = workspace / "src" / "calculator.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("old", encoding="utf-8")
+    scope = guardrails.begin_execution_scope(tmp_path)
+    guardrails.record_read(target, success=True)
+
+    assert guardrails.successful_read_path_hints(
+        "/workspace/src/calculator.py",
+    ) == (str(target.resolve()),)
+    assert guardrails.successful_read_path_hints(
+        tmp_path / "src" / "calculator.py",
+    ) == (str(target.resolve()),)
     guardrails.end_execution_scope(scope)
 
 

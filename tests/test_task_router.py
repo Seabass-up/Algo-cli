@@ -29,6 +29,16 @@ def test_route_review_task_wins_before_coding_terms():
     assert route.suggested_pipeline == "review"
 
 
+def test_route_normalizes_common_review_and_vulnerability_typos():
+    route = task_router.route_task(
+        "reveiw this harness and look for voerbilites"
+    )
+
+    assert route.task_type == "review"
+    assert route.suggested_pipeline == "review"
+    assert "typo_normalized" in route.signals
+
+
 def test_route_research_task_recommends_research_pipeline():
     route = task_router.route_task("Research the latest Ollama embedding models")
 
@@ -68,3 +78,26 @@ def test_route_read_only_document_brief_uses_research_pipeline():
 
     assert route.task_type == "research"
     assert route.suggested_pipeline == "research"
+    assert route.read_only is True
+    assert route.mutation_intent is False
+    assert route.external_side_effect is False
+
+
+def test_explicit_fix_intent_wins_over_review_wording():
+    route = task_router.route_task(
+        "Review the auth bug, fix it, and verify the tests"
+    )
+
+    assert route.task_type == "coding"
+    assert route.suggested_pipeline == "code-change"
+    assert route.mutation_intent is True
+    assert {"review", "coding", "mutation"} <= set(route.signals)
+
+
+def test_negated_release_language_does_not_create_external_side_effect():
+    route = task_router.route_task(
+        "Review the release notes only; do not publish or deploy"
+    )
+
+    assert route.task_type == "review"
+    assert route.external_side_effect is False

@@ -97,6 +97,60 @@ def test_edit_file_no_match_reports_first_line(tmp_path):
     assert p.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
 
 
+def test_edit_file_recovers_whole_json_document_formatting_mismatch(
+    tmp_path,
+):
+    p = tmp_path / "settings.json"
+    p.write_text(
+        '{\n  "enabled": false,\n  "endpoint": "/old"\n}\n',
+        encoding="utf-8",
+    )
+
+    result = tools.edit_file(
+        str(p),
+        '{"endpoint":"/old","enabled":false}',
+        '{"endpoint":"/live","enabled":true}',
+    )
+
+    assert result.startswith("Edited ")
+    assert "semantically matching whole JSON document" in result
+    assert p.read_text(encoding="utf-8") == (
+        '{"endpoint":"/live","enabled":true}\n'
+    )
+
+
+def test_edit_file_json_fallback_requires_exact_semantic_old_document(
+    tmp_path,
+):
+    p = tmp_path / "settings.json"
+    original = '{\n  "enabled": false,\n  "endpoint": "/old"\n}\n'
+    p.write_text(original, encoding="utf-8")
+
+    result = tools.edit_file(
+        str(p),
+        '{"endpoint":"/different","enabled":false}',
+        '{"endpoint":"/live","enabled":true}',
+    )
+
+    assert "old_string not found" in result
+    assert p.read_text(encoding="utf-8") == original
+
+
+def test_edit_file_json_fallback_rejects_duplicate_keys(tmp_path):
+    p = tmp_path / "settings.json"
+    original = '{"enabled":false,"enabled":true}\n'
+    p.write_text(original, encoding="utf-8")
+
+    result = tools.edit_file(
+        str(p),
+        '{"enabled":true}',
+        '{"enabled":false}',
+    )
+
+    assert "old_string not found" in result
+    assert p.read_text(encoding="utf-8") == original
+
+
 def test_edit_file_empty_old_string_rejected(tmp_path):
     p = tmp_path / "note.txt"
     p.write_text("alpha\n", encoding="utf-8")
@@ -178,21 +232,21 @@ def test_edit_file_in_verification_layer():
 
 
 def test_edit_file_in_mutating_tools():
-    from algo_cli.tool_policy import MUTATING_TOOLS, WRITE_TOOLS
+    from algo_cli.samuel_policy import MUTATING_TOOLS, WRITE_TOOLS
 
     assert "edit_file" in MUTATING_TOOLS
     assert "edit_file" in WRITE_TOOLS
 
 
 def test_edit_file_described_as_mutation():
-    from algo_cli.tool_policy import describes_mutation_action
+    from algo_cli.samuel_policy import describes_mutation_action
 
     desc = describes_mutation_action("edit_file", {"path": "/tmp/foo.py"})
     assert desc == "edit_file: /tmp/foo.py"
 
 
 def test_edit_file_in_oneshot_dangerous_tools():
-    from algo_cli import oneshot
+    from algo_cli import oliver_oneshot as oneshot
 
     assert "edit_file" in oneshot.DANGEROUS_TOOLS
 

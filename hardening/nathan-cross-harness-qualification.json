@@ -1,0 +1,288 @@
+{
+  "benchmark": "nathan-cross-harness-agent-runtime-v1",
+  "claim": "Within this source-bound, same-model local draft, Algo CLI ranked first across four frozen tasks with 12 of 12 checker passes, clean processes, and workspace-scope passes.",
+  "claim_assessment": {
+    "broad_better_than_claim_supported": false,
+    "public_claim_eligible": false,
+    "reason": "One local machine, one model, four tasks, and three repetitions are insufficient for a broad superiority claim.",
+    "website_publication_allowed": false
+  },
+  "created_at": "2026-07-30T18:47:23Z",
+  "source": {
+    "raw_receipt": "benchmark-results/20260730-runtime-memory-84d3358/summary.json",
+    "raw_receipt_committed": false,
+    "raw_receipt_sha256": "sha256:5e88a744735c50103da26e181f3560daba1695da7157b0130ad0e3ef82be5209",
+    "revision": "84d3358d80f6154cafce1688bcd970679391cc2d",
+    "runner_sha256": "sha256:95f800c8f99b28f00039ee78463cce0e0286bce920d6a34ab4b9af1aaa9619f2",
+    "task_suite_sha256": "sha256:1e0b9ee182c7599ea5d45166fea0b6f257ec01598bb35b2eff57c104be5c3f45",
+    "tracked_worktree_clean": true
+  },
+  "protocol": {
+    "harnesses": 11,
+    "id": "algo-cli-cross-harness-v3-draft",
+    "model": "qwen3.6:35b-mlx",
+    "model_warmup_seconds": 4.084318,
+    "order_policy": "deterministic cyclic rotation",
+    "provider": "local Ollama",
+    "repetitions": 3,
+    "same_machine": true,
+    "same_model": true,
+    "same_task_fixtures": true,
+    "tasks": [
+      "code_repair_small_repo",
+      "tool_trap_misleading_state",
+      "memory_rag_conflict_live_files",
+      "evidence_reconciliation_medium_repo"
+    ],
+    "timeout_seconds": 360,
+    "total_runs": 132,
+    "warmup_included_in_scored_duration": false
+  },
+  "validation": {
+    "aggregate_recomputed": true,
+    "baseline_checker_failed_as_expected": 132,
+    "baseline_checker_total": 132,
+    "clean_processes": 119,
+    "overall_checker_passes": 121,
+    "protected_input_receipts_passed": 132,
+    "protected_input_receipts_total": 132,
+    "publisher_validation": "pass",
+    "raw_runner_exit_code": 2,
+    "raw_runner_exit_explanation": "All runs and the summary completed; exit 2 reports genuine failed participant cells.",
+    "scope_passes": 127,
+    "timeouts": 0
+  },
+  "aggregate": [
+    {
+      "checker_passes": 12,
+      "clean_processes": 12,
+      "harness": "algo_cli",
+      "median_seconds": 27.976441,
+      "p95_seconds": 55.702766,
+      "rank": 1,
+      "runs": 12,
+      "scope_passes": 12
+    },
+    {
+      "checker_passes": 12,
+      "clean_processes": 12,
+      "harness": "pi",
+      "median_seconds": 34.636361,
+      "p95_seconds": 90.44645,
+      "rank": 2,
+      "runs": 12,
+      "scope_passes": 12
+    },
+    {
+      "checker_passes": 12,
+      "clean_processes": 12,
+      "harness": "oh_my_pi",
+      "median_seconds": 36.339422,
+      "p95_seconds": 83.093994,
+      "rank": 3,
+      "runs": 12,
+      "scope_passes": 12
+    },
+    {
+      "checker_passes": 12,
+      "clean_processes": 12,
+      "harness": "hermes_agent",
+      "median_seconds": 85.194209,
+      "p95_seconds": 168.869473,
+      "rank": 4,
+      "runs": 12,
+      "scope_passes": 12
+    },
+    {
+      "checker_passes": 11,
+      "clean_processes": 9,
+      "harness": "droid",
+      "median_seconds": 83.76869,
+      "p95_seconds": 193.680862,
+      "rank": 5,
+      "runs": 12,
+      "scope_passes": 12
+    },
+    {
+      "checker_passes": 11,
+      "clean_processes": 11,
+      "harness": "codex_cli",
+      "median_seconds": 37.092793,
+      "p95_seconds": 60.975378,
+      "rank": 6,
+      "runs": 12,
+      "scope_passes": 11
+    },
+    {
+      "checker_passes": 11,
+      "clean_processes": 11,
+      "harness": "copilot_cli",
+      "median_seconds": 67.898458,
+      "p95_seconds": 229.160929,
+      "rank": 7,
+      "runs": 12,
+      "scope_passes": 11
+    },
+    {
+      "checker_passes": 10,
+      "clean_processes": 10,
+      "harness": "goose",
+      "median_seconds": 49.441755,
+      "p95_seconds": 120.9593,
+      "rank": 8,
+      "runs": 12,
+      "scope_passes": 12
+    },
+    {
+      "checker_passes": 10,
+      "clean_processes": 10,
+      "harness": "opencode",
+      "median_seconds": 52.086509,
+      "p95_seconds": 151.457552,
+      "rank": 9,
+      "runs": 12,
+      "scope_passes": 12
+    },
+    {
+      "checker_passes": 10,
+      "clean_processes": 10,
+      "harness": "openclaw",
+      "median_seconds": 39.798362,
+      "p95_seconds": 58.153193,
+      "rank": 10,
+      "runs": 12,
+      "scope_passes": 11
+    },
+    {
+      "checker_passes": 10,
+      "clean_processes": 10,
+      "harness": "claude_code",
+      "median_seconds": 48.115781,
+      "p95_seconds": 97.990681,
+      "rank": 11,
+      "runs": 12,
+      "scope_passes": 10
+    }
+  ],
+  "algo_focus": {
+    "agent_runtime_qualification": {
+      "artifact": "hardening/nathan-agent-runtime-qualification.json",
+      "correctness_probes_passed": 18,
+      "correctness_probes_total": 18,
+      "duplicate_mutations": 0,
+      "policy_escapes": 0,
+      "source_revision": "e0d09dd47db96b949df0b8632087ff0bc54eb057",
+      "task_pass_rate": 1.0,
+      "unverified_completions": 0,
+      "workload_p95_ms": 21.526041,
+      "workload_runs": 31,
+      "workload_ttfa_p95_ms": 3.339625
+    },
+    "task_comparison": {
+      "code_repair_small_repo": {
+        "algo_cli": {
+          "checker_passes": 3,
+          "median_seconds": 17.766219,
+          "runs": 3
+        },
+        "hermes_agent": {
+          "checker_passes": 3,
+          "median_seconds": 53.537398,
+          "runs": 3
+        },
+        "openclaw": {
+          "checker_passes": 3,
+          "median_seconds": 29.194903,
+          "runs": 3
+        }
+      },
+      "evidence_reconciliation_medium_repo": {
+        "algo_cli": {
+          "checker_passes": 3,
+          "median_seconds": 52.62148,
+          "runs": 3
+        },
+        "hermes_agent": {
+          "checker_passes": 3,
+          "median_seconds": 110.743719,
+          "runs": 3
+        },
+        "openclaw": {
+          "checker_passes": 3,
+          "median_seconds": 53.292079,
+          "runs": 3
+        }
+      },
+      "memory_rag_conflict_live_files": {
+        "algo_cli": {
+          "checker_passes": 3,
+          "median_seconds": 28.270886,
+          "runs": 3
+        },
+        "hermes_agent": {
+          "checker_passes": 3,
+          "median_seconds": 144.448121,
+          "runs": 3
+        },
+        "openclaw": {
+          "checker_passes": 2,
+          "median_seconds": 39.201391,
+          "runs": 3
+        }
+      },
+      "tool_trap_misleading_state": {
+        "algo_cli": {
+          "checker_passes": 3,
+          "median_seconds": 25.540954,
+          "runs": 3
+        },
+        "hermes_agent": {
+          "checker_passes": 3,
+          "median_seconds": 97.198468,
+          "runs": 3
+        },
+        "openclaw": {
+          "checker_passes": 2,
+          "median_seconds": 42.773881,
+          "runs": 3
+        }
+      }
+    }
+  },
+  "versions": {
+    "algo_cli": "0.18.0",
+    "claude_code": "2.1.220",
+    "codex_cli": "0.146.0",
+    "copilot_cli": "1.0.76",
+    "droid": "0.183.0",
+    "goose": "1.45.0",
+    "hermes_agent": "0.19.0; upstream 1fd7548b499b70621fb08501ae55959c4870fe13",
+    "oh_my_pi": "17.2.1",
+    "openclaw": "2026.7.1-2 (0790d9f)",
+    "opencode": "1.18.10",
+    "pi": "0.83.0"
+  },
+  "excluded_attempts": [
+    {
+      "receipt": "benchmark-results/20260730-runtime-memory-c3bb4c1",
+      "reason": "Candidate executable was resolved after entering the disposable workspace, causing an infrastructure FileNotFoundError. No result from this attempt is scored."
+    }
+  ],
+  "blocked_lanes": [
+    "Grok Build: same-model adapter not implemented",
+    "Cline CLI: installed binary has no usable deterministic CLI response",
+    "Pool: license acceptance required before installation",
+    "Mercury: harness identity not supplied",
+    "Codex App and Hermes Desktop: no deterministic headless adapter",
+    "Assistants: category rather than a separate harness"
+  ],
+  "limitations": [
+    "The benchmark is a draft corpus and has not been independently reproduced.",
+    "Raw artifacts are ignored because they may contain prompts, process output, and local paths.",
+    "Token counters are not comparable across every harness and are not used for ranking.",
+    "Hosted browser, selected Chrome, production signing, notarization, Gatekeeper, and live TCC gates remain blocked.",
+    "The active hardening freeze blocks tagging, releasing, and website publication."
+  ],
+  "schema_version": 1,
+  "status": "validated_local_draft"
+}

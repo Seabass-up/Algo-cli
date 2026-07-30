@@ -7,6 +7,7 @@ executing external tools or reading obvious secret files.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import fnmatch
 import math
@@ -14,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from contextlib import contextmanager
 
@@ -24,7 +26,7 @@ except ImportError:
     _np = None  # type: ignore[assignment]
     _NUMPY = False
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -59,12 +61,21 @@ EMBED_PRIORITY_TIERS = (
 )
 STALE_CHECK_TTL_S = 2.0  # coalesce repeated source-tree walks within one turn
 RETRIEVAL_SNIPPET_CHARS = 400
+DEFAULT_CONTEXT_TOKEN_BUDGET = 1_200
+MIN_VECTOR_SIMILARITY = 0.45
+RECORD_AUTHORITY_WEIGHTS: dict[str, float] = {
+    "runtime": 1.0,
+    "source": 0.94,
+    "user-curated": 0.90,
+    "generated-doc": 0.72,
+    "historical": 0.25,
+}
 REVIEWED_ALGO_REL = "ALGO.md"
 REVIEWED_ALGO_TITLE = "ALGO reviewed algorithm pattern catalog"
 REVIEWED_ALGO_DESCRIPTION = (
-    "Canonical reviewed Algo algorithm and pattern catalog. Use for Algo CLI harness self-evaluation, "
-    "capability audits, action registry/selfcheck guidance, memory/wiki quality, and runtime context review. "
-    "Read and update docs/ALGO.md."
+    "Canonical reviewed Algo algorithm and pattern catalog. Use this catalog to rate your harness, "
+    "run Algo CLI self-evaluation, audit capabilities, review the action registry/selfcheck, "
+    "assess memory/wiki quality, and inspect runtime context. Read and update docs/ALGO.md."
 )
 REVIEWED_ALGO_TAGS = (
     "algorithm",
@@ -92,7 +103,7 @@ CURATED_PROJECT_WIKI_DOCS = (
     "echo-veil-security-status.md",
 )
 CURATED_PROJECT_MEMORY_DOCS = (
-    "algo-cli-memory-lifecycle-contract.md",
+    "ada-algo-cli-memory-lifecycle-contract.md",
     "algo-cli-execution-verification-contract.md",
     "algo-cli-algorithm-evidence-contract.md",
 )
@@ -107,6 +118,34 @@ CODEX_PLUGIN_CONNECTOR_PATTERNS = ("*/.app.json",)
 CODEX_PLUGIN_MCP_PATTERNS = ("*/.mcp.json",)
 CODEX_PLUGIN_COMMAND_PATTERNS = ("*/commands/*.md",)
 CODEX_PLUGIN_AGENT_PATTERNS = ("*/agents/*.yaml", "*/skills/*/agents/*.yaml")
+ALLOWED_CONFIGURED_SOURCE_SUFFIXES = frozenset(
+    {
+        ".bat",
+        ".cmd",
+        ".csv",
+        ".go",
+        ".java",
+        ".js",
+        ".json",
+        ".jsonl",
+        ".jsx",
+        ".kt",
+        ".md",
+        ".mdx",
+        ".ps1",
+        ".py",
+        ".rs",
+        ".sh",
+        ".sql",
+        ".swift",
+        ".toml",
+        ".ts",
+        ".tsx",
+        ".txt",
+        ".yaml",
+        ".yml",
+    }
+)
 # Configurable via ALGO_CLI_QUERY_VEC_CACHE_SIZE env var (default 32)
 _QUERY_VEC_CACHE_SIZE_DEFAULT = 32
 try:
@@ -115,65 +154,6 @@ except (TypeError, ValueError):
     QUERY_VEC_CACHE_SIZE = _QUERY_VEC_CACHE_SIZE_DEFAULT
 
 EmbedFn = Callable[[list[str]], list[list[float]]]
-
-# Echo Veil memory layer (optional)
-_echo_veil_layer: Any = None
-
-
-def get_echo_veil_layer() -> Any:
-    """Lazily initialize and return the Echo Veil memory layer."""
-    global _echo_veil_layer
-    if _echo_veil_layer is not None:
-        return _echo_veil_layer
-
-    try:
-        from .memory_echo_veil import create_echo_veil_layer
-
-        # Load config to check if Echo Veil is enabled
-        config_path = CONFIG_DIR / "config.json"
-        if config_path.exists():
-            with open(config_path, 'r') as f:
-                config = __import__('json').load(f)
-
-            if config.get('echo_veil_enabled', False):
-                # Build a real embed function: batches Ollama embed calls directly.
-                # Mirrors make_local_embed_fn in main.py (gateway-less path) so the
-                # Echo Veil layer can vectorize memory writes without the proxy.
-                _ev_host = config.get('host', 'http://localhost:11434')
-                _ev_model = config.get('harness_embed_model', DEFAULT_EMBED_MODEL)
-                _ev_dim = config.get('embed_dimensions')
-
-                def _echo_veil_embed(texts: list[str]) -> list[list[float]]:
-                    if not texts:
-                        return []
-                    try:
-                        from ollama import Client as _OClient
-                        kwargs: dict = {"model": _ev_model, "input": texts}
-                        if _ev_dim:
-                            try:
-                                kwargs["dimensions"] = int(_ev_dim)
-                            except (TypeError, ValueError):
-                                pass
-                        resp = _OClient(host=_ev_host).embed(**kwargs)
-                        # ollama client returns .embeddings (list[list[float]])
-                        embs = getattr(resp, "embeddings", None) or resp.get("embeddings") if isinstance(resp, dict) else None
-                        if embs is None:
-                            embs = getattr(resp, "embeddings", None) or []
-                        return embs or []
-                    except Exception:
-                        return []
-
-                _ev_key_path = config.get('echo_veil_crypto_key_path')
-
-                _echo_veil_layer = create_echo_veil_layer(
-                    embed_fn=_echo_veil_embed,
-                    config=config,
-                    crypto_key_path=_ev_key_path,
-                )
-    except Exception:
-        pass
-
-    return _echo_veil_layer
 
 SECRET_RE = re.compile(
     r"(?:^|[/\\._-])"
@@ -210,6 +190,8 @@ _ID_LOOKUP: dict[str, dict[str, Any]] | None = None
 _QUERY_VEC_CACHE: WindowTinyLFUCache[tuple[str, str], list[float]] = WindowTinyLFUCache(
     max(1, QUERY_VEC_CACHE_SIZE)
 )
+_LAST_RETRIEVAL_TRACE: dict[str, Any] = {}
+_LAST_RETRIEVAL_RESULT_IDS: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -222,12 +204,12 @@ class _LexicalCandidateIndex:
 
 
 _BM25_INDEX_CACHE: tuple[
-    tuple[tuple[str, ...], str, int, int, int],
+    tuple[tuple[str, ...], str, tuple[str, ...], int, int, int],
     list[dict[str, Any]],
     _LexicalCandidateIndex,
 ] | None = None
 _VECTOR_MATRIX_CACHE: tuple[
-    tuple[str, int, tuple[str, ...], str, int, int, int],
+    tuple[str, int, tuple[str, ...], str, tuple[str, ...], int, int, int],
     list[dict[str, Any]],
     Any,
 ] | None = None
@@ -255,7 +237,9 @@ def _metadata_only_json(path: Path) -> bool:
 # result has identical shape regardless of which retrieval surfaced it.
 _RESULT_FIELDS: tuple[str, ...] = (
     "id", "harness", "kind", "title", "path", "relative_path",
-    "description", "tags", "summary", "snippet", "updated", "score",
+    "description", "tags", "summary", "snippet", "status", "updated",
+    "authority", "valid_from", "valid_until", "verified_at", "supersedes",
+    "conflicts_with", "scope", "claims", "score",
 )
 
 
@@ -345,9 +329,12 @@ def build_index_with_rust(previous: dict[str, Any] | None = None) -> dict[str, A
         return None
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     try:
+        indexer_env = os.environ.copy()
+        indexer_env["ALGO_CLI_REPO_DIR"] = str(ALGO_CLI_REPO_DIR)
         proc = subprocess.run(
             [str(binary), "--output", str(INDEX_PATH)],
             cwd=str(Path(__file__).resolve().parents[1]),
+            env=indexer_env,
             text=True,
             encoding="utf-8",
             errors="replace",
@@ -623,6 +610,21 @@ def _markdown_heading_text(path: Path, *, limit: int = MAX_HEADING_INDEX_TEXT) -
     return " ".join(headings)[:limit]
 
 
+def _frontmatter_value(value: str) -> Any:
+    raw = value.strip()
+    if raw.startswith("[") and raw.endswith("]"):
+        return [
+            item.strip().strip("\"'")
+            for item in raw[1:-1].split(",")
+            if item.strip()
+        ]
+    if raw.casefold() in {"true", "false"}:
+        return raw.casefold() == "true"
+    if raw.casefold() in {"null", "none", "~"}:
+        return None
+    return raw.strip("\"'")
+
+
 def parse_frontmatter(text: str) -> dict[str, Any]:
     if not text.startswith("---"):
         return {}
@@ -630,15 +632,24 @@ def parse_frontmatter(text: str) -> dict[str, Any]:
     if end == -1:
         return {}
     data: dict[str, Any] = {}
+    parent_key: str | None = None
     for line in text[3:end].splitlines():
         if ":" not in line:
             continue
+        indentation = len(line) - len(line.lstrip())
         key, value = line.split(":", 1)
-        value = value.strip()
-        if value.startswith("[") and value.endswith("]"):
-            data[key.strip()] = [item.strip().strip("\"'") for item in value[1:-1].split(",") if item.strip()]
+        normalized_key = key.strip()
+        if not normalized_key:
+            continue
+        if indentation and parent_key and isinstance(data.get(parent_key), dict):
+            data[parent_key][normalized_key] = _frontmatter_value(value)
+            continue
+        parent_key = None
+        if not value.strip():
+            data[normalized_key] = {}
+            parent_key = normalized_key
         else:
-            data[key.strip()] = value.strip("\"'")
+            data[normalized_key] = _frontmatter_value(value)
     return data
 
 
@@ -691,6 +702,91 @@ def is_excluded_from_retrieval(record: dict[str, Any]) -> bool:
     if status in {"historical", "backlog", "superseded"}:
         return True
     return False
+
+
+def _parse_record_time(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def record_truth_factors(
+    record: dict[str, Any],
+    *,
+    as_of: datetime | None = None,
+    scope: dict[str, str] | None = None,
+) -> dict[str, float]:
+    """Return bounded authority/freshness/scope/verification rank factors."""
+
+    authority_name = str(record.get("authority") or "source").strip().casefold()
+    authority = RECORD_AUTHORITY_WEIGHTS.get(authority_name, 0.65)
+    now = (as_of or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    status = str(record.get("status") or "").strip().casefold()
+    verified = _parse_record_time(record.get("verified_at") or record.get("updated"))
+    valid_from = _parse_record_time(record.get("valid_from"))
+    valid_until = _parse_record_time(record.get("valid_until"))
+    if status in {"historical", "backlog", "superseded", "archived"}:
+        freshness = 0.20
+    elif valid_from is not None and valid_from > now:
+        freshness = 0.10
+    elif valid_until is not None and valid_until < now:
+        freshness = 0.25
+    elif verified is None:
+        freshness = 0.82
+    else:
+        age_days = max(0.0, (now - verified).total_seconds() / 86_400.0)
+        if age_days <= 30:
+            freshness = 1.0
+        elif age_days <= 180:
+            freshness = 0.95
+        elif age_days <= 365:
+            freshness = 0.90
+        elif age_days <= 730:
+            freshness = 0.80
+        else:
+            freshness = 0.70
+    verification = 1.0 if verified is not None else 0.88
+    requested_scope = scope or {
+        "project": "algo-cli",
+        "platform": sys.platform,
+    }
+    record_scope = record.get("scope")
+    scope_match = 1.0
+    if isinstance(record_scope, dict):
+        for key, expected in requested_scope.items():
+            actual = str(record_scope.get(key) or "*")
+            if actual not in {"*", "", str(expected)}:
+                scope_match *= 0.75
+    return {
+        "authority": round(authority, 6),
+        "freshness": round(freshness, 6),
+        "scope_match": round(scope_match, 6),
+        "verification": round(verification, 6),
+    }
+
+
+def authority_adjusted_score(
+    relevance: float,
+    record: dict[str, Any],
+    *,
+    as_of: datetime | None = None,
+    scope: dict[str, str] | None = None,
+) -> tuple[float, dict[str, float]]:
+    """Apply the documented truth factors without inventing probability."""
+
+    factors = record_truth_factors(record, as_of=as_of, scope=scope)
+    multiplier = math.prod(factors.values())
+    return float(relevance) * multiplier, {
+        **factors,
+        "truth_multiplier": round(multiplier, 6),
+    }
 
 
 def load_mercury_stop_conditions(*, max_chars: int = 6000) -> str:
@@ -759,16 +855,31 @@ def resolve_record_kind(root: SourceRoot, rel: str) -> str:
 def iter_files(root: SourceRoot) -> list[Path]:
     if not root.root.exists():
         return []
+    try:
+        root_resolved = root.root.resolve(strict=True)
+    except OSError:
+        return []
     seen: dict[str, Path] = {}
     for current, dirs, files in os.walk(root.root):
         if len(seen) >= root.max_files:
             break
-        dirs[:] = [name for name in dirs if name not in _SKIP_DIRS]
         current_path = Path(current)
+        dirs[:] = [
+            name
+            for name in dirs
+            if name not in _SKIP_DIRS
+            and not (current_path / name).is_symlink()
+        ]
         for filename in files:
             if len(seen) >= root.max_files:
                 break
             path = current_path / filename
+            if path.is_symlink():
+                continue
+            try:
+                path.resolve(strict=True).relative_to(root_resolved)
+            except (OSError, ValueError):
+                continue
             try:
                 rel = path.relative_to(root.root).as_posix()
             except ValueError:
@@ -827,6 +938,100 @@ def _unique_tags(values: list[str]) -> list[str]:
         tags.append(tag)
         seen.add(key)
     return tags
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _record_authority(
+    root: SourceRoot,
+    path: Path,
+    *,
+    kind: str,
+    status: str,
+    frontmatter: dict[str, Any],
+) -> str:
+    explicit = str(frontmatter.get("authority") or "").strip().casefold()
+    if explicit in RECORD_AUTHORITY_WEIGHTS:
+        return explicit
+    if status.casefold() in {"historical", "backlog", "superseded", "archived"}:
+        return "historical"
+    if root.harness != "algo-cli":
+        return "source"
+    if _path_is_within(path, CONFIG_DIR):
+        return "user-curated"
+    if kind in {"tool", "model"}:
+        return "source"
+    return "generated-doc"
+
+
+def _record_scope(
+    root: SourceRoot,
+    frontmatter: dict[str, Any],
+) -> dict[str, str]:
+    raw_scope = frontmatter.get("scope")
+    scope = raw_scope if isinstance(raw_scope, dict) else {}
+    project = str(scope.get("project") or ("algo-cli" if root.harness == "algo-cli" else "*"))
+    platform = str(scope.get("platform") or "*")
+    version = str(scope.get("version") or "*")
+    return {
+        "project": project[:128],
+        "platform": platform[:64],
+        "version": version[:64],
+    }
+
+
+def _record_claims(frontmatter: dict[str, Any]) -> dict[str, Any]:
+    raw_claims = frontmatter.get("claims")
+    if not isinstance(raw_claims, dict):
+        return {}
+    claims: dict[str, Any] = {}
+    for key, value in list(raw_claims.items())[:32]:
+        normalized = str(key).strip()[:160]
+        if not normalized or not isinstance(value, (str, int, float, bool, type(None))):
+            continue
+        claims[normalized] = value
+    return claims
+
+
+def _truth_metadata(
+    root: SourceRoot,
+    path: Path,
+    *,
+    kind: str,
+    status: str,
+    updated: str,
+    frontmatter: dict[str, Any],
+) -> dict[str, Any]:
+    verified_at = str(frontmatter.get("verified_at") or updated).strip()
+    valid_from = str(frontmatter.get("valid_from") or verified_at).strip()
+    raw_valid_until = frontmatter.get("valid_until")
+    valid_until = (
+        str(raw_valid_until).strip()
+        if raw_valid_until is not None and raw_valid_until != ""
+        else None
+    )
+    return {
+        "authority": _record_authority(
+            root,
+            path,
+            kind=kind,
+            status=status,
+            frontmatter=frontmatter,
+        ),
+        "valid_from": valid_from,
+        "valid_until": valid_until,
+        "verified_at": verified_at,
+        "supersedes": _coerce_tags(frontmatter.get("supersedes"))[:32],
+        "conflicts_with": _coerce_tags(frontmatter.get("conflicts_with"))[:32],
+        "scope": _record_scope(root, frontmatter),
+        "claims": _record_claims(frontmatter),
+    }
 
 
 def _json_record_metadata(path: Path, text: str) -> dict[str, Any]:
@@ -927,7 +1132,6 @@ def _normalize_reviewed_algo_record(record: dict[str, Any]) -> dict[str, Any]:
             updated.get("title", ""),
             updated.get("description", ""),
             " ".join(tags),
-            updated.get("status", ""),
             updated.get("relative_path", ""),
             updated.get("index_text") or updated.get("summary", ""),
             updated.get("heading_text", ""),
@@ -937,6 +1141,67 @@ def _normalize_reviewed_algo_record(record: dict[str, Any]) -> dict[str, Any]:
         updated["search_text"] = search_text
         updated.pop("embedding", None)
         updated.pop("embedding_model", None)
+    return updated
+
+
+def _normalize_record_truth_metadata(record: dict[str, Any]) -> dict[str, Any]:
+    """Backfill the truth contract on indexes created before the contract existed."""
+
+    updated = dict(record)
+    status = str(updated.get("status") or "active").strip().casefold()
+    harness_name = str(updated.get("harness") or "").strip().casefold()
+    kind = str(updated.get("kind") or "").strip().casefold()
+    authority = str(updated.get("authority") or "").strip().casefold()
+    if authority not in RECORD_AUTHORITY_WEIGHTS:
+        if status in {"historical", "backlog", "superseded", "archived"}:
+            authority = "historical"
+        elif kind == "runtime_capability":
+            authority = "runtime"
+        elif harness_name != "algo-cli":
+            authority = "source"
+        else:
+            raw_path = str(updated.get("path") or "")
+            try:
+                user_curated = bool(raw_path) and _path_is_within(
+                    Path(raw_path),
+                    CONFIG_DIR,
+                )
+            except (OSError, ValueError):
+                user_curated = False
+            if user_curated:
+                authority = "user-curated"
+            elif kind in {"tool", "model"}:
+                authority = "source"
+            else:
+                authority = "generated-doc"
+    verified_at = str(
+        updated.get("verified_at") or updated.get("updated") or ""
+    ).strip()
+    valid_from = str(updated.get("valid_from") or verified_at).strip()
+    raw_scope = updated.get("scope")
+    scope = raw_scope if isinstance(raw_scope, dict) else {}
+    normalized_scope = {
+        "project": str(
+            scope.get("project")
+            or ("algo-cli" if harness_name == "algo-cli" else "*")
+        )[:128],
+        "platform": str(scope.get("platform") or "*")[:64],
+        "version": str(scope.get("version") or "*")[:64],
+    }
+    claims = updated.get("claims")
+    updated.update(
+        {
+            "status": status,
+            "authority": authority,
+            "valid_from": valid_from,
+            "valid_until": updated.get("valid_until") or None,
+            "verified_at": verified_at,
+            "supersedes": _coerce_tags(updated.get("supersedes"))[:32],
+            "conflicts_with": _coerce_tags(updated.get("conflicts_with"))[:32],
+            "scope": normalized_scope,
+            "claims": claims if isinstance(claims, dict) else {},
+        }
+    )
     return updated
 
 
@@ -951,7 +1216,9 @@ def _normalize_index_records(index: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(record, dict):
             normalized.append(record)
             continue
-        normalized_record = _normalize_reviewed_algo_record(record)
+        normalized_record = _normalize_reviewed_algo_record(
+            _normalize_record_truth_metadata(record)
+        )
         normalized.append(normalized_record)
         if normalized_record != record:
             changed = True
@@ -1010,7 +1277,22 @@ def make_record(root: SourceRoot, path: Path, *, stat_result: Any | None = None)
         if root.harness == "algo-cli" and rel == REVIEWED_ALGO_REL
         else ""
     )
-    status = str(fm.get("status", "") or "").strip()
+    status = str(fm.get("status", "active") or "active").strip()
+    updated = str(
+        fm.get("updated")
+        or datetime.fromtimestamp(
+            stat_result.st_mtime,
+            tz=timezone.utc,
+        ).isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
+    truth_metadata = _truth_metadata(
+        root,
+        path,
+        kind=kind,
+        status=status,
+        updated=updated,
+        frontmatter=fm,
+    )
     search_text = " ".join(
         str(value)
         for value in (
@@ -1021,6 +1303,8 @@ def make_record(root: SourceRoot, path: Path, *, stat_result: Any | None = None)
             description,
             " ".join(tags),
             status,
+            truth_metadata["authority"],
+            " ".join(truth_metadata["scope"].values()),
             rel,
             index_text,
             heading_text,
@@ -1036,7 +1320,7 @@ def make_record(root: SourceRoot, path: Path, *, stat_result: Any | None = None)
         "description": description,
         "tags": tags,
         "status": status,
-        "updated": fm.get("updated") or datetime.fromtimestamp(stat_result.st_mtime).isoformat(timespec="seconds"),
+        "updated": updated,
         "file_size": int(stat_result.st_size),
         "file_mtime_ns": int(stat_result.st_mtime_ns),
         "links": links,
@@ -1044,6 +1328,7 @@ def make_record(root: SourceRoot, path: Path, *, stat_result: Any | None = None)
         "index_text": index_text,
         "heading_text": heading_text,
         "search_text": search_text,
+        **truth_metadata,
     }
     return _normalize_reviewed_algo_record(record)
 
@@ -1051,7 +1336,7 @@ def make_record(root: SourceRoot, path: Path, *, stat_result: Any | None = None)
 def _runtime_capability_records(
     previous: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Materialize ActionSpecs as stable, retrievable runtime knowledge."""
+    """Materialize the live typed registry as retrievable runtime knowledge."""
     from . import action_registry
 
     source_path = Path(action_registry.__file__).resolve()
@@ -1059,7 +1344,10 @@ def _runtime_capability_records(
         source_stat = source_path.stat()
         file_size = int(source_stat.st_size)
         file_mtime_ns = int(source_stat.st_mtime_ns)
-        updated = datetime.fromtimestamp(source_stat.st_mtime).isoformat(timespec="seconds")
+        updated = datetime.fromtimestamp(
+            source_stat.st_mtime,
+            tz=timezone.utc,
+        ).isoformat(timespec="seconds").replace("+00:00", "Z")
     except OSError:
         file_size = file_mtime_ns = 0
         updated = ""
@@ -1069,7 +1357,11 @@ def _runtime_capability_records(
         if isinstance(record, dict) and record.get("kind") == "runtime_capability"
     }
     records: list[dict[str, Any]] = []
-    for spec in action_registry.list_action_specs(include_archived=True):
+    capabilities = action_registry.capability_registry_snapshot(
+        include_archived=True,
+    )
+    for capability in capabilities:
+        spec = capability.spec
         record_id_value = f"algo-cli:runtime_capability:{spec.name}"
         limitations = " ".join(spec.known_limitations) or "No registry limitation recorded."
         prerequisites = " ".join(spec.prerequisites) or "No extra prerequisite recorded."
@@ -1083,19 +1375,27 @@ def _runtime_capability_records(
                     "mutating" if spec.mutates_state else "read-only",
                     "approval-required" if spec.requires_approval else "no-approval",
                     "network-required" if spec.requires_network else "local-capable",
+                    f"status-{capability.status}",
+                    "model-callable" if capability.model_callable else "not-model-callable",
                     *spec.tags,
                 )
             )
         )
-        status = "archived" if spec.archived else "ready"
+        status = capability.status
         index_text = (
             f"Capability {spec.name}. {spec.description} Group {spec.group}. "
+            f"Live status {status}: {capability.reason} "
+            f"Installed {capability.installed}; enabled {capability.enabled}; "
+            f"authenticated {capability.authenticated}; policy allowed {capability.policy_allowed}; "
+            f"model callable {capability.model_callable}. "
             f"Threat and policy use: {spec.threat_detection_use} "
             f"Risk {spec.risk_level}; mutates state {spec.mutates_state}; "
             f"approval required {spec.requires_approval}; safe retry {spec.safe_retry}; "
             f"network required {spec.requires_network}; provider {spec.requires_provider or 'none'}; "
             f"binaries {' '.join(spec.requires_binary) or 'none'}; "
             f"supported OS {' '.join(spec.supported_os)}. "
+            f"Authority {capability.authority}; "
+            f"scope {json.dumps(dict(capability.scope), sort_keys=True)}. "
             f"Prerequisites: {prerequisites} Limitations and failure modes: {limitations}"
         )[:MAX_INDEX_TEXT]
         search_text = " ".join(
@@ -1128,7 +1428,21 @@ def _runtime_capability_records(
             "index_text": index_text,
             "heading_text": "",
             "search_text": search_text,
-            "capability": spec.as_dict(),
+            "authority": capability.authority,
+            "valid_from": capability.valid_from,
+            "valid_until": capability.valid_until,
+            "verified_at": capability.verified_at,
+            "supersedes": list(capability.supersedes),
+            "conflicts_with": list(capability.conflicts_with),
+            "scope": dict(capability.scope),
+            "claims": {
+                f"capability:{spec.name}:installed": capability.installed,
+                f"capability:{spec.name}:enabled": capability.enabled,
+                f"capability:{spec.name}:authenticated": capability.authenticated,
+                f"capability:{spec.name}:policy_allowed": capability.policy_allowed,
+                f"capability:{spec.name}:model_callable": capability.model_callable,
+            },
+            "capability": capability.as_dict(),
         }
         prior = prior_by_id.get(record_id_value)
         if (
@@ -1185,11 +1499,31 @@ def _parse_extra_source_roots_payload(data: Any) -> tuple[list[SourceRoot], int]
         try:
             if not isinstance(item, dict):
                 raise TypeError("root entry must be an object")
+            enabled = item.get("enabled", True)
+            if not isinstance(enabled, bool):
+                raise TypeError("enabled must be a boolean")
+            if not enabled:
+                continue
+            mode = str(item.get("mode", "read-only")).strip().casefold()
+            if mode != "read-only":
+                raise ValueError("configured source roots must be read-only")
             patterns = item.get("patterns", ["*.md"])
             if not isinstance(patterns, list) or not patterns or not all(
                 isinstance(pattern, str) and pattern.strip() for pattern in patterns
             ):
                 raise TypeError("patterns must be a non-empty string list")
+            normalized_patterns = [pattern.strip().replace("\\", "/") for pattern in patterns]
+            if any(
+                pattern.startswith("/")
+                or "\x00" in pattern
+                or ".." in Path(pattern).parts
+                or Path(pattern).suffix.casefold()
+                not in ALLOWED_CONFIGURED_SOURCE_SUFFIXES
+                for pattern in normalized_patterns
+            ):
+                raise ValueError(
+                    "patterns must be relative allowlisted text or source-code files"
+                )
             harness_name = str(item["harness"]).strip()
             kind = str(item["kind"]).strip()
             root_value = str(item["root"]).strip()
@@ -1201,7 +1535,7 @@ def _parse_extra_source_roots_payload(data: Any) -> tuple[list[SourceRoot], int]
                     harness=harness_name,
                     kind=kind,
                     root=Path(root_value).expanduser(),
-                    patterns=tuple(patterns),
+                    patterns=tuple(normalized_patterns),
                     max_files=max_files,
                 )
             )
@@ -1357,6 +1691,15 @@ def source_roots_diagnostics(records: list[dict[str, Any]] | None = None) -> dic
             "harness/kind/relative_path records in stable source order"
         ),
         "privacy_default": "disabled; explicit opt-in required",
+        "adapter_contract": {
+            "mode": "read-only",
+            "configured_roots_only": True,
+            "allowlisted_file_types": sorted(ALLOWED_CONFIGURED_SOURCE_SUFFIXES),
+            "incremental_indexing": True,
+            "secret_filtering": True,
+            "symlink_and_path_escape_protection": True,
+            "source_mutation": False,
+        },
     }
 
 
@@ -1535,7 +1878,9 @@ def build_index(previous: dict[str, Any] | None = None) -> dict[str, Any]:
     all_roots = all_source_roots()
     if not all_roots and previous:
         prior_records = [
-            _normalize_reviewed_algo_record(record)
+            _normalize_reviewed_algo_record(
+                _normalize_record_truth_metadata(record)
+            )
             for record in (previous.get("records", []) or [])
             if isinstance(record, dict)
         ]
@@ -1860,6 +2205,195 @@ def _dedup_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped
 
 
+def qualify_configured_external_roots() -> dict[str, Any]:
+    """Exercise the configured-root ingestion path without touching user state.
+
+    The probe owns two temporary roots and sends them through the same payload
+    parser, bounded file walk, record builder, provenance-preserving dedupe,
+    redaction, and lexical ranking used by explicitly configured roots. It does
+    not enable external sources or read any installed agent store.
+    """
+
+    probe = "harness-configured-external-roots-v1"
+    fixtures = {
+        "codex": (
+            "# Shared incident handoff\n"
+            "Codex provenance for the cross-source safety review. "
+            "Authorization: Bearer qualification-secret-token\n"
+        ),
+        "claude": (
+            "# Shared incident handoff\n"
+            "Claude provenance for the cross-source safety review.\n"
+        ),
+    }
+    fixture_digest = hashlib.sha256(
+        json.dumps(
+            fixtures,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    policy_before = dict(_source_policy())
+    checks = {
+        "configuration_accepted": False,
+        "bounded_files_indexed": False,
+        "provenance_complete": False,
+        "cross_harness_conflict_preserved": False,
+        "secret_named_file_excluded": False,
+        "inline_secret_redacted": False,
+        "cross_root_retrieval": False,
+        "runtime_policy_unchanged": False,
+    }
+    ranked_ids: list[str] = []
+    record_count = 0
+    rejected_count = 0
+    error_type: str | None = None
+
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="algo-harness-root-qualification-"
+        ) as temporary:
+            root_path = Path(temporary)
+            root_payload: list[dict[str, Any]] = []
+            for harness_name, content in fixtures.items():
+                source_path = root_path / harness_name
+                source_path.mkdir()
+                (source_path / "shared.md").write_text(content, encoding="utf-8")
+                (source_path / "credentials.md").write_text(
+                    "api_key=qualification-secret-token\n",
+                    encoding="utf-8",
+                )
+                root_payload.append(
+                    {
+                        "harness": harness_name,
+                        "kind": "skill",
+                        "root": str(source_path),
+                        "patterns": ["*.md"],
+                        "max_files": 4,
+                    }
+                )
+
+            roots, rejected_count = _parse_extra_source_roots_payload(
+                root_payload
+            )
+            checks["configuration_accepted"] = (
+                len(roots) == len(fixtures) and rejected_count == 0
+            )
+            records = [
+                make_record(root, path)
+                for root in roots
+                for path in iter_files(root)
+            ]
+            records = _dedup_records(records)
+            record_count = len(records)
+            record_ids = {str(record.get("id") or "") for record in records}
+            expected_ids = {
+                f"{harness_name}:skill:shared.md"
+                for harness_name in fixtures
+            }
+            checks["bounded_files_indexed"] = record_ids == expected_ids
+            checks["secret_named_file_excluded"] = not any(
+                "credentials.md" in record_id for record_id in record_ids
+            )
+            checks["provenance_complete"] = bool(records) and all(
+                all(record.get(field) for field in (
+                    "id",
+                    "harness",
+                    "kind",
+                    "path",
+                    "relative_path",
+                    "updated",
+                ))
+                for record in records
+            )
+            checks["cross_harness_conflict_preserved"] = (
+                len(records) == 2
+                and {str(record.get("harness") or "") for record in records}
+                == set(fixtures)
+                and {
+                    str(record.get("relative_path") or "")
+                    for record in records
+                }
+                == {"shared.md"}
+            )
+            serialized_records = json.dumps(
+                records,
+                ensure_ascii=True,
+                sort_keys=True,
+                default=str,
+            )
+            checks["inline_secret_redacted"] = (
+                "qualification-secret-token" not in serialized_records
+                and "Bearer <redacted>" in serialized_records
+            )
+
+            terms = lexical_tokens("cross source safety review provenance")
+            lexical = BM25Index(
+                [str(record.get("search_text") or "") for record in records]
+            )
+            scored = [
+                (
+                    lexical_score + float(score_record(record, terms)),
+                    record,
+                )
+                for lexical_score, record in zip(
+                    lexical.scores(terms),
+                    records,
+                )
+            ]
+            ranked = stable_top_k(
+                scored,
+                len(expected_ids),
+                score=lambda pair: pair[0],
+            )
+            ranked_ids = [
+                str(record.get("id") or "")
+                for score, record in ranked
+                if score > 0.0
+            ]
+            checks["cross_root_retrieval"] = set(ranked_ids) == expected_ids
+    except Exception as exc:
+        error_type = type(exc).__name__
+    finally:
+        checks["runtime_policy_unchanged"] = (
+            dict(_source_policy()) == policy_before
+        )
+
+    passed = all(checks.values()) and error_type is None
+    return {
+        "schema_version": 1,
+        "probe": probe,
+        "status": "pass" if passed else "fail",
+        "scope": (
+            "isolated temporary configured roots; user stores are not read "
+            "and runtime source policy is not changed"
+        ),
+        "checks": checks,
+        "metrics": {
+            "configured_roots": len(fixtures),
+            "records_indexed": record_count,
+            "configuration_rejections": rejected_count,
+            "retrieved_records": len(ranked_ids),
+        },
+        "evidence": {
+            "fixture_digest": fixture_digest,
+            "ranking_digest": hashlib.sha256(
+                json.dumps(
+                    ranked_ids,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        },
+        "error_type": error_type,
+        "limitations": [
+            "This qualifies Algo's configured-root ingestion path, not the availability or correctness of any installed external agent store.",
+            "External stores remain disabled by default and require explicit user opt-in.",
+        ],
+    }
+
+
 def harness_filter_names(harness: str | None) -> set[str] | None:
     if not harness:
         return None
@@ -1885,8 +2419,38 @@ def resolve_embed_model(cfg: Any | None = None) -> str:
     return DEFAULT_EMBED_MODEL
 
 
-def search_index(query: str, harness: str | None = None, kind: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
-    return [_display_record(record) for _score, record in _rank_keyword_records(query, harness, kind, limit)]
+def _normalized_excluded_kinds(
+    excluded_kinds: set[str] | frozenset[str] | None,
+) -> frozenset[str]:
+    if excluded_kinds is None:
+        return frozenset()
+    if not isinstance(excluded_kinds, (set, frozenset)):
+        raise TypeError("excluded_kinds must be a set or frozenset")
+    return frozenset(
+        str(value).strip().casefold()
+        for value in excluded_kinds
+        if str(value).strip()
+    )
+
+
+def search_index(
+    query: str,
+    harness: str | None = None,
+    kind: str | None = None,
+    limit: int = 10,
+    *,
+    excluded_kinds: set[str] | frozenset[str] | None = None,
+) -> list[dict[str, Any]]:
+    return [
+        _display_record(record)
+        for _score, record in _rank_keyword_records(
+            query,
+            harness,
+            kind,
+            limit,
+            excluded_kinds=excluded_kinds,
+        )
+    ]
 
 
 def _rank_keyword_records(
@@ -1894,6 +2458,8 @@ def _rank_keyword_records(
     harness: str | None = None,
     kind: str | None = None,
     limit: int = 10,
+    *,
+    excluded_kinds: set[str] | frozenset[str] | None = None,
 ) -> list[tuple[float, dict[str, Any]]]:
     """Rank filtered records with BM25 plus curated title/path/meta boosts."""
     index = load_index()
@@ -1901,16 +2467,24 @@ def _rank_keyword_records(
     if not terms:
         return []
     harness_names = harness_filter_names(harness)
+    excluded = _normalized_excluded_kinds(excluded_kinds)
     candidates: list[dict[str, Any]] = []
     for record in index.get("records", []):
         if harness_names and record.get("harness") not in harness_names:
             continue
         if kind and record.get("kind") != kind:
             continue
+        if str(record.get("kind") or "").casefold() in excluded:
+            continue
         if is_excluded_from_retrieval(record):
             continue
         candidates.append(record)
-    lexical_index = _candidate_bm25_index(candidates, harness_names=harness_names, kind=kind)
+    lexical_index = _candidate_bm25_index(
+        candidates,
+        harness_names=harness_names,
+        kind=kind,
+        excluded_kinds=excluded,
+    )
     lexical_scores = lexical_index.bm25.scores(terms)
     scored: list[tuple[float, dict[str, Any]]] = []
     for position, (lexical_score, record) in enumerate(zip(lexical_scores, candidates)):
@@ -1933,12 +2507,14 @@ def _candidate_bm25_index(
     *,
     harness_names: set[str] | None,
     kind: str | None,
+    excluded_kinds: frozenset[str],
 ) -> _LexicalCandidateIndex:
     """Return reusable corpus statistics for one filtered retrieval slice."""
     global _BM25_INDEX_CACHE
     key = (
         tuple(sorted(harness_names or ())),
         kind or "",
+        tuple(sorted(excluded_kinds)),
         len(candidates),
         id(candidates[0]) if candidates else 0,
         id(candidates[-1]) if candidates else 0,
@@ -2103,23 +2679,29 @@ def stats() -> dict[str, Any]:
     except Exception:
         record_distribution = {}
     try:
-        from .memory_echo_veil import get_echo_veil_readiness
+        from .ada_memory_echo_veil import get_echo_veil_readiness
 
         echo_veil = get_echo_veil_readiness()
     except Exception as exc:
         echo_veil = {
             "installed": False,
+            "version_supported": False,
             "enabled": False,
+            "crypto_initialized": False,
             "write_wired": False,
+            "index_wired": False,
             "retrieval_wired": False,
             "persistence_wired": False,
+            "restart_restored": False,
+            "rotation_ready": False,
+            "healthy": False,
             "readiness_source": "algo_cli.harness.stats.fallback",
             "runtime": f"{sys.implementation.name}-{sys.version_info.major}.{sys.version_info.minor}",
-            "module_origin": None,
+            "installation_identity": "unsupported",
             "import_error": type(exc).__name__,
         }
     try:
-        from .perf_telemetry import private_perf_store_readiness
+        from .dorothy_perf_telemetry import private_perf_store_readiness
 
         runtime_event_store = private_perf_store_readiness()
     except Exception as exc:
@@ -2568,13 +3150,14 @@ def retrieve_for_query(
     k: int = 3,
     harness: str | None = None,
     kind: str | None = None,
+    excluded_kinds: set[str] | frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Cosine-rank harness records against the query. Returns up to k records as dicts
     with id/harness/kind/title/path/snippet. Empty list if no embeddings ready.
 
-    If the experimental Echo Veil layer is enabled, run its observation cycle
-    for diagnostics. Its result does not affect ranking until the write,
-    retrieval-consumption, and full-state persistence paths are complete.
+    Echo Veil memory retrieval is deliberately separate from harness-record
+    ranking. The authoritative adapter is consumed by context assembly, not by
+    mutating a duplicate Oracle from query vectors here.
     """
     query = (query or "").strip()
     if not query:
@@ -2597,20 +3180,13 @@ def retrieve_for_query(
         qvec = vecs[0]
         _QUERY_VEC_CACHE.put(cache_key, qvec)
 
-    # Optional Echo Veil observation only. Readiness reports retrieval_wired=False
-    # until this output is deliberately consumed by the ranking/prompt path.
-    echo_veil_layer = get_echo_veil_layer()
-    if echo_veil_layer is not None and hasattr(echo_veil_layer, 'observe'):
-        try:
-            echo_veil_layer.observe(qvec)
-        except Exception:
-            pass  # Echo Veil is optional - don't fail on errors
-
     harness_names = harness_filter_names(harness)
+    excluded = _normalized_excluded_kinds(excluded_kinds)
     candidates = [
         r for r in records
         if (not harness_names or r.get("harness") in harness_names)
         and (not kind or r.get("kind") == kind)
+        and str(r.get("kind") or "").casefold() not in excluded
         and not is_excluded_from_retrieval(r)
         and r.get("embedding")
         and r.get("embedding_model") == model
@@ -2626,6 +3202,7 @@ def retrieve_for_query(
             dimensions=len(qvec),
             harness_names=harness_names,
             kind=kind,
+            excluded_kinds=excluded,
         )
         qv = _np.array(qvec, dtype=_np.float32)
         q_norm = float(_np.linalg.norm(qv))
@@ -2637,13 +3214,13 @@ def retrieve_for_query(
         scored: list[tuple[float, dict[str, Any]]] = [
             (float(s), candidates[i])
             for i, s in enumerate(sims)
-            if math.isfinite(float(s)) and s > 0.0
+            if math.isfinite(float(s)) and s >= MIN_VECTOR_SIMILARITY
         ]
     else:
         scored = []
         for record in candidates:
             sim = _cosine(qvec, record["embedding"])
-            if sim > 0.0:
+            if sim >= MIN_VECTOR_SIMILARITY:
                 scored.append((sim, record))
     top_scored = stable_top_k(scored, k, score=lambda pair: pair[0])
     return [{**_slim_record(record), "score": round(float(sim), 4)} for sim, record in top_scored]
@@ -2656,6 +3233,7 @@ def _normalized_candidate_matrix(
     dimensions: int,
     harness_names: set[str] | None,
     kind: str | None,
+    excluded_kinds: frozenset[str],
 ) -> tuple[list[dict[str, Any]], Any]:
     """Return a cached row-aligned L2-normalized NumPy matrix."""
     global _VECTOR_MATRIX_CACHE
@@ -2664,6 +3242,7 @@ def _normalized_candidate_matrix(
         dimensions,
         tuple(sorted(harness_names or ())),
         kind or "",
+        tuple(sorted(excluded_kinds)),
         len(candidates),
         id(candidates[0]) if candidates else 0,
         id(candidates[-1]) if candidates else 0,
@@ -2690,14 +3269,17 @@ def _retrieval_embedding_coverage(
     *,
     harness: str | None,
     kind: str | None,
+    excluded_kinds: set[str] | frozenset[str] | None = None,
 ) -> tuple[int, int]:
     """Return model-matching and total eligible records for a retrieval slice."""
     harness_names = harness_filter_names(harness)
+    excluded = _normalized_excluded_kinds(excluded_kinds)
     records = [
         record
         for record in (load_index().get("records", []) or [])
         if (not harness_names or record.get("harness") in harness_names)
         and (not kind or record.get("kind") == kind)
+        and str(record.get("kind") or "").casefold() not in excluded
         and not is_excluded_from_retrieval(record)
     ]
     matching = sum(
@@ -2745,6 +3327,8 @@ def hybrid_search(
     harness: str | None = None,
     kind: str | None = None,
     rrf_k: int = 60,
+    excluded_kinds: set[str] | frozenset[str] | None = None,
+    trace: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Reciprocal Rank Fusion of keyword and vector rankings.
 
@@ -2752,10 +3336,33 @@ def hybrid_search(
     RRF: score(d) = 1/(rrf_k+rank_keyword) + 1/(rrf_k+rank_vector).
     Falls back to keyword-only if embeddings are unavailable.
     """
+    global _LAST_RETRIEVAL_RESULT_IDS, _LAST_RETRIEVAL_TRACE
     pool = k * 3
-    keyword_ranked = _rank_keyword_records(query, harness=harness, kind=kind, limit=pool)
-    keyword_results = [record for _score, record in keyword_ranked]
-    vector_results = retrieve_for_query(query, embed_fn, model, k=pool, harness=harness, kind=kind)
+    excluded = _normalized_excluded_kinds(excluded_kinds)
+    index_records = [
+        record
+        for record in (load_index().get("records", []) or [])
+        if isinstance(record, dict)
+    ]
+    stale_or_historical = sum(
+        1 for record in index_records if is_excluded_from_retrieval(record)
+    )
+    keyword_ranked = _rank_keyword_records(
+        query,
+        harness=harness,
+        kind=kind,
+        limit=pool,
+        excluded_kinds=excluded,
+    )
+    vector_results = retrieve_for_query(
+        query,
+        embed_fn,
+        model,
+        k=pool,
+        harness=harness,
+        kind=kind,
+        excluded_kinds=excluded,
+    )
 
     raw_scores: dict[str, float] = {}
     ranker_counts: dict[str, int] = {}
@@ -2784,19 +3391,54 @@ def hybrid_search(
         })
 
     if not raw_scores:
-        return [{**_slim_record(r), "score": 0.0} for r in keyword_results[:k]]
+        empty_trace = {
+            "schema_version": 1,
+            "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
+            "index_records": len(index_records),
+            "lexical_matches": len(keyword_ranked),
+            "dense_matches": len(vector_results),
+            "fused_candidates": 0,
+            "returned": 0,
+            "dropped": {
+                "duplicate_context": 0,
+                "stale_or_historical": stale_or_historical,
+                "scope_mismatch": 0,
+            },
+            "conflict_detected": False,
+            "context_tokens": 0,
+        }
+        _LAST_RETRIEVAL_TRACE = empty_trace
+        _LAST_RETRIEVAL_RESULT_IDS = ()
+        if trace is not None:
+            trace.clear()
+            trace.update(empty_trace)
+        return []
 
-    embedded, eligible = _retrieval_embedding_coverage(model, harness=harness, kind=kind)
+    embedded, eligible = _retrieval_embedding_coverage(
+        model,
+        harness=harness,
+        kind=kind,
+        excluded_kinds=excluded,
+    )
     coverage_complete = eligible > 0 and embedded == eligible
     fusion_mode = "rrf" if coverage_complete else "coverage-neutral-rrf"
     # Ordinary RRF rewards agreement by summing ranker contributions. While the
     # index is only partially embedded, that turns embedding availability into a
     # relevance signal. Average the available contributions until coverage is
     # complete so a fresh exact lexical hit is not demoted merely for being new.
-    scores = {
+    relevance_scores = {
         rid: raw_score if coverage_complete else raw_score / max(1, ranker_counts[rid])
         for rid, raw_score in raw_scores.items()
     }
+    truth_factors: dict[str, dict[str, float]] = {}
+    scores: dict[str, float] = {}
+    for rid, relevance_score in relevance_scores.items():
+        adjusted, factors = authority_adjusted_score(
+            relevance_score,
+            id_to_record[rid],
+        )
+        scores[rid] = adjusted
+        truth_factors[rid] = factors
     ranked_ids = stable_top_k(list(scores), k, score=lambda rid: scores[rid])
     results: list[dict[str, Any]] = []
     for rid in ranked_ids:
@@ -2811,33 +3453,329 @@ def hybrid_search(
                 "fusion_mode": fusion_mode,
                 "embedding_coverage": round(embedded / eligible, 6) if eligible else 0.0,
                 "rrf_raw_score": round(raw_scores[rid], 6),
-                "rrf_score": round(scores[rid], 6),
+                "rrf_relevance_score": round(relevance_scores[rid], 6),
+                "rrf_score": round(relevance_scores[rid], 6),
+                "authority_adjusted_score": round(scores[rid], 6),
+                "truth_factors": truth_factors[rid],
             },
         })
+    scope_mismatch = sum(
+        1
+        for rid in raw_scores
+        if truth_factors.get(rid, {}).get("scope_match", 1.0) < 1.0
+    )
+    retrieval_trace = {
+        "schema_version": 1,
+        "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
+        "index_records": len(index_records),
+        "lexical_matches": len(keyword_ranked),
+        "dense_matches": len(vector_results),
+        "fused_candidates": len(raw_scores),
+        "returned": len(results),
+        "dropped": {
+            "duplicate_context": 0,
+            "stale_or_historical": stale_or_historical,
+            "scope_mismatch": scope_mismatch,
+        },
+        "conflict_detected": bool(detect_retrieval_conflicts(results)),
+        "context_tokens": 0,
+    }
+    _LAST_RETRIEVAL_TRACE = retrieval_trace
+    _LAST_RETRIEVAL_RESULT_IDS = tuple(
+        str(result.get("id") or "") for result in results if result.get("id")
+    )
+    if trace is not None:
+        trace.clear()
+        trace.update(retrieval_trace)
     return results
 
 
-def format_retrieved_context(retrieved: list[dict[str, Any]]) -> str:
-    """Render retrieval results as a Markdown block for the system prompt."""
-    if not retrieved:
-        return ""
-    lines = [
-        "The following entries from your local harness are relevant to the current message.",
-        "Use harness_read with the ID to load the full record if you need more depth.",
-        "",
-    ]
-    for rec in retrieved:
-        rid = rec.get("id") or "?"
-        lines.append(f"### {rid}")
-        meta = " · ".join(
-            repair_mojibake(str(value))
-            for value in (rec.get("harness"), rec.get("kind"), rec.get("title"))
-            if value
+def _canonical_claim_value(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _conflict_preference_key(candidate: dict[str, Any]) -> tuple[float, float, float]:
+    authority = RECORD_AUTHORITY_WEIGHTS.get(
+        str(candidate.get("authority") or "source").casefold(),
+        0.65,
+    )
+    verified = _parse_record_time(candidate.get("verified_at"))
+    verified_score = verified.timestamp() if verified is not None else 0.0
+    scope_factor = float(candidate.get("scope_match") or 0.0)
+    return authority, verified_score, scope_factor
+
+
+def detect_retrieval_conflicts(
+    records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Preserve contradictory structured claims and justify any preference."""
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        claims = record.get("claims")
+        if not isinstance(claims, dict):
+            continue
+        factors = record_truth_factors(record)
+        for claim, value in claims.items():
+            grouped.setdefault(str(claim), []).append(
+                {
+                    "value": value,
+                    "source": str(record.get("id") or "?"),
+                    "authority": str(record.get("authority") or "source"),
+                    "verified_at": str(record.get("verified_at") or ""),
+                    "scope_match": factors["scope_match"],
+                }
+            )
+    conflicts: list[dict[str, Any]] = []
+    for claim, candidates in sorted(grouped.items()):
+        if len({_canonical_claim_value(item["value"]) for item in candidates}) < 2:
+            continue
+        ordered = sorted(
+            enumerate(candidates),
+            key=lambda item: (*_conflict_preference_key(item[1]), -item[0]),
+            reverse=True,
         )
-        if meta:
-            lines.append(meta)
-        snippet = rec.get("snippet")
-        if snippet:
-            lines.append(repair_mojibake(str(snippet)))
-        lines.append("")
-    return "\n".join(lines).rstrip()
+        preferred: str | None = None
+        preferred_value: Any = None
+        reason = "No candidate has a justified authority/freshness advantage; ambiguity is preserved."
+        if len(ordered) == 1 or _conflict_preference_key(ordered[0][1]) > _conflict_preference_key(ordered[1][1]):
+            winner = ordered[0][1]
+            preferred = str(winner["source"])
+            preferred_value = winner["value"]
+            reason = "Preferred by higher authority, newer verification, then scope match."
+        conflicts.append(
+            {
+                "status": "conflict",
+                "claim": claim,
+                "candidates": candidates,
+                "preferred": preferred,
+                "preferred_value": preferred_value,
+                "reason": reason,
+            }
+        )
+    return conflicts
+
+
+def _context_fingerprint(record: dict[str, Any]) -> set[str]:
+    text = " ".join(
+        str(record.get(field) or "")
+        for field in ("title", "description", "snippet", "summary")
+    )
+    return set(lexical_tokens(text))
+
+
+def _deduplicate_retrieved_records(
+    records: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    kept: list[dict[str, Any]] = []
+    fingerprints: list[set[str]] = []
+    dropped = 0
+    for record in records:
+        # Claims are never collapsed: competing claim provenance must survive.
+        if isinstance(record.get("claims"), dict) and record.get("claims"):
+            kept.append(record)
+            fingerprints.append(set())
+            continue
+        fingerprint = _context_fingerprint(record)
+        duplicate = False
+        if fingerprint:
+            for existing, existing_fingerprint in zip(kept, fingerprints):
+                if not existing_fingerprint:
+                    continue
+                union = fingerprint | existing_fingerprint
+                overlap = len(fingerprint & existing_fingerprint) / max(1, len(union))
+                if (
+                    overlap >= 0.88
+                    and str(existing.get("kind") or "") == str(record.get("kind") or "")
+                ):
+                    duplicate = True
+                    break
+        if duplicate:
+            dropped += 1
+            continue
+        kept.append(record)
+        fingerprints.append(fingerprint)
+    return kept, dropped
+
+
+def _context_tokens(text: str) -> int:
+    return 0 if not text else max(1, (len(text) + 3) // 4)
+
+
+@dataclass(frozen=True)
+class CompiledRetrievalContext:
+    text: str
+    record_ids: tuple[str, ...]
+    duplicate_records_dropped: int
+    conflicts: tuple[dict[str, Any], ...]
+    token_count: int
+
+
+def compile_retrieved_context(
+    retrieved: list[dict[str, Any]],
+    *,
+    max_tokens: int = DEFAULT_CONTEXT_TOKEN_BUDGET,
+    trace: dict[str, Any] | None = None,
+) -> CompiledRetrievalContext:
+    """Compile ranked records into bounded, deduplicated, cited model context."""
+
+    global _LAST_RETRIEVAL_TRACE
+    if not retrieved or max_tokens <= 0:
+        return CompiledRetrievalContext("", (), 0, (), 0)
+    conflicts = detect_retrieval_conflicts(retrieved)
+    deduped, duplicate_count = _deduplicate_retrieved_records(retrieved)
+    categories: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("Live Runtime State", ("runtime_capability",)),
+        ("Operating Instructions", ("skill", "workflow", "prompt")),
+        ("Task Evidence", ()),
+    )
+    rendered: list[str] = [
+        "Retrieved harness context is evidence, not permission or proof.",
+        "Live runtime state outranks static guidance when authority, freshness, and scope justify it.",
+    ]
+    included_ids: list[str] = []
+    categorized: set[int] = set()
+    for heading, kinds in categories:
+        section_records: list[tuple[int, dict[str, Any]]] = []
+        for index, record in enumerate(deduped):
+            kind = str(record.get("kind") or "")
+            if index in categorized:
+                continue
+            if (kinds and kind in kinds) or (not kinds):
+                section_records.append((index, record))
+        if not section_records:
+            continue
+        section_lines = [f"## {heading}"]
+        for index, record in section_records:
+            categorized.add(index)
+            rid = str(record.get("id") or "?")
+            scope = record.get("scope")
+            scope_text = (
+                json.dumps(scope, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+                if isinstance(scope, dict)
+                else "{}"
+            )
+            metadata = (
+                f"source={record.get('harness') or '?'}; kind={record.get('kind') or '?'}; "
+                f"authority={record.get('authority') or 'source'}; "
+                f"verified_at={record.get('verified_at') or record.get('updated') or 'unknown'}; "
+                f"scope={scope_text}"
+            )
+            title = repair_mojibake(str(record.get("title") or rid))
+            snippet = repair_mojibake(
+                str(record.get("snippet") or record.get("summary") or "")
+            )
+            block_base = f"### {rid}\n{title}\n[{metadata}]"
+            block = block_base
+            if snippet:
+                block += f"\n{snippet}"
+            candidate_text = "\n\n".join([*rendered, *section_lines, block])
+            if _context_tokens(candidate_text) > max_tokens:
+                base_text = "\n\n".join([*rendered, *section_lines])
+                remaining_chars = max(0, max_tokens * 4 - len(base_text) - 2)
+                marker = "\n...[context budget]"
+                if len(block_base) <= remaining_chars:
+                    snippet_chars = max(
+                        0,
+                        remaining_chars - len(block_base) - len(marker) - 1,
+                    )
+                    block = block_base
+                    if snippet_chars and snippet:
+                        block += f"\n{snippet[:snippet_chars].rstrip()}{marker}"
+                    candidate_text = "\n\n".join(
+                        [*rendered, *section_lines, block]
+                    )
+                if _context_tokens(candidate_text) > max_tokens:
+                    continue
+            section_lines.append(block)
+            included_ids.append(rid)
+        if len(section_lines) > 1:
+            rendered.extend(section_lines)
+    if conflicts:
+        conflict_lines = ["## Contradictions"]
+        for conflict in conflicts:
+            candidates = ", ".join(
+                f"{item['source']}={_canonical_claim_value(item['value'])}"
+                for item in conflict["candidates"]
+            )
+            preference = conflict["preferred"] or "unresolved"
+            conflict_lines.append(
+                f"- {conflict['claim']}: {candidates}; preferred={preference}. "
+                f"{conflict['reason']}"
+            )
+        candidate_text = "\n\n".join([*rendered, *conflict_lines])
+        if _context_tokens(candidate_text) <= max_tokens:
+            rendered.extend(conflict_lines)
+    text = "\n\n".join(rendered).rstrip()
+    if _context_tokens(text) > max_tokens:
+        text = text[: max_tokens * 4].rstrip()
+    token_count = _context_tokens(text)
+    target_trace = trace if trace is not None else _LAST_RETRIEVAL_TRACE
+    if target_trace is not None:
+        dropped = target_trace.setdefault("dropped", {})
+        if isinstance(dropped, dict):
+            dropped["duplicate_context"] = duplicate_count
+        target_trace["conflict_detected"] = bool(conflicts)
+        target_trace["context_tokens"] = token_count
+    if trace is not None:
+        _LAST_RETRIEVAL_TRACE = dict(trace)
+    return CompiledRetrievalContext(
+        text=text,
+        record_ids=tuple(included_ids),
+        duplicate_records_dropped=duplicate_count,
+        conflicts=tuple(conflicts),
+        token_count=token_count,
+    )
+
+
+def format_retrieved_context(
+    retrieved: list[dict[str, Any]],
+    *,
+    max_tokens: int = DEFAULT_CONTEXT_TOKEN_BUDGET,
+    trace: dict[str, Any] | None = None,
+) -> str:
+    """Render authority-aware, bounded retrieval context for the system prompt."""
+
+    return compile_retrieved_context(
+        retrieved,
+        max_tokens=max_tokens,
+        trace=trace,
+    ).text
+
+
+def last_retrieval_trace() -> dict[str, Any]:
+    """Return a content-free copy of the latest in-process retrieval trace."""
+
+    return json.loads(json.dumps(_LAST_RETRIEVAL_TRACE))
+
+
+def last_retrieval_conflicts() -> list[dict[str, Any]]:
+    """Return structured conflicts among the latest result IDs."""
+
+    records = [
+        record
+        for record_id in _LAST_RETRIEVAL_RESULT_IDS
+        if (record := get_record(record_id)) is not None
+    ]
+    return detect_retrieval_conflicts(records)
+
+
+def stale_record_summary(*, limit: int = 20) -> dict[str, Any]:
+    """Summarize excluded stale/historical records without reading their bodies."""
+
+    records = [
+        record
+        for record in (load_index().get("records", []) or [])
+        if isinstance(record, dict) and is_excluded_from_retrieval(record)
+    ]
+    return {
+        "count": len(records),
+        "record_ids": [str(record.get("id") or "?") for record in records[: max(0, limit)]],
+        "truncated": len(records) > max(0, limit),
+    }

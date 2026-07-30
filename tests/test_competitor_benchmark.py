@@ -51,6 +51,152 @@ def test_every_measured_product_has_an_adapter() -> None:
     }
 
 
+def test_algo_candidate_override_is_exact_and_fail_closed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    candidate = tmp_path / "candidate-algo"
+    candidate.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    candidate.chmod(0o755)
+    monkeypatch.setattr(runner, "version_receipt", lambda *_args: "candidate-version")
+
+    available = runner.product_availability(
+        "algo_cli",
+        executable_override=str(candidate),
+    )
+    missing = runner.product_availability(
+        "algo_cli",
+        executable_override=str(tmp_path / "missing-algo"),
+    )
+
+    assert available["status"] == "runnable"
+    assert available["executable"] == str(candidate)
+    assert available["version"] == "candidate-version"
+    assert missing["status"] == "blocked"
+    assert missing["executable"] is None
+
+
+def test_parser_accepts_exact_algo_candidate_executable() -> None:
+    parsed = runner.build_parser().parse_args(
+        ["--algo-executable", "/tmp/candidate-algo"]
+    )
+
+    assert parsed.algo_executable == "/tmp/candidate-algo"
+
+
+def test_relative_algo_candidate_is_canonicalized_before_disposable_cwd(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    candidate = tmp_path / "bin" / "candidate-algo"
+    candidate.parent.mkdir()
+    candidate.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    candidate.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        runner,
+        "version_receipt",
+        lambda *_args: "candidate-version",
+    )
+
+    available = runner.product_availability(
+        "algo_cli",
+        executable_override="bin/candidate-algo",
+    )
+
+    assert available["status"] == "runnable"
+    assert available["executable"] == str(candidate.resolve())
+    assert Path(available["executable"]).is_absolute()
+
+
+def test_source_provenance_binds_clean_revision_and_runner(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner_path = tmp_path / "runner.py"
+    runner_path.write_text("benchmark runner\n", encoding="utf-8")
+    revision = "a" * 40
+    receipts = iter(
+        (
+            subprocess.CompletedProcess([], 0, revision + "\n", ""),
+            subprocess.CompletedProcess([], 0, "", ""),
+        )
+    )
+    monkeypatch.setattr(runner.subprocess, "run", lambda *_args, **_kwargs: next(receipts))
+
+    receipt = runner.source_provenance(tmp_path, runner_path)
+
+    assert receipt == {
+        "revision": revision,
+        "tracked_worktree_clean": True,
+        "runner_sha256": runner.sha256_file(runner_path),
+    }
+
+
+def test_source_provenance_rejects_tracked_changes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner_path = tmp_path / "runner.py"
+    runner_path.write_text("benchmark runner\n", encoding="utf-8")
+    receipts = iter(
+        (
+            subprocess.CompletedProcess([], 0, "a" * 40 + "\n", ""),
+            subprocess.CompletedProcess([], 0, " M algo_cli/main.py\n", ""),
+        )
+    )
+    monkeypatch.setattr(runner.subprocess, "run", lambda *_args, **_kwargs: next(receipts))
+
+    try:
+        runner.source_provenance(tmp_path, runner_path)
+    except RuntimeError as error:
+        assert "tracked changes" in str(error)
+    else:
+        raise AssertionError("dirty source worktree was accepted")
+
+
+def test_algo_benchmark_uses_explicit_bounded_workspace_authority(
+    tmp_path: Path,
+) -> None:
+    command, _environment = runner.command_for(
+        "algo_cli",
+        "/tmp/candidate-algo",
+        tmp_path / "result",
+        tmp_path / "state",
+        "benchmark prompt",
+        "test-model",
+        30,
+    )
+
+    mode_index = command.index("--approval-mode")
+    assert command[mode_index + 1] == "workspace"
+
+
+def test_openclaw_benchmark_uses_explicit_native_coding_tools(
+    tmp_path: Path,
+) -> None:
+    result = tmp_path / "result"
+    state = tmp_path / "state"
+
+    command, environment = runner.command_for(
+        "openclaw",
+        "/tmp/openclaw",
+        result,
+        state,
+        "benchmark prompt",
+        "test-model",
+        30,
+    )
+    config = json.loads(
+        (state / "openclaw" / "openclaw.json").read_text(encoding="utf-8")
+    )
+
+    assert config["agents"]["defaults"]["workspace"] == str(result)
+    assert config["tools"]["profile"] == "coding"
+    assert environment["OPENCLAW_CONFIG_PATH"].endswith("openclaw.json")
+    assert command[1:3] == ["agent", "--local"]
+
+
 def test_rotating_order_is_deterministic_and_complete() -> None:
     harnesses = ["algo_cli", "codex_cli", "pi"]
     tasks = ["code_repair_small_repo", "tool_trap_misleading_state"]
@@ -310,6 +456,11 @@ def publication_fixture() -> dict:
     return {
         "schema_version": 1,
         "created_at": "2026-07-15T00:00:00+00:00",
+        "source": {
+            "revision": "b" * 40,
+            "tracked_worktree_clean": True,
+            "runner_sha256": "d" * 64,
+        },
         "protocol": {
             "id": "algo-cli-cross-harness-v3-draft",
             "harnesses": harnesses,
@@ -374,6 +525,17 @@ def test_website_publisher_rejects_unwarmed_cell() -> None:
         assert "warmup did not succeed" in str(error)
     else:
         raise AssertionError("unwarmed benchmark cell was accepted")
+
+
+def test_website_publisher_rejects_mismatched_source_revision() -> None:
+    raw = publication_fixture()
+
+    try:
+        publisher._validate(raw, "e" * 40)
+    except ValueError as error:
+        assert "does not match the benchmark receipt" in str(error)
+    else:
+        raise AssertionError("mismatched source revision was accepted")
 
 
 def test_website_publisher_preserves_protected_input_failure_as_a_score() -> None:

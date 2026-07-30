@@ -20,7 +20,12 @@ except ImportError:  # pragma: no cover - exercised only without the runtime SDK
 def serialized_tool_schemas(
     tools: Sequence[Callable[..., Any] | dict[str, Any]],
 ) -> str:
-    """Serialize the callable catalog in the provider-adapter wire shape."""
+    """Serialize the callable catalog in the provider-adapter wire shape.
+
+    For live Algo actions, the description is projected from ActionSpec so the
+    provider schema cannot drift from /actions or indexed capability records.
+    Arbitrary test/plugin callables retain their own SDK-generated description.
+    """
 
     payload: list[dict[str, Any]] = []
     for item in tools:
@@ -30,7 +35,19 @@ def serialized_tool_schemas(
         if convert_function_to_tool is None:
             continue
         try:
-            payload.append(convert_function_to_tool(item).model_dump(exclude_none=True))
+            tool = convert_function_to_tool(item).model_dump(exclude_none=True)
+            try:
+                from .action_registry import capability_description
+
+                description = capability_description(
+                    str(getattr(item, "__name__", "") or "")
+                )
+            except Exception:
+                description = None
+            function = tool.get("function")
+            if description and isinstance(function, dict):
+                function["description"] = description
+            payload.append(tool)
         except Exception:
             # Provider adapters skip unconvertible callables too; accounting
             # must describe the request that can actually be emitted.

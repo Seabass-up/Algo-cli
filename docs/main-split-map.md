@@ -1,6 +1,19 @@
-# main.py decomposition map
+---
+title: main.py Decomposition Map
+description: Current architecture status and limited roadmap for decomposing the Algo CLI orchestrator.
+tags: [architecture, roadmap, main, modules, algo-cli]
+status: architecture-status
+updated: 2026-07-24
+last_reviewed: 2026-07-24
+runtime_version: "Algo CLI v0.18.0"
+verification_revision: "215d7cb044fd530809af7c9d0a375e1d3bb792d5"
+---
+
+# main.py Decomposition Map
 
 `algo_cli/main.py` is the CLI orchestrator. Split it incrementally; keep `from algo_cli import main` working for tests and scripts.
+
+This page is a current architecture-status record with one optional roadmap item. It is not a promise that the next slice will be implemented. `tests/test_julia_curated_memory_contracts.py` verifies that every module named in the completed-module table still exists.
 
 ## Done
 
@@ -8,14 +21,14 @@
 |--------|----------------|
 | `chat_protocol.py` | `get_attr`, `normalize_tool_call`, `serialize_tool_call`, `collapse_tool_history_for_gemini`, `normalize_message` |
 | `model_routing.py` | Cloud/local/xAI host routing and model name classifiers |
-| `runtime_services.py` | `create_client`, `client_for_model`, Ollama serve, harness-gateway lifecycle, `apply_tool_runtime_env`, readiness caches |
+| `theodore_runtime_services.py` | `create_client`, `client_for_model`, Ollama serve, harness-gateway lifecycle, `apply_tool_runtime_env`, readiness caches |
 | `context_budget.py` | Token estimates, `build_system_prompt`, pruning, compaction, `context_status`, `unpack_embed` cache keys, `estimate_usage_with_system_prompt` |
-| `perf_telemetry.py` | Perf JSONL buffer, chat/tool/compaction metrics, embed perf log, `/perf` summary |
-| `tool_runtime.py` | `run_tool`, approval, attempt ledger, reflex augmentation, reflection checkpoint, pipeline tool execution |
+| `dorothy_perf_telemetry.py` | Allowlisted perf JSONL buffer, chat/tool/compaction metrics, embed perf log, `/perf` summary |
+| `nathan_runtime.py` | `run_tool`, scoped authority, attempt ledger, reflex augmentation, reflection checkpoint, pipeline tool execution |
 | `agent_pipeline.py` | `run_agent_block`, `run_agent_pipeline`, required-change contract, recovery/replan, session pipeline buffer |
-| `slash_dispatch.py` | `SLASH_COMMANDS`, `SlashCommandCompleter`, `handle_command` (delegates to `main` for handlers) |
+| `oliver_slash_dispatch.py` | `SLASH_COMMANDS`, `SlashCommandCompleter`, `handle_command` (delegates to `main` for handlers) |
 | `session_commands.py` | Model-invokable `/read`, `/ls`, `/cd`, `/cwd` |
-| `oneshot.py` | `--oneshot --json` NDJSON mode |
+| `oliver_oneshot.py` | `--oneshot --json` NDJSON mode |
 | `agent_blocks.py` | Pipeline definitions and TOML loading |
 
 `main.py` re-exports moved symbols so `tests/test_main_helpers.py` and `test_verify.py` need no churn.

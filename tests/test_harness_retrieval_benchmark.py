@@ -98,11 +98,19 @@ def test_benchmark_passes_stable_canaries_and_reusable_bm25_gate() -> None:
     assert result["performance"]["sufficient_samples"] is True
     assert result["quality"]["status"] == "pass"
     assert result["quality"]["metrics"] == {
-        "case_count": 7,
+        "case_count": 13,
         "recall_at_k": 1.0,
+        "recall_at_5": 1.0,
         "mrr": 1.0,
         "ndcg_at_k": 1.0,
+        "ndcg_at_10": 1.0,
         "citation_precision": 1.0,
+        "false_positive_rate": 0.0,
+        "no_answer_accuracy": 1.0,
+        "stale_record_preference_rate": 0.0,
+        "provenance_accuracy": 1.0,
+        "context_tokens_per_successful_answer": 110.0,
+        "conflict_resolution_accuracy": 1.0,
     }
     assert len(result["evidence"]["index_digest"]) == 64
     assert len(result["evidence"]["ranking_digest"]) == 64
@@ -112,14 +120,38 @@ def test_benchmark_passes_stable_canaries_and_reusable_bm25_gate() -> None:
     json.dumps(result, allow_nan=False)
 
 
-def test_quality_workload_covers_multilingual_complex_and_supersession() -> None:
+def test_quality_workload_covers_real_tasks_abstention_conflicts_and_supersession() -> None:
     result = benchmark.run_retrieval_quality_benchmark()
     categories = {case["category"] for case in result["cases"]}
     temporal = next(case for case in result["cases"] if case["name"] == "temporal_supersession")
+    conflict = next(
+        case
+        for case in result["cases"]
+        if case["name"] == "runtime_outweighs_static_guidance"
+    )
+    no_answer = [
+        case
+        for case in result["cases"]
+        if case["category"] == "no_answer"
+    ]
 
     assert result["status"] == "pass"
-    assert categories == {"multilingual", "complex"}
+    assert categories == {
+        "known_item",
+        "paraphrase",
+        "noisy_query",
+        "multilingual",
+        "complex",
+        "temporal",
+        "conflict",
+        "no_answer",
+    }
     assert "quality:auth:obsolete" not in temporal["ranked_ids"]
+    assert conflict["ranked_ids"][0] == "quality:external:runtime-state"
+    assert conflict["conflict_preferred"] == "quality:external:runtime-state"
+    assert all(case["no_answer_correct"] is True for case in no_answer)
+    assert result["metrics"]["false_positive_rate"] == 0.0
+    assert result["metrics"]["provenance_accuracy"] == 1.0
     assert len(result["fixture_digest"]) == 64
 
 

@@ -64,6 +64,19 @@ def test_ordinary_prompt_ranking_recalls_required_code_tools_and_is_stable() -> 
     ]
 
 
+def test_mutation_discovery_keeps_file_edit_capability_family_complete() -> None:
+    prompt = (
+        "Read the authoritative manifest, update three fields in settings, "
+        "create a summary file, and run verification."
+    )
+
+    selected = select_tools_for_prompt(prompt, tools.ALL_TOOLS)
+    names = _names(selected)
+
+    assert {"read_file", "edit_file", "batch_edit", "write_file"} <= names
+    assert len(selected) <= DEFAULT_TOOL_LIMIT
+
+
 def test_incidental_harness_word_does_not_activate_specialist_context() -> None:
     prompt = (
         "You are participating in a controlled agent-harness benchmark. "
@@ -87,6 +100,24 @@ def test_explicit_harness_search_intent_passes_specialist_gate() -> None:
     )
 
     assert {"harness_search", "harness_stats"} <= names
+
+
+def test_echo_tools_require_explicit_memory_operation_intent() -> None:
+    general = _names(
+        select_tools_for_prompt(
+            "What is the current Echo integration priority? Answer briefly.",
+            tools.ALL_TOOLS,
+        )
+    )
+    explicit = _names(
+        select_tools_for_prompt(
+            "Run the Echo memory doctor and list its protected inventory.",
+            tools.ALL_TOOLS,
+        )
+    )
+
+    assert not any(name.startswith("echo_veil_") for name in general)
+    assert {"echo_veil_doctor", "echo_veil_list"} <= explicit
 
 
 def test_deferred_runtime_tools_are_always_visible_when_installed() -> None:
@@ -123,6 +154,16 @@ def test_reconciliation_guidance_is_task_local_and_schema_aware() -> None:
 def test_deliberation_is_adaptive_for_deep_one_shot_tasks() -> None:
     assert deliberation.needs_deliberation("Perform a security audit and threat model") is True
     assert deliberation.needs_deliberation("Fix the failing test and verify it") is False
+    assert deliberation.is_exact_response_task(
+        "Reply with exactly: ALGO_QOS_OK"
+    ) is True
+    assert select_tools_for_prompt(
+        "Reply with exactly: ALGO_QOS_OK",
+        tools.ALL_TOOLS,
+    ) == []
+    assert deliberation.is_exact_response_task(
+        "Read the repository, then reply with exactly: OK"
+    ) is False
 
 
 def test_reconciliation_infers_cross_schema_lineage_from_values() -> None:

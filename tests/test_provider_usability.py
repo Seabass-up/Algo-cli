@@ -10,7 +10,7 @@ from urllib.error import URLError
 
 import pytest
 
-from algo_cli import model_info, model_routing, runtime_services
+from algo_cli import model_info, model_routing, theodore_runtime_services as runtime_services
 from algo_cli.config import Config
 
 
@@ -141,6 +141,38 @@ def test_provider_models_do_not_start_local_ollama(monkeypatch):
 )
 def test_host_is_local_requires_an_exact_loopback_endpoint(host, expected):
     assert runtime_services.host_is_local(host) is expected
+
+
+@pytest.mark.parametrize(
+    ("url", "require_http", "expected"),
+    [
+        ("http://127.0.0.1:8765", True, "127.0.0.1:8765"),
+        ("http://[::1]:8765/", True, "[::1]:8765"),
+        ("https://localhost:11434", False, "localhost:11434"),
+        ("https://localhost:11434", True, None),
+        ("http://localhost", True, None),
+        ("http://user:secret@localhost:8765", True, None),
+        ("http://localhost:8765/path", True, None),
+        ("http://localhost.example:8765", True, None),
+        ("http://0.0.0.0:8765", True, None),
+    ],
+)
+def test_local_service_address_is_explicit_loopback_and_credential_free(
+    url,
+    require_http,
+    expected,
+):
+    assert runtime_services.local_service_address(url, require_http=require_http) == expected
+
+
+def test_gateway_ready_never_contacts_remote_or_ambiguous_endpoint(monkeypatch):
+    calls = []
+    monkeypatch.setattr(runtime_services, "urlopen", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    assert runtime_services.gateway_ready("https://example.com:8765") is False
+    assert runtime_services.gateway_ready("http://user:secret@localhost:8765") is False
+    assert runtime_services.gateway_ready("http://localhost") is False
+    assert calls == []
 
 
 def test_failed_server_probe_uses_short_negative_cache(monkeypatch):

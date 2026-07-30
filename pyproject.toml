@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -27,6 +27,8 @@ dependencies = [
     "rich>=13.0",
     "prompt-toolkit>=3.0",
     "numpy>=1.20",
+    "cryptography>=44.0",
+    "keyring>=25.0",
     'tomli>=2.0; python_version < "3.11"',
 ]
 
@@ -45,8 +47,18 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.0",
 ]
+release = [
+    "build==1.5.0",
+    "twine==6.2.0",
+]
+supply-chain = [
+    "pip-audit==2.10.1",
+]
 pdf = [
     "PyMuPDF>=1.24",
+]
+echo-veil = [
+    "echo-veil @ git+https://github.com/Seabass-up/echo-veil.git@e94be9e649048273ab74eb1150e65ac9481596d9",
 ]
 quantization = [
     "turbovec>=0.7",
@@ -54,6 +66,8 @@ quantization = [
 
 [project.scripts]
 algo-cli = "algo_cli.main:main"
+algo-cli-control-install = "algo_cli.austin_install_finalizer:main"
+algo-cli-control-uninstall = "algo_cli.oliver_control_uninstall:main"
 # Legacy shim for 1-2 releases (prints deprecation, then works)
 ollama-cli = "algo_cli.main:main"
 
@@ -61,6 +75,9 @@ ollama-cli = "algo_cli.main:main"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-q"
+
+[tool.uv]
+required-version = "==0.11.26"
 
 [tool.ruff]
 target-version = "py310"
@@ -72,7 +89,7 @@ select = ["F", "E4", "E7", "E9"]
 
 [tool.coverage.run]
 branch = true
-source = ["algo_cli"]
+source_pkgs = ["algo_cli"]
 
 [tool.coverage.report]
 fail_under = 57
@@ -84,6 +101,9 @@ packages = ["algo_cli", "ollama_cli"]
 
 [tool.hatch.version]
 path = "algo_cli/__init__.py"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel.force-include]
 "docs/ALGO.md" = "algo_cli/resources/docs/ALGO.md"
@@ -97,7 +117,7 @@ path = "algo_cli/__init__.py"
 "docs/privacy-and-context.md" = "algo_cli/resources/docs/privacy-and-context.md"
 "docs/runtime-capability-catalog.md" = "algo_cli/resources/docs/runtime-capability-catalog.md"
 "docs/echo-veil-security-status.md" = "algo_cli/resources/docs/echo-veil-security-status.md"
-"docs/algo-cli-memory-lifecycle-contract.md" = "algo_cli/resources/docs/algo-cli-memory-lifecycle-contract.md"
+"docs/ada-algo-cli-memory-lifecycle-contract.md" = "algo_cli/resources/docs/ada-algo-cli-memory-lifecycle-contract.md"
 "docs/algo-cli-execution-verification-contract.md" = "algo_cli/resources/docs/algo-cli-execution-verification-contract.md"
 "docs/algo-cli-algorithm-evidence-contract.md" = "algo_cli/resources/docs/algo-cli-algorithm-evidence-contract.md"
 "docs/t3-code-parity-2026-07.md" = "algo_cli/resources/docs/t3-code-parity-2026-07.md"
@@ -128,7 +148,7 @@ include = [
     "/docs/privacy-and-context.md",
     "/docs/runtime-capability-catalog.md",
     "/docs/echo-veil-security-status.md",
-    "/docs/algo-cli-memory-lifecycle-contract.md",
+    "/docs/ada-algo-cli-memory-lifecycle-contract.md",
     "/docs/algo-cli-execution-verification-contract.md",
     "/docs/algo-cli-algorithm-evidence-contract.md",
     "/docs/t3-code-parity-2026-07.md",

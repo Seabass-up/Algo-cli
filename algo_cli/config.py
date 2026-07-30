@@ -471,7 +471,11 @@ class Config:
     # Session-only auto-approve set by answering "a" at an approval prompt.
     # Never persisted: see save(); resets on every new session.
     session_auto_approve: bool = False
-    show_thinking: bool = True
+    show_thinking: bool = False
+    # Keep ordinary chat focused on the work. Operators can opt into routing,
+    # context-admission, backend, and full tool payload diagnostics.
+    show_runtime_details: bool = False
+    show_route_suggestions: bool = False
     # Per-model Codex reasoning effort. Empty entries use the provider default
     # (medium); keeping a map lets Sol, Terra, and Luna have independent knobs.
     chatgpt_reasoning_efforts: dict[str, str] = field(default_factory=dict)
@@ -486,10 +490,25 @@ class Config:
     cloud_embedding_model: str = "nomic-embed-text:latest"  # Reserved until cloud embeddings are supported.
     harness_embed_model: str = "qwen3-embedding:latest"  # Local Ollama embed model for harness + lessons RAG
     embed_dimensions: int | None = None  # Optional override; None lets the model decide (e.g. 4096 for qwen3-embedding)
+    # Never turn an ordinary prompt into a foreground batch-indexing job.
+    # Explicit /harness embed and /hsearch commands remain available.
+    harness_auto_embed_enabled: bool = False
     echo_veil_enabled: bool = False  # Enable Echo Veil tiered memory layer
     echo_veil_capacity: int = 400  # Maximum active Echo Veil memories before decay
-    echo_veil_production: bool = False  # Require encrypted Echo Veil storage when enabled
-    echo_veil_crypto_key_path: str | None = None  # Path to JSON file with {"key_hex": "..."} for memory encryption
+    echo_veil_protection: str = "optional"  # optional | required; required blocks plaintext memory writes
+    echo_veil_profile: str = "echo-universal-qwen3-v1"  # Shared local Echo authority
+    echo_veil_scope: str = "local-user"  # Authorization scope bound into ciphertext
+    echo_veil_state_dir: str = ""  # Empty uses Echo Veil's owner-only platform data root
+    echo_veil_embedding_dimension: int = 1024
+    # Keep protected recall on a bounded CPU runner so a large local agent
+    # model can remain resident on the GPU across memory operations.
+    echo_veil_embedding_keep_alive_seconds: int = 0
+    echo_veil_embedding_context_length: int = 16_384
+    echo_veil_embedding_gpu_layers: int = 0
+    # Deprecated compatibility fields. They are ignored by the authoritative
+    # adapter; raw key references in config are no longer accepted.
+    echo_veil_production: bool = False
+    echo_veil_crypto_key_path: str | None = None
     memory_auto_capture_enabled: bool = True  # Auto-save only explicit, high-confidence durable user statements
     memory_auto_daily_limit: int = 5  # User may lower; admission hard-maxes at 5/day
     memory_auto_entry_limit: int = 64  # User may lower; admission hard-maxes at 64 fingerprints
@@ -505,7 +524,9 @@ class Config:
     verify_mode: bool = False
     intuition_recall_enabled: bool = False
     intuition_capture_enabled: bool = False
-    algorithmic_tool_policy_enabled: bool = False
+    # Enforced for new Agent runs by default. Ordinary chat and non-approval
+    # baseline reads do not use the Agent Block route ceiling.
+    algorithmic_tool_policy_enabled: bool = True
     reflex_enabled: bool = False
     model_adaptive: bool = True  # adapt num_ctx/temperature/reflection to model size+provider
     code_rag_enabled: bool = False  # opt in to retrieving cfg.cwd source chunks each turn
@@ -550,6 +571,11 @@ class Config:
         _atomic_write_text(CONFIG_FILE, json.dumps(data, indent=2))
 
     def save_memories(self) -> None:
+        if self.echo_veil_protection.strip().casefold() == "required":
+            raise RuntimeError(
+                "plaintext memory persistence is disabled while Echo Veil "
+                "protection is required"
+            )
         with _exclusive_state_lock(MEMORY_FILE):
             _atomic_write_text(MEMORY_FILE, json.dumps([str(item) for item in self.memories], indent=2))
 
@@ -558,6 +584,14 @@ class Config:
         fact = str(fact).strip()
         if not fact:
             return False
+        if self.echo_veil_protection.strip().casefold() == "required":
+            from .ada_memory_echo_veil import remember_with_echo_veil
+
+            return remember_with_echo_veil(
+                self,
+                fact,
+                source="user_explicit",
+            )
         with _exclusive_state_lock(MEMORY_FILE):
             loaded = _load_json_file(MEMORY_FILE, [])
             current = [str(item) for item in loaded] if isinstance(loaded, list) else []
@@ -581,6 +615,12 @@ class Config:
         can be reversed without relying on positional ``/forget`` operations.
         Fact bodies are deliberately absent from the returned telemetry.
         """
+
+        if self.echo_veil_protection.strip().casefold() == "required":
+            raise RuntimeError(
+                "legacy plaintext reconciliation is prohibited while Echo Veil "
+                "protection is required"
+            )
 
         def normalized_key(value: str) -> str:
             return " ".join(value.split()).casefold()
@@ -691,7 +731,10 @@ class Config:
         # system prompts are preserved verbatim.
         if cfg.system == LEGACY_DEFAULT_SYSTEM:
             cfg.system = DEFAULT_SYSTEM
-        if MEMORY_FILE.exists():
+        if (
+            cfg.echo_veil_protection.strip().casefold() != "required"
+            and MEMORY_FILE.exists()
+        ):
             loaded = _load_json_file(MEMORY_FILE, [])
             if isinstance(loaded, list):
                 cfg.memories = [str(item) for item in loaded]

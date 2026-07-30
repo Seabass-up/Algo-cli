@@ -4,15 +4,22 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 from pathlib import Path
 import subprocess
 import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-
-from scripts import check_public_release  # noqa: E402
+_RELEASE_SCAN_PATH = ROOT / "scripts" / "check_public_release.py"
+_RELEASE_SCAN_SPEC = importlib.util.spec_from_file_location(
+    "algo_cli_public_release_scan",
+    _RELEASE_SCAN_PATH,
+)
+if _RELEASE_SCAN_SPEC is None or _RELEASE_SCAN_SPEC.loader is None:
+    raise RuntimeError("public_release_scanner_unavailable")
+check_public_release = importlib.util.module_from_spec(_RELEASE_SCAN_SPEC)
+_RELEASE_SCAN_SPEC.loader.exec_module(check_public_release)
 
 
 def _git_bytes(root: Path, *args: str) -> bytes:

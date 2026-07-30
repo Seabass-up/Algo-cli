@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>Algo CLI Control</string>
+    <key>CFBundleExecutable</key>
+    <string>austin-control</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.algo-cli.austin.control</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Algo CLI Control</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+	<string>0.18.0</string>
+    <key>CFBundleVersion</key>
+    <string>1800</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Algo CLI uses reviewed, typed Apple Event adapters only after your approval.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Algo CLI captures one user-approved frame for local redaction and verified work.</string>
+</dict>
+</plist>

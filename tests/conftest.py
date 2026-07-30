@@ -8,6 +8,7 @@ module-level caches via the autouse `clean_state` fixture.
 
 from __future__ import annotations
 
+import importlib
 import os
 import random
 import shutil
@@ -97,8 +98,25 @@ def clean_state():
         model_info._CACHE.clear()
     except ImportError:
         pass
+    try:
+        from algo_cli import memory_echo_veil
+
+        if not hasattr(memory_echo_veil, "reset_echo_veil_layer"):
+            memory_echo_veil = importlib.reload(memory_echo_veil)
+        memory_echo_veil.reset_echo_veil_layer()
+    except (ImportError, RuntimeError):
+        pass
 
     yield
+
+    try:
+        from algo_cli import memory_echo_veil
+
+        if not hasattr(memory_echo_veil, "reset_echo_veil_layer"):
+            memory_echo_veil = importlib.reload(memory_echo_veil)
+        memory_echo_veil.reset_echo_veil_layer()
+    except (ImportError, RuntimeError):
+        pass
 
     shutil.rmtree(_TEST_CONFIG_DIR, ignore_errors=True)
 

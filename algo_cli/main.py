@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from html import escape
 import importlib
 import json
@@ -24,6 +25,7 @@ from prompt_toolkit.shortcuts import CompleteStyle
 from prompt_toolkit.styles import Style
 from rich import box
 from rich.table import Table
+from rich.text import Text
 
 from .config import (
     CODE_RAG_CONSENT_VERSION,
@@ -42,6 +44,7 @@ from .config import (
     code_rag_consent_granted,
 )
 from . import agent_blocks  # noqa: F401 — tests patch main.agent_blocks
+from . import agent_context
 from . import git_evidence  # noqa: F401 — tests patch main.git_evidence
 from . import harness
 from . import identity
@@ -49,7 +52,8 @@ from . import code_rag
 from . import execution_guardrails
 from . import model_info as _model_info_module
 from . import model_profile
-from . import memory_runtime
+from . import nathan_provider_protocol
+from . import julia_memory_runtime as memory_runtime
 from . import reasoning_bridge
 from . import reconciliation
 from . import task_ledger
@@ -63,6 +67,7 @@ from . import google_workspace_auth
 from . import google_workspace
 from . import x_account
 from . import updater
+from . import echo_veil_update
 from .display import (
     compact_path,
     _format_bytes,
@@ -77,21 +82,21 @@ from .display import (
     show_thinking_text,
     finish_thinking_block,
     show_tool_call,
-    show_tool_result,
+    show_tool_result,  # noqa: F401 - compatibility surface for callers and tests
     show_recalled_context,
     show_session_overview,  # noqa: F401 — re-exported for slash_dispatch (m.show_session_overview)
     finish_streaming_response,
     theme_colors,
     set_theme,
+    set_runtime_details_visible,
     json_sink,
-    tool_execution_status,
 )
 from . import tools as tools_module
 from .chat_protocol import (
     collapse_tool_history_for_gemini,
     get_attr,
     normalize_tool_call,
-    serialize_tool_call,
+    serialize_tool_call,  # noqa: F401 - compatibility helper
 )
 from .model_routing import (
     effective_runtime_host,  # noqa: F401 — re-exported for tests and oneshot callers
@@ -102,42 +107,49 @@ from .model_routing import (
     require_cloud_api_key,  # noqa: F401
     uses_ollama_cloud,  # noqa: F401
 )
-from .runtime_services import (
+from .theodore_runtime_services import (
     SERVER_READY_CACHE,
     client_for_model,  # noqa: F401 — re-exported for tests
     create_client,
     host_is_local,
     ollama_server_ready,
-    scoped_tool_runtime_env,
     start_local_ollama_host,
     start_ollama_server,
     start_supplemental_gateway,
 )
-from .runtime_qos import order_tool_batch_by_qos
-from .perf_telemetry import (
+from .theodore_runtime_qos import order_tool_batch_by_qos
+from .dorothy_perf_telemetry import (
     flush_perf_records,
     log_embed_perf,
     record_chat_metrics,
     record_perf_event,
 )
-from .tool_runtime import (
-    RuntimeToolPreflight,
+from .nathan_runtime import (
     ask_approval,
-    augment_tool_result_with_reflex,
-    classify_tool_status,
-    find_failed_attempt,
-    preflight_runtime_tool,
-    record_tool_attempt,
     reflection_checkpoint,
     run_tool,
+    show_typed_tool_result,
     run_args_preview as _run_args_preview,
-    tool_attempt_signature,
-    tool_result_message,
     tool_runtime_args,
 )
+from .james_dispatch import (
+    DispatchDependencies,
+    DispatchResult,
+    TRUSTED_ADAPTER_ACTIONS,
+    batch_policy_ceiling_codes,
+    default_dispatch_dependencies,
+    dispatch_action,
+)
+from .marcus_authority import ConfirmationMode, EffectClass, IdempotencyClass
+from .samuel_policy_engine import resolve_action
 from .tool_context import select_tools_for_prompt
 from .tool_schema import estimate_tool_schema_tokens
-from .slash_dispatch import SLASH_COMMANDS, SlashCommandCompleter, handle_command, unknown_command_message
+from .oliver_slash_dispatch import (
+    SLASH_COMMANDS,
+    SlashCommandCompleter,
+    handle_command,
+    unknown_command_message,
+)
 from .agent_pipeline import (  # noqa: F401
     _session_pipeline_blocks,
     AgentRunResult,
@@ -1704,7 +1716,7 @@ def reload_runtime() -> Config:
         "algo_cli.workspace_resolver",
         "algo_cli.task_router",
         "algo_cli.reflex",
-        "algo_cli.tool_policy",
+        "algo_cli.samuel_policy",
     ):
         loaded = sys.modules.get(module_name)
         if loaded is not None:
@@ -1720,6 +1732,7 @@ def reload_runtime() -> Config:
         set_theme(cfg.theme)
     except ValueError:
         cfg.theme = current_theme_name()
+    set_runtime_details_visible(cfg.show_runtime_details)
     return cfg
 
 
@@ -1894,9 +1907,56 @@ _GEMINI_WORKAROUND_NOTICE_SHOWN: set[str] = set()
 READ_ONLY_TOOLS = frozenset({
     "read_file", "read_pdf", "render_pdf_pages", "list_directory",
     "search_files", "git_status", "git_diff", "harness_search", "harness_read", "harness_stats",
-    "available_actions", "action_search",
+    "available_actions", "action_search", "echo_veil_list", "echo_veil_doctor",
     "model_show",
 })
+
+
+def _main_dispatch_dependencies() -> DispatchDependencies:
+    """Build canonical dispatcher dependencies while preserving test injection points."""
+
+    dependencies = default_dispatch_dependencies()
+    trusted_invoke = dependencies.invoke
+
+    def invoke(name: str, args: dict[str, Any], cfg: Config) -> str:
+        if name in TRUSTED_ADAPTER_ACTIONS:
+            return trusted_invoke(name, args, cfg)
+        return run_tool(name, args, cfg)
+
+    dependencies.invoke = invoke
+    dependencies.approve = ask_approval
+    return dependencies
+
+
+def _parallel_dispatch_allowed(
+    calls: list[tuple[str, dict[str, Any]]],
+    cfg: Config,
+) -> bool:
+    """Allow concurrency only for distinct, pure, no-confirmation observations."""
+
+    if len(calls) <= 1 or bool(getattr(cfg, "reflex_enabled", False)):
+        return False
+    actions = []
+    try:
+        for name, args in calls:
+            if name not in READ_ONLY_TOOLS:
+                return False
+            action = resolve_action(
+                name,
+                tool_runtime_args(name, args, cfg),
+                cwd=cfg.cwd,
+            )
+            if (
+                action.effect_class is not EffectClass.OBSERVE
+                or action.confirmation_mode is not ConfirmationMode.NONE
+                or action.idempotency is not IdempotencyClass.PURE
+                or action.target.endswith(":unresolved")
+            ):
+                return False
+            actions.append(action)
+    except Exception:
+        return False
+    return len({action.action_digest for action in actions}) == len(actions)
 
 
 def _terminal_answer_from_tool_calls(tool_calls: list[Any]) -> str | None:
@@ -1984,7 +2044,7 @@ def resolve_embed_backend(cfg: Config) -> tuple[str, str]:
         result = ("local", "auto: local embeddings only")
 
     _EMBED_BACKEND_CACHE[setting] = result
-    if setting not in _EMBED_BACKEND_ANNOUNCED:
+    if setting not in _EMBED_BACKEND_ANNOUNCED and cfg.show_runtime_details:
         _EMBED_BACKEND_ANNOUNCED.add(setting)
         show_info(f"Embedding backend: {result[0]} ({result[1]})")
     return result
@@ -2566,6 +2626,31 @@ def ensure_lessons_index(cfg: Config) -> bool:
     return False
 
 
+def lessons_index_ready_for_chat(cfg: Config, model: str) -> bool:
+    """Use a valid lesson index without building one during an ordinary turn."""
+
+    if cfg.harness_auto_embed_enabled:
+        return ensure_lessons_index(cfg)
+    status = identity.lessons_index_status()
+    return bool(status.get("index")) and not identity.lessons_index_stale(
+        model,
+        configured_embed_dimensions(cfg),
+    )
+
+
+def harness_index_ready_for_chat(
+    cfg: Config,
+    model: str,
+    local_names: list[str] | None = None,
+) -> bool:
+    """Use existing harness vectors; batch embedding is explicit by default."""
+
+    if cfg.harness_auto_embed_enabled:
+        return ensure_harness_index(cfg, local_names)
+    matching, _total = harness.embedded_count(model)
+    return matching > 0
+
+
 
 
 def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
@@ -2575,6 +2660,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
     persisted_user_message = user_message
     context_query_message = user_message
     optional_context_blocks: list[OptionalContextBlock] = []
+    broker_omitted_contexts: list[str] = []
     reconciliation_guidance = reconciliation.guidance_for_prompt(user_message)
     if reconciliation_guidance:
         optional_context_blocks.append(
@@ -2629,10 +2715,44 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
         _turn_local_models = local_model_names(cfg)
 
     retrieved_lessons: list[str] | None = None
-    if ensure_lessons_index(cfg):
+    lessons_ready = lessons_index_ready_for_chat(cfg, _embed_model)
+    if lessons_ready:
         retrieved_lessons = identity.retrieve_lessons(
             context_query_message, _shared_embed, _embed_model, k=LESSONS_TOP_K
         )
+    # Governed memory recall is independent from the optional Intuition layer.
+    # Pinned facts are already injected by context_budget; only curated/history
+    # records are retrieved here so the prompt does not contain duplicates.
+    from .ada_memory_echo_veil import protection_required
+
+    required_memory_protection = protection_required(cfg)
+    if not required_memory_protection:
+        try:
+            memory_catalog = memory_runtime.MemoryCatalog()
+            memory_catalog.sync_legacy_facts(cfg.memories, authoritative=False)
+            memory_embed_fn = (
+                _shared_embed
+                if host_is_local(cfg.host) and ollama_server_ready(cfg.host)
+                else None
+            )
+            memory_hits = memory_catalog.search(
+                context_query_message,
+                embed_fn=memory_embed_fn,
+                embedding_model=_embed_model,
+                tiers={"curated", "history"},
+                scopes={memory_runtime.scope_for_workspace(cfg.cwd)},
+            )
+            memory_block = memory_runtime.format_prompt_hits(memory_hits)
+            if memory_block:
+                optional_context_blocks.append(
+                    OptionalContextBlock(
+                        "memory",
+                        "Relevant System Memory",
+                        memory_block,
+                    )
+                )
+        except memory_runtime.MemorySystemError as exc:
+            logger.debug("Governed memory recall failed: %s", exc)
     retrieved_context: list[dict[str, Any]] | None = None
     from .session_mode import normalize_mode
 
@@ -2640,15 +2760,32 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
     harness_tools_available = any(
         getattr(tool, "__name__", "").startswith("harness_") for tool in active_tools
     )
+    harness_ready = harness_index_ready_for_chat(
+        cfg,
+        _embed_model,
+        _turn_local_models,
+    )
     if (
         _session_mode != "execute"
         and (json_sink() is None or harness_tools_available)
-        and ensure_harness_index(cfg, _turn_local_models)
+        and harness_ready
     ):
+        retrieval_trace: dict[str, Any] = {}
         retrieved_context = harness.hybrid_search(
-            context_query_message, _shared_embed, _embed_model, k=HARNESS_TOP_K
+            context_query_message,
+            _shared_embed,
+            _embed_model,
+            k=HARNESS_TOP_K,
+            excluded_kinds=(
+                {"memory"} if required_memory_protection else None
+            ),
+            trace=retrieval_trace,
         )
-        context_block = harness.format_retrieved_context(retrieved_context or [])
+        context_block = harness.format_retrieved_context(
+            retrieved_context or [],
+            trace=retrieval_trace,
+        )
+        cfg.context_state["harness_retrieval_trace"] = retrieval_trace
         if context_block:
             optional_context_blocks.append(
                 OptionalContextBlock("harness", "Relevant Context", context_block)
@@ -2699,13 +2836,160 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
         plan_block = reasoning_bridge.maybe_reasoning_plan(cfg, client, persisted_user_message)
         if plan_block:
             optional_context_blocks.append(OptionalContextBlock("reasoning", "", plan_block))
+    context_policies: dict[
+        str,
+        tuple[int, str, str, str],
+    ] = {
+        "reconciliation": (
+            120,
+            "runtime_reconciliation",
+            "session",
+            "reconciliation-runtime",
+        ),
+        "memory": (
+            110,
+            "governed_memory",
+            "workspace",
+            "julia-memory-runtime",
+        ),
+        "code": (
+            100,
+            "code_retrieval",
+            "workspace",
+            "code-rag-index",
+        ),
+        "harness": (
+            90,
+            "harness_retrieval",
+            "workspace",
+            "harness-hybrid-index",
+        ),
+        "index-compute-lab": (
+            80,
+            "knowledge_graph",
+            "workspace",
+            "index-compute-lab",
+        ),
+        "reasoning": (
+            70,
+            "reasoning_plan",
+            "session",
+            "reasoning-preflight",
+        ),
+        "intuition": (
+            50,
+            "heuristic_memory",
+            "workspace",
+            "intuition-runtime",
+        ),
+    }
+    context_titles = {
+        "intuition": "Heuristic Intuition Memory",
+        "reasoning": "Reasoning Preflight",
+    }
+    broker_sources: list[agent_context.AgentContextSource] = []
+    for index, optional_block in enumerate(optional_context_blocks):
+        (
+            priority,
+            trust,
+            scope,
+            provenance,
+        ) = context_policies.get(
+            optional_block.name,
+            (
+                40,
+                "harness_retrieval",
+                "workspace",
+                "runtime-context",
+            ),
+        )
+        broker_sources.append(
+            agent_context.AgentContextSource(
+                name=optional_block.name,
+                title=(
+                    optional_block.title
+                    or context_titles.get(
+                        optional_block.name,
+                        optional_block.name.replace("-", " ").title(),
+                    )
+                ),
+                body=optional_block.body,
+                priority=priority,
+                trust=trust,
+                scope=scope,
+                freshness_rank=max(
+                    0,
+                    1_000 - index,
+                ),
+                provenance=provenance,
+                answerable=bool(optional_block.body.strip()),
+            )
+        )
+    try:
+        context_admission = (
+            agent_context.admit_agent_context_sources(
+                broker_sources,
+                allowed_scopes={
+                    "global",
+                    "workspace",
+                    "session",
+                },
+            )
+        )
+        optional_context_blocks = [
+            OptionalContextBlock(
+                source.name,
+                "",
+                source.render(),
+            )
+            for source in context_admission.sources
+        ]
+        broker_omitted_contexts = list(
+            context_admission.omitted_sources
+        )
+        cfg.context_state["context_broker"] = {
+            "schema_version": (
+                agent_context.AGENT_CONTEXT_SCHEMA_VERSION
+            ),
+            "admitted_sources": [
+                source.name
+                for source in context_admission.sources
+            ],
+            "omitted_sources": broker_omitted_contexts,
+            "source_metadata": [
+                item.payload()
+                for item in context_admission.source_metadata
+            ],
+        }
+    except agent_context.AgentContextError as exc:
+        logger.debug(
+            "Context broker rejected optional chat context: %s",
+            exc,
+        )
+        broker_omitted_contexts = [
+            block.name
+            for block in optional_context_blocks
+        ]
+        optional_context_blocks = []
+        cfg.context_state["context_broker"] = {
+            "schema_version": (
+                agent_context.AGENT_CONTEXT_SCHEMA_VERSION
+            ),
+            "admitted_sources": [],
+            "omitted_sources": broker_omitted_contexts,
+            "error": type(exc).__name__,
+        }
     cfg.messages.append({"role": "user", "content": persisted_user_message})
     max_iterations = max(1, min(128, int(cfg.max_tool_iterations)))
     # Model-aware params: adapt num_ctx/temperature/reflection cadence to the
     # active model's size + provider, honoring any explicit user overrides.
     if getattr(cfg, "model_adaptive", True):
         _profile_params = model_profile.effective_params(cfg, _active_model_info)
-        if _profile_params.adapted_fields and json_sink() is None:
+        if (
+            _profile_params.adapted_fields
+            and json_sink() is None
+            and cfg.show_runtime_details
+        ):
             show_info(
                 f"↳ model-adaptive ({', '.join(_profile_params.adapted_fields)}): "
                 f"ctx={_profile_params.num_ctx} temp={_profile_params.temperature} "
@@ -2731,6 +3015,22 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
     completion_nudged = False
     next_round_trigger = "initial_plan"
     tool_ms_since_previous_round = 0.0
+    loop_state = nathan_provider_protocol.ProviderToolLoopState()
+
+    def record_protocol_dispatch(
+        name: str,
+        args: dict[str, Any],
+        tool_call_id: str | None,
+    ) -> None:
+        try:
+            action = resolve_action(name, args, cwd=cfg.cwd)
+            mutating = action.effect_class is not EffectClass.OBSERVE
+        except Exception:
+            mutating = True
+        loop_state.record_tool_dispatch(
+            tool_call_id,
+            mutating=mutating,
+        )
 
     def _round_context_sources(
         request_messages: list[dict[str, Any]],
@@ -2752,7 +3052,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 if tool_name in verification_tools:
                     verification_tokens += tokens
                 content = str(message.get("content") or "")
-                if "artifact://sha256/" in content or "receipt://sha256/" in content:
+                if "artifact://private/v1/" in content or "receipt://sha256/" in content:
                     artifact_referenced_chars += len(content)
             else:
                 conversation_tokens += tokens
@@ -2827,6 +3127,14 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
             runtime_cap=runtime_cap,
             model_info=_active_model_info,
         )
+        omitted = list(
+            dict.fromkeys(
+                [
+                    *broker_omitted_contexts,
+                    *omitted,
+                ]
+            )
+        )
         return fitted, adjusted_base_used + optional_used, included, omitted
 
     try:
@@ -2835,7 +3143,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
         show_error(f"Cannot start a safe execution scope: {exc}")
         return
 
-    from .program_runtime import authorization_for_actions
+    from .nathan_program_runtime import authorization_for_actions
 
     _program_auth_missing = object()
     _previous_program_authorization = getattr(
@@ -2860,9 +3168,11 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
             context_build_started = (
                 agent_loop_started if iterations_used == 0 else time.perf_counter()
             )
-            finalization_turn = _ == max_iterations
+            round_start_completion = execution_guardrails.completion_decision()
+            budget_finalization_turn = _ == max_iterations
+            finalization_turn = budget_finalization_turn
             if finalization_turn:
-                completion = execution_guardrails.completion_decision()
+                completion = round_start_completion
                 if not completion.allowed:
                     show_error(
                         f"Max tool iterations reached ({max_iterations}) before successful "
@@ -2895,12 +3205,25 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 if msg.get("role") == "user":
                     last_user = str(msg.get("content") or persisted_user_message)
                     break
-            system_prompt = build_system_prompt(
-                cfg,
-                retrieved_lessons=retrieved_lessons,
-                active_model_info=_active_model_info,
-                user_message=last_user,
-            )
+            try:
+                system_prompt = build_system_prompt(
+                    cfg,
+                    retrieved_lessons=retrieved_lessons,
+                    active_model_info=_active_model_info,
+                    user_message=last_user,
+                )
+            except Exception as exc:
+                if not required_memory_protection:
+                    raise
+                logger.debug(
+                    "Required Echo Veil system context failed: %s",
+                    type(exc).__name__,
+                )
+                show_error(
+                    "This turn stopped before model execution because required "
+                    "protected memory is unavailable."
+                )
+                break
             request_user_message, precomputed_used, included_contexts, omitted_contexts = _fit_request_user_message(system_prompt)
             if maybe_compact_context(
                 client,
@@ -2909,12 +3232,25 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 model_info=_active_model_info,
             ):
                 invalidate_context_usage_cache()
-                system_prompt = build_system_prompt(
-                    cfg,
-                    retrieved_lessons=retrieved_lessons,
-                    active_model_info=_active_model_info,
-                    user_message=last_user,
-                )
+                try:
+                    system_prompt = build_system_prompt(
+                        cfg,
+                        retrieved_lessons=retrieved_lessons,
+                        active_model_info=_active_model_info,
+                        user_message=last_user,
+                    )
+                except Exception as exc:
+                    if not required_memory_protection:
+                        raise
+                    logger.debug(
+                        "Required Echo Veil compacted context failed: %s",
+                        type(exc).__name__,
+                    )
+                    show_error(
+                        "This turn stopped before model execution because "
+                        "required protected memory is unavailable."
+                    )
+                    break
                 request_user_message, precomputed_used, included_contexts, omitted_contexts = _fit_request_user_message(system_prompt)
             request_messages = [{"role": "system", "content": system_prompt}] + cfg.messages
             if request_user_message != persisted_user_message:
@@ -2924,7 +3260,12 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                         msg["content"] = request_user_message
                         request_messages[i] = msg
                         break
-            if optional_context_blocks and not context_selection_notified and json_sink() is None:
+            if (
+                optional_context_blocks
+                and not context_selection_notified
+                and json_sink() is None
+                and cfg.show_runtime_details
+            ):
                 if included_contexts:
                     show_info(f"↳ auto context attached: {', '.join(included_contexts)}")
                 if omitted_contexts:
@@ -2978,6 +3319,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
             provider_metrics: dict[str, Any] = {}
             context_build_ms = (time.perf_counter() - context_build_started) * 1000
             model_started = time.perf_counter()
+            loop_state.begin_model_round(_)
             try:
                 stream = client.chat(
                     model=cfg.model,
@@ -3012,15 +3354,18 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                         record_usage(
                             prompt_tokens=get_attr(chunk, "prompt_eval_count", None),
                             completion_tokens=get_attr(chunk, "eval_count", None),
-                        )
+                    )
                     message = get_attr(chunk, "message", {})
                     thinking = get_attr(message, "thinking", "")
                     content = get_attr(message, "content", "")
                     calls = get_attr(message, "tool_calls", None)
-                    if thinking and cfg.show_thinking:
-                        show_thinking_text(thinking)
-                        thinking_text += thinking
+                    if thinking:
+                        loop_state.record_model_event("reasoning")
+                        if cfg.show_thinking:
+                            show_thinking_text(thinking)
+                            thinking_text += thinking
                     if content:
+                        loop_state.record_model_event("content")
                         finish_thinking_block()
                         if not completion_pending_before_response:
                             if not stream_started:
@@ -3029,6 +3374,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                             show_stream_text(content)
                         content_text += content
                     if calls:
+                        loop_state.record_model_event("tool")
                         tool_calls.extend(calls)
                     # Forward-compat: capture any message-level thought_signature
                     # for round-tripping when the SDK starts exposing it.
@@ -3096,24 +3442,31 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
 
             if json_sink() is None:
                 console.print()
-            if stream_error is not None and not (content_text or thinking_text):
-                raise stream_error
-            terminal_answer = _terminal_answer_from_tool_calls(tool_calls)
-            if terminal_answer is not None:
-                tool_calls = []
-                if terminal_answer:
-                    content_text = terminal_answer
-                    if not completion_pending_before_response:
-                        start_streaming_response()
-                        show_stream_text(terminal_answer)
-                        finish_streaming_response()
+            serialized_calls: list[dict[str, Any]] = []
+            if stream_error is not None:
+                loop_state.interrupt(
+                    str(stream_error),
+                    timed_out=isinstance(stream_error, TimeoutError),
+                )
+                if not (content_text or thinking_text):
+                    raise stream_error
+            else:
+                terminal_answer = _terminal_answer_from_tool_calls(tool_calls)
+                if terminal_answer is not None:
+                    tool_calls = []
+                    if terminal_answer:
+                        content_text = terminal_answer
+                        if not completion_pending_before_response:
+                            start_streaming_response()
+                            show_stream_text(terminal_answer)
+                            finish_streaming_response()
+                serialized_calls = loop_state.complete_model_round(tool_calls)
             assistant: dict[str, Any] = {"role": "assistant"}
             if content_text:
                 assistant["content"] = content_text
                 final_content = content_text
             if thinking_text:
                 assistant["thinking"] = thinking_text
-            serialized_calls = [serialize_tool_call(call) for call in tool_calls]
             if tool_calls and stream_error is None:
                 assistant["tool_calls"] = serialized_calls
             if message_signature:
@@ -3128,21 +3481,32 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 break
 
             if finalization_turn and tool_calls:
+                loop_state.cancel(
+                    "finalization turn attempted a tool call"
+                )
                 final_content = ""
                 show_error("Finalization turn attempted an additional tool call; completion withheld.")
                 break
 
             if not tool_calls:
+                loop_state.finish_without_tools()
                 completion = execution_guardrails.completion_decision()
                 if completion.allowed:
                     turn_completed_normally = True
                     break
+                unresolved_mutation = (
+                    "no mutation succeeded" in completion.reason
+                )
                 if not completion_nudged:
                     if _ + 1 >= max_iterations:
                         final_content = ""
                         show_error(
-                            "Completion blocked: the tool-iteration budget ended before successful "
-                            "post-mutation verification."
+                            "Completion blocked: the tool-iteration budget ended before "
+                            + (
+                                "a requested workspace mutation succeeded."
+                                if unresolved_mutation
+                                else "successful post-mutation verification."
+                            )
                         )
                         break
                     completion_nudged = True
@@ -3150,19 +3514,39 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                     final_content = ""
                     optional_context_blocks.clear()
                     show_info(
-                        "Unverified final text was withheld. Completion is deferred until the last "
-                        "workspace mutation has a passing "
-                        "test, lint/type check, or git diff verification."
+                        (
+                            "Unverified final text was withheld. A workspace mutation was "
+                            "attempted, but none succeeded."
+                            if unresolved_mutation
+                            else
+                            "Unverified final text was withheld. Completion is deferred until the last "
+                            "workspace mutation has a complete file read-back or a passing test, "
+                            "lint/type check, or git diff verification."
+                        )
                     )
                     cfg.messages.append(
                         {
                             "role": "user",
                             "content": (
+                                (
+                                    "[Internal completion gate] Do not claim a change: every "
+                                    "workspace mutation attempt failed or was denied. Reuse exactly "
+                                    "the canonical path from a successful read_file result, then call "
+                                    "the direct edit_file or write_file tool. Do not prepend the "
+                                    "working directory to an absolute path or use action_program in "
+                                    "workspace approval mode. Run a fail-on-error verifier after the "
+                                    "mutation succeeds, then report only the verified outcome."
+                                )
+                                if unresolved_mutation
+                                else
                                 "[Internal completion gate] Do not claim completion yet. The last "
                                 "workspace mutation has no successful post-mutation verifier. Run one "
                                 "appropriate non-mutating test, lint/type check, or git_diff tool now. "
                                 "Custom verification must fail on mismatch: run a healthcheck/check/verify "
-                                "script, or Python -c with one or more assertions; then give a concise "
+                                "script, or Python -c with direct assertions. Reuse the exact paths from "
+                                "successful mutation receipts; do not shorten them or assume a nested task "
+                                "directory is the process working directory. A complete reread of every "
+                                "mutated file also satisfies read-back verification. Then give a concise "
                                 "final answer grounded in that result."
                             ),
                         }
@@ -3170,201 +3554,122 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                     continue
                 final_content = ""
                 show_error(
-                    "Completion blocked: the model stopped twice without successful verification "
-                    "after its last workspace mutation."
+                    (
+                        "Completion blocked: the model stopped twice after failed or denied "
+                        "workspace mutation attempts."
+                        if unresolved_mutation
+                        else
+                        "Completion blocked: the model stopped twice without successful verification "
+                        "after its last workspace mutation."
+                    )
                 )
                 break
 
-            # Normalize all calls once; reused by both the parallel check and _batch build.
-            _nc = [normalize_tool_call(c) for c in tool_calls]
+            normalized_calls = [normalize_tool_call(call) for call in tool_calls]
+            batch = [
+                (normalized, str(serialized.get("id") or "") or None)
+                for normalized, serialized in zip(normalized_calls, serialized_calls)
+            ]
+            loop_state.begin_tool_batch()
+            policy_ceiling_codes = batch_policy_ceiling_codes(batch, cfg)
+            state_ceiling_codes = loop_state.tool_batch_ceiling_codes()
+            batch_ceiling_codes = tuple(
+                state_code or policy_code
+                for state_code, policy_code in zip(
+                    state_ceiling_codes,
+                    policy_ceiling_codes,
+                )
+            )
+            dependencies = _main_dispatch_dependencies()
             next_round_trigger = "tool_result_requires_interpretation"
 
-            def _exec_one(item: tuple[tuple[str, dict[str, Any]], str | None]) -> tuple[str, dict[str, Any], str | None, str, float]:
-                (n, a), tid = item
-                t0 = time.perf_counter()
-                res = run_tool(n, a, cfg)
-                return n, a, tid, res, round((time.perf_counter() - t0) * 1000, 2)
+            def consume_dispatch(
+                name: str,
+                args: dict[str, Any],
+                tool_call_id: str | None,
+                dispatched: DispatchResult,
+            ) -> None:
+                nonlocal tool_ms_since_previous_round, tool_calls_since_reflection
 
-            # Parallel dispatch when all tool calls in this batch are read-only.
-            _parallel = (
-                len(tool_calls) > 1
-                and all(n[0] in READ_ONLY_TOOLS for n in _nc)
-                and all(not find_failed_attempt(cfg, tool_attempt_signature(n[0], tool_runtime_args(n[0], n[1], cfg))) for n in _nc)
-            )
-            if _parallel:
-                # _batch items must match _exec_one signature: tuple[tuple[str, dict], str | None]
-                _batch = [(n, (str(sc.get("id") or "") or None)) for n, sc in zip(_nc, serialized_calls)]
-                for item in _batch:
-                    (name, args), tid = item
-                    show_tool_call(name, args, call_id=tid)
+                tool_ms_since_previous_round += dispatched.duration_ms
+                show_typed_tool_result(
+                    name,
+                    dispatched.result,
+                    outcome_status=dispatched.outcome.status,
+                    duration_ms=(
+                        dispatched.duration_ms if dispatched.outcome.invoked else None
+                    ),
+                    call_id=tool_call_id,
+                )
+                cfg.messages.append(dispatched.message)
+                loop_state.record_tool_result(tool_call_id)
+                run_tool_calls.append(
+                    {
+                        "name": name,
+                        "status": dispatched.status,
+                        "args": _run_args_preview(args, name=name),
+                    }
+                )
+                tool_calls_since_reflection += 1
 
-                ordered_results: list[
-                    tuple[str, dict[str, Any], str | None, str, float] | None
-                ] = [None] * len(_batch)
-                dispatch_order = order_tool_batch_by_qos([item[0] for item in _batch])
-                preflight_by_index: dict[int, RuntimeToolPreflight] = {}
-                allowed_dispatch_order: list[int] = []
-                for queue_position, batch_index in enumerate(dispatch_order):
-                    (queued_name, queued_args), _queued_id = _batch[batch_index]
-                    preflight = preflight_runtime_tool(
-                        queued_name,
-                        queued_args,
-                        cfg,
-                        queue_position=queue_position,
-                    )
-                    preflight_by_index[batch_index] = preflight
-                    if preflight.allowed:
-                        allowed_dispatch_order.append(batch_index)
-                if allowed_dispatch_order:
-                    with scoped_tool_runtime_env(cfg):
-                        with ThreadPoolExecutor(max_workers=min(4, len(allowed_dispatch_order))) as _pool:
-                            future_to_index = {
-                                _pool.submit(_exec_one, _batch[idx]): idx for idx in allowed_dispatch_order
-                            }
-                            for future in as_completed(future_to_index):
-                                ordered_results[future_to_index[future]] = future.result()
-
-                for idx, ((name, args), _tid) in enumerate(_batch):
-                    preflight = preflight_by_index[idx]
-                    if not preflight.allowed:
-                        result = preflight.blocked_result
-                        show_tool_result(name, result, approved=False, call_id=_tid)
-                        cfg.messages.append(tool_result_message(name, result, _tid))
-                        record_tool_attempt(
-                            cfg,
-                            name=name,
-                            args=preflight.signature_args,
-                            result=result,
-                            status="denied",
-                        )
-                        record_perf_event(
-                            "tool",
-                            tool=name,
-                            status="denied",
-                            duration_ms=0.0,
-                            **preflight.qos_fields,
-                        )
-                        run_tool_calls.append(
-                            {"name": name, "status": "denied", "args": _run_args_preview(args, name=name)}
-                        )
-                        tool_calls_since_reflection += 1
-                        continue
-                    row = ordered_results[idx]
-                    if row is None:
-                        continue
-                    name, args, tool_call_id, result, duration_ms = row
-                    tool_ms_since_previous_round += duration_ms
-                    tool_status = classify_tool_status(result)
-                    result = augment_tool_result_with_reflex(
-                        cfg, name, preflight.signature_args, result, tool_status
-                    )
-                    show_tool_result(name, result, duration_ms=duration_ms, call_id=tool_call_id)
-                    cfg.messages.append(tool_result_message(name, result, tool_call_id))
-                    record_tool_attempt(
-                        cfg,
-                        name=name,
-                        args=preflight.signature_args,
-                        result=result,
-                        status=tool_status,
-                    )
-                    record_perf_event(
-                        "tool",
-                        tool=name,
-                        status=tool_status,
-                        duration_ms=duration_ms,
-                        **preflight.qos_fields,
-                    )
-                    run_tool_calls.append(
-                        {"name": name, "status": tool_status, "args": _run_args_preview(args, name=name)}
-                    )
-                    tool_calls_since_reflection += 1
-            else:
-                for call, serialized_call in zip(tool_calls, serialized_calls):
-                    tool_call_id = str(serialized_call.get("id") or "") or None
-                    name, args = normalize_tool_call(call)
+            if not any(batch_ceiling_codes) and _parallel_dispatch_allowed(
+                normalized_calls,
+                cfg,
+            ):
+                for (name, args), tool_call_id in batch:
                     show_tool_call(name, args, call_id=tool_call_id)
-                    preflight = preflight_runtime_tool(name, args, cfg)
-                    signature_args = preflight.signature_args
-                    if not preflight.allowed:
-                        result = preflight.blocked_result
-                        show_tool_result(name, result, approved=False, call_id=tool_call_id)
-                        cfg.messages.append(tool_result_message(name, result, tool_call_id))
-                        record_tool_attempt(cfg, name=name, args=signature_args, result=result, status="denied")
-                        record_perf_event(
-                            "tool",
-                            tool=name,
-                            status="denied",
-                            duration_ms=0.0,
-                            **preflight.qos_fields,
-                        )
-                        run_tool_calls.append(
-                            {"name": name, "status": "denied", "args": _run_args_preview(args, name=name)}
-                        )
-                        tool_calls_since_reflection += 1
-                        continue
-                    signature = tool_attempt_signature(name, signature_args)
-                    previous_failure = find_failed_attempt(cfg, signature)
-                    if previous_failure:
-                        result = (
-                            "Skipped repeated failed attempt. "
-                            f"Prior outcome: {previous_failure.get('summary', 'same tool path already failed or was denied')}."
-                        )
-                        show_tool_result(name, result, approved=False, call_id=tool_call_id)
-                        cfg.messages.append(tool_result_message(name, result, tool_call_id))
-                        record_tool_attempt(cfg, name=name, args=signature_args, result=result, status="skipped")
-                        record_perf_event(
-                            "tool",
-                            tool=name,
-                            status="skipped",
-                            duration_ms=0.0,
-                            **preflight.qos_fields,
-                        )
-                        run_tool_calls.append({"name": name, "status": "skipped", "args": _run_args_preview(args, name=name)})
-                        tool_calls_since_reflection += 1
-                        continue
-                    if not ask_approval(name, args, cfg):
-                        result = "User denied this operation."
-                        show_tool_result(name, result, approved=False, call_id=tool_call_id)
-                        cfg.messages.append(tool_result_message(name, result, tool_call_id))
-                        record_tool_attempt(cfg, name=name, args=signature_args, result=result, status="denied")
-                        record_perf_event(
-                            "tool",
-                            tool=name,
-                            status="denied",
-                            duration_ms=0.0,
-                            **preflight.qos_fields,
-                        )
-                        run_tool_calls.append({"name": name, "status": "denied", "args": _run_args_preview(args, name=name)})
-                        continue
 
-                    started = time.perf_counter()
-                    with scoped_tool_runtime_env(cfg):
-                        with tool_execution_status(
-                            f"[muted]executing {name} · {preflight.runtime_hint.spawn_class.value}...[/]"
-                        ):
-                            result = run_tool(name, args, cfg)
-                    duration_ms = round((time.perf_counter() - started) * 1000, 2)
-                    tool_ms_since_previous_round += duration_ms
-                    tool_status = classify_tool_status(result)
-                    result = augment_tool_result_with_reflex(
-                        cfg, name, signature_args, result, tool_status
+                ordered_results: list[DispatchResult | None] = [None] * len(batch)
+                dispatch_order = order_tool_batch_by_qos([item[0] for item in batch])
+                with ThreadPoolExecutor(max_workers=min(4, len(batch))) as pool:
+                    future_to_index = {}
+                    for queue_position, batch_index in enumerate(dispatch_order):
+                        (name, args), tool_call_id = batch[batch_index]
+                        record_protocol_dispatch(
+                            name,
+                            args,
+                            tool_call_id,
+                        )
+                        context = copy_context()
+                        future = pool.submit(
+                            context.run,
+                            dispatch_action,
+                            name,
+                            args,
+                            cfg,
+                            tool_call_id=tool_call_id,
+                            dependencies=dependencies,
+                            render=False,
+                            queue_position=queue_position,
+                        )
+                        future_to_index[future] = batch_index
+                    for future in as_completed(future_to_index):
+                        ordered_results[future_to_index[future]] = future.result()
+
+                for index, ((name, args), tool_call_id) in enumerate(batch):
+                    dispatched = ordered_results[index]
+                    if dispatched is None:  # pragma: no cover - executor invariant
+                        raise RuntimeError("canonical dispatcher returned no result")
+                    consume_dispatch(name, args, tool_call_id, dispatched)
+            else:
+                for index, ((name, args), tool_call_id) in enumerate(batch):
+                    show_tool_call(name, args, call_id=tool_call_id)
+                    record_protocol_dispatch(
+                        name,
+                        args,
+                        tool_call_id,
                     )
-                    show_tool_result(name, result, duration_ms=duration_ms, call_id=tool_call_id)
-                    cfg.messages.append(tool_result_message(name, result, tool_call_id))
-                    record_tool_attempt(
-                        cfg, name=name, args=signature_args, result=result, status=tool_status
+                    dispatched = dispatch_action(
+                        name,
+                        args,
+                        cfg,
+                        tool_call_id=tool_call_id,
+                        dependencies=dependencies,
+                        render=False,
+                        policy_ceiling_code=batch_ceiling_codes[index],
                     )
-                    record_perf_event(
-                        "tool",
-                        tool=name,
-                        status=tool_status,
-                        duration_ms=duration_ms,
-                        **preflight.qos_fields,
-                    )
-                    run_tool_calls.append(
-                        {"name": name, "status": tool_status, "args": _run_args_preview(args, name=name)}
-                    )
-                    tool_calls_since_reflection += 1
+                    consume_dispatch(name, args, tool_call_id, dispatched)
+            loop_state.finish_tool_batch()
 
             if tool_calls_since_reflection >= reflection_interval:
                 if json_sink() is None:
@@ -3623,7 +3928,20 @@ def print_harness_results(
         active_model = harness.DEFAULT_EMBED_MODEL
         matching, _total = harness.embedded_count(active_model)
     if cfg is not None and embed_fn is not None and matching > 0:
-        results = harness.hybrid_search(query, embed_fn, active_model, k=12, harness=harness_name, kind=kind)
+        from .ada_memory_echo_veil import protection_required
+
+        required_memory_protection = protection_required(cfg)
+        results = harness.hybrid_search(
+            query,
+            embed_fn,
+            active_model,
+            k=12,
+            harness=harness_name,
+            kind=kind,
+            excluded_kinds=(
+                {"memory"} if required_memory_protection else None
+            ),
+        )
         if results:
             lines = [f"[dim]hybrid (RRF) results for:[/] {query}", ""]
             for rec in results:
@@ -3635,7 +3953,15 @@ def print_harness_results(
             console.print("\n".join(lines))
             return
     from .tools import harness_search
-    console.print(harness_search(query=query, harness_name=harness_name, kind=kind, limit=12))
+    console.print(
+        harness_search(
+            query=query,
+            harness_name=harness_name,
+            kind=kind,
+            limit=12,
+            cfg=cfg,
+        )
+    )
 
 
 def build_rust_indexer() -> None:
@@ -3709,9 +4035,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--approval-mode",
-        choices=["never", "auto"],
+        choices=["never", "auto", "workspace"],
         default="never",
-        help="In --oneshot, control how approval-required tools are handled: never (default, deny + tool_denied event) or auto (auto-approve, equivalent to /auto).",
+        help=(
+            "In --oneshot, control approval-required tools: never (default), "
+            "auto (session-preapproval only), or workspace (contained file "
+            "edits with read-after-write verification; external and arbitrary "
+            "shell actions remain denied)."
+        ),
     )
     parser.add_argument(
         "--thinking",
@@ -3751,7 +4082,7 @@ def _run_oneshot_entry(args: argparse.Namespace) -> int:
         overrides["cwd"] = str(Path(args.cwd).expanduser().resolve())
     if args.thinking != "auto":
         overrides["show_thinking"] = args.thinking == "on"
-    from . import oneshot as _oneshot_module
+    from . import oliver_oneshot as _oneshot_module
     return _oneshot_module.run_oneshot(
         prompt=prompt,
         approval_mode=args.approval_mode,
@@ -3767,6 +4098,28 @@ def _run_update_entry() -> int:
     if result.returncode != 0 and result.details:
         console.print(result.details, markup=False)
     return result.returncode
+
+
+def _run_echo_veil_request(text: str, cfg: Config) -> tuple[bool, int]:
+    """Handle Echo package maintenance without model or generic-shell routing."""
+
+    command = echo_veil_update.classify_echo_request(text)
+    if command is None:
+        return False, 0
+    if command == "status":
+        status = echo_veil_update.collect_echo_status(cfg)
+        console.print(echo_veil_update.render_echo_status(status), markup=False)
+        return True, status.exit_code
+    with console.status(
+        "[muted]staging and verifying the Algo-qualified Echo Veil build...[/]",
+        spinner="dots",
+    ):
+        result = echo_veil_update.update_echo_veil(cfg)
+    style = "green" if result.returncode == 0 else "red"
+    console.print(f"[{style}]{result.message}[/{style}]")
+    if result.returncode != 0 and result.details:
+        console.print(result.details, markup=False)
+    return True, result.returncode
 
 
 def _force_utf8_console() -> None:
@@ -3846,6 +4199,7 @@ def main() -> None:
         _exit = _run_oneshot_entry(args)
         sys.exit(_exit)
     cfg = Config.load()
+    set_runtime_details_visible(cfg.show_runtime_details)
     harness.configure_context_sources(
         external=cfg.external_harness_sources_enabled,
         index_compute_lab=cfg.index_compute_lab_auto_inject,
@@ -3859,6 +4213,10 @@ def main() -> None:
         cfg.cloud = True
     if args.cwd:
         cfg.cwd = str(Path(args.cwd).expanduser().resolve())
+    if args.prompt and not args.oneshot:
+        echo_handled, echo_exit_code = _run_echo_veil_request(args.prompt, cfg)
+        if echo_handled:
+            raise SystemExit(echo_exit_code)
     if (args.prompt or "").strip().lower() == "doctor" and not args.oneshot:
         from .action_registry import build_doctor_report, render_doctor
 
@@ -3884,7 +4242,7 @@ def main() -> None:
     # --- Subcommand: plugin list ---
     _prompt_lower = (args.prompt or "").strip().lower()
     if _prompt_lower.startswith("plugin ") and not args.oneshot:
-        from .plugins import discover_plugins, plugin_status
+        from .william_plugins import discover_plugins, plugin_status
         sub = _prompt_lower.split(maxsplit=1)[1].strip() if " " in _prompt_lower else ""
         if sub in ("", "list"):
             discovered = discover_plugins()
@@ -3898,9 +4256,9 @@ def main() -> None:
                 table.add_column("Enabled", style="yellow")
                 for manifest in sorted(discovered, key=lambda item: item.name.lower()):
                     table.add_row(
-                        manifest.name,
-                        manifest.version,
-                        manifest.description,
+                        Text(manifest.name),
+                        Text(manifest.version),
+                        Text(manifest.description),
                         "yes" if manifest.enabled else "no",
                     )
                 console.print(table)
@@ -3908,17 +4266,19 @@ def main() -> None:
         elif sub == "status":
             statuses = plugin_status()
             if not statuses:
-                console.print("[dim]No plugins loaded.[/dim]")
+                console.print("[dim]No plugin manifests found.[/dim]")
             else:
                 table = Table(title="Plugin Status", box=box.ROUNDED)
                 table.add_column("Name", style="cyan")
+                table.add_column("State", style="yellow")
                 table.add_column("Loaded", style="green")
                 table.add_column("Error", style="red")
                 for s in statuses:
                     table.add_row(
-                        s.get("name", "?"),
+                        Text(str(s.get("name", "?"))),
+                        Text(str(s.get("state", "unknown"))),
                         "yes" if s.get("loaded") else "no",
-                        s.get("error", "") or "",
+                        Text(str(s.get("load_error", "") or "")),
                     )
                 console.print(table)
             return
@@ -4063,11 +4423,18 @@ def main() -> None:
             show_error(unknown_command_message(user_input))
             continue
         try:
+            echo_handled, _echo_exit_code = _run_echo_veil_request(
+                user_input,
+                cfg,
+            )
+            if echo_handled:
+                continue
             if cfg.cloud:
                 start_supplemental_gateway(cfg)
             elif not start_ollama_server(cfg):
                 continue
-            maybe_show_route_suggestion(user_input)
+            if cfg.show_route_suggestions:
+                maybe_show_route_suggestion(user_input)
             agent_loop(client, cfg, user_input)
             refresh_runtime_status(cfg, client)
             invalidate_prompt_toolbar(session)

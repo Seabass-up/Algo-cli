@@ -16,11 +16,11 @@ python -m pip install -e ".[dev]"
 
 ```bash
 ruff check algo_cli tests
-mypy algo_cli/main.py algo_cli/tool_runtime.py algo_cli/tools.py algo_cli/harness.py --ignore-missing-imports --no-strict-optional --follow-imports=skip
+mypy algo_cli/main.py algo_cli/nathan_runtime.py algo_cli/tools.py algo_cli/harness.py --ignore-missing-imports --no-strict-optional --follow-imports=skip
 python -m compileall -q algo_cli ollama_cli
 pytest tests
 python scripts/check_public_release.py
-python scripts/smoke_wheel_install.py dist  # after python -m build
+python scripts/oliver_smoke_wheel_install.py dist  # after python -m build
 ```
 
 Run `cargo test --manifest-path harness-indexer/Cargo.toml --locked` or `go test ./...` from `harness-gateway/` when changing a native helper.

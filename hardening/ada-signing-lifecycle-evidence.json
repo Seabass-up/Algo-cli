@@ -1,0 +1,14 @@
+{
+  "authorities_digest": "sha256:d121ad7bd04846372f1951357b1937ce07f9fd5fac3e808f08d24a0989fc783f",
+  "binding_digest": "",
+  "external_lifecycle_eligible": false,
+  "generated_at": "2026-07-20T10:40:58Z",
+  "limitations": [
+    "No lifecycle claim is made until three externally produced receipts and a protected authorities digest are present.",
+    "GitHub runner absence is not host-destruction evidence; provider destruction and external log delivery remain separate requirements."
+  ],
+  "public_claim_eligible": false,
+  "reason_code": "austin_lifecycle_authorities_unconfigured",
+  "schema_version": 1,
+  "status": "blocked"
+}

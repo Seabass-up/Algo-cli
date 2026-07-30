@@ -6,6 +6,9 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from algo_cli import harness
 from conftest import make_fake_embed
@@ -107,6 +110,83 @@ def test_parse_frontmatter():
     assert fm["name"] == "demo"
     assert fm["description"] == "a demo"
     assert fm["tags"] == ["a", "b"]
+
+
+def test_frontmatter_and_record_preserve_authority_freshness_scope_and_claims(tmp_path):
+    path = tmp_path / "runtime-state.md"
+    path.write_text(
+        "---\n"
+        "title: Runtime state\n"
+        "status: active\n"
+        "authority: runtime\n"
+        "valid_from: 2026-07-01\n"
+        "valid_until: null\n"
+        "verified_at: 2026-07-29T01:02:03Z\n"
+        "supersedes: [old-state]\n"
+        "conflicts_with: [static-guide]\n"
+        "scope:\n"
+        "  project: algo-cli\n"
+        "  platform: darwin\n"
+        "  version: 0.18.0\n"
+        "claims:\n"
+        "  external_stores_enabled: false\n"
+        "---\n"
+        "# Runtime state\n",
+        encoding="utf-8",
+    )
+    root = harness.SourceRoot("algo-cli", "wiki", tmp_path, ("*.md",), 10)
+
+    record = harness.make_record(root, path)
+
+    assert record["authority"] == "runtime"
+    assert record["valid_from"] == "2026-07-01"
+    assert record["valid_until"] is None
+    assert record["verified_at"] == "2026-07-29T01:02:03Z"
+    assert record["supersedes"] == ["old-state"]
+    assert record["conflicts_with"] == ["static-guide"]
+    assert record["scope"] == {
+        "project": "algo-cli",
+        "platform": "darwin",
+        "version": "0.18.0",
+    }
+    assert record["claims"] == {"external_stores_enabled": False}
+
+
+def test_normalize_index_records_backfills_truth_contract():
+    index = {
+        "records": [
+            {
+                "id": "openclaw:skill:legacy",
+                "harness": "openclaw",
+                "kind": "skill",
+                "status": "historical",
+                "updated": "2025-01-02T03:04:05Z",
+            },
+            {
+                "id": "algo-cli:wiki:guide",
+                "harness": "algo-cli",
+                "kind": "wiki",
+                "updated": "2026-07-29T00:00:00Z",
+            },
+        ]
+    }
+
+    normalized = harness._normalize_index_records(index)
+
+    historical, generated = normalized["records"]
+    assert historical["authority"] == "historical"
+    assert historical["verified_at"] == "2025-01-02T03:04:05Z"
+    assert historical["valid_from"] == "2025-01-02T03:04:05Z"
+    assert historical["valid_until"] is None
+    assert historical["scope"] == {
+        "project": "*",
+        "platform": "*",
+        "version": "*",
+    }
+    assert historical["claims"] == {}
+    assert generated["authority"] == "generated-doc"
+    assert generated["status"] == "active"
+    assert generated["scope"]["project"] == "algo-cli"
 
 
 def test_parse_frontmatter_none():
@@ -302,14 +382,32 @@ def test_embedding_priority_tiers_keep_capability_metadata_ahead_of_bulk():
 
 
 def test_runtime_capability_records_are_searchable_and_preserve_embeddings(monkeypatch):
+    from algo_cli import action_registry
+
     records = harness._runtime_capability_records()
 
     assert records
-    assert len(records) == len(__import__("algo_cli.action_registry", fromlist=["ACTION_SPECS"]).ACTION_SPECS)
+    assert len(records) == len(
+        action_registry.effective_action_specs(include_archived=True)
+    )
     write_file = next(record for record in records if record["id"].endswith(":write_file"))
     assert write_file["kind"] == "runtime_capability"
     assert "approval required True" in write_file["index_text"]
     assert write_file["capability"]["risk_level"] == "high"
+    assert write_file["capability"]["installed"] is True
+    assert write_file["capability"]["model_callable"] is True
+    assert write_file["authority"] == "runtime"
+    assert write_file["verified_at"]
+    assert write_file["scope"]["project"] == "algo-cli"
+    assert write_file["claims"]["capability:write_file:enabled"] is True
+
+    external = next(
+        record
+        for record in records
+        if record["id"].endswith(":harness.external_agent_stores")
+    )
+    assert external["status"] == "disabled"
+    assert "installed but disabled" in external["index_text"]
 
     write_file["embedding"] = [0.25, 0.75]
     write_file["embedding_model"] = "test-model"
@@ -349,6 +447,51 @@ def test_extra_root_parser_keeps_valid_entries_and_reports_rejections(tmp_path):
     assert len(roots) == 1
     assert roots[0].harness == "demo"
     assert rejected == 2
+
+
+def test_extra_root_parser_enforces_opt_in_read_only_allowlist(tmp_path):
+    roots, rejected = harness._parse_extra_source_roots_payload(
+        [
+            {
+                "harness": "disabled",
+                "kind": "wiki",
+                "root": str(tmp_path),
+                "enabled": False,
+                "patterns": ["*.md"],
+            },
+            {
+                "harness": "mutable",
+                "kind": "wiki",
+                "root": str(tmp_path),
+                "mode": "read-write",
+                "patterns": ["*.md"],
+            },
+            {
+                "harness": "escape",
+                "kind": "wiki",
+                "root": str(tmp_path),
+                "patterns": ["../*.md"],
+            },
+            {
+                "harness": "binary",
+                "kind": "wiki",
+                "root": str(tmp_path),
+                "patterns": ["*.sqlite"],
+            },
+            {
+                "harness": "ready",
+                "kind": "wiki",
+                "root": str(tmp_path),
+                "enabled": True,
+                "mode": "read-only",
+                "patterns": ["skills/**/*.md", "*.json"],
+            },
+        ]
+    )
+
+    assert [root.harness for root in roots] == ["ready"]
+    assert roots[0].patterns == ("skills/**/*.md", "*.json")
+    assert rejected == 3
 
 
 def test_extra_root_diagnostics_distinguish_malformed_and_unavailable(tmp_path, monkeypatch):
@@ -405,6 +548,9 @@ def test_source_root_diagnostics_report_adapter_contract_without_paths(tmp_path,
     assert result["unavailable_adapter_roots"] == 1
     assert result["indexed_records"] == 1
     assert result["indexed_harnesses"] == ["codex"]
+    assert result["adapter_contract"]["mode"] == "read-only"
+    assert result["adapter_contract"]["symlink_and_path_escape_protection"] is True
+    assert result["adapter_contract"]["source_mutation"] is False
     assert str(tmp_path) not in json.dumps(result)
 
 
@@ -439,6 +585,40 @@ def test_source_root_diagnostics_distinguish_unreadable_adapter(tmp_path, monkey
     assert result["unavailable_adapter_roots"] == 0
 
 
+def test_configured_external_root_qualification_exercises_real_pipeline():
+    policy_before = harness._source_policy()
+
+    report = harness.qualify_configured_external_roots()
+
+    assert report["status"] == "pass"
+    assert report["probe"] == "harness-configured-external-roots-v1"
+    assert all(report["checks"].values())
+    assert report["metrics"] == {
+        "configured_roots": 2,
+        "records_indexed": 2,
+        "configuration_rejections": 0,
+        "retrieved_records": 2,
+    }
+    assert len(report["evidence"]["fixture_digest"]) == 64
+    assert len(report["evidence"]["ranking_digest"]) == 64
+    assert report["error_type"] is None
+    assert harness._source_policy() == policy_before
+    serialized = json.dumps(report)
+    assert "qualification-secret-token" not in serialized
+    assert "/private/" not in serialized
+    assert "/Users/" not in serialized
+
+
+def test_configured_external_root_qualification_fails_closed(monkeypatch):
+    monkeypatch.setattr(harness, "iter_files", lambda _root: [])
+
+    report = harness.qualify_configured_external_roots()
+
+    assert report["status"] == "fail"
+    assert report["checks"]["bounded_files_indexed"] is False
+    assert report["checks"]["cross_root_retrieval"] is False
+
+
 def test_superseded_records_are_excluded_from_automatic_retrieval():
     assert harness.is_excluded_from_retrieval({"status": "superseded"}) is True
 
@@ -449,7 +629,6 @@ def test_harness_stats_reports_truthful_echo_veil_readiness(monkeypatch):
 
     monkeypatch.setattr(memory_echo_veil, "ECHO_VEIL_AVAILABLE", False)
     monkeypatch.setattr(memory_echo_veil, "ECHO_VEIL_IMPORT_ERROR", "ModuleNotFoundError")
-    monkeypatch.setattr(memory_echo_veil, "ECHO_VEIL_MODULE_ORIGIN", "")
     stats = harness.stats()
 
     assert stats["echo_veil"]["installed"] is False
@@ -458,6 +637,7 @@ def test_harness_stats_reports_truthful_echo_veil_readiness(monkeypatch):
     assert stats["echo_veil"]["retrieval_wired"] is False
     assert stats["echo_veil"]["persistence_wired"] is False
     assert stats["echo_veil"]["import_error"] == "ModuleNotFoundError"
+    assert "module_origin" not in stats["echo_veil"]
     assert tools.harness is harness
     assert json.loads(tools.harness_stats())["echo_veil"] == stats["echo_veil"]
 
@@ -516,6 +696,165 @@ def test_format_retrieved_context_handles_missing_id():
     # rec.get("id") falsy must not crash; renders "?" placeholder.
     block = harness.format_retrieved_context([{"title": "no-id record"}])
     assert "### ?" in block
+
+
+def test_authority_ranking_and_conflict_compiler_prefer_live_runtime(monkeypatch):
+    model = "authority-model"
+    records = [
+        {
+            "id": "algo-cli:wiki:static",
+            "harness": "algo-cli",
+            "kind": "wiki",
+            "title": "External stores searchable",
+            "path": "__pytest__/static.md",
+            "relative_path": "static.md",
+            "summary": "External agent stores are searchable in this session.",
+            "search_text": "external agent stores searchable active session",
+            "status": "ready",
+            "authority": "generated-doc",
+            "verified_at": "2026-07-01T00:00:00Z",
+            "scope": {"project": "algo-cli", "platform": "*", "version": "*"},
+            "claims": {"external_stores_enabled": True},
+            "embedding": [1.0, 0.0],
+            "embedding_model": model,
+        },
+        {
+            "id": "algo-cli:runtime_capability:external",
+            "harness": "algo-cli",
+            "kind": "runtime_capability",
+            "title": "External stores disabled",
+            "path": "__pytest__/runtime",
+            "relative_path": "action-registry/external",
+            "summary": "External agent stores are disabled in this session.",
+            "search_text": "external agent stores searchable active session disabled",
+            "status": "disabled",
+            "authority": "runtime",
+            "verified_at": "2026-07-29T00:00:00Z",
+            "scope": {"project": "algo-cli", "platform": "*", "version": "*"},
+            "claims": {"external_stores_enabled": False},
+            "embedding": [1.0, 0.0],
+            "embedding_model": model,
+        },
+    ]
+    monkeypatch.setattr(harness, "load_index", lambda refresh=False: {"records": records})
+    trace: dict = {}
+
+    results = harness.hybrid_search(
+        "are external agent stores searchable in this active session",
+        lambda _texts: [[1.0, 0.0]],
+        model,
+        k=2,
+        trace=trace,
+    )
+    compiled = harness.compile_retrieved_context(
+        results,
+        max_tokens=500,
+        trace=trace,
+    )
+
+    assert [record["id"] for record in results] == [
+        "algo-cli:runtime_capability:external",
+        "algo-cli:wiki:static",
+    ]
+    assert results[0]["rank_provenance"]["truth_factors"]["authority"] == 1.0
+    assert results[1]["rank_provenance"]["truth_factors"]["authority"] == 0.72
+    assert len(compiled.conflicts) == 1
+    assert compiled.conflicts[0]["preferred"] == "algo-cli:runtime_capability:external"
+    assert "## Live Runtime State" in compiled.text
+    assert "## Task Evidence" in compiled.text
+    assert "## Contradictions" in compiled.text
+    assert "authority=runtime" in compiled.text
+    assert trace["conflict_detected"] is True
+    assert trace["context_tokens"] == compiled.token_count
+
+
+def test_truth_factors_demote_expired_future_and_scope_mismatched_records():
+    as_of = harness._parse_record_time("2026-07-29T00:00:00Z")
+    assert as_of is not None
+    common = {
+        "authority": "source",
+        "verified_at": "2026-07-29T00:00:00Z",
+        "scope": {"project": "algo-cli", "platform": "*", "version": "*"},
+    }
+
+    future = harness.record_truth_factors(
+        {**common, "valid_from": "2026-08-01T00:00:00Z"},
+        as_of=as_of,
+    )
+    expired = harness.record_truth_factors(
+        {**common, "valid_until": "2026-07-01T00:00:00Z"},
+        as_of=as_of,
+    )
+    mismatch = harness.record_truth_factors(
+        {
+            **common,
+            "scope": {
+                "project": "another-project",
+                "platform": "linux",
+                "version": "*",
+            },
+        },
+        as_of=as_of,
+        scope={"project": "algo-cli", "platform": "darwin"},
+    )
+
+    assert future["freshness"] == 0.10
+    assert expired["freshness"] == 0.25
+    assert mismatch["scope_match"] == 0.5625
+
+
+def test_context_compiler_deduplicates_and_respects_strict_budget():
+    records = [
+        {
+            "id": f"algo-cli:wiki:{index}",
+            "harness": "algo-cli",
+            "kind": "wiki",
+            "title": "Repeated operational guidance",
+            "snippet": "same bounded operational evidence " * 30,
+            "authority": "source",
+            "verified_at": "2026-07-29T00:00:00Z",
+            "scope": {"project": "algo-cli", "platform": "*", "version": "*"},
+        }
+        for index in range(3)
+    ]
+    trace = {"dropped": {}}
+
+    compiled = harness.compile_retrieved_context(
+        records,
+        max_tokens=120,
+        trace=trace,
+    )
+
+    assert compiled.duplicate_records_dropped == 2
+    assert compiled.token_count <= 120
+    assert len(compiled.record_ids) == 1
+    assert trace["dropped"]["duplicate_context"] == 2
+
+
+def test_vector_retrieval_abstains_below_similarity_threshold(monkeypatch):
+    record = {
+        "id": "algo-cli:wiki:unrelated",
+        "harness": "algo-cli",
+        "kind": "wiki",
+        "title": "Unrelated",
+        "path": "__pytest__/unrelated.md",
+        "relative_path": "unrelated.md",
+        "summary": "unrelated evidence",
+        "search_text": "unrelated evidence",
+        "embedding": [1.0, 0.0],
+        "embedding_model": "m",
+    }
+    monkeypatch.setattr(harness, "load_index", lambda refresh=False: {"records": [record]})
+
+    results = harness.hybrid_search(
+        "quantum zucchini",
+        lambda _texts: [[0.1, 1.0]],
+        "m",
+        k=3,
+    )
+
+    assert results == []
+    assert harness.last_retrieval_trace()["returned"] == 0
 
 
 def test_retrieved_context_repairs_common_mojibake():
@@ -838,6 +1177,24 @@ def test_iter_files_skips_secret_names(tmp_path):
     assert "secret_key.md" not in names
 
 
+def test_iter_files_rejects_symlink_file_and_directory_escapes(tmp_path):
+    root_dir = tmp_path / "configured"
+    outside_dir = tmp_path / "outside"
+    root_dir.mkdir()
+    outside_dir.mkdir()
+    (root_dir / "inside.md").write_text("# inside\n", encoding="utf-8")
+    (outside_dir / "outside.md").write_text("# outside\n", encoding="utf-8")
+    try:
+        (root_dir / "file-link.md").symlink_to(outside_dir / "outside.md")
+        (root_dir / "dir-link").symlink_to(outside_dir, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are unavailable on this platform")
+
+    root = harness.SourceRoot("configured", "wiki", root_dir, ("*.md",), 10)
+
+    assert [path.name for path in harness.iter_files(root)] == ["inside.md"]
+
+
 def test_iter_files_skips_secret_directory_components(tmp_path):
     """Files under credential/secret-like directories must be excluded."""
     root_dir = tmp_path / "assets"
@@ -923,6 +1280,67 @@ def test_search_index_skips_excluded_records():
     assert all("archive/" not in h["id"] for h in hits)
 
 
+def test_protected_candidate_exclusion_applies_before_keyword_and_vector_ranking():
+    model = "fake-protected-model"
+    index = {
+        "generated": "2026-07-24T09:00",
+        "record_count": 2,
+        "roots": [],
+        "records": [
+            {
+                "id": "codex:memory:legacy.md",
+                "harness": "codex",
+                "kind": "memory",
+                "title": "Legacy memory",
+                "path": "__pytest__/legacy.md",
+                "summary": "release shield guidance",
+                "search_text": "release shield guidance",
+                "embedding": [1.0, 0.0],
+                "embedding_model": model,
+            },
+            {
+                "id": "codex:skill:shield.md",
+                "harness": "codex",
+                "kind": "skill",
+                "title": "Shield skill",
+                "path": "__pytest__/shield.md",
+                "summary": "release shield guidance",
+                "search_text": "release shield guidance",
+                "embedding": [1.0, 0.0],
+                "embedding_model": model,
+            },
+        ],
+    }
+    harness.INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    harness.INDEX_PATH.write_text(json.dumps(index), encoding="utf-8")
+    harness._INDEX_CACHE = None
+    harness._ID_LOOKUP = None
+
+    keyword = harness.search_index(
+        "release shield",
+        limit=5,
+        excluded_kinds={"memory"},
+    )
+    vector = harness.retrieve_for_query(
+        "release shield",
+        lambda _texts: [[1.0, 0.0]],
+        model,
+        k=5,
+        excluded_kinds={"memory"},
+    )
+    hybrid = harness.hybrid_search(
+        "release shield",
+        lambda _texts: [[1.0, 0.0]],
+        model,
+        k=5,
+        excluded_kinds={"memory"},
+    )
+
+    assert [item["id"] for item in keyword] == ["codex:skill:shield.md"]
+    assert [item["id"] for item in vector] == ["codex:skill:shield.md"]
+    assert [item["id"] for item in hybrid] == ["codex:skill:shield.md"]
+
+
 def test_resolve_embed_model_prefers_config():
     class _Cfg:
         harness_embed_model = "embeddinggemma:latest"
@@ -957,6 +1375,48 @@ def test_rust_indexer_candidates_accepts_legacy_env(monkeypatch, tmp_path):
     candidates = harness.rust_indexer_candidates()
 
     assert candidates[0] == legacy_binary
+
+
+def test_rust_indexer_receives_exact_imported_package_boundary(monkeypatch, tmp_path):
+    binary = tmp_path / "harness-indexer"
+    binary.write_bytes(b"fixture")
+    index_path = tmp_path / "private" / "harness_index.json"
+    config_dir = index_path.parent
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+        index_path.write_text(
+            json.dumps(
+                {
+                    "generated": "1",
+                    "record_count": 0,
+                    "roots": [],
+                    "records": [],
+                    "refresh_stats": {
+                        "reused_records": 0,
+                        "rebuilt_records": 0,
+                        "removed_records": 0,
+                    },
+                    "indexer": "rust",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(harness, "_EXTERNAL_SOURCES_ENABLED", True)
+    monkeypatch.setattr(harness, "find_rust_indexer", lambda: binary)
+    monkeypatch.setattr(harness, "INDEX_PATH", index_path)
+    monkeypatch.setattr(harness, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(harness.subprocess, "run", fake_run)
+
+    result = harness.build_index_with_rust()
+
+    assert result is not None and result["indexer"] == "rust"
+    assert captured["command"] == [str(binary), "--output", str(index_path)]
+    assert captured["env"]["ALGO_CLI_REPO_DIR"] == str(harness.ALGO_CLI_REPO_DIR)
 
 
 def test_retrieve_for_query_skips_excluded_records():

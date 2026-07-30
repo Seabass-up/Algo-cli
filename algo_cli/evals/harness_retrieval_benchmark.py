@@ -13,6 +13,7 @@ import math
 import statistics
 import time
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime, timezone
 from typing import Any
 
 from .. import harness
@@ -23,7 +24,8 @@ from ..retrieval_algorithms import (
     stable_top_k,
 )
 
-BENCHMARK_VERSION = "harness-retrieval-v2"
+BENCHMARK_VERSION = "harness-retrieval-v3"
+BENCHMARK_AS_OF = datetime(2026, 7, 29, tzinfo=timezone.utc)
 CANARY_QUERIES: tuple[str, ...] = (
     "rate your harness",
     "harness context",
@@ -41,11 +43,16 @@ MIN_REUSABLE_SPEEDUP = 1.5
 MAX_WARM_MAD_RATIO = 0.25
 MAX_BENCHMARK_RECORDS = 2_048
 MAX_BENCHMARK_TEXT_CHARS = 40_000
-QUALITY_LIMIT = 4
+QUALITY_LIMIT = 10
 MIN_QUALITY_RECALL = 0.95
 MIN_QUALITY_MRR = 0.90
 MIN_QUALITY_NDCG = 0.90
 MIN_CITATION_PRECISION = 0.80
+MAX_FALSE_POSITIVE_RATE = 0.20
+MIN_NO_ANSWER_ACCURACY = 1.0
+MAX_STALE_PREFERENCE_RATE = 0.0
+MIN_PROVENANCE_ACCURACY = 1.0
+MAX_CONTEXT_TOKENS_PER_SUCCESS = 300.0
 
 QUALITY_RECORDS: tuple[dict[str, Any], ...] = (
     {
@@ -54,8 +61,14 @@ QUALITY_RECORDS: tuple[dict[str, Any], ...] = (
         "kind": "runtime_capability",
         "title": "Write file | Escribir archivo",
         "relative_path": "action-registry/write_file",
-        "search_text": "write file escribir archivo guardar fichero escritura segura approval aprobación",
+        "search_text": (
+            "write file escribir archivo guardar fichero escritura segura approval aprobación "
+            "safely save local document permission action-registry/write_file"
+        ),
         "status": "ready",
+        "authority": "runtime",
+        "verified_at": "2026-07-29T00:00:00Z",
+        "scope": {"project": "algo-cli", "platform": "*", "version": "0.18.0"},
     },
     {
         "id": "quality:verification:file",
@@ -65,6 +78,9 @@ QUALITY_RECORDS: tuple[dict[str, Any], ...] = (
         "relative_path": "verification/file-write.md",
         "search_text": "verify file write pytest test verificar archivo escritura comando comprobación",
         "status": "ready",
+        "authority": "source",
+        "verified_at": "2026-07-28T00:00:00Z",
+        "scope": {"project": "algo-cli", "platform": "*", "version": "*"},
     },
     {
         "id": "quality:auth:current",
@@ -74,6 +90,9 @@ QUALITY_RECORDS: tuple[dict[str, Any], ...] = (
         "relative_path": "recovery/oauth-current.md",
         "search_text": "current latest oauth token invalidated recover login recuperación autenticación actual vigente",
         "status": "ready",
+        "authority": "source",
+        "verified_at": "2026-07-28T00:00:00Z",
+        "scope": {"project": "algo-cli", "platform": "*", "version": "*"},
     },
     {
         "id": "quality:auth:obsolete",
@@ -83,6 +102,9 @@ QUALITY_RECORDS: tuple[dict[str, Any], ...] = (
         "relative_path": "recovery/oauth-old.md",
         "search_text": "old obsolete oauth token recovery login antigua obsoleta",
         "status": "superseded",
+        "authority": "historical",
+        "verified_at": "2026-01-01T00:00:00Z",
+        "scope": {"project": "algo-cli", "platform": "*", "version": "*"},
     },
     {
         "id": "quality:external:codex",
@@ -92,6 +114,9 @@ QUALITY_RECORDS: tuple[dict[str, Any], ...] = (
         "relative_path": "external/codex.md",
         "search_text": "compare cross source codex external agent store adapter provenance",
         "status": "ready",
+        "authority": "source",
+        "verified_at": "2026-07-28T00:00:00Z",
+        "scope": {"project": "*", "platform": "*", "version": "*"},
     },
     {
         "id": "quality:external:claude",
@@ -101,10 +126,72 @@ QUALITY_RECORDS: tuple[dict[str, Any], ...] = (
         "relative_path": "external/claude.md",
         "search_text": "compare cross source claude external agent store adapter provenance",
         "status": "ready",
+        "authority": "source",
+        "verified_at": "2026-07-28T00:00:00Z",
+        "scope": {"project": "*", "platform": "*", "version": "*"},
+    },
+    {
+        "id": "quality:retrieval:rrf",
+        "harness": "algo-cli",
+        "kind": "algorithm",
+        "title": "Reciprocal Rank Fusion retrieval provenance",
+        "relative_path": "algorithms/rrf.md",
+        "search_text": (
+            "rrf reciprocal rank fusion retrieval provenance retrival provnance "
+            "hybrid lexical dense ranking"
+        ),
+        "status": "ready",
+        "authority": "source",
+        "verified_at": "2026-07-28T00:00:00Z",
+        "scope": {"project": "algo-cli", "platform": "*", "version": "*"},
+    },
+    {
+        "id": "quality:external:static-guidance",
+        "harness": "algo-cli",
+        "kind": "wiki",
+        "title": "External stores are searchable",
+        "relative_path": "guidance/external-stores.md",
+        "search_text": "external agent stores searchable active session capability enabled",
+        "status": "ready",
+        "authority": "generated-doc",
+        "verified_at": "2026-07-01T00:00:00Z",
+        "scope": {"project": "algo-cli", "platform": "*", "version": "0.18.0"},
+        "claims": {"capability:harness.external_agent_stores:enabled": True},
+    },
+    {
+        "id": "quality:external:runtime-state",
+        "harness": "algo-cli",
+        "kind": "runtime_capability",
+        "title": "External stores disabled in this session",
+        "relative_path": "action-registry/harness.external_agent_stores",
+        "search_text": "external agent stores searchable active session capability disabled",
+        "status": "disabled",
+        "authority": "runtime",
+        "verified_at": "2026-07-29T00:00:00Z",
+        "scope": {"project": "algo-cli", "platform": "*", "version": "0.18.0"},
+        "claims": {"capability:harness.external_agent_stores:enabled": False},
     },
 )
 
 QUALITY_CASES: tuple[dict[str, Any], ...] = (
+    {
+        "name": "exact_known_item",
+        "category": "known_item",
+        "query": "action-registry/write_file",
+        "relevant": ("quality:capability:write-file",),
+    },
+    {
+        "name": "paraphrased_capability_request",
+        "category": "paraphrase",
+        "query": "safely save a local document with permission",
+        "relevant": ("quality:capability:write-file",),
+    },
+    {
+        "name": "abbreviation_and_misspelling",
+        "category": "noisy_query",
+        "query": "rrf retrival provnance",
+        "relevant": ("quality:retrieval:rrf",),
+    },
     {
         "name": "multilingual_query_english_record",
         "category": "multilingual",
@@ -143,9 +230,30 @@ QUALITY_CASES: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "temporal_supersession",
-        "category": "complex",
+        "category": "temporal",
         "query": "current oauth recovery not obsolete",
         "relevant": ("quality:auth:current",),
+    },
+    {
+        "name": "runtime_outweighs_static_guidance",
+        "category": "conflict",
+        "query": "are external agent stores searchable in the active session",
+        "relevant": ("quality:external:runtime-state",),
+        "conflict_expected": True,
+    },
+    {
+        "name": "no_answer_unrelated_domain",
+        "category": "no_answer",
+        "query": "quantum zucchini payroll nebula",
+        "relevant": (),
+        "expected_empty": True,
+    },
+    {
+        "name": "no_answer_attractive_irrelevance",
+        "category": "no_answer",
+        "query": "book a cruise cabin and transfer cryptocurrency",
+        "relevant": (),
+        "expected_empty": True,
     },
 )
 
@@ -229,14 +337,21 @@ def _local_search(
     bm25: BM25Index,
     query: str,
     limit: int,
+    *,
+    as_of: datetime = BENCHMARK_AS_OF,
 ) -> list[dict[str, Any]]:
     terms = lexical_tokens(query)
     if not terms:
         return []
     scored: list[tuple[float, dict[str, Any]]] = []
     for lexical_score, record in zip(bm25.scores(terms), records):
-        score = lexical_score + float(harness.score_record(record, terms))
-        if score > 0.0:
+        relevance = lexical_score + float(harness.score_record(record, terms))
+        if relevance > 0.0:
+            score, _factors = harness.authority_adjusted_score(
+                relevance,
+                record,
+                as_of=as_of,
+            )
             scored.append((score, record))
     return [
         record
@@ -287,7 +402,7 @@ def _mean(values: Sequence[float]) -> float:
 
 
 def run_retrieval_quality_benchmark() -> dict[str, Any]:
-    """Run frozen multilingual and complex-query retrieval workloads offline."""
+    """Run frozen real-task retrieval and abstention workloads offline."""
     records = [dict(record) for record in QUALITY_RECORDS if not harness.is_excluded_from_retrieval(record)]
     bm25 = BM25Index([_search_text(record) for record in records])
     results: list[dict[str, Any]] = []
@@ -295,12 +410,39 @@ def run_retrieval_quality_benchmark() -> dict[str, Any]:
     reciprocal_ranks: list[float] = []
     ndcgs: list[float] = []
     citation_precisions: list[float] = []
+    no_answer_results: list[float] = []
+    false_positive_count = 0
+    evaluated_window_count = 0
+    stale_preferences: list[float] = []
+    provenance_hits = 0
+    provenance_expected = 0
+    successful_context_tokens: list[float] = []
+    conflict_results: list[float] = []
     for case in QUALITY_CASES:
         relevant = {str(record_id) for record_id in case["relevant"]}
         hits = _local_search(records, bm25, str(case["query"]), QUALITY_LIMIT)
         ranked_ids = [_result_id(hit) for hit in hits]
-        matched = relevant.intersection(ranked_ids)
-        recall = len(matched) / len(relevant) if relevant else 1.0
+        expected_empty = bool(case.get("expected_empty"))
+        if expected_empty:
+            no_answer_correct = not ranked_ids
+            no_answer_results.append(1.0 if no_answer_correct else 0.0)
+            false_positive_count += len(ranked_ids)
+            evaluated_window_count += len(ranked_ids)
+            results.append(
+                {
+                    "name": case["name"],
+                    "category": case["category"],
+                    "query": case["query"],
+                    "relevant": [],
+                    "ranked_ids": ranked_ids,
+                    "expected_empty": True,
+                    "no_answer_correct": no_answer_correct,
+                    "false_positive_count": len(ranked_ids),
+                }
+            )
+            continue
+        recall_window = set(ranked_ids[:5])
+        recall = len(relevant.intersection(recall_window)) / len(relevant) if relevant else 1.0
         first_rank = next(
             (position for position, record_id in enumerate(ranked_ids, start=1) if record_id in relevant),
             0,
@@ -308,10 +450,10 @@ def run_retrieval_quality_benchmark() -> dict[str, Any]:
         reciprocal_rank = 1.0 / first_rank if first_rank else 0.0
         dcg = sum(
             1.0 / math.log2(position + 1)
-            for position, record_id in enumerate(ranked_ids[:QUALITY_LIMIT], start=1)
+            for position, record_id in enumerate(ranked_ids[:10], start=1)
             if record_id in relevant
         )
-        ideal_count = min(len(relevant), QUALITY_LIMIT)
+        ideal_count = min(len(relevant), 10)
         ideal_dcg = sum(1.0 / math.log2(position + 1) for position in range(1, ideal_count + 1))
         ndcg = dcg / ideal_dcg if ideal_dcg else 1.0
         citation_window = ranked_ids[:max(1, len(relevant))]
@@ -324,6 +466,62 @@ def run_retrieval_quality_benchmark() -> dict[str, Any]:
         reciprocal_ranks.append(reciprocal_rank)
         ndcgs.append(ndcg)
         citation_precisions.append(citation_precision)
+        false_positive_count += sum(
+            1 for record_id in citation_window if record_id not in relevant
+        )
+        evaluated_window_count += len(citation_window)
+        matched_records = [
+            record
+            for record in hits
+            if _result_id(record) in relevant
+        ]
+        case_provenance_expected = len(matched_records)
+        case_provenance_hits = sum(
+            1
+            for record in matched_records
+            if record.get("authority")
+            and record.get("verified_at")
+            and isinstance(record.get("scope"), dict)
+        )
+        provenance_expected += case_provenance_expected
+        provenance_hits += case_provenance_hits
+        successful = relevant.issubset(set(ranked_ids[:QUALITY_LIMIT]))
+        if successful:
+            compiled = harness.compile_retrieved_context(
+                [harness._slim_record(record) for record in hits[: max(1, len(relevant))]],
+                max_tokens=int(MAX_CONTEXT_TOKENS_PER_SUCCESS),
+                trace={},
+            )
+            successful_context_tokens.append(float(compiled.token_count))
+        if case["category"] == "temporal":
+            relevant_rank = min(
+                (
+                    position
+                    for position, record_id in enumerate(ranked_ids, start=1)
+                    if record_id in relevant
+                ),
+                default=QUALITY_LIMIT + 1,
+            )
+            stale_rank = min(
+                (
+                    position
+                    for position, hit in enumerate(hits, start=1)
+                    if str(hit.get("status") or "").casefold()
+                    in {"historical", "backlog", "superseded", "archived"}
+                ),
+                default=QUALITY_LIMIT + 1,
+            )
+            stale_preferences.append(1.0 if stale_rank < relevant_rank else 0.0)
+        conflict_preferred: str | None = None
+        if case.get("conflict_expected"):
+            conflicts = harness.detect_retrieval_conflicts(hits)
+            conflict_preferred = (
+                str(conflicts[0].get("preferred") or "")
+                if conflicts
+                else ""
+            )
+            correct = conflict_preferred in relevant
+            conflict_results.append(1.0 if correct else 0.0)
         results.append(
             {
                 "name": case["name"],
@@ -332,23 +530,57 @@ def run_retrieval_quality_benchmark() -> dict[str, Any]:
                 "relevant": sorted(relevant),
                 "ranked_ids": ranked_ids,
                 "recall_at_k": round(recall, 6),
+                "recall_at_5": round(recall, 6),
                 "reciprocal_rank": round(reciprocal_rank, 6),
                 "ndcg_at_k": round(ndcg, 6),
+                "ndcg_at_10": round(ndcg, 6),
                 "citation_precision": round(citation_precision, 6),
+                "provenance_complete": (
+                    case_provenance_hits == case_provenance_expected
+                ),
+                "conflict_preferred": conflict_preferred,
             }
         )
+    false_positive_rate = (
+        false_positive_count / evaluated_window_count
+        if evaluated_window_count
+        else 0.0
+    )
+    no_answer_accuracy = _mean(no_answer_results) if no_answer_results else 1.0
+    stale_preference_rate = _mean(stale_preferences) if stale_preferences else 0.0
+    provenance_accuracy = (
+        provenance_hits / provenance_expected
+        if provenance_expected
+        else 1.0
+    )
+    context_tokens_per_success = _mean(successful_context_tokens)
+    conflict_resolution_accuracy = _mean(conflict_results) if conflict_results else 1.0
     metrics = {
         "case_count": len(results),
         "recall_at_k": round(_mean(recalls), 6),
+        "recall_at_5": round(_mean(recalls), 6),
         "mrr": round(_mean(reciprocal_ranks), 6),
         "ndcg_at_k": round(_mean(ndcgs), 6),
+        "ndcg_at_10": round(_mean(ndcgs), 6),
         "citation_precision": round(_mean(citation_precisions), 6),
+        "false_positive_rate": round(false_positive_rate, 6),
+        "no_answer_accuracy": round(no_answer_accuracy, 6),
+        "stale_record_preference_rate": round(stale_preference_rate, 6),
+        "provenance_accuracy": round(provenance_accuracy, 6),
+        "context_tokens_per_successful_answer": round(context_tokens_per_success, 6),
+        "conflict_resolution_accuracy": round(conflict_resolution_accuracy, 6),
     }
     passed = (
         metrics["recall_at_k"] >= MIN_QUALITY_RECALL
         and metrics["mrr"] >= MIN_QUALITY_MRR
         and metrics["ndcg_at_k"] >= MIN_QUALITY_NDCG
         and metrics["citation_precision"] >= MIN_CITATION_PRECISION
+        and metrics["false_positive_rate"] <= MAX_FALSE_POSITIVE_RATE
+        and metrics["no_answer_accuracy"] >= MIN_NO_ANSWER_ACCURACY
+        and metrics["stale_record_preference_rate"] <= MAX_STALE_PREFERENCE_RATE
+        and metrics["provenance_accuracy"] >= MIN_PROVENANCE_ACCURACY
+        and metrics["context_tokens_per_successful_answer"] <= MAX_CONTEXT_TOKENS_PER_SUCCESS
+        and metrics["conflict_resolution_accuracy"] >= 1.0
     )
     return {
         "status": "pass" if passed else "fail",
@@ -359,6 +591,12 @@ def run_retrieval_quality_benchmark() -> dict[str, Any]:
             "mrr": MIN_QUALITY_MRR,
             "ndcg_at_k": MIN_QUALITY_NDCG,
             "citation_precision": MIN_CITATION_PRECISION,
+            "false_positive_rate_max": MAX_FALSE_POSITIVE_RATE,
+            "no_answer_accuracy": MIN_NO_ANSWER_ACCURACY,
+            "stale_record_preference_rate_max": MAX_STALE_PREFERENCE_RATE,
+            "provenance_accuracy": MIN_PROVENANCE_ACCURACY,
+            "context_tokens_per_successful_answer_max": MAX_CONTEXT_TOKENS_PER_SUCCESS,
+            "conflict_resolution_accuracy": 1.0,
         },
         "cases": results,
         "fixture_digest": _digest({"records": QUALITY_RECORDS, "cases": QUALITY_CASES}),
@@ -370,6 +608,7 @@ def run_harness_retrieval_benchmark(
     search_fn: SearchFn | None = None,
     *,
     clock_ns: ClockFn | None = None,
+    as_of: datetime | None = None,
 ) -> dict[str, Any]:
     """Run the bounded retrieval benchmark and return JSON-serializable evidence.
 
@@ -379,6 +618,8 @@ def run_harness_retrieval_benchmark(
         search_fn: Optional ``(query, limit) -> results`` function for canary
             checks. Timing always uses local BM25 instances.
         clock_ns: Optional monotonic nanosecond clock for deterministic tests.
+        as_of: Truth-ranking timestamp for the live-corpus canaries. The frozen
+            quality fixture retains ``BENCHMARK_AS_OF`` for reproducibility.
     """
 
     load_error: str | None = None
@@ -392,10 +633,17 @@ def run_harness_retrieval_benchmark(
     records = _bounded_records(eligible_records)
     documents = [_search_text(record) for record in records]
     reusable_index = BM25Index(documents)
+    live_as_of = (as_of or datetime.now(timezone.utc)).astimezone(timezone.utc)
     active_search: SearchFn
     if search_fn is None:
         def active_search(query: str, limit: int) -> list[dict[str, Any]]:
-            return _local_search(records, reusable_index, query, limit)
+            return _local_search(
+                records,
+                reusable_index,
+                query,
+                limit,
+                as_of=live_as_of,
+            )
     else:
         active_search = search_fn
 
@@ -568,6 +816,7 @@ def run_harness_retrieval_benchmark(
         },
         "quality": quality,
         "evidence": {
+            "live_as_of": live_as_of.isoformat(),
             "index_record_count": index_record_count,
             "eligible_record_count": len(eligible_records),
             "benchmark_record_count": len(records),
@@ -591,7 +840,12 @@ __all__ = [
     "BENCHMARK_VERSION",
     "CANARY_QUERIES",
     "CANONICAL_ALGO_ID",
+    "MAX_CONTEXT_TOKENS_PER_SUCCESS",
+    "MAX_FALSE_POSITIVE_RATE",
     "MAX_BENCHMARK_RECORDS",
+    "MAX_STALE_PREFERENCE_RATE",
+    "MIN_NO_ANSWER_ACCURACY",
+    "MIN_PROVENANCE_ACCURACY",
     "QUALITY_CASES",
     "QUALITY_RECORDS",
     "run_retrieval_quality_benchmark",

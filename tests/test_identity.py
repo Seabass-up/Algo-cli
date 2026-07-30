@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+import warnings
 
 import pytest
 
@@ -180,11 +181,36 @@ def test_retrieve_rejects_query_vector_dimension_mismatch_without_matmul_error()
     )
     identity.rebuild_lessons_index(lambda _texts: [[1.0, 0.0]], "model-a")
 
-    assert identity.retrieve_lessons(
-        "safety",
-        lambda _texts: [[1.0, 0.0, 0.0]],
+    assert (
+        identity.retrieve_lessons(
+            "safety",
+            lambda _texts: [[1.0, 0.0, 0.0]],
+            "model-a",
+        )
+        == []
+    )
+
+
+def test_retrieve_handles_large_finite_vectors_without_runtime_warning():
+    identity.scaffold_if_needed()
+    identity.LESSONS_PATH.write_text(
+        "# Lessons Learned\n\n## L1\nA sufficiently long large-vector numerical safety lesson.\n",
+        encoding="utf-8",
+    )
+    identity.rebuild_lessons_index(
+        lambda _texts: [[1.0e300, -1.0e300]],
         "model-a",
-    ) == []
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        hits = identity.retrieve_lessons(
+            "numerical safety",
+            lambda _texts: [[1.0e300, -1.0e300]],
+            "model-a",
+        )
+
+    assert hits == ["## L1\nA sufficiently long large-vector numerical safety lesson."]
 
 
 def test_rebuild_rejects_mixed_vector_dimensions_without_writing_invalid_index():

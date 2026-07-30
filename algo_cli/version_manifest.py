@@ -86,7 +86,7 @@ def _safe_get_kg_info() -> dict[str, Any]:
 def _safe_get_plugin_versions() -> dict[str, str]:
     """Safely query loaded plugins for their versions."""
     try:
-        from . import plugins as plugins_module
+        from . import william_plugins as plugins_module
         manifests = plugins_module.discover_plugins()
         return {m.name: m.version for m in manifests}
     except Exception:

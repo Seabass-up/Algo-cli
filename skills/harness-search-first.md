@@ -1,8 +1,14 @@
 ---
 name: harness-search-first
-description: Before broad filesystem scans, call harness_search to find skills, prompts, memory, wiki pages, and workflows already indexed from codex/claude/openclaw/mercury/pi/agents.
+description: Before broad filesystem scans, call harness_search over sources enabled in the live runtime; external Codex/Claude/OpenClaw/Mercury/Pi/agents stores require explicit opt-in and current indexing evidence.
 tags: [algo-cli, harness, RAG, navigation]
 created: 2026-06-09
+authority: generated-doc
+verified_at: 2026-07-29T00:00:00Z
+scope:
+  project: algo-cli
+  platform: "*"
+  version: "0.18.0"
 ---
 
 # Harness Search First
@@ -13,13 +19,18 @@ When the user asks for "the X skill" or "how to do Y" or wants a known
 workflow, or when you are about to scan a large directory tree, run
 `harness_search` first.
 
+Support documentation does not prove activation. Run `/harness sources` or
+`/harness status` in the current process before claiming that an external
+agent store is searchable.
+
 ## Steps
 
-1. Call `harness_search(query, harness_name=None, kind=None, limit=10)`.
-2. If results exist, pick the most relevant 1-3 and call
+1. Inspect `/harness sources` when the request depends on an external store.
+2. Call `harness_search(query, harness_name=None, kind=None, limit=10)`.
+3. If results exist, pick the most relevant 1-3 and call
    `harness_read(record_id)` to load their full body.
-3. If no results match, fall back to `search_files` and `read_file`.
-4. When writing your final answer, cite the harness record ids you used
+4. If no results match, fall back to `search_files` and `read_file`.
+5. When writing your final answer, cite the harness record ids you used
    (e.g. "codex:skill:browser-qa/SKILL.md") so the user can find the source.
 
 ## Key Discoveries
