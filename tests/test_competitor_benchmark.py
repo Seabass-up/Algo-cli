@@ -84,6 +84,31 @@ def test_parser_accepts_exact_algo_candidate_executable() -> None:
     assert parsed.algo_executable == "/tmp/candidate-algo"
 
 
+def test_relative_algo_candidate_is_canonicalized_before_disposable_cwd(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    candidate = tmp_path / "bin" / "candidate-algo"
+    candidate.parent.mkdir()
+    candidate.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    candidate.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        runner,
+        "version_receipt",
+        lambda *_args: "candidate-version",
+    )
+
+    available = runner.product_availability(
+        "algo_cli",
+        executable_override="bin/candidate-algo",
+    )
+
+    assert available["status"] == "runnable"
+    assert available["executable"] == str(candidate.resolve())
+    assert Path(available["executable"]).is_absolute()
+
+
 def test_source_provenance_binds_clean_revision_and_runner(
     tmp_path: Path,
     monkeypatch,

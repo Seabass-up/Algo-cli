@@ -271,7 +271,7 @@ def resolve_executable(candidates: Iterable[str]) -> str | None:
         path_candidate = expanded.is_absolute() or "/" in candidate or "\\" in candidate
         if path_candidate:
             if expanded.is_file() and os.access(expanded, os.X_OK):
-                return str(expanded)
+                return str(expanded.resolve(strict=True))
             # An explicit path is exact.  Never let PATH resolution silently
             # substitute a different executable when that path is missing.
             continue
