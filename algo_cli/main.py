@@ -3494,12 +3494,19 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 if completion.allowed:
                     turn_completed_normally = True
                     break
+                unresolved_mutation = (
+                    "no mutation succeeded" in completion.reason
+                )
                 if not completion_nudged:
                     if _ + 1 >= max_iterations:
                         final_content = ""
                         show_error(
-                            "Completion blocked: the tool-iteration budget ended before successful "
-                            "post-mutation verification."
+                            "Completion blocked: the tool-iteration budget ended before "
+                            + (
+                                "a requested workspace mutation succeeded."
+                                if unresolved_mutation
+                                else "successful post-mutation verification."
+                            )
                         )
                         break
                     completion_nudged = True
@@ -3507,14 +3514,31 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                     final_content = ""
                     optional_context_blocks.clear()
                     show_info(
-                        "Unverified final text was withheld. Completion is deferred until the last "
-                        "workspace mutation has a complete file read-back or a passing test, "
-                        "lint/type check, or git diff verification."
+                        (
+                            "Unverified final text was withheld. A workspace mutation was "
+                            "attempted, but none succeeded."
+                            if unresolved_mutation
+                            else
+                            "Unverified final text was withheld. Completion is deferred until the last "
+                            "workspace mutation has a complete file read-back or a passing test, "
+                            "lint/type check, or git diff verification."
+                        )
                     )
                     cfg.messages.append(
                         {
                             "role": "user",
                             "content": (
+                                (
+                                    "[Internal completion gate] Do not claim a change: every "
+                                    "workspace mutation attempt failed or was denied. Reuse exactly "
+                                    "the canonical path from a successful read_file result, then call "
+                                    "the direct edit_file or write_file tool. Do not prepend the "
+                                    "working directory to an absolute path or use action_program in "
+                                    "workspace approval mode. Run a fail-on-error verifier after the "
+                                    "mutation succeeds, then report only the verified outcome."
+                                )
+                                if unresolved_mutation
+                                else
                                 "[Internal completion gate] Do not claim completion yet. The last "
                                 "workspace mutation has no successful post-mutation verifier. Run one "
                                 "appropriate non-mutating test, lint/type check, or git_diff tool now. "
@@ -3530,8 +3554,14 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                     continue
                 final_content = ""
                 show_error(
-                    "Completion blocked: the model stopped twice without successful verification "
-                    "after its last workspace mutation."
+                    (
+                        "Completion blocked: the model stopped twice after failed or denied "
+                        "workspace mutation attempts."
+                        if unresolved_mutation
+                        else
+                        "Completion blocked: the model stopped twice without successful verification "
+                        "after its last workspace mutation."
+                    )
                 )
                 break
 

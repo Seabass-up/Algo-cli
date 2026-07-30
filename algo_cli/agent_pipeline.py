@@ -778,16 +778,35 @@ def run_agent_block(
                 loop_state.finish_without_tools()
                 completion = execution_guardrails.completion_decision()
                 if not completion.allowed:
+                    unresolved_mutation = (
+                        "no mutation succeeded" in completion.reason
+                    )
                     if not completion_nudged and _ + 1 < iteration_limit:
                         completion_nudged = True
                         block.output = ""
                         show_info(
-                            f"{block.role} completion deferred until a post-mutation verifier passes."
+                            (
+                                f"{block.role} completion deferred because no requested "
+                                "workspace mutation succeeded."
+                                if unresolved_mutation
+                                else
+                                f"{block.role} completion deferred until a post-mutation verifier passes."
+                            )
                         )
                         messages.append(
                             {
                                 "role": "user",
                                 "content": (
+                                    (
+                                        "[Internal completion gate] Do not claim a change: every "
+                                        "workspace mutation attempt failed or was denied. Reuse exactly "
+                                        "the canonical path from a successful read_file result, then call "
+                                        "the direct edit_file or write_file tool. Do not prepend the "
+                                        "working directory to an absolute path. After a mutation succeeds, "
+                                        "run one fail-on-error verifier and ground the final output in it."
+                                    )
+                                    if unresolved_mutation
+                                    else
                                     "[Internal completion gate] The last workspace mutation is not "
                                     "verified. Run one appropriate non-mutating test, lint/type check, "
                                     "or git_diff tool now. Reuse the exact paths from successful mutation "
@@ -801,8 +820,16 @@ def run_agent_block(
                         )
                         continue
                     block.status = "partial"
-                    block.status_code = "verification_missing"
+                    block.status_code = (
+                        "mutation_missing"
+                        if unresolved_mutation
+                        else "verification_missing"
+                    )
                     block.status_reason = (
+                        "The block stopped after failed or denied workspace mutation attempts; "
+                        "no requested mutation succeeded."
+                        if unresolved_mutation
+                        else
                         "The block stopped without a successful test, lint/type check, or git diff "
                         "after its last workspace mutation."
                     )

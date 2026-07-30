@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Literal, Sequence
 
 
-EvidenceKind = Literal["read", "mutation", "verification"]
+EvidenceKind = Literal["read", "mutation", "mutation_attempt", "verification"]
 VerificationKind = Literal["same_path_reread", "git_diff", "test", "lint"]
 
 _PATH_MUTATION_OPERATIONS = frozenset({"write_file", "edit_file", "batch_edit"})
@@ -345,6 +345,13 @@ def _valid_evidence(events: Sequence[EvidenceEvent]) -> bool:
             elif event.kind == "mutation":
                 if event.operation not in _MUTATION_OPERATIONS or not event.relative_path or event.verification_kind:
                     return False
+            elif event.kind == "mutation_attempt":
+                if (
+                    event.operation not in _MUTATION_OPERATIONS
+                    or event.relative_path
+                    or event.verification_kind
+                ):
+                    return False
             elif event.kind == "verification":
                 if (
                     event.operation != "verification"
@@ -388,6 +395,77 @@ def read_before_edit_decision(path: str | Path) -> ReadBeforeEditDecision:
     if not path_decision.allowed or not path_decision.relative_path:
         return ReadBeforeEditDecision(False, path_decision.reason)
     return evaluate_read_before_edit(path_decision.relative_path, evidence_snapshot())
+
+
+def successful_read_path_hints(
+    path: str | Path,
+    *,
+    limit: int = 3,
+) -> tuple[str, ...]:
+    """Return bounded exact-path hints from successful reads in this scope.
+
+    Hints are advisory only: callers must still submit the path through normal
+    containment, read-before-edit, and authority checks. Matching uses a
+    common path suffix so a mistaken ``/workspace/...`` alias or duplicated
+    working-directory prefix can recover the already-read canonical target
+    without silently rewriting a model-controlled path.
+    """
+
+    ledger = _ACTIVE_LEDGER.get()
+    if ledger is None or ledger.closed or isinstance(limit, bool) or limit < 1:
+        return ()
+    try:
+        requested_parts = tuple(
+            part
+            for part in Path(path).expanduser().parts
+            if part not in {"", ".", os.sep}
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return ()
+    if not requested_parts:
+        return ()
+
+    scored: dict[str, int] = {}
+    for event in ledger.events:
+        if event.kind != "read" or not event.relative_path:
+            continue
+        relative = Path(event.relative_path)
+        relative_parts = relative.parts
+        if not relative_parts or relative_parts[-1] != requested_parts[-1]:
+            continue
+        score = 0
+        for requested, observed in zip(
+            reversed(requested_parts),
+            reversed(relative_parts),
+        ):
+            if requested != observed:
+                break
+            score += 1
+        if score < 1:
+            continue
+        decision = assess_write_path(ledger.workspace, relative)
+        if not decision.allowed or decision.resolved_path is None:
+            continue
+        exact = str(decision.resolved_path)
+        scored[exact] = max(score, scored.get(exact, 0))
+
+    ordered = sorted(scored, key=lambda candidate: (-scored[candidate], candidate))
+    return tuple(ordered[:limit])
+
+
+def record_failed_mutation_attempt(
+    *,
+    operation: str,
+    failed: bool,
+) -> EvidenceEvent | None:
+    """Record a content-free mutation failure for completion gating."""
+
+    if not failed or operation not in _MUTATION_OPERATIONS:
+        return None
+    ledger = _ACTIVE_LEDGER.get()
+    if ledger is None or ledger.closed:
+        return None
+    return ledger.append("mutation_attempt", operation)
 
 
 def _append_path_event(
@@ -783,6 +861,11 @@ def evaluate_completion(events: Sequence[EvidenceEvent]) -> CompletionDecision:
         return CompletionDecision(False, "execution evidence is invalid")
     mutations = [event for event in events if event.kind == "mutation"]
     if not mutations:
+        if any(event.kind == "mutation_attempt" for event in events):
+            return CompletionDecision(
+                False,
+                "workspace mutation was attempted but no mutation succeeded",
+            )
         return CompletionDecision(True, "no successful file mutation requires verification")
     last_mutation = mutations[-1]
     for event in events:

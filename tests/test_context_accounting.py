@@ -70,6 +70,19 @@ def test_oneshot_prompt_defers_interactive_capability_tutorials(monkeypatch):
     )
 
 
+def test_workspace_oneshot_prompt_uses_direct_bounded_mutations(monkeypatch):
+    cfg = Config(model="test-model")
+    setattr(cfg, "_nathan_approval_mode", "workspace")
+    monkeypatch.setattr(context_budget.identity, "build_identity_block", lambda **_kwargs: "")
+    monkeypatch.setattr(context_budget, "json_sink", lambda: object())
+
+    automated = context_budget.build_system_prompt(cfg, user_message="fix the tests")
+
+    assert "action_program is not authorized in this mode" in automated
+    assert "reuse exactly the path from the successful same-file read" in automated
+    assert "Prefer action_program" not in automated
+
+
 def test_adaptive_window_feeds_accounting():
     cfg = Config()
     cfg.model_adaptive = True

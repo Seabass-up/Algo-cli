@@ -590,6 +590,14 @@ def preflight_runtime_tool(
             )
             if not path_decision.allowed:
                 guardrail_reasons.append(path_decision.reason)
+                read_hints = execution_guardrails.successful_read_path_hints(
+                    effective_path,
+                )
+                if read_hints:
+                    guardrail_reasons.append(
+                        "reuse an exact successfully read path: "
+                        + ", ".join(read_hints)
+                    )
             else:
                 requires_read = name in {"edit_file", "batch_edit"}
                 if name == "write_file" and bool(signature_args.get("overwrite")):
@@ -601,6 +609,14 @@ def preflight_runtime_tool(
                     read_decision = execution_guardrails.read_before_edit_decision(effective_path)
                     if not read_decision.allowed:
                         guardrail_reasons.append(read_decision.reason)
+                        read_hints = execution_guardrails.successful_read_path_hints(
+                            effective_path,
+                        )
+                        if read_hints:
+                            guardrail_reasons.append(
+                                "reuse an exact successfully read path: "
+                                + ", ".join(read_hints)
+                            )
     preflight = RuntimeToolPreflight(
         signature_args=signature_args,
         runtime_hint=runtime_hint,
@@ -949,13 +965,23 @@ def _record_tool_attempt_unlocked(
             success=mutation_succeeded,
             operation=name,
         )
+        execution_guardrails.record_failed_mutation_attempt(
+            operation=name,
+            failed=not mutation_succeeded,
+        )
     elif name == "run_shell":
         command = str(args.get("command") or "")
         exit_matches = _SHELL_EXIT_CODE_RE.findall(str(result))
         returncode = int(exit_matches[-1]) if exit_matches else None
-        if returncode == 0 and tools_module.shell_mutates_workspace(command):
+        shell_mutation = tools_module.shell_mutates_workspace(command)
+        if returncode == 0 and shell_mutation:
             workspace_changed = True
             execution_guardrails.record_workspace_mutation(success=True)
+        elif shell_mutation:
+            execution_guardrails.record_failed_mutation_attempt(
+                operation="run_shell",
+                failed=True,
+            )
         if returncode is not None:
             execution_guardrails.record_shell_verification(command, returncode=returncode)
     elif name == "git_diff":

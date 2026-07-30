@@ -162,6 +162,34 @@ def test_headless_workspace_mode_allows_only_contained_file_edits(
         execution_guardrails.end_execution_scope(scope)
 
 
+def test_denied_edit_returns_exact_successful_read_path_hint(tmp_path) -> None:
+    from algo_cli import execution_guardrails
+
+    target = tmp_path / "workspace" / "src" / "calculator.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("old", encoding="utf-8")
+    cfg = Config(cwd=str(tmp_path))
+    setattr(cfg, "_nathan_approval_mode", "workspace")
+    scope = execution_guardrails.begin_execution_scope(tmp_path)
+    try:
+        execution_guardrails.record_read(target, success=True)
+        preflight = preflight_runtime_tool(
+            "edit_file",
+            {
+                "path": "/workspace/src/calculator.py",
+                "old_string": "old",
+                "new_string": "new",
+            },
+            cfg,
+        )
+
+        assert preflight.allowed is False
+        assert "reuse an exact successfully read path" in preflight.blocked_result
+        assert str(target.resolve()) in preflight.blocked_result
+    finally:
+        execution_guardrails.end_execution_scope(scope)
+
+
 def test_interactive_auto_still_prompts_for_action_time(monkeypatch, tmp_path) -> None:
     cfg = Config(cwd=str(tmp_path), auto_mode=True)
     prompts: list[str] = []

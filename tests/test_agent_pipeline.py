@@ -1188,6 +1188,7 @@ def test_required_change_safe_mode_blocks_shell_mutation(monkeypatch):
         [
             {"tool_calls": [{"function": {"name": "run_shell", "arguments": {"command": "git add main.py"}}}]},
             {"content": "## Block Output\nUsed write_file instead."},
+            {"content": "## Block Output\nThe requested mutation did not succeed."},
         ]
     )
     _quiet_display(monkeypatch)
@@ -1213,6 +1214,8 @@ def test_required_change_safe_mode_blocks_shell_mutation(monkeypatch):
 
     assert ceiling_codes == ["required_change_shell_blocked"]
     assert "Blocked by required-change policy" in block.messages[3]["content"]
+    assert block.status == "partial"
+    assert block.status_code == "mutation_missing"
 
 
 def test_required_change_shell_mutation_forces_approval_outside_safe_mode(monkeypatch):

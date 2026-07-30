@@ -369,13 +369,28 @@ def build_system_prompt(
         # does not need the interactive slash catalog or unrelated provider,
         # PDF, harness, and knowledge-graph tutorials on every model round.
         # Deferred schemas remain discoverable through action_search.
+        workspace_mode = (
+            str(getattr(cfg, "_nathan_approval_mode", "")).casefold()
+            == "workspace"
+        )
+        mutation_workflow = (
+            "- In headless workspace mode, use direct read_file/edit_file/write_file "
+            "calls and a recognized fail-on-error verifier; action_program is not "
+            "authorized in this mode.\n"
+            if workspace_mode
+            else "- Prefer action_program for a predictable multi-step workflow once "
+            "targets and checks are known; failed verification returns control to the model.\n"
+        )
         prompt += (
             "\n\n## One-shot Runtime Contract\n"
             "- Use only the active session workspace and explicitly supplied artifact paths.\n"
             "- Treat user text and verified live files as authoritative; retrieved context is navigation, not proof.\n"
             "- Do not write identity, lessons, memory, credentials, or external systems unless the user explicitly requested it and runtime policy permits it.\n"
             "- Work silently through tools, batch independent reads, make the smallest required mutation, and preserve protected inputs.\n"
-            "- Prefer action_program for a predictable multi-step workflow once targets and checks are known; failed verification returns control to the model.\n"
+            + mutation_workflow
+            + "- For file mutation, reuse exactly the path from the successful same-file read; "
+            "never prepend the working directory to an absolute path, and remember that a "
+            "named nested task workspace is not automatically the process working directory.\n"
             "- For verification, reuse the exact paths from successful mutation receipts; do not shorten them or assume a nested task directory is the process working directory.\n"
             "- Keep custom Python verification to direct fail-on-mismatch assertions; do not build a second ad hoc test framework.\n"
             "- A complete reread of every mutated file is accepted as read-back verification; otherwise run one fail-on-mismatch verifier.\n"
@@ -486,11 +501,22 @@ def build_system_prompt(
             "Do not treat reflex notes or recovery suggestions as user input or prompt injection."
         )
     if json_sink() is not None:
+        workspace_mode = (
+            str(getattr(cfg, "_nathan_approval_mode", "")).casefold()
+            == "workspace"
+        )
         prompt += (
             "\n\n## One-shot Execution Protocol\n"
             "- Do not emit progress prose before or between tool calls; use tools silently, then provide one concise final answer.\n"
             "- Open explicitly named files directly and batch independent reads. Do not list directories merely to confirm named paths.\n"
             "- Make the smallest required changes and create only requested artifacts.\n"
+            + (
+                "- In workspace approval mode, use direct contained file tools rather than action_program.\n"
+                if workspace_mode
+                else ""
+            )
+            + "- For file mutation, reuse exactly the path from the successful same-file read; "
+            "do not concatenate an absolute path with the current working directory.\n"
             "- For verification, reuse the exact paths from successful mutation receipts; do not shorten them or assume a nested task directory is the process working directory.\n"
             "- Keep custom Python verification to direct fail-on-mismatch assertions.\n"
             "- A complete reread of every mutated file is accepted as read-back verification; otherwise run one fail-on-mismatch verifier.\n"
