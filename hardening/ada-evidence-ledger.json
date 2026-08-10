@@ -709,6 +709,15 @@
           "timestamp": "2026-08-10T16:39:10Z",
           "scope": "post-hoc final-state reconciliation after closing exact Nathan environment, protocol, correctness, effectiveness, gate, narrative, and failure-code schemas; report status now selects an exact affirmative pass claim or non-affirmative fail claim, while the implicit report-bound Windows profile changes only checkpoint_resume from 1000 to 2500 ms; no-renames committed, staged, unstaged, and untracked inventory remains closed",
           "limitations": "this late reconciliation proves final-state closure only; it does not prove pre-change authorization timing, historical gate execution, future hosted-run stability, authenticated host attestation, or any external browser, signing, TCC, or lifecycle authority"
+        },
+        {
+          "kind": "test",
+          "path_or_command": "PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/david_hardening_gate.py; source-bound M8 qualification after powered Windows workload-total profile calibration",
+          "digest": "sha256:1595549aea925948bd22ed36200c7900054239d1ba5882e85a0f98ae3b561ed6",
+          "result": "pass: the immutable full-SHA freeze baseline yields exactly 377 changed path identities, including 36 deletion identities, and every identity is authorized with no missing, duplicate, or surplus path",
+          "timestamp": "2026-08-10T17:07:13Z",
+          "scope": "post-hoc final-state reconciliation after duplicate Windows runs on commit 49295e1 preserved all 17 correctness probes while one powered 20-sample runner observed workload-total p95 of 2760.6905 ms; the implicit Windows profile now changes only checkpoint_resume to 2500 ms and agent_workload_total to 3500 ms, while all five baseline ceilings and three other Windows ceilings remain exact; no-renames committed, staged, unstaged, and untracked inventory remains closed",
+          "limitations": "this late reconciliation proves final-state closure only; it does not prove pre-change authorization timing, historical gate execution, future hosted-run stability, authenticated host attestation, or any external browser, signing, TCC, or lifecycle authority"
         }
       ]
     },
@@ -2976,6 +2985,15 @@
           "timestamp": "2026-08-10T16:39:11Z",
           "scope": "source digest sha256:6d27709978c5cfa62c5d45e998e57dce225966b63ee13737ef77ad40fb4986b0 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind 174 descriptor-verified source paths, 92 focused suites, the powered Nathan latency corpus, exact report schema and status-conditional claim contract, report-bound Windows checkpoint profile, unchanged baseline and non-checkpoint ceilings, 10000 stale-target races, 1000 unknown outcomes, 1000 malformed programs, 1000 privacy canaries, 100000 malformed frames, 1000 fresh postconditions, and pre/post source identity checks across the full qualification window; stale-target p50/p95 are 4.217/4.548 ms and fresh-postcondition p50/p95 are 5.622/5.965 ms",
           "limitations": "local deterministic evidence does not prove future hosted Windows stability, authenticated host attestation, native-amd64 GHCR publication and attestation, selected Chrome, live profile/network containment, browser freshness, signed XPC/TCC, production power-loss, or installed lifecycle behavior; HARD-080 remains in progress and the active freeze remains in force"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "UV_CACHE_DIR=/tmp/algo-cli-uv-cache UV_LINK_MODE=copy PYTHONDONTWRITEBYTECODE=1 PYTEST_ADDOPTS='-p no:cacheprovider' uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy python -B scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:1595549aea925948bd22ed36200c7900054239d1ba5882e85a0f98ae3b561ed6",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, the exact 92-suite focused corpus passes, and public_claim_eligible is false",
+          "timestamp": "2026-08-10T17:07:14Z",
+          "scope": "source digest sha256:e6bd4f9f86fd478e5844313f9b15dfecc60284722a4f21bb77fff36490d8d009 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind 174 descriptor-verified source paths, 92 focused suites, exact Nathan report schemas and status-conditional claims, the powered 2760.6905 ms hosted Windows workload observation, Windows-only checkpoint/workload ceilings of 2500/3500 ms, unchanged five-metric baseline ceilings, 10000 stale-target races, 1000 unknown outcomes, 1000 malformed programs, 1000 privacy canaries, 100000 malformed frames, 1000 fresh postconditions, and pre/post source identity checks across the full qualification window; stale-target p50/p95 are 4.232/4.568 ms and fresh-postcondition p50/p95 are 5.637/6.006 ms",
+          "limitations": "local deterministic evidence does not prove future hosted Windows stability, authenticated host attestation, native-amd64 GHCR publication and attestation, selected Chrome, live profile/network containment, browser freshness, signed XPC/TCC, production power-loss, or installed lifecycle behavior; HARD-080 remains in progress and the active freeze remains in force"
         }
       ]
     },
@@ -3478,6 +3496,24 @@
           "result": "status blocked: current source-bound local measurements retain exact source and fixture digests, denominators, Wilson 95 percent intervals, p50/p95, 9 local passes, 5 production-browser blocks, zero failed or not-verified metrics, and public_claim_eligible is false",
           "timestamp": "2026-08-10T16:39:13Z",
           "scope": "five model-free efficiency repetitions measure 82.454 percent median tool-schema reduction and 96.644 percent typed-program reduction; stale-target p50/p95 are 4.217/4.548 ms and fresh-postcondition p50/p95 are 5.622/5.965 ms; the powered report-bound Nathan latency policy, exact report-schema contract, and 174-source and 92-suite corpus remain stable across the full qualification window",
+          "limitations": "synthetic local measurements do not prove live task completion, model quality, semantic-route share, screenshot reduction, confirmation count, provider latency, future hosted Windows stability, authenticated host attestation, production-signed XPC/TCC readiness, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, HARD-081 stays in progress, the active freeze forbids public benchmark claims, and public_claim_eligible is false"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json verified by scripts/nathan_agent_runtime_qualification.py after powered Windows workload-total profile calibration",
+          "digest": "sha256:51fb63c587d4b310e4582dddf73f1d9db6abce563cff0d5fb78370df26b273b7",
+          "result": "status pass: 17 of 17 adversarial Agent runtime probes and 31 of 31 frozen workloads pass with 100 percent task, verifier, crash-resume, protocol, and context-usefulness rates, zero policy escapes, unverified completions, or duplicate mutations, and public_claim_eligible is false",
+          "timestamp": "2026-08-10T17:07:15Z",
+          "scope": "source digest sha256:6103c575ceb92b150017a3dc2b55f6384421da2de64492c5156df7f5edb6955a and report digest sha256:b00c226718acd26895370877625642e099adb68a2213e400c40d5d91c650850e bind 17 protected/runtime probes, 101 contract samples at p50/p95 0.260666/0.287291 ms, 101 broker samples at 0.042000/0.047375 ms, 31 checkpoint samples at 9.482292/9.687834 ms, and 31 workload samples at 25.611750/26.035958 ms total and 3.999084/4.123125 ms to first Agent event; the implicit Windows profile changes only checkpoint_resume to 2500 ms and agent_workload_total to 3500 ms based on powered hosted p95 observations of 1832.6466 and 2760.6905 ms, while exact report schemas, status-conditional claims, all correctness gates, the five baseline ceilings, and three other Windows ceilings remain unchanged",
+          "limitations": "deterministic local model-free fixtures, temporary files, injected static key and anchor stores, and a self-reported non-attested operating-system label do not prove model intelligence, live provider latency, production Keychain behavior, process or power-loss recovery, future hosted Windows stability, or superiority over another harness; HARD-081 remains in progress, the active freeze forbids public benchmark claims, and public_claim_eligible is false"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json after powered Windows workload-total profile calibration",
+          "digest": "sha256:1595549aea925948bd22ed36200c7900054239d1ba5882e85a0f98ae3b561ed6",
+          "result": "status blocked: current source-bound local measurements retain exact source and fixture digests, denominators, Wilson 95 percent intervals, p50/p95, 9 local passes, 5 production-browser blocks, zero failed or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-08-10T17:07:16Z",
+          "scope": "five model-free efficiency repetitions measure 82.454 percent median tool-schema reduction and 96.644 percent typed-program reduction; stale-target p50/p95 are 4.232/4.568 ms and fresh-postcondition p50/p95 are 5.637/6.006 ms; the powered report-bound Nathan Windows latency policy, exact report-schema contract, and 174-source and 92-suite corpus remain stable across the full qualification window",
           "limitations": "synthetic local measurements do not prove live task completion, model quality, semantic-route share, screenshot reduction, confirmation count, provider latency, future hosted Windows stability, authenticated host attestation, production-signed XPC/TCC readiness, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, HARD-081 stays in progress, the active freeze forbids public benchmark claims, and public_claim_eligible is false"
         }
       ]

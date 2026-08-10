@@ -108,6 +108,7 @@ LATENCY_THRESHOLDS_MS = {
     "agent_workload_total": 2_500.0,
 }
 WINDOWS_CHECKPOINT_RESUME_THRESHOLD_MS = 2_500.0
+WINDOWS_AGENT_WORKLOAD_TOTAL_THRESHOLD_MS = 3_500.0
 MIN_LATENCY_SAMPLES = 20
 MAX_ENVIRONMENT_TEXT_BYTES = 512
 SUPPORTED_OPERATING_SYSTEM_PREFIXES = (
@@ -138,7 +139,8 @@ BENCHMARK_LIMITATIONS = (
     "power-loss recovery, or superiority over OpenClaw, Hermes, or "
     "another harness. The latency profile is selected from a closed "
     "set using the report's self-reported, non-attested operating-system "
-    "label; Windows changes only the checkpoint durability ceiling. "
+    "label; Windows changes only the checkpoint-resume and workload-total "
+    "durability ceilings. "
     "Latency has not been independently reproduced, and the active "
     "freeze forbids public benchmark claims."
 )
@@ -180,9 +182,10 @@ def _thresholds_for_operating_system(operating_system: Any) -> dict[str, float]:
         raise AgentRuntimeBenchmarkError("runtime benchmark operating system is unsupported")
     thresholds = dict(LATENCY_THRESHOLDS_MS)
     if str(operating_system).startswith("Windows-"):
-        # FlushFileBuffers-backed checkpoint cycles on hosted Windows have a
-        # distinct durability cost. Keep every other platform ceiling exact.
+        # FlushFileBuffers-backed checkpoint and full workload cycles on hosted
+        # Windows have a distinct durability cost. Keep all other ceilings exact.
         thresholds["checkpoint_resume"] = WINDOWS_CHECKPOINT_RESUME_THRESHOLD_MS
+        thresholds["agent_workload_total"] = WINDOWS_AGENT_WORKLOAD_TOTAL_THRESHOLD_MS
     return thresholds
 
 

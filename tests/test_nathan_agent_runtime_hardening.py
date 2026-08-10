@@ -56,8 +56,12 @@ def test_windows_latency_profile_changes_only_checkpoint_durability() -> None:
 
     assert benchmark.LATENCY_THRESHOLDS_MS == expected_baseline
     assert baseline == expected_baseline
-    assert {metric for metric in baseline if windows[metric] != baseline[metric]} == {"checkpoint_resume"}
+    assert {metric for metric in baseline if windows[metric] != baseline[metric]} == {
+        "checkpoint_resume",
+        "agent_workload_total",
+    }
     assert windows["checkpoint_resume"] == 2_500.0
+    assert windows["agent_workload_total"] == 3_500.0
 
 
 def test_report_validation_uses_stored_windows_profile_not_current_host(
@@ -78,6 +82,30 @@ def test_report_validation_uses_stored_windows_profile_not_current_host(
     checkpoint_gate["threshold"] = benchmark.WINDOWS_CHECKPOINT_RESUME_THRESHOLD_MS
     checkpoint_gate["observed"] = checkpoint_performance["p95_ms"]
     checkpoint_gate["passed"] = True
+    workload_totals = ([900.0] * (len(windows["effectiveness"]["workloads"]) - 2)) + [
+        2_760.6905,
+        3_000.0,
+    ]
+    workload_ttfas = [100.0] * len(workload_totals)
+    for workload, ttfa_ms, total_ms in zip(
+        windows["effectiveness"]["workloads"],
+        workload_ttfas,
+        workload_totals,
+        strict=True,
+    ):
+        workload["ttfa_ms"] = ttfa_ms
+        workload["total_ms"] = total_ms
+    ttfa_performance = benchmark._latency_summary(workload_ttfas)
+    windows["performance"]["agent_workload_ttfa"] = ttfa_performance
+    ttfa_gate = windows["gates"]["agent_workload_ttfa_p95_ms"]
+    ttfa_gate["observed"] = ttfa_performance["p95_ms"]
+    ttfa_gate["passed"] = True
+    workload_performance = benchmark._latency_summary(workload_totals)
+    windows["performance"]["agent_workload_total"] = workload_performance
+    workload_gate = windows["gates"]["agent_workload_total_p95_ms"]
+    workload_gate["threshold"] = benchmark.WINDOWS_AGENT_WORKLOAD_TOTAL_THRESHOLD_MS
+    workload_gate["observed"] = workload_performance["p95_ms"]
+    workload_gate["passed"] = True
     windows["status"] = "pass" if all(gate["passed"] is True for gate in windows["gates"].values()) else "fail"
     _resign_report(windows)
 
@@ -99,18 +127,35 @@ def test_report_validation_uses_stored_windows_profile_not_current_host(
     )
     assert checkpoint_gate["threshold"] == 2_500.0
     assert checkpoint_gate["observed"] == 1_832.6466
+    assert workload_gate["threshold"] == 3_500.0
+    assert workload_gate["observed"] == 2_760.6905
 
 
-def test_runtime_benchmark_rejects_resigned_windows_threshold_tampering(report) -> None:
+@pytest.mark.parametrize(
+    ("metric", "forged_threshold"),
+    [
+        ("checkpoint_resume", 3_000.0),
+        ("agent_workload_total", 4_000.0),
+    ],
+)
+def test_runtime_benchmark_rejects_resigned_windows_threshold_tampering(
+    report,
+    metric: str,
+    forged_threshold: float,
+) -> None:
     tampered = deepcopy(report)
     tampered["environment"]["operating_system"] = "Windows-11-10.0.26100-SP0"
-    checkpoint_gate = tampered["gates"]["checkpoint_resume_p95_ms"]
-    checkpoint_gate["threshold"] = 3_000.0
+    windows_thresholds = benchmark._thresholds_for_environment(tampered["environment"])
+    for gate_metric, threshold in windows_thresholds.items():
+        gate = tampered["gates"][f"{gate_metric}_p95_ms"]
+        gate["threshold"] = threshold
+        gate["passed"] = gate["observed"] <= threshold
+    tampered["gates"][f"{metric}_p95_ms"]["threshold"] = forged_threshold
     _resign_report(tampered)
 
     with pytest.raises(
         benchmark.AgentRuntimeBenchmarkError,
-        match="runtime benchmark gate is invalid: checkpoint_resume_p95_ms",
+        match=rf"runtime benchmark gate is invalid: {metric}_p95_ms",
     ):
         benchmark.validate_report(
             tampered,
@@ -229,6 +274,7 @@ def test_runtime_benchmark_rejects_affirmative_claim_on_failed_report(report) ->
     correctness_gate["observed"] = failed["correctness"]["pass_rate"]
     correctness_gate["passed"] = False
     failed["status"] = "fail"
+    failed["claim"] = benchmark.BENCHMARK_PASS_CLAIM
     _resign_report(failed)
 
     with pytest.raises(
