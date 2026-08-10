@@ -2494,6 +2494,15 @@
           "timestamp": "2026-08-10T17:56:26Z",
           "scope": "public release-integrity correction for the active Oliver CI badge, explicit-opt-in memory-capture documentation in README and CLAUDE, and exact v0.17 tag/source binding with source-owned regression coverage under the 379-path freeze authorization",
           "limitations": "this is local source, tag, build, lint, dependency, and render evidence only; the live website still requires a separately reviewed post-release deployment, and HARD-072 remains in progress pending protected release authority, hosted provenance, Developer ID signing, notarization, Gatekeeper, installation, browser pairing, and lifecycle evidence"
+        },
+        {
+          "kind": "audit",
+          "path_or_command": "Node 22.23.2/npm 11.17.0 website lock qualification: npm ci; npm ls --all; npm audit; npm run lint; npm test; npm run deploy:cloudflare:dry-run",
+          "digest": "sha256:a24a1c5416154371aec0b89b8a31693013eda23052b0baa3680306cb2e21d17c",
+          "result": "local pass: the exact lock installs cleanly, the dependency tree is valid, the full npm audit reports zero known vulnerabilities, lint and production build pass, all 4 rendered-contract tests pass, and the Wrangler deployment dry-run succeeds",
+          "timestamp": "2026-08-10T18:56:06Z",
+          "scope": "website package lock supersedes sha256:a86f490d868af331cb4ae1bd373ee6277d28a892cd2d07974a3a7e7c36cdaa05 and binds Next 16.3.0, React and React Server Components 19.2.8, PostCSS 8.5.23, Vinext 0.0.45, Cloudflare Vite plugin 1.51.2, Wrangler 4.120.1, Miniflare 5.20260804.0-alpha, Workerd 1.20260804.1, and Undici 7.29.0",
+          "limitations": "point-in-time npm advisory data and local macOS execution do not prove future vulnerability-database closure, hosted cross-platform provenance, production deployment, signing, notarization, Gatekeeper, browser pairing, or lifecycle behavior; HARD-072 remains in progress"
         }
       ]
     },
