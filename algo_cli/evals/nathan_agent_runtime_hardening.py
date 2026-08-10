@@ -107,11 +107,100 @@ LATENCY_THRESHOLDS_MS = {
     "agent_workload_ttfa": 1_000.0,
     "agent_workload_total": 2_500.0,
 }
+WINDOWS_CHECKPOINT_RESUME_THRESHOLD_MS = 2_500.0
 MIN_LATENCY_SAMPLES = 20
+MAX_ENVIRONMENT_TEXT_BYTES = 512
+SUPPORTED_OPERATING_SYSTEM_PREFIXES = (
+    "Windows-",
+    "Linux-",
+    "macOS-",
+    "Darwin-",
+)
+BENCHMARK_PASS_CLAIM = (
+    "The source-bound Algo Agent runtime candidate passed every "
+    "deterministic hardening probe, including protected keyed-receipt, "
+    "rollback/recovery, thread-projection, and preflight-containment "
+    "checks, and every frozen end-to-end Agent workload with no policy "
+    "escape, unverified completion, or duplicate mutation, while "
+    "meeting its stated local TTFA and total-latency ceilings."
+)
+BENCHMARK_FAIL_CLAIM = (
+    "The source-bound Algo Agent runtime candidate did not satisfy every "
+    "deterministic correctness and latency gate; inspect the report's probe "
+    "and gate rows. No passing or public benchmark claim is made."
+)
+BENCHMARK_LIMITATIONS = (
+    "This is a local model-free runtime benchmark with deterministic "
+    "provider and task fixtures, temporary files, and injected static "
+    "key and anchor stores. It measures harness coordination and "
+    "fail-closed protected-state contracts, not model intelligence, "
+    "live provider latency, production Keychain behavior, process or "
+    "power-loss recovery, or superiority over OpenClaw, Hermes, or "
+    "another harness. The latency profile is selected from a closed "
+    "set using the report's self-reported, non-attested operating-system "
+    "label; Windows changes only the checkpoint durability ceiling. "
+    "Latency has not been independently reproduced, and the active "
+    "freeze forbids public benchmark claims."
+)
+_FAILURE_CODE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,127}")
 
 
 class AgentRuntimeBenchmarkError(RuntimeError):
     """Raised when the benchmark or its stored report fails closed."""
+
+
+def _printable_environment_text(value: Any) -> bool:
+    if type(value) is not str or not 1 <= len(value) <= MAX_ENVIRONMENT_TEXT_BYTES:
+        return False
+    try:
+        payload = value.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    return all(0x20 <= byte <= 0x7E for byte in payload)
+
+
+def _exact_finite_float(value: Any) -> bool:
+    return type(value) is float and math.isfinite(value)
+
+
+def _exact_nonnegative_int(value: Any) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _claim_for_status(status: str) -> str:
+    return BENCHMARK_PASS_CLAIM if status == "pass" else BENCHMARK_FAIL_CLAIM
+
+
+def _thresholds_for_operating_system(operating_system: Any) -> dict[str, float]:
+    """Return the closed latency profile bound to a stored OS label."""
+
+    if not _printable_environment_text(operating_system) or not str(operating_system).startswith(
+        SUPPORTED_OPERATING_SYSTEM_PREFIXES
+    ):
+        raise AgentRuntimeBenchmarkError("runtime benchmark operating system is unsupported")
+    thresholds = dict(LATENCY_THRESHOLDS_MS)
+    if str(operating_system).startswith("Windows-"):
+        # FlushFileBuffers-backed checkpoint cycles on hosted Windows have a
+        # distinct durability cost. Keep every other platform ceiling exact.
+        thresholds["checkpoint_resume"] = WINDOWS_CHECKPOINT_RESUME_THRESHOLD_MS
+    return thresholds
+
+
+def _thresholds_for_environment(environment: Any) -> dict[str, float]:
+    """Validate a report-bound environment and return its latency profile."""
+
+    if not isinstance(environment, dict) or set(environment) != {
+        "operating_system",
+        "machine",
+        "python",
+    }:
+        raise AgentRuntimeBenchmarkError("runtime benchmark environment is invalid")
+    if any(not _printable_environment_text(environment[field]) for field in ("operating_system", "machine", "python")):
+        raise AgentRuntimeBenchmarkError("runtime benchmark environment is invalid")
+    try:
+        return _thresholds_for_operating_system(environment["operating_system"])
+    except AgentRuntimeBenchmarkError as exc:
+        raise AgentRuntimeBenchmarkError("runtime benchmark environment is invalid") from exc
 
 
 def _discover_source_root(
@@ -1611,6 +1700,12 @@ def run_benchmark(
         raise AgentRuntimeBenchmarkError("warmups must be an integer from 0 to 100")
 
     source_digest, source_snapshot = _capture_source_tree()
+    environment = {
+        "operating_system": platform.platform(),
+        "machine": platform.machine(),
+        "python": platform.python_version(),
+    }
+    latency_thresholds = _thresholds_for_environment(environment)
 
     with tempfile.TemporaryDirectory(prefix="algo-agent-runtime-benchmark-") as raw_root:
         root = Path(raw_root)
@@ -1737,7 +1832,7 @@ def run_benchmark(
             "passed": effectiveness["context_usefulness_rate"] == 1.0,
         },
     }
-    for metric, threshold in LATENCY_THRESHOLDS_MS.items():
+    for metric, threshold in latency_thresholds.items():
         observed = float(performance[metric]["p95_ms"])
         gates[f"{metric}_p95_ms"] = {
             "threshold": threshold,
@@ -1755,11 +1850,7 @@ def run_benchmark(
         "created_at": _generated_at(generated_at),
         "source_revision": _git_revision(),
         "source_tree_sha256": source_digest,
-        "environment": {
-            "operating_system": platform.platform(),
-            "machine": platform.machine(),
-            "python": platform.python_version(),
-        },
+        "environment": environment,
         "protocol": {
             "model_calls": 0,
             "network_calls": 0,
@@ -1781,24 +1872,8 @@ def run_benchmark(
         "effectiveness": effectiveness,
         "gates": gates,
         "public_claim_eligible": False,
-        "claim": (
-            "The source-bound Algo Agent runtime candidate passed every "
-            "deterministic hardening probe, including protected keyed-receipt, "
-            "rollback/recovery, thread-projection, and preflight-containment "
-            "checks, and every frozen end-to-end Agent workload with no policy "
-            "escape, unverified completion, or duplicate mutation, while "
-            "meeting its stated local TTFA and total-latency ceilings."
-        ),
-        "limitations": (
-            "This is a local model-free runtime benchmark with deterministic "
-            "provider and task fixtures, temporary files, and injected static "
-            "key and anchor stores. It measures harness coordination and "
-            "fail-closed protected-state contracts, not model intelligence, "
-            "live provider latency, production Keychain behavior, process or "
-            "power-loss recovery, or superiority over OpenClaw, Hermes, or "
-            "another harness. Latency has not been independently reproduced, "
-            "and the active freeze forbids public benchmark claims."
-        ),
+        "claim": _claim_for_status(status),
+        "limitations": BENCHMARK_LIMITATIONS,
     }
     report["report_sha256"] = _digest(report)
     validate_report(report, require_current_source=True)
@@ -1833,24 +1908,51 @@ def validate_report(
     if not isinstance(report, dict) or set(report) != expected:
         raise AgentRuntimeBenchmarkError("runtime benchmark report fields do not match schema")
     if (
-        report["schema_version"] != SCHEMA_VERSION
+        type(report["schema_version"]) is not int
+        or report["schema_version"] != SCHEMA_VERSION
+        or type(report["benchmark"]) is not str
         or report["benchmark"] != BENCHMARK_ID
+        or type(report["status"]) is not str
         or report["status"] not in {"pass", "fail"}
         or report["public_claim_eligible"] is not False
-        or _UTC_RE.fullmatch(str(report["created_at"])) is None
-        or _REVISION_RE.fullmatch(str(report["source_revision"])) is None
-        or _SHA256_RE.fullmatch(str(report["source_tree_sha256"])) is None
-        or _SHA256_RE.fullmatch(str(report["report_sha256"])) is None
+        or type(report["created_at"]) is not str
+        or _UTC_RE.fullmatch(report["created_at"]) is None
+        or type(report["source_revision"]) is not str
+        or _REVISION_RE.fullmatch(report["source_revision"]) is None
+        or type(report["source_tree_sha256"]) is not str
+        or _SHA256_RE.fullmatch(report["source_tree_sha256"]) is None
+        or type(report["report_sha256"]) is not str
+        or _SHA256_RE.fullmatch(report["report_sha256"]) is None
     ):
         raise AgentRuntimeBenchmarkError("runtime benchmark report identity is invalid")
+    if type(report["claim"]) is not str or report["limitations"] != BENCHMARK_LIMITATIONS:
+        raise AgentRuntimeBenchmarkError("runtime benchmark narrative is invalid")
     if require_current_source and (report["source_tree_sha256"] != source_tree_digest()):
         raise AgentRuntimeBenchmarkError("runtime benchmark source digest is stale")
+    latency_thresholds = _thresholds_for_environment(report["environment"])
     protocol = report["protocol"]
     if (
         not isinstance(protocol, dict)
-        or protocol.get("model_calls") != 0
-        or protocol.get("network_calls") != 0
+        or set(protocol)
+        != {
+            "model_calls",
+            "network_calls",
+            "synthetic_runtime_microbenchmark",
+            "clock",
+            "warmups",
+            "contract_repetitions",
+            "context_repetitions",
+            "checkpoint_repetitions",
+            "workload_repetitions",
+        }
+        or any(
+            type(protocol.get(field)) is not int or protocol[field] != 0 for field in ("model_calls", "network_calls")
+        )
         or protocol.get("synthetic_runtime_microbenchmark") is not True
+        or protocol.get("clock") != "time.perf_counter_ns"
+        or isinstance(protocol.get("warmups"), bool)
+        or not isinstance(protocol.get("warmups"), int)
+        or not 0 <= protocol["warmups"] <= 100
         or any(
             isinstance(protocol.get(field), bool)
             or not isinstance(protocol.get(field), int)
@@ -1865,7 +1967,14 @@ def validate_report(
     ):
         raise AgentRuntimeBenchmarkError("runtime benchmark protocol is invalid")
     correctness = report["correctness"]
-    if not isinstance(correctness, dict):
+    if (
+        not isinstance(correctness, dict)
+        or set(correctness) != {"passed", "total", "pass_rate", "probes"}
+        or not _exact_nonnegative_int(correctness.get("passed"))
+        or not _exact_nonnegative_int(correctness.get("total"))
+        or not _exact_finite_float(correctness.get("pass_rate"))
+        or not 0.0 <= correctness["pass_rate"] <= 1.0
+    ):
         raise AgentRuntimeBenchmarkError("runtime benchmark correctness is invalid")
     probes = correctness.get("probes")
     if (
@@ -1877,6 +1986,8 @@ def validate_report(
             or set(row) != {"id", "passed", "failure_code"}
             or type(row["passed"]) is not bool
             or not isinstance(row["failure_code"], str)
+            or (row["passed"] is True and row["failure_code"] != "")
+            or (row["passed"] is False and _FAILURE_CODE_RE.fullmatch(row["failure_code"]) is None)
             for row in probes
         )
     ):
@@ -1890,7 +2001,7 @@ def validate_report(
     ):
         raise AgentRuntimeBenchmarkError("runtime benchmark correctness aggregate is invalid")
     performance = report["performance"]
-    if not isinstance(performance, dict) or set(performance) != set(LATENCY_THRESHOLDS_MS):
+    if not isinstance(performance, dict) or set(performance) != set(latency_thresholds):
         raise AgentRuntimeBenchmarkError("runtime benchmark performance fields are invalid")
     expected_sample_counts = {
         "contract_compile": protocol["contract_repetitions"],
@@ -1903,17 +2014,10 @@ def validate_report(
         if (
             not isinstance(row, dict)
             or set(row) != {"samples", "p50_ms", "p95_ms", "max_ms"}
-            or isinstance(row["samples"], bool)
-            or not isinstance(row["samples"], int)
+            or type(row["samples"]) is not int
             or row["samples"] != expected_sample_counts[metric]
-            or any(
-                isinstance(row[field], bool)
-                or not isinstance(row[field], (int, float))
-                or not math.isfinite(float(row[field]))
-                or float(row[field]) < 0
-                for field in ("p50_ms", "p95_ms", "max_ms")
-            )
-            or not (float(row["p50_ms"]) <= float(row["p95_ms"]) <= float(row["max_ms"]))
+            or any(not _exact_finite_float(row[field]) or row[field] < 0 for field in ("p50_ms", "p95_ms", "max_ms"))
+            or not (row["p50_ms"] <= row["p95_ms"] <= row["max_ms"])
         ):
             raise AgentRuntimeBenchmarkError(f"runtime benchmark latency is invalid: {metric}")
     effectiveness = report["effectiveness"]
@@ -1931,6 +2035,37 @@ def validate_report(
         "workloads",
     }
     if not isinstance(effectiveness, dict) or set(effectiveness) != expected_effectiveness_fields:
+        raise AgentRuntimeBenchmarkError("runtime benchmark effectiveness fields are invalid")
+    utilization = effectiveness["context_token_utilization"]
+    if (
+        not _exact_nonnegative_int(effectiveness["runs"])
+        or any(
+            not _exact_finite_float(effectiveness[field]) or not 0.0 <= effectiveness[field] <= 1.0
+            for field in (
+                "task_pass_rate",
+                "verifier_pass_rate",
+                "crash_resume_rate",
+                "protocol_correctness_rate",
+                "context_usefulness_rate",
+            )
+        )
+        or any(
+            not _exact_nonnegative_int(effectiveness[field])
+            for field in (
+                "policy_escapes",
+                "unverified_completions",
+                "duplicate_mutations",
+            )
+        )
+        or not isinstance(utilization, dict)
+        or set(utilization) != {"p50", "p95", "tokens_used", "tokens_available"}
+        or any(
+            not _exact_finite_float(utilization[field]) or not 0.0 <= utilization[field] <= 1.0
+            for field in ("p50", "p95")
+        )
+        or utilization["p50"] > utilization["p95"]
+        or any(not _exact_nonnegative_int(utilization[field]) for field in ("tokens_used", "tokens_available"))
+    ):
         raise AgentRuntimeBenchmarkError("runtime benchmark effectiveness fields are invalid")
     workloads = effectiveness["workloads"]
     expected_workload_fields = {
@@ -1981,19 +2116,16 @@ def validate_report(
             or row["context_tokens_max"] < 1
             or row["context_tokens_used"] > row["context_tokens_max"]
             or any(
-                isinstance(row[field], bool)
-                or not isinstance(row[field], (int, float))
-                or not math.isfinite(float(row[field]))
-                or float(row[field]) < 0
+                not _exact_finite_float(row[field]) or row[field] < 0
                 for field in (
                     "context_utilization",
                     "ttfa_ms",
                     "total_ms",
                 )
             )
-            or not 0 <= float(row["context_utilization"]) <= 1
-            or float(row["ttfa_ms"]) > float(row["total_ms"])
-            or float(row["context_utilization"])
+            or not 0 <= row["context_utilization"] <= 1
+            or row["ttfa_ms"] > row["total_ms"]
+            or row["context_utilization"]
             != round(
                 row["context_tokens_used"] / row["context_tokens_max"],
                 9,
@@ -2046,7 +2178,7 @@ def validate_report(
         "crash_resume_rate",
         "protocol_correctness_rate",
         "context_usefulness_rate",
-        *(f"{metric}_p95_ms" for metric in LATENCY_THRESHOLDS_MS),
+        *(f"{metric}_p95_ms" for metric in latency_thresholds),
     }
     if not isinstance(gates, dict) or set(gates) != expected_gate_names:
         raise AgentRuntimeBenchmarkError("runtime benchmark gates are invalid")
@@ -2082,7 +2214,7 @@ def validate_report(
         float,
         expected_effectiveness["context_usefulness_rate"],
     )
-    expected_gates: dict[str, tuple[float, float, bool]] = {
+    expected_gates: dict[str, tuple[int | float, int | float, bool]] = {
         "correctness": (
             1.0,
             recomputed_rate,
@@ -2100,17 +2232,17 @@ def validate_report(
         ),
         "policy_escapes": (
             0,
-            float(policy_escape_count),
+            policy_escape_count,
             policy_escape_count == 0,
         ),
         "unverified_completions": (
             0,
-            float(unverified_completion_count),
+            unverified_completion_count,
             unverified_completion_count == 0,
         ),
         "duplicate_mutations": (
             0,
-            float(duplicate_mutation_count),
+            duplicate_mutation_count,
             duplicate_mutation_count == 0,
         ),
         "crash_resume_rate": (
@@ -2129,7 +2261,7 @@ def validate_report(
             context_usefulness_rate == 1.0,
         ),
     }
-    for metric, threshold in LATENCY_THRESHOLDS_MS.items():
+    for metric, threshold in latency_thresholds.items():
         observed = float(performance[metric]["p95_ms"])
         expected_gates[f"{metric}_p95_ms"] = (
             threshold,
@@ -2145,6 +2277,8 @@ def validate_report(
         if (
             not isinstance(row, dict)
             or set(row) != {"threshold", "observed", "passed"}
+            or type(row["threshold"]) is not type(threshold)
+            or type(row["observed"]) is not type(observed)
             or row["threshold"] != threshold
             or row["observed"] != observed
             or row["passed"] is not passed
@@ -2153,6 +2287,8 @@ def validate_report(
     expected_status = "pass" if all(row["passed"] is True for row in gates.values()) else "fail"
     if report["status"] != expected_status:
         raise AgentRuntimeBenchmarkError("runtime benchmark status differs from its gates")
+    if report["claim"] != _claim_for_status(expected_status):
+        raise AgentRuntimeBenchmarkError("runtime benchmark narrative is invalid")
     unsigned = dict(report)
     stored_digest = unsigned.pop("report_sha256")
     if stored_digest != _digest(unsigned):

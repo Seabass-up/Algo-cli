@@ -37,6 +37,341 @@ def report() -> dict[str, object]:
     )
 
 
+def _resign_report(report: dict[str, object]) -> None:
+    unsigned = dict(report)
+    unsigned.pop("report_sha256", None)
+    report["report_sha256"] = benchmark._digest(unsigned)
+
+
+def test_windows_latency_profile_changes_only_checkpoint_durability() -> None:
+    expected_baseline = {
+        "contract_compile": 250.0,
+        "context_broker": 100.0,
+        "checkpoint_resume": 1_000.0,
+        "agent_workload_ttfa": 1_000.0,
+        "agent_workload_total": 2_500.0,
+    }
+    baseline = benchmark._thresholds_for_operating_system("Linux-6.11-x86_64")
+    windows = benchmark._thresholds_for_operating_system("Windows-11-10.0.26100-SP0")
+
+    assert benchmark.LATENCY_THRESHOLDS_MS == expected_baseline
+    assert baseline == expected_baseline
+    assert {metric for metric in baseline if windows[metric] != baseline[metric]} == {"checkpoint_resume"}
+    assert windows["checkpoint_resume"] == 2_500.0
+
+
+def test_report_validation_uses_stored_windows_profile_not_current_host(
+    report,
+    monkeypatch,
+) -> None:
+    windows = deepcopy(report)
+    windows["environment"]["operating_system"] = "Windows-11-10.0.26100-SP0"
+    checkpoint_performance = windows["performance"]["checkpoint_resume"]
+    checkpoint_performance.update(
+        {
+            "p50_ms": 910.0,
+            "p95_ms": 1_832.6466,
+            "max_ms": 1_975.0,
+        }
+    )
+    checkpoint_gate = windows["gates"]["checkpoint_resume_p95_ms"]
+    checkpoint_gate["threshold"] = benchmark.WINDOWS_CHECKPOINT_RESUME_THRESHOLD_MS
+    checkpoint_gate["observed"] = checkpoint_performance["p95_ms"]
+    checkpoint_gate["passed"] = True
+    windows["status"] = "pass" if all(gate["passed"] is True for gate in windows["gates"].values()) else "fail"
+    _resign_report(windows)
+
+    def forbid_current_host_access() -> str:
+        raise AssertionError("report validation consulted the current host")
+
+    monkeypatch.setattr(benchmark.platform, "platform", forbid_current_host_access)
+    monkeypatch.setattr(benchmark.platform, "system", forbid_current_host_access)
+    monkeypatch.setattr(benchmark.platform, "machine", forbid_current_host_access)
+    monkeypatch.setattr(
+        benchmark.platform,
+        "python_version",
+        forbid_current_host_access,
+    )
+
+    benchmark.validate_report(
+        windows,
+        require_current_source=True,
+    )
+    assert checkpoint_gate["threshold"] == 2_500.0
+    assert checkpoint_gate["observed"] == 1_832.6466
+
+
+def test_runtime_benchmark_rejects_resigned_windows_threshold_tampering(report) -> None:
+    tampered = deepcopy(report)
+    tampered["environment"]["operating_system"] = "Windows-11-10.0.26100-SP0"
+    checkpoint_gate = tampered["gates"]["checkpoint_resume_p95_ms"]
+    checkpoint_gate["threshold"] = 3_000.0
+    _resign_report(tampered)
+
+    with pytest.raises(
+        benchmark.AgentRuntimeBenchmarkError,
+        match="runtime benchmark gate is invalid: checkpoint_resume_p95_ms",
+    ):
+        benchmark.validate_report(
+            tampered,
+            require_current_source=False,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("operating_system", "Plan9-1.0"),
+        ("operating_system", "Windows-11\nforged"),
+        ("machine", ""),
+        ("machine", "arm64\u2603"),
+        ("python", 312),
+    ],
+)
+def test_runtime_benchmark_rejects_malformed_environment(
+    report,
+    field: str,
+    replacement: object,
+) -> None:
+    tampered = deepcopy(report)
+    tampered["environment"][field] = replacement
+
+    with pytest.raises(
+        benchmark.AgentRuntimeBenchmarkError,
+        match="runtime benchmark environment is invalid",
+    ):
+        benchmark.validate_report(
+            tampered,
+            require_current_source=False,
+        )
+
+
+def test_runtime_benchmark_rejects_environment_extension(report) -> None:
+    tampered = deepcopy(report)
+    tampered["environment"]["latency_profile"] = "forged"
+
+    with pytest.raises(
+        benchmark.AgentRuntimeBenchmarkError,
+        match="runtime benchmark environment is invalid",
+    ):
+        benchmark.validate_report(
+            tampered,
+            require_current_source=False,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("latency_profile", "forged"),
+        ("clock", "forged"),
+        ("warmups", "forged"),
+        ("warmups", -1),
+        ("warmups", 101),
+        ("model_calls", False),
+        ("model_calls", 0.0),
+        ("network_calls", False),
+        ("network_calls", 0.0),
+    ],
+)
+def test_runtime_benchmark_rejects_resigned_protocol_tampering(
+    report,
+    field: str,
+    replacement: object,
+) -> None:
+    tampered = deepcopy(report)
+    tampered["protocol"][field] = replacement
+    _resign_report(tampered)
+
+    with pytest.raises(
+        benchmark.AgentRuntimeBenchmarkError,
+        match="runtime benchmark protocol is invalid",
+    ):
+        benchmark.validate_report(
+            tampered,
+            require_current_source=False,
+        )
+
+
+@pytest.mark.parametrize("field", ["claim", "limitations"])
+@pytest.mark.parametrize("replacement", [None, "", "forged"])
+def test_runtime_benchmark_rejects_resigned_narrative_tampering(
+    report,
+    field: str,
+    replacement: object,
+) -> None:
+    tampered = deepcopy(report)
+    tampered[field] = replacement
+    _resign_report(tampered)
+
+    with pytest.raises(
+        benchmark.AgentRuntimeBenchmarkError,
+        match="runtime benchmark narrative is invalid",
+    ):
+        benchmark.validate_report(
+            tampered,
+            require_current_source=False,
+        )
+
+
+def test_runtime_benchmark_rejects_affirmative_claim_on_failed_report(report) -> None:
+    failed = deepcopy(report)
+    failed_probe = failed["correctness"]["probes"][0]
+    failed_probe.update(
+        {
+            "passed": False,
+            "failure_code": "AgentRuntimeBenchmarkError",
+        }
+    )
+    failed["correctness"]["passed"] -= 1
+    failed["correctness"]["pass_rate"] = failed["correctness"]["passed"] / failed["correctness"]["total"]
+    correctness_gate = failed["gates"]["correctness"]
+    correctness_gate["observed"] = failed["correctness"]["pass_rate"]
+    correctness_gate["passed"] = False
+    failed["status"] = "fail"
+    _resign_report(failed)
+
+    with pytest.raises(
+        benchmark.AgentRuntimeBenchmarkError,
+        match="runtime benchmark narrative is invalid",
+    ):
+        benchmark.validate_report(failed, require_current_source=False)
+
+    failed["claim"] = benchmark.BENCHMARK_FAIL_CLAIM
+    _resign_report(failed)
+    benchmark.validate_report(failed, require_current_source=False)
+
+
+@pytest.mark.parametrize(
+    ("passed", "failure_code"),
+    [
+        (True, "ValueError"),
+        (True, "bad\ncode"),
+        (False, ""),
+        (False, "bad\ncode"),
+    ],
+)
+def test_runtime_benchmark_rejects_resigned_probe_failure_code_tampering(
+    report,
+    passed: bool,
+    failure_code: str,
+) -> None:
+    tampered = deepcopy(report)
+    tampered["correctness"]["probes"][0].update(
+        {
+            "passed": passed,
+            "failure_code": failure_code,
+        }
+    )
+    _resign_report(tampered)
+
+    with pytest.raises(
+        benchmark.AgentRuntimeBenchmarkError,
+        match="runtime benchmark probes are invalid",
+    ):
+        benchmark.validate_report(
+            tampered,
+            require_current_source=False,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("schema_version", 3.0),
+        ("source_revision", 1234567),
+    ],
+)
+def test_runtime_benchmark_rejects_resigned_identity_type_tampering(
+    report,
+    field: str,
+    replacement: object,
+) -> None:
+    tampered = deepcopy(report)
+    tampered[field] = replacement
+    _resign_report(tampered)
+
+    with pytest.raises(
+        benchmark.AgentRuntimeBenchmarkError,
+        match="runtime benchmark report identity is invalid",
+    ):
+        benchmark.validate_report(tampered, require_current_source=False)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("extension", "forged"),
+        ("passed", 17.0),
+        ("total", 17.0),
+        ("pass_rate", True),
+    ],
+)
+def test_runtime_benchmark_rejects_resigned_correctness_type_tampering(
+    report,
+    field: str,
+    replacement: object,
+) -> None:
+    tampered = deepcopy(report)
+    tampered["correctness"][field] = replacement
+    _resign_report(tampered)
+
+    with pytest.raises(
+        benchmark.AgentRuntimeBenchmarkError,
+        match="runtime benchmark correctness is invalid",
+    ):
+        benchmark.validate_report(tampered, require_current_source=False)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("runs", 31.0),
+        ("task_pass_rate", True),
+        ("policy_escapes", False),
+    ],
+)
+def test_runtime_benchmark_rejects_resigned_effectiveness_type_tampering(
+    report,
+    field: str,
+    replacement: object,
+) -> None:
+    tampered = deepcopy(report)
+    tampered["effectiveness"][field] = replacement
+    _resign_report(tampered)
+
+    with pytest.raises(
+        benchmark.AgentRuntimeBenchmarkError,
+        match="runtime benchmark effectiveness fields are invalid",
+    ):
+        benchmark.validate_report(tampered, require_current_source=False)
+
+
+@pytest.mark.parametrize(
+    ("gate", "field", "replacement"),
+    [
+        ("correctness", "threshold", True),
+        ("policy_escapes", "threshold", False),
+        ("policy_escapes", "observed", False),
+    ],
+)
+def test_runtime_benchmark_rejects_resigned_gate_type_tampering(
+    report,
+    gate: str,
+    field: str,
+    replacement: object,
+) -> None:
+    tampered = deepcopy(report)
+    tampered["gates"][gate][field] = replacement
+    _resign_report(tampered)
+
+    with pytest.raises(
+        benchmark.AgentRuntimeBenchmarkError,
+        match=rf"runtime benchmark gate is invalid: {gate}",
+    ):
+        benchmark.validate_report(tampered, require_current_source=False)
+
+
 def test_minimum_latency_corpus_excludes_one_outlier_from_p95() -> None:
     values = ([1.0] * (benchmark.MIN_LATENCY_SAMPLES - 2)) + [5.0, 10.0]
 
