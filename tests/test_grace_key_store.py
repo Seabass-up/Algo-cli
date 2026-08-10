@@ -6,6 +6,7 @@ import hashlib
 
 import pytest
 
+from algo_cli import grace_key_store as grace_key_store_module
 from algo_cli.ada_control_journal import EMPTY_EVIDENCE_DIGEST, EMPTY_RECEIPT_HEAD_DIGEST
 from algo_cli.ada_credential_registry import (
     AdaCredentialFingerprint,
@@ -17,6 +18,7 @@ from algo_cli.grace_key_store import (
     ALGO_FIXED_CREDENTIAL_LABELS,
     BROWSER_PAIRING_KEY_LABEL,
     CONTROL_SIGNING_KEY_LABEL,
+    ContentFreeReceiptHead,
     MAX_RECEIPT_ANCHOR_BYTES,
     RECEIPT_ANCHOR_LABEL_PREFIX,
     GraceReceiptAnchorStore,
@@ -26,6 +28,7 @@ from algo_cli.grace_key_store import (
     StaticKeyStore,
     get_browser_pairing_key,
     get_control_signer,
+    get_existing_key_material,
     get_key_material,
 )
 from algo_cli.henry_effect_control import TargetLeaseManager
@@ -111,12 +114,10 @@ def _native_enumeration(
     records = tuple(
         AdaCredentialFingerprint(
             label=label,
-            value_digest="sha256:"
-            + hashlib.sha256(value.encode("utf-8")).hexdigest(),
+            value_digest="sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest(),
         )
         for (service, label), value in sorted(backend.values.items())
-        if service == "algo-cli-runtime"
-        and label != ADA_CREDENTIAL_REGISTRY_LABEL
+        if service == "algo-cli-runtime" and label != ADA_CREDENTIAL_REGISTRY_LABEL
     )
     return AdaNativeCredentialEnumeration(
         service="algo-cli-runtime",
@@ -168,9 +169,7 @@ def test_malformed_existing_key_fails_closed(tmp_path) -> None:
 
 def test_wrong_length_existing_key_is_not_silently_replaced(tmp_path) -> None:
     backend = FakeBackend()
-    backend.values[("algo-cli-runtime", "artifact-master-v1")] = base64.urlsafe_b64encode(
-        b"short"
-    ).decode("ascii")
+    backend.values[("algo-cli-runtime", "artifact-master-v1")] = base64.urlsafe_b64encode(b"short").decode("ascii")
 
     with pytest.raises(KeyStoreError, match="invalid"):
         _store(tmp_path, backend).get_or_create("artifact-master-v1")
@@ -196,6 +195,53 @@ def test_existing_load_never_creates_missing_key_material(tmp_path) -> None:
     assert backend.values == {}
 
 
+def test_static_existing_load_never_creates_missing_key_material() -> None:
+    store = StaticKeyStore()
+
+    with pytest.raises(KeyStoreError, match="absent"):
+        store.get_existing("artifact-master-v1")
+    with pytest.raises(KeyStoreError, match="absent"):
+        store.get_existing("artifact-master-v1")
+
+    created = store.get_or_create("artifact-master-v1")
+    assert store.get_existing("artifact-master-v1") == created
+
+
+def test_existing_key_helper_is_public_and_never_creates_static_state() -> None:
+    store = StaticKeyStore()
+
+    assert "get_existing_key_material" in grace_key_store_module.__all__
+    with pytest.raises(KeyStoreError, match="absent"):
+        get_existing_key_material(
+            "artifact-master-v1",
+            length=32,
+            require_persistent=True,
+            store=store,
+        )
+    with pytest.raises(KeyStoreError, match="absent"):
+        store.get_existing("artifact-master-v1")
+
+
+def test_grace_anchor_store_accepts_canonical_content_free_head(tmp_path) -> None:
+    anchors = GraceReceiptAnchorStore(_registered_store(tmp_path, FakeBackend()))
+    journal_id = "sha256:" + "9" * 64
+    head = ContentFreeReceiptHead(
+        namespace="agent-run-journal-v1",
+        journal_id=journal_id,
+        subject_digest="a" * 64,
+        sequence=7,
+        head_digest="b" * 64,
+        authentication="c" * 64,
+    )
+
+    assert anchors.compare_and_set(
+        journal_id,
+        expected_digest=None,
+        value=head.to_bytes(),
+    )
+    assert ContentFreeReceiptHead.from_bytes(anchors.load(journal_id) or b"") == head
+
+
 def test_content_free_fingerprint_and_compare_delete_are_cas_bound(tmp_path) -> None:
     backend = FakeBackend()
     store = _store(tmp_path, backend)
@@ -204,13 +250,9 @@ def test_content_free_fingerprint_and_compare_delete_are_cas_bound(tmp_path) -> 
 
     assert fingerprint is not None and fingerprint.startswith("sha256:")
     assert material.key.hex() not in fingerprint
-    assert store.compare_and_delete(
-        "artifact-master-v1", expected_digest="sha256:" + "0" * 64
-    ) is False
+    assert store.compare_and_delete("artifact-master-v1", expected_digest="sha256:" + "0" * 64) is False
     assert store.fingerprint("artifact-master-v1") == fingerprint
-    assert store.compare_and_delete(
-        "artifact-master-v1", expected_digest=fingerprint
-    ) is True
+    assert store.compare_and_delete("artifact-master-v1", expected_digest=fingerprint) is True
     assert store.fingerprint("artifact-master-v1") is None
 
 
@@ -393,9 +435,7 @@ def test_registry_tampering_blocks_complete_inventory_and_anchor_write(tmp_path)
     backend = FakeBackend()
     store = _registered_store(tmp_path, backend)
     raw = backend.values[("algo-cli-runtime", ADA_CREDENTIAL_REGISTRY_LABEL)]
-    backend.values[("algo-cli-runtime", ADA_CREDENTIAL_REGISTRY_LABEL)] = raw.replace(
-        '"revision":1', '"revision":2'
-    )
+    backend.values[("algo-cli-runtime", ADA_CREDENTIAL_REGISTRY_LABEL)] = raw.replace('"revision":1', '"revision":2')
 
     with pytest.raises(KeyStoreError, match="credential_registry_signature"):
         store.complete_inventory_snapshot()
@@ -454,10 +494,7 @@ def test_concurrent_anchor_registration_has_no_lost_labels(tmp_path) -> None:
 
     assert all(results)
     labels = set(store.complete_inventory_labels() or ())
-    assert {
-        RECEIPT_ANCHOR_LABEL_PREFIX + journal_id.removeprefix("sha256:")
-        for journal_id in journal_ids
-    } <= labels
+    assert {RECEIPT_ANCHOR_LABEL_PREFIX + journal_id.removeprefix("sha256:") for journal_id in journal_ids} <= labels
 
 
 def test_production_backend_requires_a_recognized_os_credential_store() -> None:

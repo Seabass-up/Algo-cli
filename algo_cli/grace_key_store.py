@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 import hashlib
 import hmac
+import json
 import re
 import secrets
 import threading
@@ -42,12 +43,9 @@ MAX_RECEIPT_ANCHOR_BYTES = 4 * 1024
 MAX_AUTHORITY_ROTATION_ANCHOR_BYTES = 16 * 1024
 _SAFE_LABEL_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-_ANCHOR_LABEL_RE = re.compile(
-    rf"^{re.escape(RECEIPT_ANCHOR_LABEL_PREFIX)}[0-9a-f]{{64}}$"
-)
-_ROTATION_ANCHOR_LABEL_RE = re.compile(
-    rf"^{re.escape(AUTHORITY_ROTATION_ANCHOR_LABEL_PREFIX)}[0-9a-f]{{64}}$"
-)
+_HEX_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+_ANCHOR_LABEL_RE = re.compile(rf"^{re.escape(RECEIPT_ANCHOR_LABEL_PREFIX)}[0-9a-f]{{64}}$")
+_ROTATION_ANCHOR_LABEL_RE = re.compile(rf"^{re.escape(AUTHORITY_ROTATION_ANCHOR_LABEL_PREFIX)}[0-9a-f]{{64}}$")
 _KEY_LENGTHS = frozenset({16, 24, 32, 48, 64})
 _SECURE_SYSTEM_BACKEND_MODULES = frozenset(
     {
@@ -129,9 +127,7 @@ class KeyringKeyStore:
     ) -> None:
         self._backend = backend
         self.service = _validate_label(service)
-        self._leases = lease_manager or TargetLeaseManager(
-            CONFIG_DIR / "private" / "grace-keyring-leases"
-        )
+        self._leases = lease_manager or TargetLeaseManager(CONFIG_DIR / "private" / "grace-keyring-leases")
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
 
     def _inventory_lease_key(self) -> str:
@@ -170,18 +166,14 @@ class KeyringKeyStore:
             raise KeyStoreError("credential_registry_authority_missing")
         return ControlSigner.from_private_bytes(_decode_key(encoded, length=32))
 
-    def _load_registry_locked(
-        self, backend: PasswordBackend
-    ) -> AdaCredentialRegistry | None:
+    def _load_registry_locked(self, backend: PasswordBackend) -> AdaCredentialRegistry | None:
         encoded = backend.get_password(self.service, ADA_CREDENTIAL_REGISTRY_LABEL)
         if encoded is None:
             return None
         if type(encoded) is not str:
             raise KeyStoreError("credential_registry_encoding")
         try:
-            registry = AdaCredentialRegistry.from_bytes(
-                encoded.encode("utf-8", errors="strict")
-            )
+            registry = AdaCredentialRegistry.from_bytes(encoded.encode("utf-8", errors="strict"))
             signer = self._registry_signer_locked(backend)
             registry.verify(signer.verifier)
         except (AdaCredentialRegistryError, UnicodeEncodeError) as exc:
@@ -239,9 +231,7 @@ class KeyringKeyStore:
                 encoded = _encode_key(generated)
                 backend.set_password(self.service, CONTROL_SIGNING_KEY_LABEL, encoded)
                 confirmed = backend.get_password(self.service, CONTROL_SIGNING_KEY_LABEL)
-                if confirmed is None or not hmac.compare_digest(
-                    _decode_key(confirmed, length=32), generated
-                ):
+                if confirmed is None or not hmac.compare_digest(_decode_key(confirmed, length=32), generated):
                     raise KeyStoreError("credential_registry_authority_write_lost")
                 signer = ControlSigner.from_private_bytes(generated)
                 now_ms = self._now_ms()
@@ -266,9 +256,7 @@ class KeyringKeyStore:
         except KeyStoreError:
             raise
         except Exception as exc:
-            raise KeyStoreError(
-                f"credential registry initialization failed: {type(exc).__name__}"
-            ) from exc
+            raise KeyStoreError(f"credential registry initialization failed: {type(exc).__name__}") from exc
 
     def initialize_from_native_credential_enumeration(
         self,
@@ -301,9 +289,7 @@ class KeyringKeyStore:
                     expected_nonce=expected_nonce,
                     expected_code_identifier=expected_code_identifier,
                     expected_team_id=expected_team_id,
-                    expected_designated_requirement_digest=(
-                        expected_designated_requirement_digest
-                    ),
+                    expected_designated_requirement_digest=(expected_designated_requirement_digest),
                     now_ms=now_ms,
                 )
                 observed = {record.label: record.value_digest for record in evidence.records}
@@ -314,27 +300,19 @@ class KeyringKeyStore:
                 if any(not self._allowed_inventory_label(label) for label in observed):
                     raise KeyStoreError("credential_enumeration_scope")
 
-                for label in ALGO_FIXED_CREDENTIAL_LABELS - {
-                    ADA_CREDENTIAL_REGISTRY_LABEL
-                }:
-                    actual = self._fingerprint_encoded(
-                        backend.get_password(self.service, label)
-                    )
+                for label in ALGO_FIXED_CREDENTIAL_LABELS - {ADA_CREDENTIAL_REGISTRY_LABEL}:
+                    actual = self._fingerprint_encoded(backend.get_password(self.service, label))
                     expected = observed.get(label)
                     if actual != expected:
                         raise KeyStoreError("credential_enumeration_changed")
                 for label, expected in observed.items():
-                    actual = self._fingerprint_encoded(
-                        backend.get_password(self.service, label)
-                    )
+                    actual = self._fingerprint_encoded(backend.get_password(self.service, label))
                     if actual is None or not hmac.compare_digest(actual, expected):
                         raise KeyStoreError("credential_enumeration_changed")
                 if backend.get_password(self.service, ADA_CREDENTIAL_REGISTRY_LABEL) is not None:
                     raise KeyStoreError("credential_enumeration_registry_present")
 
-                encoded_control = backend.get_password(
-                    self.service, CONTROL_SIGNING_KEY_LABEL
-                )
+                encoded_control = backend.get_password(self.service, CONTROL_SIGNING_KEY_LABEL)
                 if encoded_control is None:
                     generated = secrets.token_bytes(32)
                     encoded_control = _encode_key(generated)
@@ -343,34 +321,20 @@ class KeyringKeyStore:
                         CONTROL_SIGNING_KEY_LABEL,
                         encoded_control,
                     )
-                    confirmed = backend.get_password(
-                        self.service, CONTROL_SIGNING_KEY_LABEL
-                    )
-                    if confirmed is None or not hmac.compare_digest(
-                        _decode_key(confirmed, length=32), generated
-                    ):
-                        raise KeyStoreError(
-                            "credential_registry_authority_write_lost"
-                        )
-                signer = ControlSigner.from_private_bytes(
-                    _decode_key(encoded_control, length=32)
-                )
+                    confirmed = backend.get_password(self.service, CONTROL_SIGNING_KEY_LABEL)
+                    if confirmed is None or not hmac.compare_digest(_decode_key(confirmed, length=32), generated):
+                        raise KeyStoreError("credential_registry_authority_write_lost")
+                signer = ControlSigner.from_private_bytes(_decode_key(encoded_control, length=32))
                 labels = tuple(
                     sorted(
                         {
                             *ALGO_FIXED_CREDENTIAL_LABELS,
-                            *(
-                                label
-                                for label in observed
-                                if _ANCHOR_LABEL_RE.fullmatch(label)
-                            ),
+                            *(label for label in observed if _ANCHOR_LABEL_RE.fullmatch(label)),
                         }
                     )
                 )
                 evidence_payload = evidence.to_bytes()
-                evidence_digest = "sha256:" + hashlib.sha256(
-                    evidence_payload
-                ).hexdigest()
+                evidence_digest = "sha256:" + hashlib.sha256(evidence_payload).hexdigest()
                 registry = AdaCredentialRegistry.create(
                     revision=1,
                     service=self.service,
@@ -384,9 +348,7 @@ class KeyringKeyStore:
                 self._write_registry_locked(backend, registry)
 
                 for label, expected in observed.items():
-                    actual = self._fingerprint_encoded(
-                        backend.get_password(self.service, label)
-                    )
+                    actual = self._fingerprint_encoded(backend.get_password(self.service, label))
                     if actual is None or not hmac.compare_digest(actual, expected):
                         raise KeyStoreError("credential_enumeration_changed")
                 return registry
@@ -395,9 +357,7 @@ class KeyringKeyStore:
         except AdaCredentialRegistryError as exc:
             raise KeyStoreError(exc.reason_code) from exc
         except Exception as exc:
-            raise KeyStoreError(
-                f"credential registry migration failed: {type(exc).__name__}"
-            ) from exc
+            raise KeyStoreError(f"credential registry migration failed: {type(exc).__name__}") from exc
 
     def _register_inventory_label_locked(
         self,
@@ -433,9 +393,7 @@ class KeyringKeyStore:
         except KeyStoreError:
             raise
         except Exception as exc:
-            raise KeyStoreError(
-                f"credential registry update failed: {type(exc).__name__}"
-            ) from exc
+            raise KeyStoreError(f"credential registry update failed: {type(exc).__name__}") from exc
 
     def _password_backend(self) -> PasswordBackend:
         if self._backend is not None:
@@ -538,9 +496,7 @@ class KeyringKeyStore:
         except KeyStoreError:
             raise
         except Exception as exc:
-            raise KeyStoreError(
-                f"OS keyring fingerprint failed: {type(exc).__name__}"
-            ) from exc
+            raise KeyStoreError(f"OS keyring fingerprint failed: {type(exc).__name__}") from exc
 
     def compare_and_delete(self, label: str, *, expected_digest: str) -> bool:
         """Delete one exact item only while its content-free digest still matches."""
@@ -565,9 +521,7 @@ class KeyringKeyStore:
         except KeyStoreError:
             raise
         except Exception as exc:
-            raise KeyStoreError(
-                f"OS keyring compare-delete failed: {type(exc).__name__}"
-            ) from exc
+            raise KeyStoreError(f"OS keyring compare-delete failed: {type(exc).__name__}") from exc
 
     def complete_inventory_labels(self) -> tuple[str, ...] | None:
         """Return the authenticated finite registry, never backend inference."""
@@ -589,18 +543,14 @@ class KeyringKeyStore:
                 return tuple(
                     (
                         label,
-                        self._fingerprint_encoded(
-                            backend.get_password(self.service, label)
-                        ),
+                        self._fingerprint_encoded(backend.get_password(self.service, label)),
                     )
                     for label in registry.labels
                 )
         except KeyStoreError:
             raise
         except Exception as exc:
-            raise KeyStoreError(
-                f"credential registry snapshot failed: {type(exc).__name__}"
-            ) from exc
+            raise KeyStoreError(f"credential registry snapshot failed: {type(exc).__name__}") from exc
 
 
 def _anchor_label(journal_id: str) -> str:
@@ -613,10 +563,112 @@ def _anchor_digest(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
+@dataclass(frozen=True)
+class ContentFreeReceiptHead:
+    """Canonical generic head record for OS-backed rollback protection."""
+
+    namespace: str
+    journal_id: str
+    subject_digest: str
+    sequence: int
+    head_digest: str
+    authentication: str
+    schema_version: int = 1
+
+    KIND = "content_free_receipt_head"
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ReceiptAnchorStoreError("anchor_value")
+        if type(self.namespace) is not str or not _SAFE_LABEL_RE.fullmatch(self.namespace):
+            raise ReceiptAnchorStoreError("anchor_value")
+        if type(self.journal_id) is not str or not _DIGEST_RE.fullmatch(self.journal_id):
+            raise ReceiptAnchorStoreError("anchor_value")
+        for value in (
+            self.subject_digest,
+            self.head_digest,
+            self.authentication,
+        ):
+            if type(value) is not str or not _HEX_DIGEST_RE.fullmatch(value):
+                raise ReceiptAnchorStoreError("anchor_value")
+        if (
+            isinstance(self.sequence, bool)
+            or not isinstance(self.sequence, int)
+            or not 0 <= self.sequence <= MAX_SAFE_INTEGER
+        ):
+            raise ReceiptAnchorStoreError("anchor_value")
+
+    def unsigned_payload(self) -> dict[str, Any]:
+        return {
+            "kind": self.KIND,
+            "schema_version": self.schema_version,
+            "namespace": self.namespace,
+            "journal_id": self.journal_id,
+            "subject_digest": self.subject_digest,
+            "sequence": self.sequence,
+            "head_digest": self.head_digest,
+        }
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            **self.unsigned_payload(),
+            "authentication": self.authentication,
+        }
+
+    def to_bytes(self) -> bytes:
+        return json.dumps(
+            self.payload(),
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    @classmethod
+    def from_bytes(cls, value: bytes) -> "ContentFreeReceiptHead":
+        if type(value) is not bytes or not 1 <= len(value) <= MAX_RECEIPT_ANCHOR_BYTES:
+            raise ReceiptAnchorStoreError("anchor_value")
+        try:
+            decoded = json.loads(value.decode("utf-8", errors="strict"))
+            expected = {
+                "kind",
+                "schema_version",
+                "namespace",
+                "journal_id",
+                "subject_digest",
+                "sequence",
+                "head_digest",
+                "authentication",
+            }
+            if not isinstance(decoded, dict) or set(decoded) != expected or decoded.get("kind") != cls.KIND:
+                raise ValueError("schema")
+            result = cls(
+                namespace=decoded["namespace"],
+                journal_id=decoded["journal_id"],
+                subject_digest=decoded["subject_digest"],
+                sequence=decoded["sequence"],
+                head_digest=decoded["head_digest"],
+                authentication=decoded["authentication"],
+                schema_version=decoded["schema_version"],
+            )
+            if not hmac.compare_digest(result.to_bytes(), value):
+                raise ValueError("noncanonical")
+            return result
+        except ReceiptAnchorStoreError:
+            raise
+        except Exception as exc:
+            raise ReceiptAnchorStoreError("anchor_value") from exc
+
+
 def _validate_anchor_payload(value: bytes) -> bytes:
     if type(value) is not bytes or not 1 <= len(value) <= MAX_RECEIPT_ANCHOR_BYTES:
         raise ReceiptAnchorStoreError("anchor_value")
     try:
+        decoded = json.loads(value.decode("utf-8", errors="strict"))
+        if isinstance(decoded, dict) and decoded.get("kind") == ContentFreeReceiptHead.KIND:
+            ContentFreeReceiptHead.from_bytes(value)
+            return value
+
         from .ada_control_journal import ControlReceipt
         from .david_control_kernel import canonical_json_bytes, decode_json_payload
 
@@ -659,9 +711,7 @@ class GraceReceiptAnchorStore:
         try:
             backend = self._key_store._password_backend()
             with self._key_store._inventory_lease():
-                with self._key_store._leases.acquire(
-                    f"keyring:{self._key_store.service}:{label}"
-                ):
+                with self._key_store._leases.acquire(f"keyring:{self._key_store.service}:{label}"):
                     encoded = backend.get_password(self._key_store.service, label)
                     return None if encoded is None else _decode_anchor(encoded)
         except ReceiptAnchorStoreError:
@@ -669,9 +719,7 @@ class GraceReceiptAnchorStore:
         except KeyStoreError as exc:
             raise ReceiptAnchorStoreError(str(exc)) from exc
         except Exception as exc:
-            raise ReceiptAnchorStoreError(
-                f"anchor_load_{type(exc).__name__.lower()}"
-            ) from exc
+            raise ReceiptAnchorStoreError(f"anchor_load_{type(exc).__name__.lower()}") from exc
 
     def compare_and_set(
         self,
@@ -690,9 +738,7 @@ class GraceReceiptAnchorStore:
             backend = self._key_store._password_backend()
             with self._key_store._inventory_lease():
                 self._key_store._register_inventory_label_locked(backend, label)
-                with self._key_store._leases.acquire(
-                    f"keyring:{self._key_store.service}:{label}"
-                ):
+                with self._key_store._leases.acquire(f"keyring:{self._key_store.service}:{label}"):
                     current_encoded = backend.get_password(self._key_store.service, label)
                     current = None if current_encoded is None else _decode_anchor(current_encoded)
                     current_digest = None if current is None else _anchor_digest(current)
@@ -700,9 +746,7 @@ class GraceReceiptAnchorStore:
                         return False
                     backend.set_password(self._key_store.service, label, encoded_value)
                     confirmed = backend.get_password(self._key_store.service, label)
-                    if confirmed is None or not hmac.compare_digest(
-                        _decode_anchor(confirmed), value
-                    ):
+                    if confirmed is None or not hmac.compare_digest(_decode_anchor(confirmed), value):
                         raise ReceiptAnchorStoreError("anchor_write_lost")
                     return True
         except ReceiptAnchorStoreError:
@@ -710,25 +754,17 @@ class GraceReceiptAnchorStore:
         except KeyStoreError as exc:
             raise ReceiptAnchorStoreError(str(exc)) from exc
         except Exception as exc:
-            raise ReceiptAnchorStoreError(
-                f"anchor_write_{type(exc).__name__.lower()}"
-            ) from exc
+            raise ReceiptAnchorStoreError(f"anchor_write_{type(exc).__name__.lower()}") from exc
 
 
 def _rotation_anchor_label(anchor_id: str) -> str:
     if type(anchor_id) is not str or not _DIGEST_RE.fullmatch(anchor_id):
         raise AuthorityRotationAnchorStoreError("rotation_anchor_id")
-    return _validate_label(
-        AUTHORITY_ROTATION_ANCHOR_LABEL_PREFIX
-        + anchor_id.removeprefix("sha256:")
-    )
+    return _validate_label(AUTHORITY_ROTATION_ANCHOR_LABEL_PREFIX + anchor_id.removeprefix("sha256:"))
 
 
 def _validate_rotation_anchor_payload(value: bytes, *, anchor_id: str) -> bytes:
-    if (
-        type(value) is not bytes
-        or not 1 <= len(value) <= MAX_AUTHORITY_ROTATION_ANCHOR_BYTES
-    ):
+    if type(value) is not bytes or not 1 <= len(value) <= MAX_AUTHORITY_ROTATION_ANCHOR_BYTES:
         raise AuthorityRotationAnchorStoreError("rotation_anchor_value")
     try:
         from .oliver_authority_rotation import OliverAuthorityRotationRecord
@@ -775,23 +811,15 @@ class GraceAuthorityRotationAnchorStore:
         try:
             backend = self._key_store._password_backend()
             with self._key_store._inventory_lease():
-                with self._key_store._leases.acquire(
-                    f"keyring:{self._key_store.service}:{label}"
-                ):
+                with self._key_store._leases.acquire(f"keyring:{self._key_store.service}:{label}"):
                     encoded = backend.get_password(self._key_store.service, label)
-                    return (
-                        None
-                        if encoded is None
-                        else _decode_rotation_anchor(encoded, anchor_id=anchor_id)
-                    )
+                    return None if encoded is None else _decode_rotation_anchor(encoded, anchor_id=anchor_id)
         except AuthorityRotationAnchorStoreError:
             raise
         except KeyStoreError as exc:
             raise AuthorityRotationAnchorStoreError(str(exc)) from exc
         except Exception as exc:
-            raise AuthorityRotationAnchorStoreError(
-                f"rotation_anchor_load_{type(exc).__name__.lower()}"
-            ) from exc
+            raise AuthorityRotationAnchorStoreError(f"rotation_anchor_load_{type(exc).__name__.lower()}") from exc
 
     def compare_and_set(
         self,
@@ -802,23 +830,16 @@ class GraceAuthorityRotationAnchorStore:
     ) -> bool:
         label = _rotation_anchor_label(anchor_id)
         if expected_digest is not None and (
-            type(expected_digest) is not str
-            or not _DIGEST_RE.fullmatch(expected_digest)
+            type(expected_digest) is not str or not _DIGEST_RE.fullmatch(expected_digest)
         ):
-            raise AuthorityRotationAnchorStoreError(
-                "rotation_anchor_expected_digest"
-            )
+            raise AuthorityRotationAnchorStoreError("rotation_anchor_expected_digest")
         encoded_value = _encode_rotation_anchor(value, anchor_id=anchor_id)
         try:
             backend = self._key_store._password_backend()
             with self._key_store._inventory_lease():
                 self._key_store._register_inventory_label_locked(backend, label)
-                with self._key_store._leases.acquire(
-                    f"keyring:{self._key_store.service}:{label}"
-                ):
-                    current_encoded = backend.get_password(
-                        self._key_store.service, label
-                    )
+                with self._key_store._leases.acquire(f"keyring:{self._key_store.service}:{label}"):
+                    current_encoded = backend.get_password(self._key_store.service, label)
                     current = (
                         None
                         if current_encoded is None
@@ -827,9 +848,7 @@ class GraceAuthorityRotationAnchorStore:
                             anchor_id=anchor_id,
                         )
                     )
-                    current_digest = (
-                        None if current is None else _anchor_digest(current)
-                    )
+                    current_digest = None if current is None else _anchor_digest(current)
                     if current_digest != expected_digest:
                         return False
                     backend.set_password(
@@ -842,18 +861,14 @@ class GraceAuthorityRotationAnchorStore:
                         _decode_rotation_anchor(confirmed, anchor_id=anchor_id),
                         value,
                     ):
-                        raise AuthorityRotationAnchorStoreError(
-                            "rotation_anchor_write_lost"
-                        )
+                        raise AuthorityRotationAnchorStoreError("rotation_anchor_write_lost")
                     return True
         except AuthorityRotationAnchorStoreError:
             raise
         except KeyStoreError as exc:
             raise AuthorityRotationAnchorStoreError(str(exc)) from exc
         except Exception as exc:
-            raise AuthorityRotationAnchorStoreError(
-                f"rotation_anchor_write_{type(exc).__name__.lower()}"
-            ) from exc
+            raise AuthorityRotationAnchorStoreError(f"rotation_anchor_write_{type(exc).__name__.lower()}") from exc
 
 
 class StaticKeyStore:
@@ -861,6 +876,8 @@ class StaticKeyStore:
 
     def __init__(self, keys: dict[str, bytes] | None = None) -> None:
         self._keys = dict(keys or {})
+        self._anchors: dict[str, bytes] = {}
+        self._lock = threading.RLock()
 
     def get_or_create(self, label: str, *, length: int = 32) -> KeyMaterial:
         safe_label = _validate_label(label)
@@ -870,8 +887,64 @@ class StaticKeyStore:
             raise KeyStoreError("static key has the wrong length")
         return KeyMaterial(bytes(key), persistent=True, backend="static")
 
+    def get_existing(self, label: str, *, length: int = 32) -> KeyMaterial:
+        """Load a test key without creating replacement material."""
+
+        safe_label = _validate_label(label)
+        safe_length = _validate_length(length)
+        key = self._keys.get(safe_label)
+        if key is None:
+            raise KeyStoreError("required Algo CLI key material is absent")
+        if len(key) != safe_length:
+            raise KeyStoreError("static key has the wrong length")
+        return KeyMaterial(bytes(key), persistent=True, backend="static")
+
     def delete(self, label: str) -> None:
         self._keys.pop(_validate_label(label), None)
+
+    def load(self, journal_id: str) -> bytes | None:
+        """Load one test receipt head without creating anchor state."""
+
+        safe_id = str(journal_id or "")
+        if not _DIGEST_RE.fullmatch(safe_id):
+            raise ReceiptAnchorStoreError("anchor_journal_id")
+        with self._lock:
+            value = self._anchors.get(safe_id)
+            return None if value is None else bytes(value)
+
+    def compare_and_set(
+        self,
+        journal_id: str,
+        *,
+        expected_digest: str | None,
+        value: bytes,
+    ) -> bool:
+        """CAS one canonical test receipt head in memory."""
+
+        safe_id = str(journal_id or "")
+        if not _DIGEST_RE.fullmatch(safe_id):
+            raise ReceiptAnchorStoreError("anchor_journal_id")
+        if expected_digest is not None and (
+            type(expected_digest) is not str or not _DIGEST_RE.fullmatch(expected_digest)
+        ):
+            raise ReceiptAnchorStoreError("anchor_expected_digest")
+        validated = _validate_anchor_payload(value)
+        with self._lock:
+            current = self._anchors.get(safe_id)
+            actual = None if current is None else _anchor_digest(current)
+            if actual != expected_digest:
+                return False
+            self._anchors[safe_id] = bytes(validated)
+            return True
+
+    def delete_anchor(self, journal_id: str) -> None:
+        """Delete a test receipt head without affecting key material."""
+
+        safe_id = str(journal_id or "")
+        if not _DIGEST_RE.fullmatch(safe_id):
+            raise ReceiptAnchorStoreError("anchor_journal_id")
+        with self._lock:
+            self._anchors.pop(safe_id, None)
 
 
 def get_key_material(
@@ -899,6 +972,29 @@ def get_key_material(
                 secrets.token_bytes(safe_length),
             )
         return KeyMaterial(key, persistent=False, backend="volatile_process")
+    if require_persistent and not material.persistent:
+        raise KeyStoreError("persistent key material is required")
+    return material
+
+
+def get_existing_key_material(
+    label: str,
+    *,
+    length: int = 32,
+    require_persistent: bool,
+    store: Any | None = None,
+) -> KeyMaterial:
+    """Load exact key material without creating state when it is absent."""
+
+    safe_label = _validate_label(label)
+    safe_length = _validate_length(length)
+    selected = store if store is not None else KeyringKeyStore()
+    try:
+        material = selected.get_existing(safe_label, length=safe_length)
+    except Exception as exc:
+        if isinstance(exc, KeyStoreError):
+            raise
+        raise KeyStoreError(f"existing key source failed: {type(exc).__name__}") from exc
     if require_persistent and not material.persistent:
         raise KeyStoreError("persistent key material is required")
     return material
@@ -942,6 +1038,7 @@ __all__ = [
     "AuthorityRotationAnchorStoreError",
     "BROWSER_PAIRING_KEY_LABEL",
     "CONTROL_SIGNING_KEY_LABEL",
+    "ContentFreeReceiptHead",
     "KEYRING_SERVICE",
     "MAX_AUTHORITY_ROTATION_ANCHOR_BYTES",
     "MAX_RECEIPT_ANCHOR_BYTES",
@@ -955,6 +1052,7 @@ __all__ = [
     "StaticKeyStore",
     "get_browser_pairing_key",
     "get_control_signer",
+    "get_existing_key_material",
     "load_control_signer",
     "get_key_material",
 ]

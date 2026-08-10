@@ -1,4 +1,4 @@
-﻿"""ReAct+ Enhanced Reasoning-Action Loop.
+"""ReAct+ Enhanced Reasoning-Action Loop.
 
 Interleaves structured Thought, Action, and Observation steps with:
 - Typed action parsing (tool calls, sub-questions, assertions)
@@ -21,6 +21,7 @@ from ..chat_protocol import get_attr, normalize_tool_call
 @dataclass
 class ReactStep:
     """One step in a ReAct episode."""
+
     thought: str
     action: str
     action_input: dict[str, Any] | str
@@ -80,7 +81,7 @@ def compact_observations(steps: list[ReactStep], max_chars: int = 4000) -> str:
     lines: list[str] = []
     total = 0
     for i, step in enumerate(steps):
-        entry = f"[{i+1}] Thought: {step.thought[:200]}\n    Action: {step.action} -> Obs: {step.observation[:300]}"
+        entry = f"[{i + 1}] Thought: {step.thought[:200]}\n    Action: {step.action} -> Obs: {step.observation[:300]}"
         if total + len(entry) > max_chars:
             remaining = len(steps) - i
             lines.append(f"... ({remaining} earlier steps compacted)")
@@ -93,6 +94,7 @@ def compact_observations(steps: list[ReactStep], max_chars: int = 4000) -> str:
 @dataclass
 class ReactLoop:
     """Stateful ReAct+ loop for agent harness integration."""
+
     max_steps: int = 10
     observation_limit: int = 2000
     loop_detection_window: int = 3
@@ -104,7 +106,7 @@ class ReactLoop:
         """Detect if the last N actions are identical (stuck loop)."""
         if len(self._action_history) < self.loop_detection_window:
             return False
-        window = self._action_history[-self.loop_detection_window:]
+        window = self._action_history[-self.loop_detection_window :]
         return len(set(window)) == 1
 
     def add_step(self, step: ReactStep) -> None:
@@ -113,7 +115,7 @@ class ReactLoop:
 
     def truncate_observation(self, obs: str) -> str:
         if len(obs) > self.observation_limit:
-            return obs[:self.observation_limit - 20] + "\n...[truncated]"
+            return obs[: self.observation_limit - 20] + "\n...[truncated]"
         return obs
 
     def build_context(self, task: str, system: str) -> list[dict[str, Any]]:
@@ -126,10 +128,12 @@ class ReactLoop:
             messages.append(step.to_message())
             messages.append(step.observation_message())
         # Final prompt to continue reasoning
-        messages.append({
-            "role": "user",
-            "content": "Continue with your next Thought and Action. If you have enough information to answer, respond with just the final answer.",
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": "Continue with your next Thought and Action. If you have enough information to answer, respond with just the final answer.",
+            }
+        )
         return messages
 
 
@@ -153,12 +157,18 @@ def run_react_loop(
         tools: Optional list of tool functions for the model.
         system: System prompt (ReAct format instructions).
         max_steps: Maximum reasoning steps.
-        tool_map: Optional mapping of action names to callables for executing actions.
+        tool_map: Deprecated direct-call mapping. Supplying it is refused;
+            model actions must use Algo CLI's governed dispatcher instead.
         observation_limit: Max chars per observation.
 
     Returns:
         List of ReactStep records.
     """
+    if tool_map is not None:
+        raise ValueError("direct ReAct tool maps are disabled; use the governed agent dispatcher")
+    if tools:
+        raise ValueError("standalone ReAct tool execution is disabled; use the governed agent pipeline")
+
     loop = ReactLoop(max_steps=max_steps, observation_limit=observation_limit)
     kwargs: dict[str, Any] = {
         "model": model,
@@ -172,29 +182,30 @@ def run_react_loop(
         try:
             response = client.chat(**kwargs)
         except Exception as exc:
-            loop.add_step(ReactStep(
-                thought="(LLM call failed)",
-                action="error",
-                action_input={},
-                observation=str(exc),
-            ))
+            loop.add_step(
+                ReactStep(
+                    thought="(LLM call failed)",
+                    action="error",
+                    action_input={},
+                    observation=str(exc),
+                )
+            )
             break
 
         content = get_attr(get_attr(response, "message", {}), "content", "")
         tool_calls = get_attr(get_attr(response, "message", {}), "tool_calls", None)
 
-        # If the model used structured tool calls, execute them
+        # Standalone ReAct is reasoning-only. Tool schemas are rejected above,
+        # so an unsolicited structured call is recorded but never executed.
         if tool_calls:
             for call in tool_calls:
                 name, args = normalize_tool_call(call)
                 thought = f"(model called tool: {name})"
                 obs = ""
-                if tool_map and name in tool_map:
-                    try:
-                        obs = str(tool_map[name](**args))
-                    except Exception as exc:
-                        obs = f"Tool error: {exc}"
-                step = ReactStep(thought=thought, action=name, action_input=args, observation=loop.truncate_observation(obs))
+                obs = "Tool execution unavailable in standalone ReAct mode."
+                step = ReactStep(
+                    thought=thought, action=name, action_input=args, observation=loop.truncate_observation(obs)
+                )
                 loop.add_step(step)
             # Rebuild context and continue
             kwargs["messages"] = loop.build_context(task, system)
@@ -205,26 +216,17 @@ def run_react_loop(
 
         if not action or action.lower() == "finish":
             # Task complete or final answer
-            loop.add_step(ReactStep(
-                thought=thought,
-                action="finish",
-                action_input=action_input if isinstance(action_input, str) else json.dumps(action_input),
-                observation="Task complete.",
-            ))
+            loop.add_step(
+                ReactStep(
+                    thought=thought,
+                    action="finish",
+                    action_input=action_input if isinstance(action_input, str) else json.dumps(action_input),
+                    observation="Task complete.",
+                )
+            )
             break
 
-        # Execute action if tool_map provided
-        obs = ""
-        if tool_map:
-            fn = tool_map.get(action)
-            if fn:
-                try:
-                    args = action_input if isinstance(action_input, dict) else {"query": str(action_input)}
-                    obs = str(fn(**args))
-                except Exception as exc:
-                    obs = f"Tool error: {exc}"
-            else:
-                obs = f"Unknown action: {action}"
+        obs = "Tool execution unavailable in standalone ReAct mode."
 
         step = ReactStep(
             thought=thought,

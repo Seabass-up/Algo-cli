@@ -6,7 +6,7 @@ execution, policy, and contract code are unchanged; this module only swaps
 the output sink and gates the approval flow.
 
 Event schema (one JSON object per line, no embedded raw newlines):
-    {"type":"session_start","model":...,"host":...,"cwd":...,"approval_mode":...,"version":...}
+    {"type":"session_start","model":...,"host":...,"cwd":"<redacted>","approval_mode":...,"version":...}
     {"type":"thinking","text":...}
     {"type":"content","text":...}
     {"type":"model_round","round":... ,"phase":... ,"trigger":... ,
@@ -145,44 +145,43 @@ class JsonEventSink:
     # --- framing ---
 
     def session_start(self, *, model: str, host: str, cwd: str, version: str) -> None:
-        self._write({
-            "type": "session_start",
-            "model": model,
-            "host": host,
-            "cwd": cwd,
-            "approval_mode": self.approval_mode,
-            "version": version,
-        })
+        del cwd
+        self._write(
+            {
+                "type": "session_start",
+                "model": model,
+                "host": host,
+                "cwd": "<redacted>",
+                "approval_mode": self.approval_mode,
+                "version": version,
+            }
+        )
 
     def done(self, *, status: str, status_reason: str, duration_ms: float) -> None:
         total_tokens = self._prompt_tokens + self._completion_tokens
-        prompt_counts = [
-            int(item.get("prompt_tokens") or 0) for item in self._round_receipts
-        ]
-        prompt_eval_ms = sum(
-            float(item.get("prompt_eval_ms") or 0.0) for item in self._round_receipts
+        prompt_counts = [int(item.get("prompt_tokens") or 0) for item in self._round_receipts]
+        prompt_eval_ms = sum(float(item.get("prompt_eval_ms") or 0.0) for item in self._round_receipts)
+        generation_ms = sum(float(item.get("generation_ms") or 0.0) for item in self._round_receipts)
+        self._write(
+            {
+                "type": "done",
+                "status": status,
+                "status_reason": status_reason,
+                "tool_calls": self._tool_calls_done,
+                "duration_ms": round(duration_ms, 2),
+                "usage": {
+                    "prompt_tokens": self._prompt_tokens,
+                    "completion_tokens": self._completion_tokens,
+                    "total_tokens": total_tokens,
+                },
+                "rounds": {
+                    "count": len(self._round_receipts),
+                    "max_prompt_tokens": max(prompt_counts, default=0),
+                    "prompt_eval_ms": round(prompt_eval_ms, 2),
+                    "generation_ms": round(generation_ms, 2),
+                },
+            }
         )
-        generation_ms = sum(
-            float(item.get("generation_ms") or 0.0) for item in self._round_receipts
-        )
-        self._write({
-            "type": "done",
-            "status": status,
-            "status_reason": status_reason,
-            "tool_calls": self._tool_calls_done,
-            "duration_ms": round(duration_ms, 2),
-            "usage": {
-                "prompt_tokens": self._prompt_tokens,
-                "completion_tokens": self._completion_tokens,
-                "total_tokens": total_tokens,
-            },
-            "rounds": {
-                "count": len(self._round_receipts),
-                "max_prompt_tokens": max(prompt_counts, default=0),
-                "prompt_eval_ms": round(prompt_eval_ms, 2),
-                "generation_ms": round(generation_ms, 2),
-            },
-        })
 
     # --- model output ---
 
@@ -230,12 +229,14 @@ class JsonEventSink:
 
     def tool_call(self, *, call_id: str, name: str, args: dict[str, Any]) -> None:
         self._pending_call_ids.setdefault(name, deque()).append(call_id)
-        self._write({
-            "type": "tool_call",
-            "call_id": call_id,
-            "name": name,
-            "args": args,
-        })
+        self._write(
+            {
+                "type": "tool_call",
+                "call_id": call_id,
+                "name": name,
+                "args": args,
+            }
+        )
 
     def tool_result(
         self,
@@ -256,25 +257,29 @@ class JsonEventSink:
             status = "ok" if normalized == "succeeded" else normalized
         summary, truncated = _summarize(result)
         self._tool_calls_done += 1
-        self._write({
-            "type": "tool_result",
-            "call_id": call_id,
-            "name": name,
-            "status": status,
-            "duration_ms": round(duration_ms, 2) if duration_ms is not None else None,
-            "summary": summary,
-            "truncated": truncated,
-        })
+        self._write(
+            {
+                "type": "tool_result",
+                "call_id": call_id,
+                "name": name,
+                "status": status,
+                "duration_ms": round(duration_ms, 2) if duration_ms is not None else None,
+                "summary": summary,
+                "truncated": truncated,
+            }
+        )
 
     def tool_denied(self, *, call_id: str | None, name: str, reason: str) -> None:
         call_id = self._matching_call_id(name, call_id)
         self._tool_calls_done += 1
-        self._write({
-            "type": "tool_denied",
-            "call_id": call_id,
-            "name": name,
-            "reason": reason,
-        })
+        self._write(
+            {
+                "type": "tool_denied",
+                "call_id": call_id,
+                "name": name,
+                "reason": reason,
+            }
+        )
 
     def _matching_call_id(self, name: str, call_id: str | None) -> str:
         """Resolve a result to the oldest unmatched call of the same tool."""
@@ -300,11 +305,13 @@ class JsonEventSink:
 
     def error(self, *, error_class: str, message: str) -> None:
         self._errors.append({"class": str(error_class), "message": str(message)})
-        self._write({
-            "type": "error",
-            "class": error_class,
-            "message": message,
-        })
+        self._write(
+            {
+                "type": "error",
+                "class": error_class,
+                "message": message,
+            }
+        )
 
     @property
     def errors(self) -> tuple[dict[str, str], ...]:
@@ -329,6 +336,10 @@ def run_oneshot(
     # interactive path when --oneshot is not used.
     from . import deliberation, display, harness, main, skills
     from .config import Config
+    from .elsie_echo_preflight import (
+        EchoAuxiliaryPreflightError,
+        prepare_echo_auxiliary_state,
+    )
     from .model_routing import effective_runtime_host
 
     cfg = Config.load()
@@ -344,10 +355,6 @@ def run_oneshot(
             if value is not None and hasattr(cfg, key):
                 persistent_values.setdefault(key, getattr(cfg, key))
                 setattr(cfg, key, value)
-    harness.configure_context_sources(
-        external=cfg.external_harness_sources_enabled,
-        index_compute_lab=cfg.index_compute_lab_auto_inject,
-    )
     if approval_mode not in {"never", "auto"}:
         raise ValueError("approval_mode must be 'never' or 'auto'")
     cfg.auto_mode = approval_mode == "auto"
@@ -374,9 +381,23 @@ def run_oneshot(
     started = time.perf_counter()
     status = "complete"
     status_reason = ""
+    preflight_succeeded = False
     try:
+        prepare_echo_auxiliary_state(cfg)
+        preflight_succeeded = True
+        harness.configure_context_sources(
+            external=cfg.external_harness_sources_enabled,
+            index_compute_lab=cfg.index_compute_lab_auto_inject,
+        )
         client = main.create_client(cfg)
         main.agent_loop(client, cfg, prompt)
+    except EchoAuxiliaryPreflightError:
+        status = "failed"
+        status_reason = "echo_auxiliary_preflight_refused"
+        sink.error(
+            error_class="policy",
+            message="Echo-protected auxiliary state could not be prepared safely.",
+        )
     except KeyboardInterrupt:
         status = "failed"
         status_reason = "interrupted"
@@ -387,7 +408,8 @@ def run_oneshot(
         sink.error(error_class="internal", message=status_reason)
     finally:
         display.uninstall_json_sink()
-        skills.ensure_dirs()  # restore any deferred dir state
+        if preflight_succeeded:
+            skills.ensure_dirs()  # restore any deferred dir state
         # agent_loop saves config; restore bridge-only mutations and CLI override fields.
         for key, value in persistent_values.items():
             setattr(cfg, key, value)
@@ -412,6 +434,7 @@ def run_oneshot(
 def _resolve_version() -> str:
     try:
         from importlib.metadata import version
+
         return version("algo-cli-runtime")
     except Exception:
         return "unknown"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -68,16 +69,10 @@ def test_curated_project_source_tuples_are_contract_focused() -> None:
     docs_memory_roots = [
         root
         for root in roots
-        if root.harness == "algo-cli"
-        and root.kind == "memory"
-        and root.root == runtime_docs_root
+        if root.harness == "algo-cli" and root.kind == "memory" and root.root == runtime_docs_root
     ]
     docs_wiki_roots = [
-        root
-        for root in roots
-        if root.harness == "algo-cli"
-        and root.kind == "wiki"
-        and root.root == runtime_docs_root
+        root for root in roots if root.harness == "algo-cli" and root.kind == "wiki" and root.root == runtime_docs_root
     ]
     assert [root.patterns for root in docs_memory_roots] == [EXPECTED_MEMORY_DOCS]
     assert [root.patterns for root in docs_wiki_roots] == [EXPECTED_WIKI_DOCS]
@@ -184,3 +179,49 @@ def test_product_memory_quality_uses_categories_and_excludes_personal_records() 
     assert missing_quality["personal_memory_records"] == 1
     assert missing_quality["covered_product_memory_categories"] == list(EXPECTED_CATEGORIES[:2])
     assert missing_quality["missing_product_memory_categories"] == ["algorithm-evidence"]
+
+
+def test_reviewed_wiki_docs_expose_runtime_and_evidence_boundaries() -> None:
+    external = (DOCS_ROOT / "external-agent-store-operations.md").read_text(encoding="utf-8")
+    privacy = (DOCS_ROOT / "privacy-and-context.md").read_text(encoding="utf-8")
+    graph = (DOCS_ROOT / "index-compute-lab-integration.md").read_text(encoding="utf-8")
+    echo = (DOCS_ROOT / "echo-veil-security-status.md").read_text(encoding="utf-8")
+
+    assert all(
+        label in external
+        for label in (
+            "Supported capability",
+            "Configured sources",
+            "Currently indexed sources",
+            "Runtime-disabled sources",
+        )
+    )
+    assert "/harness status" in external
+
+    privacy_frontmatter = harness.parse_frontmatter(privacy)
+    assert privacy_frontmatter["updated"] == "2026-08-10"
+    assert privacy_frontmatter["last_reviewed"] == "2026-08-10"
+    assert privacy_frontmatter["runtime_version"] == "Algo CLI v0.18.0"
+
+    graph_frontmatter = harness.parse_frontmatter(graph)
+    assert graph_frontmatter["concept"] == "concept:algo-cli"
+    assert "retrieval evidence, not proof" in graph.lower()
+
+    assert "Reproducible verification stamp" in echo
+    assert "PYTHONPATH=. .venv/bin/pytest" in echo
+    assert "exact count intentionally is not a release invariant" in echo
+    assert "nine `echo_veil_*` tools" in echo
+    assert "all_records_shielded=true" in echo
+    assert "local archive" in echo
+    assert "production_ready=false" in echo
+
+
+def test_main_split_map_references_existing_modules() -> None:
+    text = (DOCS_ROOT / "main-split-map.md").read_text(encoding="utf-8")
+    frontmatter = harness.parse_frontmatter(text)
+    assert frontmatter["status"] == "architecture-status"
+    assert frontmatter["last_reviewed"] == "2026-07-24"
+
+    modules = re.findall(r"^\| `([^`]+\.py)` \|", text, flags=re.MULTILINE)
+    assert modules
+    assert [name for name in modules if not (REPO_ROOT / "algo_cli" / name).is_file()] == []

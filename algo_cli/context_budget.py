@@ -11,7 +11,14 @@ from typing import Any, Callable
 
 from ollama import Client
 
-from .config import Config, load_runtime_env
+from .config import (
+    Config,
+    echo_authority_selected_for_persistence,
+    load_runtime_env,
+    persisted_session_summary,
+    project_messages_for_persistence,
+    sanitize_attempt_ledger,
+)
 from . import dorothy_perf_telemetry as perf_telemetry
 from . import evelyn_context_supersession as context_supersession
 from . import harness
@@ -33,6 +40,7 @@ OPTIONAL_CONTEXT_MIN_TOKENS = 96
 OPTIONAL_CONTEXT_TRUNCATION_SUFFIX = "\n...[truncated by context budget]"
 
 _SMALL_MODEL_THRESHOLD_B = 70.0
+PROTECTED_PROMPT_TOP_K = 3
 
 _CALIBRATION_BLOCK = (
     "\n\n## Accuracy Constraints (small-model mode)\n"
@@ -48,28 +56,28 @@ CONTEXT_USAGE_CACHE: tuple[tuple[Any, ...], int] | None = None
 
 
 def _echo_veil_memory_items(cfg: Config) -> list[str]:
-    """Return query-relevant durable memories, falling back to the legacy list."""
-    fallback = [str(item) for item in cfg.memories]
-    if not cfg.echo_veil_enabled:
-        return fallback
+    """Return memories from the one explicitly selected backend."""
     try:
-        from .ada_memory_echo_veil import (
-            protection_required,
-            recall_with_echo_veil,
-        )
+        from .ada_memory_echo_veil import echo_veil_authority_selected
+
+        echo_authority = echo_veil_authority_selected(cfg)
+        if echo_authority and not cfg.echo_veil_enabled:
+            return []
+    except Exception:
+        return []
+    if not echo_authority:
+        return [str(item) for item in cfg.memories]
+    try:
+        from .ada_memory_echo_veil import recall_with_echo_veil
 
         query = next(
-            (
-                str(message.get("content", ""))
-                for message in reversed(cfg.messages)
-                if message.get("role") == "user"
-            ),
+            (str(message.get("content", "")) for message in reversed(cfg.messages) if message.get("role") == "user"),
             "",
         )
         recalled = recall_with_echo_veil(cfg, query, top_k=8) if query else []
         if recalled:
             return list(dict.fromkeys(recalled))
-        return [] if protection_required(cfg) else fallback
+        return []
     except Exception as exc:
         logger = getattr(perf_telemetry, "logger", None)
         if logger is not None:
@@ -77,12 +85,76 @@ def _echo_veil_memory_items(cfg: Config) -> list[str]:
                 "Echo Veil context recall unavailable: %s",
                 type(exc).__name__,
             )
-        try:
-            from .ada_memory_echo_veil import protection_required
+        return []
 
-            return [] if protection_required(cfg) else fallback
-        except Exception:
-            return fallback
+
+def _protected_memory_prompt_section(cfg: Config) -> str:
+    """Render Echo memory metadata in required mode without legacy fallback."""
+
+    try:
+        from .ada_memory_echo_veil import (
+            get_echo_veil_readiness,
+            protected_memory_operating_contract,
+            protected_prompt_context,
+            protection_required,
+        )
+        from .deliberation import is_exact_response_task
+
+        if not protection_required(cfg):
+            return ""
+        contract = protected_memory_operating_contract(cfg)
+        query = next(
+            (str(message.get("content", "")) for message in reversed(cfg.messages) if message.get("role") == "user"),
+            "",
+        )
+        if not query:
+            return contract
+        if is_exact_response_task(query):
+            readiness = get_echo_veil_readiness(cfg, live_probe=True)
+            if (
+                readiness.get("healthy") is not True
+                or readiness.get("all_records_shielded") is not True
+                or readiness.get("local_protection_ready") is not True
+                or readiness.get("protection_policy") != "required"
+            ):
+                raise RuntimeError("required Echo Veil preflight is not healthy")
+            return (
+                f"{contract}\n\n## Protected Echo Veil Memory\n"
+                "Doctor-backed shield preflight passed. Semantic recall was "
+                "not consulted because this is a closed-form, wholly "
+                "self-contained response."
+            )
+        block = protected_prompt_context(
+            cfg,
+            query,
+            top_k=PROTECTED_PROMPT_TOP_K,
+        )
+        if block:
+            return f"{contract}\n\n## Protected Echo Veil Memory\n{block}"
+        return (
+            f"{contract}\n\n## Protected Echo Veil Memory\n"
+            "No answerable protected memory was returned. No legacy memory "
+            "fallback was consulted."
+        )
+    except Exception as exc:
+        logger = getattr(perf_telemetry, "logger", None)
+        if logger is not None:
+            logger.debug(
+                "Protected Echo Veil prompt recall unavailable: %s",
+                type(exc).__name__,
+            )
+        raise RuntimeError("required protected memory context is unavailable") from exc
+
+
+def _memory_prompt_section(cfg: Config) -> str:
+    protected = _protected_memory_prompt_section(cfg)
+    if protected:
+        return protected
+    memory_items = _echo_veil_memory_items(cfg)
+    if not memory_items:
+        return ""
+    memories = "\n".join(f"- {item}" for item in memory_items)
+    return f"## Long-term Memories\n{memories}"
 
 
 def invalidate_context_usage_cache() -> None:
@@ -98,6 +170,8 @@ def _context_usage_cache_key(
     user_message_fingerprint: int = 0,
 ) -> tuple[Any, ...]:
     last_message = cfg.messages[-1] if cfg.messages else {}
+    protected_identity = echo_authority_selected_for_persistence(cfg)
+    identity_key = () if protected_identity else identity.identity_mtime_key()
     return (
         len(cfg.messages),
         len(str(last_message.get("content", ""))),
@@ -108,7 +182,7 @@ def _context_usage_cache_key(
         len(cfg.memories),
         cfg.num_ctx,
         cfg.system,
-        identity.identity_mtime_key(),
+        identity_key,
         lessons_fingerprint,
         model_info_fingerprint,
         user_message_fingerprint,
@@ -237,7 +311,18 @@ def build_system_prompt(
     active_model_info: dict[str, Any] | None = None,
     user_message: str | None = None,
 ) -> str:
-    identity_block = identity.build_identity_block(retrieved_lessons=retrieved_lessons)
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    # Legacy lesson Markdown is a mutable plaintext memory store.  Once Echo
+    # owns memory, an omitted lesson selection must mean "no legacy lessons",
+    # never the historical inline-all fallback.
+    echo_authority = echo_veil_authority_selected(cfg)
+    if echo_authority:
+        retrieved_lessons = []
+    identity_block = identity.build_identity_block(
+        retrieved_lessons=retrieved_lessons,
+        protected=echo_authority,
+    )
     prompt = (identity_block + "\n\n" if identity_block else "") + cfg.system
     load_runtime_env(override=True)
     if _model_info_module.is_xai_model(cfg.model):
@@ -253,6 +338,25 @@ def build_system_prompt(
         "OpenClaw, Mercury, Pi, and shared .agents assets."
         if cfg.external_harness_sources_enabled
         else "External local agent stores are disabled. Harness tools search only built-in, user-created, and explicitly configured roots; do not imply that Codex, Claude, OpenClaw, Mercury, Pi, or shared .agents content is available."
+    )
+    if echo_authority:
+        external_harness_guidance += (
+            " Mutable memory roots and their cached records are excluded while Echo Veil is the sole memory authority."
+        )
+    lesson_identity_guidance = (
+        f"- {identity.LESSONS_PATH.name} — excluded local plaintext continuity; do not read, write, or index it while Echo Veil owns memory.\n"
+        if echo_authority
+        else f"- {identity.LESSONS_PATH.name} — accumulated lessons. Use append_lesson only when the user explicitly asks to store a lesson.\n"
+    )
+    memory_write_guidance = (
+        "- Echo Veil is the sole mutable memory authority. Explicit remember, lesson, and knowledge-note writes must route through Echo; never create a plaintext lesson, Intuition, graph-note, or external-memory shadow.\n"
+        if echo_authority
+        else "- Call append_lesson or remember only when the user explicitly requests that write. Do not duplicate a statement merely because it may qualify for automatic capture.\n"
+    )
+    graph_write_guidance = (
+        "When the user explicitly asks to persist a correction or contact, write_knowledge_graph_note routes it to Echo Veil; do not create an index-compute-lab atom or refresh the graph for persistence. "
+        if echo_authority
+        else "To persist a correction or contact before the next full reindex: write_knowledge_graph_note then harness_refresh. "
     )
     prompt += (
         "\n\n## Runtime Model Status\n"
@@ -289,10 +393,9 @@ def build_system_prompt(
             "- Prefer action_program for a predictable multi-step workflow once targets and checks are known; failed verification returns control to the model.\n"
             "- After one successful fail-on-mismatch verifier, give one concise final answer; do not reread, rediff, or rerun unchanged evidence."
         )
-        memory_items = _echo_veil_memory_items(cfg)
-        if memory_items:
-            memories = "\n".join(f"- {item}" for item in memory_items)
-            prompt += f"\n\n## Long-term Memories\n{memories}"
+        memory_section = _memory_prompt_section(cfg)
+        if memory_section:
+            prompt += f"\n\n{memory_section}"
         if active_model_info:
             size_b = _model_info_module.parameter_size_billions(active_model_info)
             if size_b is not None and size_b < _SMALL_MODEL_THRESHOLD_B:
@@ -304,25 +407,40 @@ def build_system_prompt(
             )
         from . import session_mode
 
-        prompt += (
-            f"\n\n{session_mode.prompt_section(cfg.session_mode, include_external=cfg.external_harness_sources_enabled)}"
-        )
+        prompt += f"\n\n{session_mode.prompt_section(cfg.session_mode, include_external=cfg.external_harness_sources_enabled)}"
         return prompt
     from . import session_commands
 
     prompt += f"\n\n## Session Slash Commands\n{session_commands.catalog_for_prompt()}"
-    if cfg.session_summary.strip() and json_sink() is None:
-        prompt += f"\n\n## Conversation Summary\n{cfg.session_summary.strip()}"
+    persisted_summary = persisted_session_summary(cfg).strip()
+    if persisted_summary and json_sink() is None:
+        prompt += f"\n\n## Conversation Summary\n{persisted_summary}"
+    identity_guidance = (
+        "\n\n## Protected Identity Boundary\n"
+        "The identity and soul text above is immutable repo-shipped product policy. "
+        "Local SOUL.md, IDENTITY.md, USER.md, and lessons-learned.md are plaintext continuity stores; "
+        "they are not read, stat-keyed, scaffolded, or injected while Echo Veil owns memory. "
+        "update_user_profile is unavailable in this mode; use an explicit reviewed Echo memory action.\n"
+        if echo_authority
+        else (
+            "\n\n## Identity Files\n"
+            "Your persona and user profile are managed identity files whose contents are already loaded above:\n"
+            f"- {identity.SOUL_PATH.name} — your voice and operating values. Read-only; never write programmatically.\n"
+            f"- {identity.IDENTITY_PATH.name} — who you are. Read-only; never write programmatically.\n"
+            f"- {identity.USER_PATH.name} — who the user is. Use the update_user_profile tool only when the user explicitly asks you to edit their profile.\n"
+        )
+    )
+    identity_read_guidance = (
+        "Local identity files are excluded in protected mode; never use filesystem, shell, session, or harness tools to recover them. "
+        if echo_authority
+        else "The contents of all four files are already loaded into this system prompt above; do not read_file them just to see what they say. "
+    )
     prompt += (
-        "\n\n## Identity Files\n"
-        "Your persona and user profile are managed identity files whose contents are already loaded above:\n"
-        f"- {identity.SOUL_PATH.name} — your voice and operating values. Read-only; never write programmatically.\n"
-        f"- {identity.IDENTITY_PATH.name} — who you are. Read-only; never write programmatically.\n"
-        f"- {identity.USER_PATH.name} — who the user is. Use the update_user_profile tool only when the user explicitly asks you to edit their profile.\n"
-        f"- {identity.LESSONS_PATH.name} — accumulated lessons. Use append_lesson only when the user explicitly asks to store a lesson.\n"
+        f"{identity_guidance}"
+        f"{lesson_identity_guidance}"
         "## Memory discipline (bounded automatic capture)\n"
         "- A deterministic completion gate evaluates only the original user text for explicit, high-confidence durable statements; it never learns from assistant, tool, retrieval, specialist, quoted, secret, or personal-data output.\n"
-        "- Call append_lesson or remember only when the user explicitly requests that write. Do not duplicate a statement merely because it may qualify for automatic capture.\n"
+        f"{memory_write_guidance}"
         "- Automatic capture is bounded, deduplicated, and reviewable with /memories; inspect or toggle it with /memory-auto status|on|off.\n"
         "- Long-term memories, lessons, harness RAG, and index-compute-lab graph blocks are navigation hints — verify with read_file or tools before acting.\n"
         "- Never store secrets, credentials, private keys, tokens, or inferred sensitive personal data.\n"
@@ -330,7 +448,7 @@ def build_system_prompt(
         "- Prefer one decisive tool call over several speculative ones when the target is already known.\n"
         "- Do not narrate every tool call; summarize outcomes in plain language after work completes.\n"
         "- index-compute-lab canonical for this product is concept:algo-cli (legacy ollama-cli / ollama-cli-concept names in graph output are retired).\n"
-        "The contents of all four files are already loaded into this system prompt above; do not read_file them just to see what they say. "
+        f"{identity_read_guidance}"
         "When the user references 'my wiki', 'my notes', or asks you to learn from their knowledge base, note that the harness RAG layer already injected the most relevant entries into the Relevant Context section (if present); use harness_search/harness_read only for explicit deep dives the retrieval missed."
         "\n\n## Local Harness Bridge\n"
         f"{external_harness_guidance} Use available_actions, harness_search, harness_read, harness_stats, and harness_refresh. "
@@ -340,7 +458,7 @@ def build_system_prompt(
         "ranked associations from the user's configured index-compute-lab sources. "
         "Treat it like harness RAG — navigation and relationship hints, not proof that files exist. "
         "Use query_knowledge_graph for ranked co-occurrence (not prose biographies), and use harness_search for supporting documents. "
-        "To persist a correction or contact before the next full reindex: write_knowledge_graph_note then harness_refresh. "
+        f"{graph_write_guidance}"
         "Use reindex_knowledge_graph only when the user explicitly asks to rebuild configured graph sources."
         "\n\n## Grok / xAI model compatibility\n"
         "When the user asks whether a grok-* model works in this harness, do not scan the repo blindly: "
@@ -366,12 +484,13 @@ def build_system_prompt(
     # One-shot tool results already carry failures in the message history.
     # Rebuilding the system prompt with a growing ledger invalidates Ollama's
     # prefix/KV cache on every tool turn, so keep automation prompts stable.
-    if cfg.attempt_ledger and json_sink() is None:
+    safe_attempts = sanitize_attempt_ledger(cfg.attempt_ledger)
+    if safe_attempts and json_sink() is None:
         ledger_lines = []
-        for item in cfg.attempt_ledger[-ATTEMPT_PROMPT_LIMIT:]:
+        for item in safe_attempts[-ATTEMPT_PROMPT_LIMIT:]:
             ledger_lines.append(
                 f"- {item.get('status', '?').upper()} {item.get('tool', '?')} "
-                f"{item.get('args_preview', '')}: {item.get('summary', '')}"
+                f"args={item.get('args_receipt', '')}: {item.get('summary', '')}"
             )
         prompt += (
             "\n\n## Attempt Ledger\n"
@@ -379,10 +498,9 @@ def build_system_prompt(
             "Only retry when the arguments materially change, new evidence appears, or the user asks.\n"
             + "\n".join(ledger_lines)
         )
-    memory_items = _echo_veil_memory_items(cfg)
-    if memory_items:
-        memories = "\n".join(f"- {item}" for item in memory_items)
-        prompt += f"\n\n## Long-term Memories\n{memories}"
+    memory_section = _memory_prompt_section(cfg)
+    if memory_section:
+        prompt += f"\n\n{memory_section}"
     if active_model_info:
         size_b = _model_info_module.parameter_size_billions(active_model_info)
         if size_b is not None and size_b < _SMALL_MODEL_THRESHOLD_B:
@@ -421,11 +539,7 @@ def build_system_prompt(
         include_external=cfg.external_harness_sources_enabled,
     )
     if mercury_gates:
-        full_doc = (
-            harness.load_mercury_stop_conditions()
-            if cfg.external_harness_sources_enabled
-            else ""
-        )
+        full_doc = harness.load_mercury_stop_conditions() if cfg.external_harness_sources_enabled else ""
         is_full = mercury_gates == full_doc and bool(full_doc)
         title = (
             "Stop Conditions (Mercury harness — full gates)"
@@ -541,12 +655,17 @@ def summarize_message_batch(
     if not batch:
         return cfg.session_summary
     source_lines = []
-    if cfg.session_summary.strip():
+    persisted_summary = persisted_session_summary(cfg).strip()
+    if persisted_summary:
         source_lines.append("CURRENT SUMMARY:")
-        source_lines.append(cfg.session_summary.strip())
+        source_lines.append(persisted_summary)
         source_lines.append("")
     source_lines.append("MESSAGES TO COMPRESS:")
-    for item in batch:
+    persisted_batch = project_messages_for_persistence(
+        batch,
+        echo_authority=echo_authority_selected_for_persistence(cfg),
+    )
+    for item in persisted_batch:
         role = item.get("role", "message")
         content = item.get("content") or item.get("thinking") or ""
         tool_name = item.get("tool_name")
@@ -588,9 +707,9 @@ def summarize_message_batch(
     except Exception:
         pass
     fallback = []
-    if cfg.session_summary.strip():
-        fallback.append(cfg.session_summary.strip())
-    for item in batch[-4:]:
+    if persisted_summary:
+        fallback.append(persisted_summary)
+    for item in persisted_batch[-4:]:
         role = item.get("role", "message")
         content = (item.get("content") or item.get("thinking") or "")[:240]
         fallback.append(f"{role}: {content}")
@@ -695,11 +814,7 @@ def prune_stale_tool_messages(cfg: Config) -> int:
         elif pending_calls:
             result_name = str(message.get("tool_name") or message.get("name") or "")
             pending_index = next(
-                (
-                    position
-                    for position, item in enumerate(pending_calls)
-                    if not result_name or item[2] == result_name
-                ),
+                (position for position, item in enumerate(pending_calls) if not result_name or item[2] == result_name),
                 0,
             )
             pending = pending_calls.pop(pending_index)
@@ -735,7 +850,9 @@ def prune_stale_tool_messages(cfg: Config) -> int:
     return removed
 
 
-def _split_for_compaction(messages: list[dict[str, Any]], keep_count: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _split_for_compaction(
+    messages: list[dict[str, Any]], keep_count: int
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     keep_from = max(0, len(messages) - keep_count)
     while keep_from > 0 and messages[keep_from].get("role") == "tool":
         keep_from -= 1
@@ -769,9 +886,8 @@ def maybe_compact_context(
         return False
     started = time.perf_counter()
     from . import main as _main
-    summary = summarize_message_batch(
-        cfg, batch, client, maintenance_client_fn=_main.small_maintenance_client
-    )
+
+    summary = summarize_message_batch(cfg, batch, client, maintenance_client_fn=_main.small_maintenance_client)
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
     cfg.session_summary = summary
     cfg.messages = kept
@@ -794,9 +910,8 @@ def rebuild_context_summary(client: Client, cfg: Config) -> tuple[bool, str]:
         return False, "No safe message boundary found for compaction."
     started = time.perf_counter()
     from . import main as _main
-    summary = summarize_message_batch(
-        cfg, batch, client, maintenance_client_fn=_main.small_maintenance_client
-    )
+
+    summary = summarize_message_batch(cfg, batch, client, maintenance_client_fn=_main.small_maintenance_client)
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
     cfg.session_summary = summary
     cfg.messages = kept

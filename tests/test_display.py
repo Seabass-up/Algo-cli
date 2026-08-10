@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import os
+import stat
+
 from rich.console import Console
 from rich.panel import Panel
 
 from algo_cli import display
+from algo_cli.grace_memory_receipts import ElsieReceiptAuthority, ElsieReceiptError
+from algo_cli.grace_key_store import StaticKeyStore
+from algo_cli.irene_privacy_views import PRIVACY_KEY_LABEL
 
 
 class _FakeLive:
@@ -219,6 +225,118 @@ def test_agent_block_completion_renders_verification_warning(monkeypatch):
     assert "Verification warning" in rendered
     assert "manually" in rendered and "confirm" in rendered
     assert "Implementation done." in rendered
+
+
+def test_protected_agent_block_omits_dump_and_purges_legacy_file(
+    monkeypatch,
+    config_dir,
+) -> None:
+    monkeypatch.setattr(display, "CONFIG_DIR", config_dir)
+    console = Console(record=True, width=140, theme=display.THEME_MAP["tokyo-night"])
+    monkeypatch.setattr(display, "console", console)
+    legacy = config_dir / "last-block-plan.md"
+    legacy.write_text("SECRET_LEGACY_BLOCK_CANARY", encoding="utf-8")
+    authority = ElsieReceiptAuthority.from_key_store(store=StaticKeyStore({PRIVACY_KEY_LABEL: b"d" * 32}))
+
+    display.show_agent_block_complete(
+        "plan",
+        "SECRET_CURRENT_BLOCK_CANARY",
+        duration_ms=100,
+        tool_calls=0,
+        status="complete",
+        protected=True,
+        receipt_authority=authority,
+    )
+
+    rendered = console.export_text()
+    assert not legacy.exists()
+    assert not list(config_dir.glob("last-block-*.md"))
+    assert "Protected dump omitted" in rendered
+    assert "hmac-sha256:" in rendered
+    if os.name == "posix":
+        assert stat.S_IMODE(config_dir.stat().st_mode) == 0o700
+
+
+def test_protected_agent_block_missing_key_never_falls_back_to_plaintext_dump(
+    monkeypatch,
+    config_dir,
+) -> None:
+    class FailingAuthority:
+        def receipt(self, *_args, **_kwargs):
+            raise ElsieReceiptError("missing persistent key")
+
+    monkeypatch.setattr(display, "CONFIG_DIR", config_dir)
+    console = Console(record=True, width=140, theme=display.THEME_MAP["tokyo-night"])
+    monkeypatch.setattr(display, "console", console)
+
+    display.show_agent_block_complete(
+        "implement",
+        "SECRET_NO_KEY_BLOCK_CANARY",
+        duration_ms=100,
+        tool_calls=0,
+        status="complete",
+        protected=True,
+        receipt_authority=FailingAuthority(),  # type: ignore[arg-type]
+    )
+
+    assert not list(config_dir.glob("last-block-*.md"))
+    assert "receipt unavailable" in console.export_text()
+
+
+def test_protected_agent_block_purge_unlinks_symlink_not_target(
+    monkeypatch,
+    config_dir,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(display, "CONFIG_DIR", config_dir)
+    target = tmp_path / "outside.md"
+    target.write_text("outside remains", encoding="utf-8")
+    linked = config_dir / "last-block-review.md"
+    try:
+        linked.symlink_to(target)
+    except OSError:
+        return
+
+    assert display.purge_legacy_agent_block_dumps() == 1
+    assert not linked.exists()
+    assert target.read_text(encoding="utf-8") == "outside remains"
+
+
+def test_protected_agent_display_missing_key_never_calls_create(
+    monkeypatch,
+    config_dir,
+) -> None:
+    def forbidden_create(cls):
+        raise AssertionError("protected display must not create a receipt key")
+
+    def missing_existing(cls):
+        raise ElsieReceiptError("missing existing key")
+
+    monkeypatch.setattr(display, "CONFIG_DIR", config_dir)
+    console = Console(record=True, width=140, theme=display.THEME_MAP["tokyo-night"])
+    monkeypatch.setattr(display, "console", console)
+    monkeypatch.setattr(
+        display.ElsieReceiptAuthority,
+        "from_key_store",
+        classmethod(forbidden_create),
+    )
+    monkeypatch.setattr(
+        display.ElsieReceiptAuthority,
+        "from_existing_key_store",
+        classmethod(missing_existing),
+    )
+
+    display.show_agent_block_complete(
+        "review",
+        "SECRET_DISPLAY_MISSING_KEY_CANARY",
+        duration_ms=1,
+        tool_calls=0,
+        status="complete",
+        protected=True,
+    )
+
+    assert not list(config_dir.glob("last-block-*.md"))
+    assert "receipt unavailable" in console.export_text()
 
 
 def test_agent_recovery_start_renders_reason_and_budget(monkeypatch):

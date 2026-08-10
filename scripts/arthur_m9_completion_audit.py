@@ -18,13 +18,11 @@ from typing import Any, Mapping, NoReturn
 ROOT = Path(__file__).resolve().parents[1]
 LEDGER_PATH = ROOT / "hardening" / "ada-evidence-ledger.json"
 REPORT_PATH = ROOT / "hardening" / "ada-m9-completion-audit.json"
+M8_ARTIFACT_PATH = ROOT / "hardening" / "grace-m8-local-qualification.json"
+NATHAN_ARTIFACT_PATH = ROOT / "hardening" / "nathan-agent-runtime-qualification.json"
 AUDIT_ID = "arthur-m9-completion-v1"
-EXPECTED_REQUIREMENT_IDENTITY_DIGEST = (
-    "sha256:91ead279a77ec689290691f4f6c27d61e1b4ad0d3b759ffbc383939891781a04"
-)
-EXPECTED_CONTRACT_DIGEST = (
-    "sha256:26a6b34c3a7f09df4255f922ce0f12e9da68f291e56da54a6e32a64053cacb32"
-)
+EXPECTED_REQUIREMENT_IDENTITY_DIGEST = "sha256:91ead279a77ec689290691f4f6c27d61e1b4ad0d3b759ffbc383939891781a04"
+EXPECTED_CONTRACT_DIGEST = "sha256:26a6b34c3a7f09df4255f922ce0f12e9da68f291e56da54a6e32a64053cacb32"
 MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _UTC_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
@@ -161,9 +159,7 @@ def _canonical_timestamp(value: object) -> bool:
     if type(value) is not str or _UTC_RE.fullmatch(value) is None:
         return False
     try:
-        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=timezone.utc
-        )
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     except ValueError:
         return False
     return parsed.strftime("%Y-%m-%dT%H:%M:%SZ") == value
@@ -196,7 +192,7 @@ def _validate_ledger_envelope(ledger: Mapping[str, Any]) -> None:
         _reject("m9_audit_ledger_schema")
 
 
-def _safe_document(path: Path) -> dict[str, Any]:
+def _safe_document_with_digest(path: Path) -> tuple[dict[str, Any], str]:
     candidate = path if path.is_absolute() else ROOT / path
     try:
         hardening_root = (ROOT / "hardening").resolve(strict=True)
@@ -217,16 +213,13 @@ def _safe_document(path: Path) -> dict[str, Any]:
     try:
         descriptor = os.open(
             candidate,
-            os.O_RDONLY
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
         )
         opened = os.fstat(descriptor)
         if (
             not stat.S_ISREG(opened.st_mode)
             or opened.st_nlink != 1
-            or (opened.st_dev, opened.st_ino, opened.st_size)
-            != (before.st_dev, before.st_ino, before.st_size)
+            or (opened.st_dev, opened.st_ino, opened.st_size) != (before.st_dev, before.st_ino, before.st_size)
         ):
             _reject("m9_audit_path")
         payload = bytearray()
@@ -263,6 +256,11 @@ def _safe_document(path: Path) -> dict[str, Any]:
         _reject("m9_audit_json")
     if type(value) is not dict:
         _reject("m9_audit_json")
+    return value, "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _safe_document(path: Path) -> dict[str, Any]:
+    value, _raw_digest = _safe_document_with_digest(path)
     return value
 
 
@@ -276,9 +274,7 @@ def _contract_projection() -> dict[str, Any]:
                 "required_evidence_kinds": list(required_kinds),
                 "requires_external_execution": external,
             }
-            for requirement_id, (milestone, required_kinds, external) in sorted(
-                REQUIREMENT_CONTRACT.items()
-            )
+            for requirement_id, (milestone, required_kinds, external) in sorted(REQUIREMENT_CONTRACT.items())
         ],
     }
 
@@ -337,12 +333,14 @@ def _external_authoritative_evidence(
     evidence: list[Mapping[str, Any]],
     required_kinds: tuple[str, ...],
 ) -> bool:
-    return any(
-        item["kind"] in required_kinds
+    authoritative_kinds = {
+        str(item["kind"])
+        for item in evidence
+        if item["kind"] in required_kinds
         and bool(item["digest"])
         and str(item["result"]).casefold().startswith(_EXTERNAL_PASS_PREFIXES)
-        for item in evidence
-    )
+    }
+    return set(required_kinds) <= authoritative_kinds
 
 
 def audit_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
@@ -399,9 +397,7 @@ def audit_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
 
     audit_rows: list[dict[str, Any]] = []
     latest_timestamps: list[str] = []
-    for requirement_id, (milestone, required_kinds, external) in sorted(
-        REQUIREMENT_CONTRACT.items()
-    ):
+    for requirement_id, (milestone, required_kinds, external) in sorted(REQUIREMENT_CONTRACT.items()):
         row = requirements_by_id[requirement_id]
         if (
             row.get("milestone") != milestone
@@ -415,15 +411,9 @@ def audit_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
         timestamps = sorted(str(item["timestamp"]) for item in evidence)
         latest_timestamp = timestamps[-1] if timestamps else ""
         latest_timestamps.extend(timestamps)
-        external_authoritative = (
-            _external_authoritative_evidence(evidence, required_kinds)
-            if external
-            else True
-        )
+        external_authoritative = _external_authoritative_evidence(evidence, required_kinds) if external else True
         requirement_ledger_status = str(row["status"])
-        if requirement_ledger_status == "verified" and (
-            missing_kinds or not external_authoritative
-        ):
+        if requirement_ledger_status == "verified" and (missing_kinds or not external_authoritative):
             audit_status = "failed"
         elif requirement_ledger_status == "verified":
             audit_status = "verified"
@@ -446,26 +436,19 @@ def audit_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
         )
 
     counts = {
-        status: sum(row["audit_status"] == status for row in audit_rows)
-        for status in ("blocked", "failed", "verified")
+        status: sum(row["audit_status"] == status for row in audit_rows) for status in ("blocked", "failed", "verified")
     }
     ledger_status = ledger.get("status")
     if ledger_status not in {"active", "lifted"}:
         _reject("m9_audit_ledger_status")
     for milestone_id, milestone_status in milestone_statuses.items():
-        requirement_statuses = {
-            row["ledger_status"]
-            for row in audit_rows
-            if row["milestone"] == milestone_id
-        }
+        requirement_statuses = {row["ledger_status"] for row in audit_rows if row["milestone"] == milestone_id}
         if milestone_status == "verified" and requirement_statuses != {"verified"}:
             _reject("m9_audit_milestone_consistency")
         if milestone_status == "pending" and requirement_statuses != {"pending"}:
             _reject("m9_audit_milestone_consistency")
     all_verified = counts == {"blocked": 0, "failed": 0, "verified": len(audit_rows)}
-    m0_m8_verified = all(
-        milestone_statuses[f"M{index}"] == "verified" for index in range(9)
-    )
+    m0_m8_verified = all(milestone_statuses[f"M{index}"] == "verified" for index in range(9))
     hard_091 = requirements_by_id["HARD-091"]
     ready_for_lift = (
         counts["failed"] == 0
@@ -510,8 +493,156 @@ def audit_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _mentions_artifact(value: object, artifact: str) -> bool:
+    if type(value) is not str:
+        return False
+    boundary = r"A-Za-z0-9_./-"
+    return re.search(rf"(?<![{boundary}]){re.escape(artifact)}(?![{boundary}])", value) is not None
+
+
+def _latest_artifact_evidence(
+    ledger: Mapping[str, Any],
+    *,
+    requirement_id: str,
+    artifact: str,
+    expected_kind: str,
+) -> Mapping[str, Any]:
+    requirements = ledger.get("requirements")
+    if type(requirements) is not list:
+        _reject("m9_audit_ledger_schema")
+    matches = [row for row in requirements if type(row) is dict and row.get("id") == requirement_id]
+    if len(matches) != 1:
+        _reject("m9_audit_local_evidence")
+    evidence = [
+        row
+        for row in _evidence_rows(matches[0].get("evidence"))
+        if _mentions_artifact(row.get("path_or_command"), artifact)
+    ]
+    if not evidence:
+        _reject("m9_audit_local_evidence")
+    latest_timestamp = max(str(row["timestamp"]) for row in evidence)
+    latest = [row for row in evidence if row["timestamp"] == latest_timestamp]
+    if len(latest) != 1 or latest[0].get("kind") != expected_kind or not latest[0].get("digest"):
+        _reject("m9_audit_local_evidence")
+    return latest[0]
+
+
+def _ledger_status_matches(evidence: Mapping[str, Any], status: str) -> bool:
+    result = str(evidence.get("result", "")).casefold()
+    return re.search(rf"(?<![a-z]){re.escape(status.casefold())}(?![a-z])", result) is not None
+
+
+def _ledger_forbids_public_claim(evidence: Mapping[str, Any]) -> bool:
+    rendered = " ".join(str(evidence.get(field, "")).casefold() for field in ("result", "limitations"))
+    explicit_false = re.search(
+        r"public[_ ]claim[_ ]eligible(?:\s+is)?\s+false",
+        rendered,
+    )
+    return explicit_false is not None or "forbids public benchmark claims" in rendered
+
+
+def audit_local_artifact_currency(
+    ledger: Mapping[str, Any],
+    *,
+    m8_artifact_path: Path = M8_ARTIFACT_PATH,
+    nathan_artifact_path: Path = NATHAN_ARTIFACT_PATH,
+) -> dict[str, dict[str, Any]]:
+    """Bind current local artifacts to their latest content-free ledger rows."""
+
+    contracts = (
+        (
+            "m8",
+            "m8",
+            "hardening/grace-m8-local-qualification.json",
+            "HARD-080",
+            "qualification",
+            "qualification",
+            "henry-m8-local-v1",
+            1,
+            "blocked",
+        ),
+        (
+            "nathan",
+            "nathan",
+            "hardening/nathan-agent-runtime-qualification.json",
+            "HARD-081",
+            "benchmark",
+            "benchmark",
+            "nathan-agent-runtime-hardening-v3",
+            3,
+            "pass",
+        ),
+        (
+            "m8_efficiency",
+            "m8",
+            "hardening/grace-m8-local-qualification.json",
+            "HARD-081",
+            "benchmark",
+            "qualification",
+            "henry-m8-local-v1",
+            1,
+            "blocked",
+        ),
+    )
+    snapshots = {
+        "m8": _safe_document_with_digest(m8_artifact_path),
+        "nathan": _safe_document_with_digest(nathan_artifact_path),
+    }
+    currency: dict[str, dict[str, Any]] = {}
+    for (
+        label,
+        snapshot_label,
+        artifact,
+        requirement_id,
+        evidence_kind,
+        identity_field,
+        identity_value,
+        schema_version,
+        expected_status,
+    ) in contracts:
+        document, raw_digest = snapshots[snapshot_label]
+        if (
+            type(document.get("schema_version")) is not int
+            or document.get("schema_version") != schema_version
+            or document.get(identity_field) != identity_value
+        ):
+            _reject("m9_audit_local_schema")
+        if document.get("status") != expected_status:
+            _reject("m9_audit_local_status")
+        if document.get("public_claim_eligible") is not False:
+            _reject("m9_audit_local_public_claim")
+        evidence = _latest_artifact_evidence(
+            ledger,
+            requirement_id=requirement_id,
+            artifact=artifact,
+            expected_kind=evidence_kind,
+        )
+        if evidence.get("digest") != raw_digest:
+            _reject("m9_audit_local_digest")
+        if not _ledger_status_matches(evidence, expected_status):
+            _reject("m9_audit_local_status")
+        if not _ledger_forbids_public_claim(evidence):
+            _reject("m9_audit_local_public_claim")
+        currency[label] = {
+            "artifact": artifact,
+            "ledger_requirement": requirement_id,
+            "ledger_timestamp": evidence["timestamp"],
+            "public_claim_eligible": False,
+            "raw_sha256": raw_digest,
+            "status": expected_status,
+        }
+    return currency
+
+
 def current_report() -> dict[str, Any]:
-    return audit_ledger(_safe_document(LEDGER_PATH))
+    ledger = _safe_document(LEDGER_PATH)
+    report = audit_ledger(ledger)
+    report["local_artifact_currency"] = audit_local_artifact_currency(
+        ledger,
+        m8_artifact_path=M8_ARTIFACT_PATH,
+        nathan_artifact_path=NATHAN_ARTIFACT_PATH,
+    )
+    return report
 
 
 def write_current_report(report_path: Path = REPORT_PATH) -> dict[str, Any]:
@@ -520,16 +651,10 @@ def write_current_report(report_path: Path = REPORT_PATH) -> dict[str, Any]:
     parent = report_path.parent.resolve()
     if report_path.exists() or report_path.is_symlink():
         information = report_path.lstat()
-        if (
-            report_path.is_symlink()
-            or not stat.S_ISREG(information.st_mode)
-            or information.st_nlink != 1
-        ):
+        if report_path.is_symlink() or not stat.S_ISREG(information.st_mode) or information.st_nlink != 1:
             _reject("m9_audit_report_identity")
     report = current_report()
-    payload = (json.dumps(report, ensure_ascii=True, indent=2, sort_keys=True) + "\n").encode(
-        "ascii"
-    )
+    payload = (json.dumps(report, ensure_ascii=True, indent=2, sort_keys=True) + "\n").encode("ascii")
     if not 1 <= len(payload) <= MAX_DOCUMENT_BYTES:
         _reject("m9_audit_report_bounds")
     descriptor, temporary_name = tempfile.mkstemp(

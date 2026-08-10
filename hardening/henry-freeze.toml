@@ -2,7 +2,7 @@
 schema_version = 1
 freeze_id = "algo-cli-hardening-2026-07-18"
 status = "active"
-base_commit = "20bb879"
+base_commit = "20bb8790ba548866fc88b0a0d976d6600fa84a5e"
 base_tag = "v0.18.0"
 started_at = "2026-07-18T00:00:00-05:00"
 reason = "Computer/browser authority research exposed fail-open policy, approval, outcome, privacy, plugin, and crash-consistency gaps."

@@ -2,7 +2,9 @@
 
 from algo_cli import reasoning_bridge
 from algo_cli.config import Config
-from algo_cli.reasoning import ReflexionEpisode
+from algo_cli.reasoning import ReflexionEpisode, run_react_loop
+
+import pytest
 
 
 def test_skips_when_chat_disabled():
@@ -17,6 +19,24 @@ def test_skips_react_mode():
     cfg.reasoning_chat_enabled = True
     cfg.reasoning_mode = "react"
     assert reasoning_bridge.maybe_reasoning_plan(cfg, object(), "plan a refactor of the loop") == ""
+
+
+def test_standalone_react_refuses_direct_tool_map_before_model_execution():
+    invoked: list[bool] = []
+
+    class ForbiddenClient:
+        def chat(self, **_kwargs):
+            raise AssertionError("unsafe ReAct configuration reached the model")
+
+    with pytest.raises(ValueError, match="direct ReAct tool maps are disabled"):
+        run_react_loop(
+            task="read protected state",
+            client=ForbiddenClient(),
+            model="test-model",
+            tool_map={"read_file": lambda **_kwargs: invoked.append(True)},
+        )
+
+    assert invoked == []
 
 
 def test_skips_trivial_message():

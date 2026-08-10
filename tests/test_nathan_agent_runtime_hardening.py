@@ -13,9 +13,7 @@ from algo_cli.evals import nathan_agent_runtime_hardening as benchmark
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = (
-    ROOT / "scripts" / "nathan_agent_runtime_qualification.py"
-)
+SCRIPT_PATH = ROOT / "scripts" / "nathan_agent_runtime_qualification.py"
 SPEC = importlib.util.spec_from_file_location(
     "nathan_agent_runtime_qualification_script",
     SCRIPT_PATH,
@@ -54,14 +52,7 @@ def test_benchmark_discovers_checkout_from_installed_module(
         source.parent.mkdir(parents=True, exist_ok=True)
         source.write_text("# source\n", encoding="utf-8")
 
-    installed_module = (
-        tmp_path
-        / "venv"
-        / "site-packages"
-        / "algo_cli"
-        / "evals"
-        / "nathan_agent_runtime_hardening.py"
-    )
+    installed_module = tmp_path / "venv" / "site-packages" / "algo_cli" / "evals" / "nathan_agent_runtime_hardening.py"
     installed_module.parent.mkdir(parents=True)
     installed_module.write_text("# installed\n", encoding="utf-8")
 
@@ -74,6 +65,232 @@ def test_benchmark_discovers_checkout_from_installed_module(
     assert discovered == checkout.resolve()
 
 
+def test_runtime_benchmark_source_manifest_covers_protected_execution_boundary() -> None:
+    required = {
+        "algo_cli/ada_memory_echo_veil.py",
+        "algo_cli/agent_blocks.py",
+        "algo_cli/agent_pipeline.py",
+        "algo_cli/agent_run_journal.py",
+        "algo_cli/agent_threads.py",
+        "algo_cli/chat_protocol.py",
+        "algo_cli/config.py",
+        "algo_cli/context_budget.py",
+        "algo_cli/elsie_echo_preflight.py",
+        "algo_cli/git_evidence.py",
+        "algo_cli/grace_key_store.py",
+        "algo_cli/grace_memory_receipts.py",
+        "algo_cli/irene_privacy_views.py",
+        "algo_cli/private_event_store.py",
+        "algo_cli/run_contract.py",
+        "tests/test_ada_memory_echo_veil.py",
+        "tests/test_agent_run_journal.py",
+        "tests/test_agent_threads.py",
+        "tests/test_elsie_echo_preflight.py",
+        "tests/test_grace_key_store.py",
+        "tests/test_grace_memory_receipts.py",
+        "tests/test_run_contract.py",
+    }
+
+    assert required <= set(benchmark.SOURCE_PATHS)
+    assert len(benchmark.SOURCE_PATHS) == len(set(benchmark.SOURCE_PATHS))
+    assert all((ROOT / relative).is_file() for relative in benchmark.SOURCE_PATHS)
+
+
+def test_source_reader_rejects_leaf_swap_before_descriptor_open(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source.py"
+    source.write_text("original\n", encoding="utf-8")
+    replacement = tmp_path / "replacement.py"
+    replacement.write_text("forged!!\n", encoding="utf-8")
+    original_open = benchmark.os.open
+    swapped = False
+
+    def swap_then_open(path, flags, *args):
+        nonlocal swapped
+        if Path(path) == source and not swapped:
+            swapped = True
+            source.rename(tmp_path / "original.py")
+            replacement.rename(source)
+        return original_open(path, flags, *args)
+
+    monkeypatch.setattr(benchmark, "ROOT", tmp_path)
+    monkeypatch.setattr(benchmark.os, "open", swap_then_open)
+
+    with pytest.raises(benchmark.AgentRuntimeBenchmarkError, match="changed while opening"):
+        benchmark._read_source_payload("source.py")
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO support is unavailable")
+def test_source_reader_rejects_fifo_swap_without_blocking(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source.py"
+    source.write_text("original\n", encoding="utf-8")
+    original_open = benchmark.os.open
+    observed_flags: list[int] = []
+    swapped = False
+
+    def swap_to_fifo_then_open(path, flags, *args):
+        nonlocal swapped
+        if Path(path) == source and not swapped:
+            swapped = True
+            source.unlink()
+            os.mkfifo(source)
+            observed_flags.append(flags)
+        return original_open(path, flags, *args)
+
+    monkeypatch.setattr(benchmark, "ROOT", tmp_path)
+    monkeypatch.setattr(benchmark.os, "open", swap_to_fifo_then_open)
+
+    with pytest.raises(benchmark.AgentRuntimeBenchmarkError, match="changed while opening"):
+        benchmark._read_source_payload("source.py")
+
+    assert swapped is True
+    assert len(observed_flags) == 1
+    assert observed_flags[0] & getattr(os, "O_NONBLOCK", 0)
+
+
+@pytest.mark.parametrize("mutation", ["mode", "timestamp"])
+def test_source_reader_rejects_metadata_change_during_descriptor_read(
+    tmp_path,
+    monkeypatch,
+    mutation,
+) -> None:
+    source = tmp_path / "source.py"
+    source.write_bytes(b"source-bound payload\n")
+    original_read = benchmark.os.read
+    mutated = False
+
+    def mutate_after_read(descriptor, size):
+        nonlocal mutated
+        chunk = original_read(descriptor, size)
+        if chunk and not mutated:
+            mutated = True
+            information = source.stat()
+            if mutation == "mode":
+                source.chmod((information.st_mode & 0o777) ^ 0o100)
+            else:
+                benchmark.os.utime(
+                    source,
+                    ns=(information.st_atime_ns, information.st_mtime_ns + 1_000_000_000),
+                )
+        return chunk
+
+    monkeypatch.setattr(benchmark, "ROOT", tmp_path)
+    monkeypatch.setattr(benchmark.os, "read", mutate_after_read)
+
+    with pytest.raises(benchmark.AgentRuntimeBenchmarkError, match="changed while reading"):
+        benchmark._read_source_payload("source.py")
+
+
+def test_source_tree_digest_rechecks_earlier_paths_after_full_read(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    first = tmp_path / "first.py"
+    first.write_text("first\n", encoding="utf-8")
+    second = tmp_path / "second.py"
+    second.write_text("second\n", encoding="utf-8")
+    original_read = benchmark._read_source_payload_with_identity
+
+    def mutate_first_after_reading_second(relative):
+        payload, identity = original_read(relative)
+        if relative == "second.py":
+            information = first.stat()
+            first.chmod((information.st_mode & 0o777) ^ 0o100)
+        return payload, identity
+
+    monkeypatch.setattr(benchmark, "ROOT", tmp_path)
+    monkeypatch.setattr(benchmark, "SOURCE_PATHS", ("first.py", "second.py"))
+    monkeypatch.setattr(
+        benchmark,
+        "_read_source_payload_with_identity",
+        mutate_first_after_reading_second,
+    )
+
+    with pytest.raises(benchmark.AgentRuntimeBenchmarkError, match="changed after reading: first.py"):
+        benchmark.source_tree_digest()
+
+
+def test_source_snapshot_rejects_mutation_across_qualification(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source.py"
+    source.write_text("source-bound payload\n", encoding="utf-8")
+    monkeypatch.setattr(benchmark, "ROOT", tmp_path)
+    monkeypatch.setattr(benchmark, "SOURCE_PATHS", ("source.py",))
+    _digest, snapshot = benchmark._capture_source_tree()
+    information = source.stat()
+    source.chmod((information.st_mode & 0o777) ^ 0o100)
+
+    with pytest.raises(
+        benchmark.AgentRuntimeBenchmarkError,
+        match="changed after reading",
+    ):
+        benchmark._verify_source_tree_snapshot(snapshot)
+
+
+def test_benchmark_rejects_source_mutation_during_execution(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source.py"
+    source.write_text("source-bound payload\n", encoding="utf-8")
+    original_run_probes = benchmark._run_probes
+
+    def run_then_mutate(root):
+        rows = original_run_probes(root)
+        information = source.stat()
+        source.chmod((information.st_mode & 0o777) ^ 0o100)
+        return rows
+
+    monkeypatch.setattr(benchmark, "ROOT", tmp_path)
+    monkeypatch.setattr(benchmark, "SOURCE_PATHS", ("source.py",))
+    monkeypatch.setattr(benchmark, "_run_probes", run_then_mutate)
+
+    with pytest.raises(
+        benchmark.AgentRuntimeBenchmarkError,
+        match="changed after reading",
+    ):
+        benchmark.run_benchmark(
+            contract_repetitions=3,
+            context_repetitions=3,
+            checkpoint_repetitions=3,
+            workload_repetitions=3,
+            warmups=0,
+        )
+
+
+def test_protected_journal_probe_rejects_crash_window_plaintext_leak(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    original = benchmark.agent_run_journal.AgentRunJournal.tool_intent
+
+    def leaking_tool_intent(self, **kwargs):
+        try:
+            return original(self, **kwargs)
+        finally:
+            with self.store.path.open("ab") as handle:
+                handle.write(b"NATHAN_PROTECTED_INTENT_CANARY")
+
+    monkeypatch.setattr(
+        benchmark.agent_run_journal.AgentRunJournal,
+        "tool_intent",
+        leaking_tool_intent,
+    )
+
+    with pytest.raises(
+        benchmark.AgentRuntimeBenchmarkError,
+        match="persisted plaintext or an unkeyed hash",
+    ):
+        benchmark._probe_protected_contract_journal_receipts(tmp_path)
+
+
 def test_runtime_benchmark_passes_every_source_bound_probe(
     report,
 ) -> None:
@@ -83,11 +300,18 @@ def test_runtime_benchmark_passes_every_source_bound_probe(
     )
 
     assert report["status"] == "pass"
+    assert report["schema_version"] == 3
+    assert report["benchmark"] == "nathan-agent-runtime-hardening-v3"
+    assert report["public_claim_eligible"] is False
     assert report["protocol"]["model_calls"] == 0
     assert report["protocol"]["network_calls"] == 0
-    assert report["correctness"]["passed"] == len(
-        benchmark.PROBES
-    )
+    assert report["correctness"]["passed"] == len(benchmark.PROBES)
+    assert len(benchmark.PROBES) == 17
+    assert {
+        "protected_contract_journal_recovery",
+        "protected_thread_projection_recovery",
+        "echo_agent_preflight_refusal",
+    } <= {row["id"] for row in report["correctness"]["probes"]}
     assert report["correctness"]["pass_rate"] == 1.0
     assert report["effectiveness"]["task_pass_rate"] == 1.0
     assert report["effectiveness"]["verifier_pass_rate"] == 1.0
@@ -95,18 +319,9 @@ def test_runtime_benchmark_passes_every_source_bound_probe(
     assert report["effectiveness"]["unverified_completions"] == 0
     assert report["effectiveness"]["duplicate_mutations"] == 0
     assert report["effectiveness"]["crash_resume_rate"] == 1.0
-    assert (
-        report["effectiveness"]["protocol_correctness_rate"]
-        == 1.0
-    )
-    assert (
-        report["effectiveness"]["context_usefulness_rate"]
-        == 1.0
-    )
-    assert all(
-        row["p50_ms"] <= row["p95_ms"] <= row["max_ms"]
-        for row in report["performance"].values()
-    )
+    assert report["effectiveness"]["protocol_correctness_rate"] == 1.0
+    assert report["effectiveness"]["context_usefulness_rate"] == 1.0
+    assert all(row["p50_ms"] <= row["p95_ms"] <= row["max_ms"] for row in report["performance"].values())
 
 
 def test_runtime_benchmark_recomputes_claimed_gates(report) -> None:
@@ -116,6 +331,27 @@ def test_runtime_benchmark_recomputes_claimed_gates(report) -> None:
     with pytest.raises(
         benchmark.AgentRuntimeBenchmarkError,
         match="gate is invalid",
+    ):
+        benchmark.validate_report(
+            tampered,
+            require_current_source=False,
+        )
+
+
+@pytest.mark.parametrize("replacement", [True, None])
+def test_runtime_benchmark_rejects_public_claim_eligibility_tampering(
+    report,
+    replacement,
+) -> None:
+    tampered = deepcopy(report)
+    if replacement is None:
+        del tampered["public_claim_eligible"]
+    else:
+        tampered["public_claim_eligible"] = replacement
+
+    with pytest.raises(
+        benchmark.AgentRuntimeBenchmarkError,
+        match="(?:fields do not match schema|identity is invalid)",
     ):
         benchmark.validate_report(
             tampered,
@@ -154,6 +390,7 @@ def test_qualification_artifact_round_trips_atomically(
     )
 
     assert restored["report_sha256"] == report["report_sha256"]
+    assert restored["public_claim_eligible"] is False
     if os.name == "posix":
         assert stat.S_IMODE(artifact.stat().st_mode) == 0o600
 
@@ -172,10 +409,22 @@ def test_qualification_private_mode_falls_back_without_fchmod(
         allowed_root=tmp_path,
     )
 
-    assert SCRIPT.verify_artifact(
-        artifact,
-        allowed_root=tmp_path,
-    )["report_sha256"] == report["report_sha256"]
+    assert (
+        SCRIPT.verify_artifact(
+            artifact,
+            allowed_root=tmp_path,
+        )["report_sha256"]
+        == report["report_sha256"]
+    )
+
+
+def test_qualification_receipt_retains_public_claim_limit(tmp_path, report) -> None:
+    artifact = tmp_path / "nathan-agent-runtime-qualification.json"
+
+    receipt = SCRIPT._receipt(report, artifact=artifact)
+
+    assert receipt["status"] == "pass"
+    assert receipt["public_claim_eligible"] is False
 
 
 def test_qualification_rejects_linked_artifact(

@@ -49,6 +49,7 @@ class ActionOutcome:
     error_code: str = ""
     deduplicated: bool = False
     compensation_action: str = ""
+    explicit_memory_write: bool = False
 
     @property
     def worked(self) -> bool:
@@ -89,6 +90,7 @@ class ActionOutcome:
             "error_code": self.error_code,
             "deduplicated": self.deduplicated,
             "compensation_action": self.compensation_action,
+            "explicit_memory_write": self.explicit_memory_write,
         }
 
 
@@ -126,15 +128,11 @@ def normalize_action_outcome(
     else:
         status = OutcomeStatus.FAILED
 
-    retry_allowed = (
-        status
-        in {
-            OutcomeStatus.FAILED,
-            OutcomeStatus.TIMED_OUT,
-            OutcomeStatus.CANCELLED,
-        }
-        and (not invoked or action.idempotency in {IdempotencyClass.PURE, IdempotencyClass.IDEMPOTENT})
-    )
+    retry_allowed = status in {
+        OutcomeStatus.FAILED,
+        OutcomeStatus.TIMED_OUT,
+        OutcomeStatus.CANCELLED,
+    } and (not invoked or action.idempotency in {IdempotencyClass.PURE, IdempotencyClass.IDEMPOTENT})
     if status is OutcomeStatus.UNKNOWN_OUTCOME:
         verification = VerificationStatus.UNKNOWN
         retry_allowed = False

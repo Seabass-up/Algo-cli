@@ -12,6 +12,7 @@ import fnmatch
 import math
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -19,6 +20,7 @@ from contextlib import contextmanager
 
 try:
     import numpy as _np
+
     _NUMPY = True
 except ImportError:
     _np = None  # type: ignore[assignment]
@@ -30,7 +32,7 @@ from typing import Any, Callable, Iterator
 
 
 from .cache_admission import WindowTinyLFUCache
-from .config import CONFIG_DIR, _atomic_write_text
+from .config import CONFIG_DIR, _atomic_write_text, _load_json_file
 from .retrieval_algorithms import BM25Index, lexical_tokens, repair_mojibake, stable_top_k
 
 
@@ -49,7 +51,7 @@ DEFAULT_EMBED_MODEL = "qwen3-embedding:latest"
 DEPRECATED_EMBED_MODELS = frozenset({"all-minilm", "all-minilm:latest"})
 EMBED_BATCH_SIZE = 128  # single HTTP round-trip; server processes batch in parallel
 EMBED_WRITE_INTERVAL_S = 5.0  # min seconds between full-index writes during embedding
-EMBED_PER_TURN_CAP = 32   # max records to embed per ensure_harness_index call
+EMBED_PER_TURN_CAP = 32  # max records to embed per ensure_harness_index call
 EMBED_PRIORITY_POLICY = "value-aware-v1"
 EMBED_PRIORITY_TIERS = (
     "project_core",
@@ -120,7 +122,7 @@ SECRET_RE = re.compile(
     r"(?:^|[/\\._-])"
     r"(?:secret|token|credentials?|auth(?:orization)?|password|passwd|api[_-]?key|access[_-]?token|private[_-]?key|\.env)"
     r"(?:[/\\._-]|$)",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
 _PRIVATE_KEY_BLOCK_RE = re.compile(
     r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----.*?"
@@ -137,20 +139,31 @@ _SECRET_ASSIGNMENT_RE = re.compile(
 )
 _URL_USERINFO_RE = re.compile(r"(https?://)[^\s/:@]+:[^\s/@]+@", re.IGNORECASE)
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)")
-_SKIP_DIRS: frozenset[str] = frozenset({
-    ".git", "node_modules", ".venv", "venv", "__pycache__",
-    ".tmp", "tmp", "logs", "sessions", "archive", "Email",
-    "fixtures", "test", "tests",
-})
+_SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        "node_modules",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".tmp",
+        "tmp",
+        "logs",
+        "sessions",
+        "archive",
+        "Email",
+        "fixtures",
+        "test",
+        "tests",
+    }
+)
 _VENDOR_DOC_MARKERS: tuple[str, ...] = ("pods/docs/", "packages/pods/docs/")
 _CHATGPT_CLIP_DESC_PREFIX = "chatgpt conversation"
 _INDEX_CACHE: dict[str, Any] | None = None
 _INDEX_CACHE_SIGNATURE: tuple[str, int, int] | None = None
 _STALE_CHECK_CACHE: tuple[tuple[str, int, int], float, bool] | None = None
 _ID_LOOKUP: dict[str, dict[str, Any]] | None = None
-_QUERY_VEC_CACHE: WindowTinyLFUCache[tuple[str, str], list[float]] = WindowTinyLFUCache(
-    max(1, QUERY_VEC_CACHE_SIZE)
-)
+_QUERY_VEC_CACHE: WindowTinyLFUCache[tuple[str, str], list[float]] = WindowTinyLFUCache(max(1, QUERY_VEC_CACHE_SIZE))
 
 
 @dataclass(frozen=True)
@@ -162,16 +175,22 @@ class _LexicalCandidateIndex:
     heading_terms: list[set[str]]
 
 
-_BM25_INDEX_CACHE: tuple[
-    tuple[tuple[str, ...], str, int, int, int],
-    list[dict[str, Any]],
-    _LexicalCandidateIndex,
-] | None = None
-_VECTOR_MATRIX_CACHE: tuple[
-    tuple[str, int, tuple[str, ...], str, int, int, int],
-    list[dict[str, Any]],
-    Any,
-] | None = None
+_BM25_INDEX_CACHE: (
+    tuple[
+        tuple[tuple[str, ...], str, tuple[str, ...], int, int, int],
+        list[dict[str, Any]],
+        _LexicalCandidateIndex,
+    ]
+    | None
+) = None
+_VECTOR_MATRIX_CACHE: (
+    tuple[
+        tuple[str, int, tuple[str, ...], str, tuple[str, ...], int, int, int],
+        list[dict[str, Any]],
+        Any,
+    ]
+    | None
+) = None
 
 
 def redact_sensitive_text(text: str) -> str:
@@ -191,12 +210,23 @@ def _metadata_only_json(path: Path) -> bool:
         or (name == "plugin.json" and path.parent.name == ".codex-plugin")
     )
 
+
 # Canonical field set returned by retrieve_for_query / hybrid_search.
 # Both keyword- and vector-path records are projected through this set so every
 # result has identical shape regardless of which retrieval surfaced it.
 _RESULT_FIELDS: tuple[str, ...] = (
-    "id", "harness", "kind", "title", "path", "relative_path",
-    "description", "tags", "summary", "snippet", "updated", "score",
+    "id",
+    "harness",
+    "kind",
+    "title",
+    "path",
+    "relative_path",
+    "description",
+    "tags",
+    "summary",
+    "snippet",
+    "updated",
+    "score",
 )
 
 
@@ -220,6 +250,7 @@ def _exclusive_harness_index_lock(*, timeout_seconds: float = 30.0) -> Iterator[
     with open(lock_path, "a+b") as lock_file:
         if os.name == "nt":
             import msvcrt
+
             lock_region = getattr(msvcrt, "locking")
             lock_nonblocking = getattr(msvcrt, "LK_NBLCK")
             unlock = getattr(msvcrt, "LK_UNLCK")
@@ -239,6 +270,7 @@ def _exclusive_harness_index_lock(*, timeout_seconds: float = 30.0) -> Iterator[
                 lock_region(lock_file.fileno(), unlock, 1)
         else:
             import fcntl
+
             while True:
                 try:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -312,9 +344,7 @@ def build_index_with_rust(previous: dict[str, Any] | None = None) -> dict[str, A
     # (matching size + mtime) â€” otherwise the embedding would describe stale content.
     if previous:
         prior_by_id: dict[str, dict[str, Any]] = {
-            r["id"]: r
-            for r in previous.get("records", [])
-            if r.get("id") and r.get("embedding")
+            r["id"]: r for r in previous.get("records", []) if r.get("id") and r.get("embedding")
         }
         if prior_by_id:
             for record in new_index.get("records", []):
@@ -460,7 +490,6 @@ def built_in_source_roots(*, include_external: bool = False) -> tuple[SourceRoot
         SourceRoot("algo-cli", "wiki", CONFIG_DIR / "wiki", ("*.md",), 100),
         SourceRoot("algo-cli", "wiki", docs_dir, CURATED_PROJECT_WIKI_DOCS, 20),
         SourceRoot("algo-cli", "memory", docs_dir, CURATED_PROJECT_MEMORY_DOCS, 20),
-
         SourceRoot(
             "algo-cli",
             "tool",
@@ -493,9 +522,54 @@ def built_in_source_roots(*, include_external: bool = False) -> tuple[SourceRoot
         SourceRoot("claude", "extension", CLAUDE_DIR / "plugins", ("SKILL.md",), 500),
         SourceRoot("openclaw", "skill", OPENCLAW_DIR / "skills", ("SKILL.md",), 120),
         SourceRoot("openclaw", "skill", OPENCLAW_DIR / "plugin-skills", ("SKILL.md",), 120),
-        SourceRoot("openclaw", "prompt", OPENCLAW_DIR / "workspace", ("AGENTS.md", "SOUL.md", "TOOLS.md", "USER.md", "HEARTBEAT.md", "IDENTITY.md", "lessons-learned.md", "LESSONS-LEARNED.md"), 40),
-        SourceRoot("openclaw", "prompt", OPENCLAW_DIR / "sandboxes", ("AGENTS.md", "SOUL.md", "TOOLS.md", "USER.md", "HEARTBEAT.md", "IDENTITY.md", "lessons-learned.md", "LESSONS-LEARNED.md"), 200),
-        SourceRoot("openclaw", "prompt", OPENCLAW_DIR / "agents", ("AGENTS.md", "SOUL.md", "TOOLS.md", "USER.md", "HEARTBEAT.md", "IDENTITY.md", "lessons-learned.md", "LESSONS-LEARNED.md"), 120),
+        SourceRoot(
+            "openclaw",
+            "prompt",
+            OPENCLAW_DIR / "workspace",
+            (
+                "AGENTS.md",
+                "SOUL.md",
+                "TOOLS.md",
+                "USER.md",
+                "HEARTBEAT.md",
+                "IDENTITY.md",
+                "lessons-learned.md",
+                "LESSONS-LEARNED.md",
+            ),
+            40,
+        ),
+        SourceRoot(
+            "openclaw",
+            "prompt",
+            OPENCLAW_DIR / "sandboxes",
+            (
+                "AGENTS.md",
+                "SOUL.md",
+                "TOOLS.md",
+                "USER.md",
+                "HEARTBEAT.md",
+                "IDENTITY.md",
+                "lessons-learned.md",
+                "LESSONS-LEARNED.md",
+            ),
+            200,
+        ),
+        SourceRoot(
+            "openclaw",
+            "prompt",
+            OPENCLAW_DIR / "agents",
+            (
+                "AGENTS.md",
+                "SOUL.md",
+                "TOOLS.md",
+                "USER.md",
+                "HEARTBEAT.md",
+                "IDENTITY.md",
+                "lessons-learned.md",
+                "LESSONS-LEARNED.md",
+            ),
+            120,
+        ),
         SourceRoot("openclaw", "wiki", OPENCLAW_DIR / "workspace" / "wiki", ("*.md",), 700),
         SourceRoot("openclaw", "memory", OPENCLAW_DIR / "memory", ("*.md", "*.json"), 80),
         SourceRoot("openclaw", "extension", OPENCLAW_DIR, ("openclaw.json", "plugins/installs.json"), 20),
@@ -512,6 +586,7 @@ def built_in_source_roots(*, include_external: bool = False) -> tuple[SourceRoot
 
 _EXTERNAL_SOURCES_ENABLED = False
 _INDEX_COMPUTE_LAB_SOURCE_ENABLED = False
+_PROTECTED_MEMORY_AUTHORITY = False
 SOURCE_ROOTS: tuple[SourceRoot, ...] = built_in_source_roots()
 
 
@@ -528,11 +603,33 @@ def configure_context_sources(*, external: bool, index_compute_lab: bool) -> Non
     _ID_LOOKUP = None
 
 
+def _protected_memory_source_allowed(root: SourceRoot) -> bool:
+    """Allow only repo-shipped, closed-pattern sources under Echo authority."""
+
+    if root.harness != "algo-cli":
+        return False
+    try:
+        candidate = os.path.abspath(os.fspath(root.root))
+        config_root = os.path.abspath(os.fspath(CONFIG_DIR))
+        if os.path.commonpath((config_root, candidate)) == config_root:
+            return False
+    except (OSError, TypeError, ValueError):
+        return False
+    return any(
+        root.kind == allowed.kind
+        and candidate == os.path.abspath(os.fspath(allowed.root))
+        and tuple(root.patterns) == tuple(allowed.patterns)
+        for allowed in built_in_source_roots(include_external=False)
+        if allowed.harness == "algo-cli" and os.path.abspath(os.fspath(allowed.root)) != config_root
+    )
+
+
 def _source_policy() -> dict[str, bool]:
     return {
         "external_agent_stores": _EXTERNAL_SOURCES_ENABLED,
         "index_compute_lab": _INDEX_COMPUTE_LAB_SOURCE_ENABLED,
     }
+
 
 _extra_roots_cache: tuple[int, list[SourceRoot]] | None = None  # (mtime_ns, roots)
 
@@ -600,10 +697,7 @@ def should_skip(path: Path) -> bool:
 
 
 def _record_path_tokens(record: dict[str, Any]) -> str:
-    return " ".join(
-        str(record.get(key, ""))
-        for key in ("id", "relative_path", "path")
-    ).replace("\\", "/")
+    return " ".join(str(record.get(key, "")) for key in ("id", "relative_path", "path")).replace("\\", "/")
 
 
 def is_chatgpt_clipping(fm: dict[str, Any]) -> bool:
@@ -625,9 +719,7 @@ def is_excluded_from_retrieval(record: dict[str, Any]) -> bool:
     tokens = _record_path_tokens(record)
     if "/archive/" in tokens or tokens.startswith("openclaw:wiki:archive/"):
         return True
-    if is_chatgpt_clipping(
-        {"description": record.get("description", ""), "tags": record.get("tags", [])}
-    ):
+    if is_chatgpt_clipping({"description": record.get("description", ""), "tags": record.get("tags", [])}):
         return True
     if str(record.get("kind", "")).lower() == "vendor-doc":
         return True
@@ -718,9 +810,7 @@ def iter_files(root: SourceRoot) -> list[Path]:
             except ValueError:
                 rel = filename
             matches = any(
-                fnmatch.fnmatch(filename, pattern)
-                if "/" not in pattern
-                else fnmatch.fnmatch(rel, pattern)
+                fnmatch.fnmatch(filename, pattern) if "/" not in pattern else fnmatch.fnmatch(rel, pattern)
                 for pattern in root.patterns
             )
             # Check SECRET_RE on the filename and skip any RELATIVE directory components
@@ -789,10 +879,7 @@ def _json_record_metadata(path: Path, text: str) -> dict[str, Any]:
         interface: dict[str, Any] = raw_interface if isinstance(raw_interface, dict) else {}
         title = interface.get("displayName") or data.get("name") or path.stem
         description = (
-            interface.get("shortDescription")
-            or data.get("description")
-            or interface.get("longDescription")
-            or ""
+            interface.get("shortDescription") or data.get("description") or interface.get("longDescription") or ""
         )
         tags = _coerce_tags(data.get("keywords"))
         tags.extend(str(value).lower() for value in _coerce_tags(interface.get("capabilities")))
@@ -810,9 +897,8 @@ def _json_record_metadata(path: Path, text: str) -> dict[str, Any]:
     if path.name == ".codex-remote-plugin-install.json":
         plugin_name = path.parent.name or "unknown"
         remote_plugin_id = str(data.get("remote_plugin_id") or "").strip()
-        description = (
-            f"Codex remote plugin install receipt for {plugin_name}."
-            + (f" Remote plugin id: {remote_plugin_id}." if remote_plugin_id else "")
+        description = f"Codex remote plugin install receipt for {plugin_name}." + (
+            f" Remote plugin id: {remote_plugin_id}." if remote_plugin_id else ""
         )
         return {
             "title": f"Codex plugin install: {plugin_name}",
@@ -911,9 +997,7 @@ def _normalize_index_records(index: dict[str, Any]) -> dict[str, Any]:
         **index,
         "record_count": len(normalized),
         "records": normalized,
-        "embeddings": _embeddings_summary(
-            [r for r in normalized if isinstance(r, dict)], active_model=active_model
-        ),
+        "embeddings": _embeddings_summary([r for r in normalized if isinstance(r, dict)], active_model=active_model),
     }
 
 
@@ -935,25 +1019,20 @@ def make_record(root: SourceRoot, path: Path, *, stat_result: Any | None = None)
         str(json_meta.get("description") if json_meta.get("description") is not None else fm.get("description", ""))
     )
     tags = _unique_tags(
-        [
-            redact_sensitive_text(tag)
-            for tag in [*_coerce_tags(fm.get("tags")), *_coerce_tags(json_meta.get("tags"))]
-        ]
+        [redact_sensitive_text(tag) for tag in [*_coerce_tags(fm.get("tags")), *_coerce_tags(json_meta.get("tags"))]]
     )
     stat_result = stat_result or path.stat()
     links = sorted(set(WIKILINK_RE.findall(text)))[:40]
-    summary = " ".join(line.strip() for line in text.splitlines() if line.strip() and not line.startswith("---"))[:SUMMARY_CHARS]
+    summary = " ".join(line.strip() for line in text.splitlines() if line.strip() and not line.startswith("---"))[
+        :SUMMARY_CHARS
+    ]
     # Keep the display summary compact, but rank and embed against the full bounded
     # read. Using the 500-character summary here made terms later in otherwise-small
     # documents impossible to retrieve.
-    index_text = " ".join(
-        line.strip() for line in text.splitlines() if line.strip() and not line.startswith("---")
-    )[:MAX_INDEX_TEXT]
-    heading_text = (
-        _markdown_heading_text(path)
-        if root.harness == "algo-cli" and rel == REVIEWED_ALGO_REL
-        else ""
-    )
+    index_text = " ".join(line.strip() for line in text.splitlines() if line.strip() and not line.startswith("---"))[
+        :MAX_INDEX_TEXT
+    ]
+    heading_text = _markdown_heading_text(path) if root.harness == "algo-cli" and rel == REVIEWED_ALGO_REL else ""
     status = str(fm.get("status", "") or "").strip()
     search_text = " ".join(
         str(value)
@@ -1096,11 +1175,7 @@ def _merge_runtime_capability_records(
     """Replace generated capability rows while preserving all file records."""
     raw_records = index.get("records", [])
     records = (
-        [
-            record
-            for record in raw_records
-            if not isinstance(record, dict) or record.get("kind") != "runtime_capability"
-        ]
+        [record for record in raw_records if not isinstance(record, dict) or record.get("kind") != "runtime_capability"]
         if isinstance(raw_records, list)
         else []
     )
@@ -1130,8 +1205,10 @@ def _parse_extra_source_roots_payload(data: Any) -> tuple[list[SourceRoot], int]
             if not isinstance(item, dict):
                 raise TypeError("root entry must be an object")
             patterns = item.get("patterns", ["*.md"])
-            if not isinstance(patterns, list) or not patterns or not all(
-                isinstance(pattern, str) and pattern.strip() for pattern in patterns
+            if (
+                not isinstance(patterns, list)
+                or not patterns
+                or not all(isinstance(pattern, str) and pattern.strip() for pattern in patterns)
             ):
                 raise TypeError("patterns must be a non-empty string list")
             harness_name = str(item["harness"]).strip()
@@ -1258,7 +1335,10 @@ def all_source_roots() -> tuple[SourceRoot, ...]:
                 dynamic.append(SourceRoot("index-compute-lab", "memory", atoms, ("*.md",), 120))
         except Exception:
             pass
-    return _dedupe_source_roots([*SOURCE_ROOTS, *dynamic, *load_extra_source_roots()])
+    roots = _dedupe_source_roots([*SOURCE_ROOTS, *dynamic, *load_extra_source_roots()])
+    if _PROTECTED_MEMORY_AUTHORITY:
+        return tuple(root for root in roots if _protected_memory_source_allowed(root))
+    return roots
 
 
 def source_roots_diagnostics(records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -1271,11 +1351,7 @@ def source_roots_diagnostics(records: list[dict[str, Any]] | None = None) -> dic
     unreadable = [root for root in adapters if _source_root_state(root) == "unreadable"]
     indexed_records = records or []
     external_harnesses = {root.harness for root in adapters}
-    indexed_external = [
-        record
-        for record in indexed_records
-        if str(record.get("harness") or "") in external_harnesses
-    ]
+    indexed_external = [record for record in indexed_records if str(record.get("harness") or "") in external_harnesses]
     configured_by_harness: dict[str, int] = {}
     available_by_harness: dict[str, int] = {}
     for root in adapters:
@@ -1304,7 +1380,6 @@ def source_roots_diagnostics(records: list[dict[str, Any]] | None = None) -> dic
     }
 
 
-
 def _index_file_signature() -> tuple[str, int, int] | None:
     """Return a cheap identity for the persisted index file."""
     try:
@@ -1325,9 +1400,7 @@ def index_is_stale(*, allow_cached: bool = False) -> bool:
         if cached_signature == signature and time.monotonic() - checked_at <= STALE_CHECK_TTL_S:
             return stale
 
-    index: dict[str, Any] | None = (
-        _INDEX_CACHE if _INDEX_CACHE_SIGNATURE == signature else None
-    )
+    index: dict[str, Any] | None = _INDEX_CACHE if _INDEX_CACHE_SIGNATURE == signature else None
     if index is None:
         try:
             index = json.loads(INDEX_PATH.read_text(encoding="utf-8"))
@@ -1537,8 +1610,7 @@ def build_index(previous: dict[str, Any] | None = None) -> dict[str, Any]:
         "generated": datetime.now().isoformat(timespec="seconds"),
         "record_count": len(records),
         "roots": [
-            {"harness": r.harness, "kind": r.kind, "root": str(r.root), "patterns": list(r.patterns)}
-            for r in all_roots
+            {"harness": r.harness, "kind": r.kind, "root": str(r.root), "patterns": list(r.patterns)} for r in all_roots
         ],
         "records": records,
         "refresh_stats": {
@@ -1607,11 +1679,7 @@ def _recent_index_cache() -> dict[str, Any] | None:
     if signature is None or signature != _INDEX_CACHE_SIGNATURE:
         return None
     cached_signature, checked_at, stale = _STALE_CHECK_CACHE
-    if (
-        cached_signature == signature
-        and not stale
-        and time.monotonic() - checked_at <= STALE_CHECK_TTL_S
-    ):
+    if cached_signature == signature and not stale and time.monotonic() - checked_at <= STALE_CHECK_TTL_S:
         return _INDEX_CACHE
     return None
 
@@ -1656,6 +1724,171 @@ def load_index(refresh: bool = False) -> dict[str, Any]:
             return recent
     with _exclusive_harness_index_lock():
         return _load_index_unlocked(refresh=refresh)
+
+
+def invalidate_user_skill_records() -> int:
+    """Remove cached records sourced from mutable user-crystallized skills.
+
+    Echo-protected startup quarantines those files before calling this helper.
+    Repo-shipped and plugin skills use different absolute roots and remain.
+    """
+
+    with _exclusive_harness_index_lock():
+        loaded = _load_json_file(
+            INDEX_PATH,
+            None,
+            preserve_corrupt=False,
+        )
+        if not isinstance(loaded, dict):
+            try:
+                descriptor = INDEX_PATH.lstat()
+            except FileNotFoundError:
+                _set_index_cache(None)
+                return 0
+            if not stat.S_ISREG(descriptor.st_mode) or stat.S_ISLNK(descriptor.st_mode):
+                raise OSError("harness index identity is unsafe")
+            INDEX_PATH.unlink()
+            _set_index_cache(None)
+            return 0
+        records = loaded.get("records", [])
+        if not isinstance(records, list):
+            INDEX_PATH.unlink()
+            _set_index_cache(None)
+            return 0
+        root = os.path.abspath(os.fspath(CONFIG_DIR / "skills"))
+
+        def from_user_skill(record: Any) -> bool:
+            if not isinstance(record, dict) or not record.get("path"):
+                return False
+            candidate = os.path.abspath(os.fspath(record["path"]))
+            try:
+                return os.path.commonpath((root, candidate)) == root
+            except ValueError:
+                return False
+
+        retained = [record for record in records if not from_user_skill(record)]
+        removed = len(records) - len(retained)
+        if removed:
+            embedding_meta = loaded.get("embeddings")
+            active_model = (
+                str(embedding_meta.get("active_model") or DEFAULT_EMBED_MODEL)
+                if isinstance(embedding_meta, dict)
+                else DEFAULT_EMBED_MODEL
+            )
+            loaded = {
+                **loaded,
+                "record_count": len(retained),
+                "records": retained,
+                "embeddings": _embeddings_summary(
+                    [record for record in retained if isinstance(record, dict)],
+                    active_model=active_model,
+                ),
+            }
+            _atomic_write_json(INDEX_PATH, loaded)
+            _set_index_cache(loaded, persisted=True, sources_current=False)
+        else:
+            _set_index_cache(loaded, persisted=True, sources_current=False)
+        return removed
+
+
+def _protected_memory_record_allowed(record: dict[str, Any]) -> bool:
+    kind = record.get("kind")
+    harness_name = record.get("harness")
+    if (
+        not isinstance(kind, str)
+        or not kind
+        or len(kind) > 64
+        or not isinstance(harness_name, str)
+        or not harness_name
+        or len(harness_name) > 64
+    ):
+        return False
+    if harness_name == "algo-cli" and kind == "runtime_capability":
+        return True
+    if harness_name != "algo-cli":
+        return False
+    candidate = str(record.get("path") or "")
+    if not candidate:
+        return False
+    try:
+        candidate_path = os.path.abspath(candidate)
+    except (OSError, TypeError, ValueError):
+        return False
+    for root in built_in_source_roots(include_external=False):
+        if not _protected_memory_source_allowed(root) or root.kind != kind:
+            continue
+        root_path = os.path.abspath(os.fspath(root.root))
+        try:
+            if os.path.commonpath((root_path, candidate_path)) != root_path:
+                continue
+            relative = os.path.relpath(candidate_path, root_path).replace("\\", "/")
+        except (OSError, ValueError):
+            continue
+        if relative.startswith("../") or relative in {".", ".."}:
+            continue
+        relative_path = Path(relative)
+        if any(relative_path.match(pattern) for pattern in root.patterns):
+            return True
+    return False
+
+
+def configure_protected_memory_authority(enabled: bool) -> int:
+    """Exclude and purge mutable memory roots while Echo owns memory.
+
+    Repo-shipped lifecycle/evidence contracts remain readable as immutable
+    product documentation. User and external harness memory bodies do not
+    remain in the persisted index and cannot be reintroduced by refresh.
+    """
+
+    global _PROTECTED_MEMORY_AUTHORITY
+    _PROTECTED_MEMORY_AUTHORITY = bool(enabled)
+    if not _PROTECTED_MEMORY_AUTHORITY:
+        return 0
+    with _exclusive_harness_index_lock():
+        loaded = _load_json_file(
+            INDEX_PATH,
+            None,
+            preserve_corrupt=False,
+        )
+        if not isinstance(loaded, dict):
+            try:
+                descriptor = INDEX_PATH.lstat()
+            except FileNotFoundError:
+                _set_index_cache(None)
+                return 0
+            if not stat.S_ISREG(descriptor.st_mode) or stat.S_ISLNK(descriptor.st_mode):
+                raise OSError("harness index identity is unsafe")
+            INDEX_PATH.unlink()
+            _set_index_cache(None)
+            return 0
+        records = loaded.get("records", [])
+        if not isinstance(records, list):
+            INDEX_PATH.unlink()
+            _set_index_cache(None)
+            return 0
+        retained = [
+            record for record in records if isinstance(record, dict) and _protected_memory_record_allowed(record)
+        ]
+        removed = len(records) - len(retained)
+        if removed:
+            embedding_meta = loaded.get("embeddings")
+            active_model = (
+                str(embedding_meta.get("active_model") or DEFAULT_EMBED_MODEL)
+                if isinstance(embedding_meta, dict)
+                else DEFAULT_EMBED_MODEL
+            )
+            loaded = {
+                **loaded,
+                "record_count": len(retained),
+                "records": retained,
+                "embeddings": _embeddings_summary(
+                    [record for record in retained if isinstance(record, dict)],
+                    active_model=active_model,
+                ),
+            }
+            _atomic_write_json(INDEX_PATH, loaded)
+        _set_index_cache(loaded, persisted=True, sources_current=False)
+        return removed
 
 
 _HARNESS_META_TERMS = {
@@ -1829,8 +2062,34 @@ def resolve_embed_model(cfg: Any | None = None) -> str:
     return DEFAULT_EMBED_MODEL
 
 
-def search_index(query: str, harness: str | None = None, kind: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
-    return [_display_record(record) for _score, record in _rank_keyword_records(query, harness, kind, limit)]
+def _normalized_excluded_kinds(
+    excluded_kinds: set[str] | frozenset[str] | None,
+) -> frozenset[str]:
+    if excluded_kinds is None:
+        return frozenset()
+    if not isinstance(excluded_kinds, (set, frozenset)):
+        raise TypeError("excluded_kinds must be a set or frozenset")
+    return frozenset(str(value).strip().casefold() for value in excluded_kinds if str(value).strip())
+
+
+def search_index(
+    query: str,
+    harness: str | None = None,
+    kind: str | None = None,
+    limit: int = 10,
+    *,
+    excluded_kinds: set[str] | frozenset[str] | None = None,
+) -> list[dict[str, Any]]:
+    return [
+        _display_record(record)
+        for _score, record in _rank_keyword_records(
+            query,
+            harness,
+            kind,
+            limit,
+            excluded_kinds=excluded_kinds,
+        )
+    ]
 
 
 def _rank_keyword_records(
@@ -1838,6 +2097,8 @@ def _rank_keyword_records(
     harness: str | None = None,
     kind: str | None = None,
     limit: int = 10,
+    *,
+    excluded_kinds: set[str] | frozenset[str] | None = None,
 ) -> list[tuple[float, dict[str, Any]]]:
     """Rank filtered records with BM25 plus curated title/path/meta boosts."""
     index = load_index()
@@ -1845,16 +2106,24 @@ def _rank_keyword_records(
     if not terms:
         return []
     harness_names = harness_filter_names(harness)
+    excluded = _normalized_excluded_kinds(excluded_kinds)
     candidates: list[dict[str, Any]] = []
     for record in index.get("records", []):
         if harness_names and record.get("harness") not in harness_names:
             continue
         if kind and record.get("kind") != kind:
             continue
+        if str(record.get("kind") or "").casefold() in excluded:
+            continue
         if is_excluded_from_retrieval(record):
             continue
         candidates.append(record)
-    lexical_index = _candidate_bm25_index(candidates, harness_names=harness_names, kind=kind)
+    lexical_index = _candidate_bm25_index(
+        candidates,
+        harness_names=harness_names,
+        kind=kind,
+        excluded_kinds=excluded,
+    )
     lexical_scores = lexical_index.bm25.scores(terms)
     scored: list[tuple[float, dict[str, Any]]] = []
     for position, (lexical_score, record) in enumerate(zip(lexical_scores, candidates)):
@@ -1877,12 +2146,14 @@ def _candidate_bm25_index(
     *,
     harness_names: set[str] | None,
     kind: str | None,
+    excluded_kinds: frozenset[str],
 ) -> _LexicalCandidateIndex:
     """Return reusable corpus statistics for one filtered retrieval slice."""
     global _BM25_INDEX_CACHE
     key = (
         tuple(sorted(harness_names or ())),
         kind or "",
+        tuple(sorted(excluded_kinds)),
         len(candidates),
         id(candidates[0]) if candidates else 0,
         id(candidates[-1]) if candidates else 0,
@@ -1933,11 +2204,7 @@ def read_record(record_id: str, max_chars: int = MAX_READ_TEXT) -> str:
 
 
 def _is_personal_memory_record(record: dict[str, Any]) -> bool:
-    path_parts = {
-        part.casefold()
-        for part in re.split(r"[/\\]+", str(record.get("path") or ""))
-        if part
-    }
+    path_parts = {part.casefold() for part in re.split(r"[/\\]+", str(record.get("path") or "")) if part}
     return "personal" in path_parts
 
 
@@ -1949,17 +2216,10 @@ def _index_quality_summary(records: list[dict[str, Any]], embeddings: dict[str, 
     algo_memory_records = [
         record
         for record in records
-        if str(record.get("harness", "")) == "algo-cli"
-        and str(record.get("kind", "")) == "memory"
+        if str(record.get("harness", "")) == "algo-cli" and str(record.get("kind", "")) == "memory"
     ]
-    personal_memory_records = [
-        record
-        for record in algo_memory_records
-        if _is_personal_memory_record(record)
-    ]
-    product_memory_records = [
-        record for record in algo_memory_records if not _is_personal_memory_record(record)
-    ]
+    personal_memory_records = [record for record in algo_memory_records if _is_personal_memory_record(record)]
+    product_memory_records = [record for record in algo_memory_records if not _is_personal_memory_record(record)]
     curated_product_memory_records = [
         record
         for record in product_memory_records
@@ -1973,15 +2233,11 @@ def _index_quality_summary(records: list[dict[str, Any]], embeddings: dict[str, 
         ):
             covered_product_memory_categories.append(category)
     missing_product_memory_categories = [
-        category
-        for category in REQUIRED_PRODUCT_MEMORY_CATEGORIES
-        if category not in covered_product_memory_categories
+        category for category in REQUIRED_PRODUCT_MEMORY_CATEGORIES if category not in covered_product_memory_categories
     ]
     memory_records = len(product_memory_records)
     wiki_records = sum(1 for record in records if str(record.get("kind", "")) == "wiki")
-    runtime_capability_records = sum(
-        1 for record in records if str(record.get("kind", "")) == "runtime_capability"
-    )
+    runtime_capability_records = sum(1 for record in records if str(record.get("kind", "")) == "runtime_capability")
     extension_share = round(extension_records / total, 3) if total else 0.0
     project_share = round(project_specific / total, 3) if total else 0.0
     embedding_complete = bool(embeddings.get("complete"))
@@ -1999,7 +2255,9 @@ def _index_quality_summary(records: list[dict[str, Any]], embeddings: dict[str, 
             recommendations.append("Add or prioritize project-specific wiki/memory records to reduce extension noise.")
         if project_share < 0.25 and extension_share > 0.5:
             status = "degraded"
-            recommendations.append("Add curated Algo CLI project records so generic extension records do not dominate RAG.")
+            recommendations.append(
+                "Add curated Algo CLI project records so generic extension records do not dominate RAG."
+            )
         if memory_records + wiki_records < 5:
             recommendations.append("Add more project-specific memory/wiki records for richer local context.")
         if not runtime_capability_records:
@@ -2043,6 +2301,7 @@ def stats() -> dict[str, Any]:
     embeddings = _embeddings_summary(records, active_model)
     try:
         from .evals.session_distribution import summarize_session_distribution
+
         record_distribution = summarize_session_distribution(counts).to_dict()
     except Exception:
         record_distribution = {}
@@ -2110,6 +2369,7 @@ def stats() -> dict[str, Any]:
 
 # ---------- Harness RAG: embeddings + retrieval ----------
 
+
 def _cosine(a: list[float], b: list[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
@@ -2154,11 +2414,7 @@ def _embedding_priority_rank(record: dict[str, Any]) -> int:
     """
     harness_name = str(record.get("harness") or "").strip().lower()
     kind = str(record.get("kind") or "").strip().lower()
-    tags = {
-        str(tag).strip().lower()
-        for tag in _coerce_tags(record.get("tags"))
-        if str(tag).strip()
-    }
+    tags = {str(tag).strip().lower() for tag in _coerce_tags(record.get("tags")) if str(tag).strip()}
 
     # Records excluded from automatic retrieval are retained for explicit
     # harness search, but should not consume a capped embed pass first.
@@ -2170,11 +2426,7 @@ def _embedding_priority_rank(record: dict[str, Any]) -> int:
         return 0
     if harness_name == "codex" and kind in _CODEX_BULK_EMBED_KINDS:
         return 3
-    if (
-        harness_name == "algo-cli"
-        or kind in _CURATED_EMBED_KINDS
-        or bool(tags & _CURATED_EMBED_TAGS)
-    ):
+    if harness_name == "algo-cli" or kind in _CURATED_EMBED_KINDS or bool(tags & _CURATED_EMBED_TAGS):
         return 1
     return 2
 
@@ -2212,16 +2464,9 @@ def _embedding_priority_progress(
 ) -> dict[str, Any]:
     """Summarize value-tier coverage for CLI/status/performance telemetry."""
     total_by_priority = _priority_counts(records)
-    matching = [
-        record
-        for record in records
-        if record.get("embedding") and record.get("embedding_model") == model
-    ]
+    matching = [record for record in records if record.get("embedding") and record.get("embedding_model") == model]
     embedded_by_priority = _priority_counts(matching)
-    pending_by_priority = {
-        tier: total_by_priority[tier] - embedded_by_priority[tier]
-        for tier in EMBED_PRIORITY_TIERS
-    }
+    pending_by_priority = {tier: total_by_priority[tier] - embedded_by_priority[tier] for tier in EMBED_PRIORITY_TIERS}
     high_value_tiers = EMBED_PRIORITY_TIERS[:2]
     high_value_total = sum(total_by_priority[tier] for tier in high_value_tiers)
     high_value_embedded = sum(embedded_by_priority[tier] for tier in high_value_tiers)
@@ -2243,11 +2488,7 @@ def _embedding_priority_progress(
 
 def embedding_progress(model: str = DEFAULT_EMBED_MODEL) -> dict[str, Any]:
     """Return live embedding coverage, including value-tier queue progress."""
-    records = [
-        record
-        for record in (load_index().get("records", []) or [])
-        if isinstance(record, dict)
-    ]
+    records = [record for record in (load_index().get("records", []) or []) if isinstance(record, dict)]
     priority = _embedding_priority_progress(records, model)
     embedded = sum(priority["embedded_by_priority"].values())
     pending = len(records) - embedded
@@ -2270,10 +2511,7 @@ def embedded_count(model: str = DEFAULT_EMBED_MODEL) -> tuple[int, int]:
     """
     index = load_index()
     records = index.get("records", []) or []
-    matching = sum(
-        1 for r in records
-        if r.get("embedding") and r.get("embedding_model") == model
-    )
+    matching = sum(1 for r in records if r.get("embedding") and r.get("embedding_model") == model)
     return matching, len(records)
 
 
@@ -2338,8 +2576,7 @@ def _embed_index_records_unlocked(
     source_watermark_ns = _source_watermark_ns(index)
     records = index.get("records", []) or []
     all_pending: list[int] = [
-        i for i, r in enumerate(records)
-        if not r.get("embedding") or r.get("embedding_model") != model
+        i for i, r in enumerate(records) if not r.get("embedding") or r.get("embedding_model") != model
     ]
     all_pending.sort(key=lambda index: _embedding_priority_sort_key(records[index]))
     if not all_pending:
@@ -2378,9 +2615,7 @@ def _embed_index_records_unlocked(
             "selected_by_priority": dict(selected_by_priority),
             "pending_by_priority": dict(remaining_by_priority),
             "next_priority": next_priority,
-            "high_value_pending": sum(
-                remaining_by_priority[tier] for tier in EMBED_PRIORITY_TIERS[:2]
-            ),
+            "high_value_pending": sum(remaining_by_priority[tier] for tier in EMBED_PRIORITY_TIERS[:2]),
         }
 
     # Bulk embed passes (model migration or catch-up): ignore live wiki mtimes so a
@@ -2391,7 +2626,7 @@ def _embed_index_records_unlocked(
     run_start = time.perf_counter()
     try:
         for start in range(0, total, batch_size):
-            batch_indices = pending[start:start + batch_size]
+            batch_indices = pending[start : start + batch_size]
             texts = [_record_text_for_embed(records[i]) for i in batch_indices]
             batch_start = time.perf_counter()
             vectors = embed_fn(texts)
@@ -2431,22 +2666,22 @@ def _embed_index_records_unlocked(
             if on_progress is not None:
                 on_progress(embedded, total)
             if on_perf is not None:
-                batch_priority_counts = _priority_counts(
-                    [records[index] for index in batch_indices]
+                batch_priority_counts = _priority_counts([records[index] for index in batch_indices])
+                on_perf(
+                    {
+                        "event": "batch",
+                        "batch_size": len(batch_indices),
+                        "wall_ms": batch_wall_ms,
+                        "per_record_ms": round(batch_wall_ms / max(1, len(batch_indices)), 2),
+                        "model": model,
+                        "priority_policy": EMBED_PRIORITY_POLICY,
+                        "batch_by_priority": batch_priority_counts,
+                        "queue_completed": embedded,
+                        "queue_total": pending_before,
+                        "selected_total": total,
+                        "pending_by_priority": dict(remaining_by_priority),
+                    }
                 )
-                on_perf({
-                    "event": "batch",
-                    "batch_size": len(batch_indices),
-                    "wall_ms": batch_wall_ms,
-                    "per_record_ms": round(batch_wall_ms / max(1, len(batch_indices)), 2),
-                    "model": model,
-                    "priority_policy": EMBED_PRIORITY_POLICY,
-                    "batch_by_priority": batch_priority_counts,
-                    "queue_completed": embedded,
-                    "queue_total": pending_before,
-                    "selected_total": total,
-                    "pending_by_priority": dict(remaining_by_priority),
-                })
     except Exception as exc:
         # Persist whatever progress was made before re-raising the result.
         try:
@@ -2468,15 +2703,17 @@ def _embed_index_records_unlocked(
     _QUERY_VEC_CACHE.clear()
     if on_perf is not None:
         total_ms = round((time.perf_counter() - run_start) * 1000, 2)
-        on_perf({
-            "event": "complete",
-            "embedded": embedded,
-            "total_records": len(records),
-            "total_ms": total_ms,
-            "per_record_ms": round(total_ms / max(1, embedded), 2),
-            "model": model,
-            **_queue_telemetry(),
-        })
+        on_perf(
+            {
+                "event": "complete",
+                "embedded": embedded,
+                "total_records": len(records),
+                "total_ms": total_ms,
+                "per_record_ms": round(total_ms / max(1, embedded), 2),
+                "model": model,
+                **_queue_telemetry(),
+            }
+        )
     ready = remaining_after_cap == 0
     result = {
         "embedded": embedded,
@@ -2518,6 +2755,7 @@ def retrieve_for_query(
     k: int = 3,
     harness: str | None = None,
     kind: str | None = None,
+    excluded_kinds: set[str] | frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Cosine-rank harness records against the query. Returns up to k records as dicts
     with id/harness/kind/title/path/snippet. Empty list if no embeddings ready.
@@ -2548,10 +2786,13 @@ def retrieve_for_query(
         _QUERY_VEC_CACHE.put(cache_key, qvec)
 
     harness_names = harness_filter_names(harness)
+    excluded = _normalized_excluded_kinds(excluded_kinds)
     candidates = [
-        r for r in records
+        r
+        for r in records
         if (not harness_names or r.get("harness") in harness_names)
         and (not kind or r.get("kind") == kind)
+        and str(r.get("kind") or "").casefold() not in excluded
         and not is_excluded_from_retrieval(r)
         and r.get("embedding")
         and r.get("embedding_model") == model
@@ -2567,6 +2808,7 @@ def retrieve_for_query(
             dimensions=len(qvec),
             harness_names=harness_names,
             kind=kind,
+            excluded_kinds=excluded,
         )
         qv = _np.array(qvec, dtype=_np.float32)
         q_norm = float(_np.linalg.norm(qv))
@@ -2576,9 +2818,7 @@ def retrieve_for_query(
         # for otherwise finite float32 cosine inputs on macOS.
         sims = _np.dot(mat, qv / q_norm).tolist()
         scored: list[tuple[float, dict[str, Any]]] = [
-            (float(s), candidates[i])
-            for i, s in enumerate(sims)
-            if math.isfinite(float(s)) and s > 0.0
+            (float(s), candidates[i]) for i, s in enumerate(sims) if math.isfinite(float(s)) and s > 0.0
         ]
     else:
         scored = []
@@ -2597,6 +2837,7 @@ def _normalized_candidate_matrix(
     dimensions: int,
     harness_names: set[str] | None,
     kind: str | None,
+    excluded_kinds: frozenset[str],
 ) -> tuple[list[dict[str, Any]], Any]:
     """Return a cached row-aligned L2-normalized NumPy matrix."""
     global _VECTOR_MATRIX_CACHE
@@ -2605,6 +2846,7 @@ def _normalized_candidate_matrix(
         dimensions,
         tuple(sorted(harness_names or ())),
         kind or "",
+        tuple(sorted(excluded_kinds)),
         len(candidates),
         id(candidates[0]) if candidates else 0,
         id(candidates[-1]) if candidates else 0,
@@ -2631,21 +2873,20 @@ def _retrieval_embedding_coverage(
     *,
     harness: str | None,
     kind: str | None,
+    excluded_kinds: set[str] | frozenset[str] | None = None,
 ) -> tuple[int, int]:
     """Return model-matching and total eligible records for a retrieval slice."""
     harness_names = harness_filter_names(harness)
+    excluded = _normalized_excluded_kinds(excluded_kinds)
     records = [
         record
         for record in (load_index().get("records", []) or [])
         if (not harness_names or record.get("harness") in harness_names)
         and (not kind or record.get("kind") == kind)
+        and str(record.get("kind") or "").casefold() not in excluded
         and not is_excluded_from_retrieval(record)
     ]
-    matching = sum(
-        1
-        for record in records
-        if record.get("embedding") and record.get("embedding_model") == model
-    )
+    matching = sum(1 for record in records if record.get("embedding") and record.get("embedding_model") == model)
     return matching, len(records)
 
 
@@ -2686,6 +2927,7 @@ def hybrid_search(
     harness: str | None = None,
     kind: str | None = None,
     rrf_k: int = 60,
+    excluded_kinds: set[str] | frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Reciprocal Rank Fusion of keyword and vector rankings.
 
@@ -2694,9 +2936,24 @@ def hybrid_search(
     Falls back to keyword-only if embeddings are unavailable.
     """
     pool = k * 3
-    keyword_ranked = _rank_keyword_records(query, harness=harness, kind=kind, limit=pool)
+    excluded = _normalized_excluded_kinds(excluded_kinds)
+    keyword_ranked = _rank_keyword_records(
+        query,
+        harness=harness,
+        kind=kind,
+        limit=pool,
+        excluded_kinds=excluded,
+    )
     keyword_results = [record for _score, record in keyword_ranked]
-    vector_results = retrieve_for_query(query, embed_fn, model, k=pool, harness=harness, kind=kind)
+    vector_results = retrieve_for_query(
+        query,
+        embed_fn,
+        model,
+        k=pool,
+        harness=harness,
+        kind=kind,
+        excluded_kinds=excluded,
+    )
 
     raw_scores: dict[str, float] = {}
     ranker_counts: dict[str, int] = {}
@@ -2708,10 +2965,12 @@ def hybrid_search(
         raw_scores[rid] = raw_scores.get(rid, 0.0) + 1.0 / (rrf_k + rank + 1)
         ranker_counts[rid] = ranker_counts.get(rid, 0) + 1
         id_to_record[rid] = _slim_record(record)
-        provenance.setdefault(rid, {}).update({
-            "keyword_rank": rank + 1,
-            "lexical_score": round(float(lexical_score), 6),
-        })
+        provenance.setdefault(rid, {}).update(
+            {
+                "keyword_rank": rank + 1,
+                "lexical_score": round(float(lexical_score), 6),
+            }
+        )
 
     for rank, record in enumerate(vector_results):
         rid = record.get("id", "")
@@ -2719,15 +2978,22 @@ def hybrid_search(
         ranker_counts[rid] = ranker_counts.get(rid, 0) + 1
         if rid not in id_to_record:
             id_to_record[rid] = record  # already slim from retrieve_for_query
-        provenance.setdefault(rid, {}).update({
-            "vector_rank": rank + 1,
-            "vector_score": round(float(record.get("score") or 0.0), 6),
-        })
+        provenance.setdefault(rid, {}).update(
+            {
+                "vector_rank": rank + 1,
+                "vector_score": round(float(record.get("score") or 0.0), 6),
+            }
+        )
 
     if not raw_scores:
         return [{**_slim_record(r), "score": 0.0} for r in keyword_results[:k]]
 
-    embedded, eligible = _retrieval_embedding_coverage(model, harness=harness, kind=kind)
+    embedded, eligible = _retrieval_embedding_coverage(
+        model,
+        harness=harness,
+        kind=kind,
+        excluded_kinds=excluded,
+    )
     coverage_complete = eligible > 0 and embedded == eligible
     fusion_mode = "rrf" if coverage_complete else "coverage-neutral-rrf"
     # Ordinary RRF rewards agreement by summing ranker contributions. While the
@@ -2743,18 +3009,20 @@ def hybrid_search(
     for rid in ranked_ids:
         detail = provenance.get(rid, {})
         sources = [source for source in ("keyword", "vector") if f"{source}_rank" in detail]
-        results.append({
-            **id_to_record[rid],
-            "score": round(scores[rid], 6),
-            "rank_sources": sources,
-            "rank_provenance": {
-                **detail,
-                "fusion_mode": fusion_mode,
-                "embedding_coverage": round(embedded / eligible, 6) if eligible else 0.0,
-                "rrf_raw_score": round(raw_scores[rid], 6),
-                "rrf_score": round(scores[rid], 6),
-            },
-        })
+        results.append(
+            {
+                **id_to_record[rid],
+                "score": round(scores[rid], 6),
+                "rank_sources": sources,
+                "rank_provenance": {
+                    **detail,
+                    "fusion_mode": fusion_mode,
+                    "embedding_coverage": round(embedded / eligible, 6) if eligible else 0.0,
+                    "rrf_raw_score": round(raw_scores[rid], 6),
+                    "rrf_score": round(scores[rid], 6),
+                },
+            }
+        )
     return results
 
 
@@ -2771,9 +3039,7 @@ def format_retrieved_context(retrieved: list[dict[str, Any]]) -> str:
         rid = rec.get("id") or "?"
         lines.append(f"### {rid}")
         meta = " · ".join(
-            repair_mojibake(str(value))
-            for value in (rec.get("harness"), rec.get("kind"), rec.get("title"))
-            if value
+            repair_mojibake(str(value)) for value in (rec.get("harness"), rec.get("kind"), rec.get("title")) if value
         )
         if meta:
             lines.append(meta)

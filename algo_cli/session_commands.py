@@ -60,11 +60,21 @@ def execute(command_line: str, cfg: Any, *, max_read_chars: int | None = None) -
 
     parts = stripped.split(None, 1)
     command = parts[0].lower()
-    remainder = stripped[len(parts[0]):].strip() if len(parts) > 1 else ""
+    remainder = stripped[len(parts[0]) :].strip() if len(parts) > 1 else ""
 
     if command not in _ALLOWED:
         allowed = ", ".join(sorted(_ALLOWED))
         return f"Error: {command} is not model-invokable. Allowed: {allowed}"
+
+    from .irene_memory_path_policy import protected_tool_policy_error
+
+    protected_error = protected_tool_policy_error(
+        "session_slash",
+        {"command": stripped, "cwd": getattr(cfg, "cwd", None)},
+        cfg,
+    )
+    if protected_error is not None:
+        return protected_error
 
     if command == "/cwd" or (command == "/cd" and not remainder):
         return f"cwd: {getattr(cfg, 'cwd', '.')}"

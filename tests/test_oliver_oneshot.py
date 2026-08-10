@@ -39,6 +39,8 @@ def test_json_event_sink_session_start_and_done_frame(monkeypatch):
     events = _drain(buf)
     assert events[0]["type"] == "session_start"
     assert events[0]["approval_mode"] == "never"
+    assert events[0]["cwd"] == "<redacted>"
+    assert "/c" not in buf.getvalue()
     assert events[-1]["type"] == "done"
     assert events[-1]["status"] == "complete"
     assert events[-1]["tool_calls"] == 0
@@ -334,6 +336,73 @@ def test_run_oneshot_completes_cleanly_when_agent_loop_succeeds(monkeypatch):
     assert "tool_call" in types and "tool_result" in types
     assert events[-1]["status"] == "complete"
     assert events[-1]["tool_calls"] == 1
+
+
+def test_run_oneshot_preflights_before_harness_or_model(monkeypatch):
+    from algo_cli import elsie_echo_preflight
+    from algo_cli import harness as harness_module
+    from algo_cli import main as main_module
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        elsie_echo_preflight,
+        "prepare_echo_auxiliary_state",
+        lambda _cfg: events.append("preflight"),
+    )
+    monkeypatch.setattr(
+        harness_module,
+        "configure_context_sources",
+        lambda **_kwargs: events.append("configure"),
+    )
+    monkeypatch.setattr(main_module, "create_client", lambda _cfg: events.append("client") or object())
+    monkeypatch.setattr(main_module, "agent_loop", lambda *_args: events.append("agent"))
+
+    assert oneshot.run_oneshot(prompt="x", stream=io.StringIO()) == 0
+    assert events == ["preflight", "configure", "client", "agent"]
+
+
+def test_run_oneshot_preflight_failure_is_content_free_and_stops_runtime(monkeypatch):
+    from algo_cli import elsie_echo_preflight
+    from algo_cli import harness as harness_module
+    from algo_cli import main as main_module
+    from algo_cli import skills as skills_module
+
+    canary = "STALE_PLAINTEXT_SKILL_CANARY"
+
+    def refuse(_cfg):
+        raise elsie_echo_preflight.EchoAuxiliaryPreflightError(canary)
+
+    monkeypatch.setattr(elsie_echo_preflight, "prepare_echo_auxiliary_state", refuse)
+    monkeypatch.setattr(
+        harness_module,
+        "configure_context_sources",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not configure")),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_client",
+        lambda _cfg: (_ for _ in ()).throw(AssertionError("must not create client")),
+    )
+    monkeypatch.setattr(
+        skills_module,
+        "ensure_dirs",
+        lambda: (_ for _ in ()).throw(AssertionError("must not recreate skill state")),
+    )
+    stream = io.StringIO()
+
+    assert oneshot.run_oneshot(prompt="x", stream=stream) == 2
+    serialized = stream.getvalue()
+    events = _drain(stream)
+    assert events[0]["type"] == "session_start"
+    assert events[1] == {
+        "type": "error",
+        "class": "policy",
+        "message": "Echo-protected auxiliary state could not be prepared safely.",
+    }
+    assert events[-1]["type"] == "done"
+    assert events[-1]["status"] == "failed"
+    assert events[-1]["status_reason"] == "echo_auxiliary_preflight_refused"
+    assert canary not in serialized
 
 
 def test_run_oneshot_auto_mode_sets_cfg_auto_mode(monkeypatch):

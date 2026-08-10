@@ -21,9 +21,7 @@ from algo_cli.evals import nathan_agent_runtime_hardening as benchmark  # noqa: 
 
 
 HARDENING_ROOT = ROOT / "hardening"
-DEFAULT_ARTIFACT = (
-    HARDENING_ROOT / "nathan-agent-runtime-qualification.json"
-)
+DEFAULT_ARTIFACT = HARDENING_ROOT / "nathan-agent-runtime-qualification.json"
 
 
 class AgentRuntimeQualificationError(RuntimeError):
@@ -38,45 +36,29 @@ def _bounded_artifact(
 ) -> Path:
     try:
         root = allowed_root.resolve(strict=True)
-        candidate = (
-            path if path.is_absolute() else ROOT / path
-        ).absolute()
+        candidate = (path if path.is_absolute() else ROOT / path).absolute()
         parent = candidate.parent.resolve(strict=True)
         parent.relative_to(root)
     except (OSError, RuntimeError, ValueError) as exc:
-        raise AgentRuntimeQualificationError(
-            "qualification artifact path is outside its boundary"
-        ) from exc
+        raise AgentRuntimeQualificationError("qualification artifact path is outside its boundary") from exc
     if candidate.parent != parent:
-        raise AgentRuntimeQualificationError(
-            "qualification artifact parent contains a link"
-        )
+        raise AgentRuntimeQualificationError("qualification artifact parent contains a link")
     if require_exists:
         try:
             info = candidate.lstat()
         except OSError as exc:
-            raise AgentRuntimeQualificationError(
-                "qualification artifact is unavailable"
-            ) from exc
+            raise AgentRuntimeQualificationError("qualification artifact is unavailable") from exc
         if (
             not stat.S_ISREG(info.st_mode)
             or stat.S_ISLNK(info.st_mode)
             or info.st_nlink != 1
             or not 1 <= info.st_size <= benchmark.MAX_REPORT_BYTES
         ):
-            raise AgentRuntimeQualificationError(
-                "qualification artifact boundary rejected the file"
-            )
+            raise AgentRuntimeQualificationError("qualification artifact boundary rejected the file")
     elif candidate.exists() or candidate.is_symlink():
         info = candidate.lstat()
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or stat.S_ISLNK(info.st_mode)
-            or info.st_nlink != 1
-        ):
-            raise AgentRuntimeQualificationError(
-                "qualification output cannot replace this target"
-            )
+        if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_nlink != 1:
+            raise AgentRuntimeQualificationError("qualification output cannot replace this target")
     return candidate
 
 
@@ -94,9 +76,7 @@ def verify_artifact(
         payload = candidate.read_bytes()
         report = json.loads(payload)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise AgentRuntimeQualificationError(
-            "qualification artifact is not valid JSON"
-        ) from exc
+        raise AgentRuntimeQualificationError("qualification artifact is not valid JSON") from exc
     try:
         benchmark.validate_report(
             report,
@@ -105,9 +85,7 @@ def verify_artifact(
     except benchmark.AgentRuntimeBenchmarkError as exc:
         raise AgentRuntimeQualificationError(str(exc)) from exc
     if report["status"] != "pass":
-        raise AgentRuntimeQualificationError(
-            "qualification artifact does not pass"
-        )
+        raise AgentRuntimeQualificationError("qualification artifact does not pass")
     return report
 
 
@@ -160,9 +138,7 @@ def write_artifact(
         + b"\n"
     )
     if len(payload) > benchmark.MAX_REPORT_BYTES:
-        raise AgentRuntimeQualificationError(
-            "qualification artifact exceeds its size bound"
-        )
+        raise AgentRuntimeQualificationError("qualification artifact exceeds its size bound")
     temporary: Path | None = None
     try:
         descriptor, raw_path = tempfile.mkstemp(
@@ -180,9 +156,7 @@ def write_artifact(
         temporary = None
         _sync_parent_directory(candidate.parent)
     except OSError as exc:
-        raise AgentRuntimeQualificationError(
-            "qualification artifact could not be stored atomically"
-        ) from exc
+        raise AgentRuntimeQualificationError("qualification artifact could not be stored atomically") from exc
     finally:
         if temporary is not None:
             try:
@@ -232,6 +206,7 @@ def _receipt(
     return {
         "benchmark": report["benchmark"],
         "status": report["status"],
+        "public_claim_eligible": report["public_claim_eligible"],
         "artifact": artifact_label,
         "source_tree_sha256": report["source_tree_sha256"],
         "report_sha256": report["report_sha256"],
@@ -239,15 +214,8 @@ def _receipt(
             "passed": report["correctness"]["passed"],
             "total": report["correctness"]["total"],
         },
-        "effectiveness": {
-            key: value
-            for key, value in report["effectiveness"].items()
-            if key != "workloads"
-        },
-        "p95_ms": {
-            metric: row["p95_ms"]
-            for metric, row in report["performance"].items()
-        },
+        "effectiveness": {key: value for key, value in report["effectiveness"].items() if key != "workloads"},
+        "p95_ms": {metric: row["p95_ms"] for metric, row in report["performance"].items()},
     }
 
 

@@ -1,5 +1,9 @@
 """Tests for working-directory code RAG."""
 
+import os
+
+import pytest
+
 from algo_cli import code_rag
 
 
@@ -102,12 +106,12 @@ def test_secret_directories_never_indexed(tmp_path):
     assert rels == {"app.py"}
 
 
-def test_symlink_inside_project_is_indexed(tmp_path):
+def test_symlink_inside_project_is_not_indexed(tmp_path):
     _write(tmp_path, "real.py", "def widget():\n    return 1\n")
     (tmp_path / "link.py").symlink_to(tmp_path / "real.py")
     index = code_rag.build_or_update_index(str(tmp_path), force=True)
     rels = {c["relative_path"] for c in index["chunks"]}
-    assert "link.py" in rels
+    assert rels == {"real.py"}
 
 
 def test_symlink_escape_outside_project_is_not_indexed(tmp_path):
@@ -127,6 +131,55 @@ def test_symlink_to_secret_path_inside_project_is_not_indexed(tmp_path):
     index = code_rag.build_or_update_index(str(tmp_path), force=True)
     rels = {c["relative_path"] for c in index["chunks"]}
     assert rels == {"app.py"}
+
+
+def test_hardlinked_source_is_not_read_embedded_or_persisted(tmp_path, monkeypatch):
+    canary = "ECHO_HARDLINK_CANARY_92eb60"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    legacy = tmp_path / "legacy-user.md"
+    legacy.write_text(canary + "\n", encoding="utf-8")
+    os.link(legacy, workspace / "profile.md")
+    index_dir = tmp_path / "code_index"
+    monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", index_dir)
+
+    embedded: list[str] = []
+
+    def embed(texts):
+        embedded.extend(texts)
+        return [[1.0] for _ in texts]
+
+    index = code_rag.ensure_embeddings(str(workspace), embed, "fake-model")
+
+    assert index["files"] == {}
+    assert index["chunks"] == []
+    assert embedded == []
+    persisted = b"".join(path.read_bytes() for path in index_dir.rglob("*") if path.is_file() and not path.is_symlink())
+    assert canary.encode() not in persisted
+
+
+def test_source_hardlinked_during_scan_is_rejected_before_index_publish(tmp_path, monkeypatch):
+    source = tmp_path / "app.py"
+    source.write_text("def widget():\n    return 1\n", encoding="utf-8")
+    alias = tmp_path.parent / f"{tmp_path.name}-late-hardlink.py"
+    index_dir = tmp_path / "code_index"
+    monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", index_dir)
+    real_build_project_graph = code_rag.build_project_graph
+
+    def build_then_link(*args, **kwargs):
+        graph = real_build_project_graph(*args, **kwargs)
+        os.link(source, alias)
+        return graph
+
+    monkeypatch.setattr(code_rag, "build_project_graph", build_then_link)
+    try:
+        index = code_rag.build_or_update_index(str(tmp_path), force=True)
+    finally:
+        alias.unlink(missing_ok=True)
+
+    assert index["files"] == {}
+    assert index["chunks"] == []
+    assert not code_rag._index_path_for(str(tmp_path)).exists()
 
 
 def test_embed_text_front_loads_symbols():
@@ -173,6 +226,22 @@ def test_purge_persisted_indexes_removes_files_and_memory_cache(tmp_path, monkey
     assert code_rag._LAST_SCAN == {}
 
 
+def test_purge_persisted_indexes_removes_preexisting_plaintext_canary(tmp_path, monkeypatch):
+    canary = "ECHO_PREEXISTING_INDEX_CANARY_5d09f1"
+    index_dir = tmp_path / "code_index"
+    index_dir.mkdir()
+    index_path = index_dir / "legacy.json"
+    index_path.write_text('{"chunks":[{"text":"' + canary + '"}]}', encoding="utf-8")
+    monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", index_dir)
+    code_rag._INDEX_MEM["legacy"] = {"chunks": [{"text": canary}]}
+
+    assert code_rag.purge_persisted_indexes() == 1
+
+    assert not index_dir.exists()
+    assert code_rag._INDEX_MEM == {}
+    assert canary not in repr(code_rag._INDEX_MEM)
+
+
 def test_purge_persisted_indexes_does_not_follow_directory_symlink(tmp_path, monkeypatch):
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -185,6 +254,74 @@ def test_purge_persisted_indexes_does_not_follow_directory_symlink(tmp_path, mon
     assert code_rag.purge_persisted_indexes() == 1
     assert not index_link.exists()
     assert retained.exists()
+
+
+def test_purge_persisted_indexes_unlinks_leaf_symlink_without_following(tmp_path, monkeypatch):
+    outside = tmp_path / "outside.json"
+    outside.write_text("ECHO_OUTSIDE_CANARY", encoding="utf-8")
+    index_dir = tmp_path / "code_index"
+    index_dir.mkdir()
+    (index_dir / "linked.json").symlink_to(outside)
+    monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", index_dir)
+
+    assert code_rag.persisted_index_count() == 1
+    assert code_rag.purge_persisted_indexes() == 1
+    assert outside.read_text(encoding="utf-8") == "ECHO_OUTSIDE_CANARY"
+    assert not index_dir.exists()
+
+
+def test_purge_persisted_indexes_fails_closed_on_nested_canary(tmp_path, monkeypatch):
+    index_dir = tmp_path / "code_index"
+    nested = index_dir / "legacy-layout" / "deeper"
+    nested.mkdir(parents=True)
+    canary = nested / "old.json"
+    canary.write_text("ECHO_NESTED_INDEX_CANARY", encoding="utf-8")
+    monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", index_dir)
+
+    assert code_rag.persisted_index_count() == 1
+    with pytest.raises(OSError, match="unexpected nested or special"):
+        code_rag.purge_persisted_indexes()
+
+    assert canary.read_text(encoding="utf-8") == "ECHO_NESTED_INDEX_CANARY"
+    assert code_rag.persisted_index_count() == 1
+
+
+def test_purge_persisted_indexes_fails_closed_on_special_entry(tmp_path, monkeypatch):
+    index_dir = tmp_path / "code_index"
+    index_dir.mkdir()
+    retained = index_dir / "retained.json"
+    retained.write_text("retained", encoding="utf-8")
+    fifo = index_dir / "unexpected.fifo"
+    os.mkfifo(fifo)
+    monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", index_dir)
+
+    with pytest.raises(OSError, match="unexpected nested or special"):
+        code_rag.purge_persisted_indexes()
+
+    assert retained.read_text(encoding="utf-8") == "retained"
+    assert fifo.exists()
+
+
+def test_purge_persisted_indexes_surfaces_partial_unlink_failure(tmp_path, monkeypatch):
+    index_dir = tmp_path / "code_index"
+    index_dir.mkdir()
+    (index_dir / "one.json").write_text("one", encoding="utf-8")
+    (index_dir / "two.json").write_text("two", encoding="utf-8")
+    monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", index_dir)
+    real_unlink = os.unlink
+
+    def fail_second(path, *args, **kwargs):
+        if path == "two.json":
+            raise OSError("injected unlink failure")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(code_rag.os, "unlink", fail_second)
+
+    with pytest.raises(OSError, match="injected unlink failure"):
+        code_rag.purge_persisted_indexes()
+
+    assert (index_dir / "two.json").read_text(encoding="utf-8") == "two"
+    assert code_rag.persisted_index_count() == 1
 
 
 def test_numpy_path_is_true_cosine(tmp_path):

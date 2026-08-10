@@ -41,18 +41,62 @@ from algo_cli.henry_hardening_qualification import (  # noqa: E402
 
 FUZZER = ROOT / "scripts" / "david_control_kernel_fuzzer.py"
 SOURCE_PATHS = (
+    "pyproject.toml",
+    "uv.lock",
     ".github/workflows/henry-austin-signing-qualification.yml",
     ".github/workflows/henry-hardening-freeze.yml",
     ".github/workflows/oliver-ci.yml",
     ".github/workflows/oliver-release.yml",
     "hardening/henry-freeze.toml",
     "hardening/ada-signing-lifecycle-authorities.json",
+    "algo_cli/__init__.py",
+    "algo_cli/action_registry.py",
     "algo_cli/david_control_kernel.py",
     "algo_cli/david_control_runtime.py",
+    "algo_cli/ada_control_journal.py",
     "algo_cli/ada_credential_registry.py",
+    "algo_cli/ada_echo_veil_identity.py",
     "algo_cli/ada_memory_echo_veil.py",
+    "algo_cli/ada_task_ledger.py",
     "algo_cli/ada_uninstall_recovery.py",
+    "algo_cli/agent_blocks.py",
+    "algo_cli/alice_artifact_store.py",
+    "algo_cli/arthur_outcomes.py",
+    "algo_cli/chat_protocol.py",
+    "algo_cli/chatgpt_client.py",
+    "algo_cli/chatgpt_auth.py",
+    "algo_cli/code_rag.py",
+    "algo_cli/config.py",
+    "algo_cli/context_budget.py",
+    "algo_cli/deliberation.py",
+    "algo_cli/display.py",
+    "algo_cli/elsie_echo_preflight.py",
+    "algo_cli/evelyn_context_supersession.py",
+    "algo_cli/google_workspace_auth.py",
+    "algo_cli/grace_memory_receipts.py",
+    "algo_cli/git_evidence.py",
+    "algo_cli/harness.py",
+    "algo_cli/identity.py",
+    "algo_cli/irene_memory_path_policy.py",
+    "algo_cli/james_dispatch.py",
+    "algo_cli/julia_memory_runtime.py",
+    "algo_cli/julia_memory_candidates.py",
+    "algo_cli/boron_browser_entry.py",
     "algo_cli/boron_browser_isolation.py",
+    "algo_cli/boron_browser_wrapper.py",
+    "algo_cli/xenon_browser_broker.py",
+    "algo_cli/xenon_browser_egress.py",
+    "algo_cli/xenon_browser_entry.py",
+    "algo_cli/resources/boron_browser/boron_browser_wrapper.sh",
+    "algo_cli/resources/boron_browser/boron_managed_policy.json",
+    "algo_cli/resources/boron_browser/boron_public_browser.Dockerfile",
+    "algo_cli/resources/boron_browser/boron_public_browser.Dockerfile.dockerignore",
+    "algo_cli/resources/boron_browser/carbon_native_browser.Dockerfile",
+    "algo_cli/resources/boron_browser/carbon_native_browser.Dockerfile.dockerignore",
+    "algo_cli/resources/boron_browser/boron_seccomp_profile.json",
+    "algo_cli/resources/boron_browser/xenon_egress_broker.sh",
+    "algo_cli/resources/boron_browser/xenon_egress_broker.Dockerfile",
+    "algo_cli/resources/boron_browser/xenon_egress_broker.Dockerfile.dockerignore",
     "algo_cli/neon_browser_simulator.py",
     "algo_cli/austin_desktop_simulator.py",
     "algo_cli/austin_install_finalizer.py",
@@ -65,20 +109,42 @@ SOURCE_PATHS = (
     "algo_cli/agent_run_journal.py",
     "algo_cli/agent_threads.py",
     "algo_cli/evals/nathan_agent_runtime_hardening.py",
+    "algo_cli/evals/tool_context_efficiency.py",
     "algo_cli/main.py",
+    "algo_cli/model_aliases.py",
+    "algo_cli/model_info.py",
     "algo_cli/henry_hardening_qualification.py",
     "algo_cli/grace_key_store.py",
     "algo_cli/nathan_program_runtime.py",
     "algo_cli/nathan_provider_protocol.py",
     "algo_cli/nathan_runtime.py",
+    "algo_cli/private_event_store.py",
     "algo_cli/run_contract.py",
+    "algo_cli/samuel_policy.py",
+    "algo_cli/spawn_budget.py",
     "algo_cli/task_router.py",
     "algo_cli/oliver_control_installation.py",
     "algo_cli/oliver_control_installer.py",
     "algo_cli/oliver_authority_rotation.py",
+    "algo_cli/oliver_oneshot.py",
+    "algo_cli/oliver_slash_dispatch.py",
+    "algo_cli/quantization/lloyd_max.py",
     "algo_cli/irene_privacy_views.py",
     "algo_cli/marcus_authority.py",
+    "algo_cli/reasoning/react.py",
     "algo_cli/samuel_policy_engine.py",
+    "algo_cli/session_commands.py",
+    "algo_cli/skills.py",
+    "algo_cli/small_context.py",
+    "algo_cli/tool_context.py",
+    "algo_cli/tools.py",
+    "docs/ada-algo-cli-memory-lifecycle-contract.md",
+    "docs/boron-browser-isolation-contract.md",
+    "docs/echo-veil-security-status.md",
+    "docs/external-agent-store-operations.md",
+    "docs/index-compute-lab-integration.md",
+    "docs/privacy-and-context.md",
+    "docs/william-public-release-checklist.md",
     "scripts/david_control_kernel_fuzzer.py",
     "scripts/arthur_m9_completion_audit.py",
     "scripts/david_hardening_gate.py",
@@ -94,7 +160,10 @@ SOURCE_PATHS = (
     "scripts/henry_austin_signing_runner.py",
     "scripts/ada_austin_signing_lifecycle_receipt.py",
     "scripts/henry_github_hardening_readiness.py",
+    "scripts/henry_echo_veil_dependency_audit.py",
     "scripts/nathan_agent_runtime_qualification.py",
+    "scripts/oliver_release_authority.py",
+    "scripts/oliver_release_source_binding.py",
     "scripts/oliver_control_uninstall.py",
     "scripts/austin_native_package_audit.py",
     "scripts/austin_release_packager.py",
@@ -144,7 +213,7 @@ SOURCE_PATHS = (
     "native/austin/Tests/AustinCoreTests/AustinWireTests.swift",
     "native/austin/Tests/AustinIntegrationTests/AustinXPCIntegrationTests.swift",
     "native/austin/Tests/NeonNativeCoreTests/NeonInvocationTests.swift",
-    "tests/test_henry_hardening_qualification.py",
+    "tests/conftest.py",
     "tests/test_arthur_control_readiness.py",
 )
 FOCUSED_TESTS = (
@@ -153,15 +222,46 @@ FOCUSED_TESTS = (
     "tests/test_agent_run_journal.py",
     "tests/test_agent_threads.py",
     "tests/test_ada_memory_echo_veil.py",
+    "tests/test_ada_task_ledger_echo.py",
+    "tests/test_alice_artifact_store.py",
+    "tests/test_chatgpt_auth.py",
+    "tests/test_chatgpt_client.py",
+    "tests/test_code_rag.py",
+    "tests/test_config.py",
+    "tests/test_context_accounting.py",
+    "tests/test_display.py",
+    "tests/test_elsie_echo_preflight.py",
+    "tests/test_evelyn_context_supersession.py",
+    "tests/test_goal_mode.py",
+    "tests/test_google_workspace_wiring.py",
+    "tests/test_grace_memory_receipts.py",
+    "tests/test_git_evidence.py",
+    "tests/test_harness.py",
+    "tests/test_henry_echo_veil_dependency_audit.py",
+    "tests/test_henry_hardening_qualification.py",
+    "tests/test_identity.py",
+    "tests/test_irene_memory_path_policy.py",
+    "tests/test_james_dispatch.py",
+    "tests/test_julia_memory_candidates.py",
     "tests/test_main_helpers.py",
+    "tests/test_model_info.py",
     "tests/test_nathan_agent_runtime_hardening.py",
+    "tests/test_pdf_render_artifacts.py",
+    "tests/test_private_event_store.py",
+    "tests/test_reasoning_bridge.py",
     "tests/test_run_contract.py",
+    "tests/test_samuel_policy.py",
+    "tests/test_session_command_output.py",
+    "tests/test_skills.py",
+    "tests/test_small_context.py",
+    "tests/test_spawn_budget.py",
     "tests/test_task_router.py",
     "tests/test_marcus_authority.py",
     "tests/test_samuel_policy_engine.py",
     "tests/test_irene_privacy_views.py",
     "tests/test_dorothy_perf_telemetry.py",
     "tests/test_julia_memory_runtime.py",
+    "tests/test_julia_curated_memory_contracts.py",
     "tests/test_nathan_program_runtime.py",
     "tests/test_david_control_runtime.py",
     "tests/test_david_control_kernel.py",
@@ -190,35 +290,165 @@ FOCUSED_TESTS = (
     "tests/test_oliver_control_installation.py",
     "tests/test_oliver_control_installer.py",
     "tests/test_oliver_authority_rotation.py",
+    "tests/test_oliver_oneshot.py",
+    "tests/test_oliver_release_authority.py",
+    "tests/test_oliver_release_source_binding.py",
+    "tests/test_oliver_slash_unknown.py",
+    "tests/test_quantization.py",
     "tests/test_boron_browser_isolation.py",
+    "tests/test_boron_browser_entry.py",
     "tests/test_boron_browser_images.py",
+    "tests/test_boron_browser_wrapper.py",
     "tests/test_henry_boron_hosted_qualification.py",
+    "tests/test_xenon_browser_broker.py",
     "tests/test_xenon_browser_egress.py",
+    "tests/test_xenon_browser_entry.py",
     "tests/test_carbon_browser_binding.py",
     "tests/test_neon_browser_native_host.py",
+    "tests/test_tool_context.py",
+    "tests/test_tool_context_efficiency.py",
+    "tests/test_tools.py",
 )
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
-POSTWRITE_EVIDENCE_TEST = "test_recorded_local_evidence_is_current_complete_and_honestly_blocked"
+POSTWRITE_EVIDENCE_TESTS = (
+    "test_recorded_local_evidence_is_current_complete_and_honestly_blocked",
+    "test_repository_report_is_exact_and_freeze_workflow_enforces_it",
+)
 
 
 class QualificationCommandError(RuntimeError):
     """A content-free qualification command failure."""
 
 
-def _source_digest() -> str:
+_SourceIdentity = tuple[int, int, int, int, int, int, int]
+
+
+def _source_identity(info: os.stat_result) -> _SourceIdentity:
+    return (
+        info.st_mode,
+        info.st_dev,
+        info.st_ino,
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _valid_source_info(info: os.stat_result) -> bool:
+    return (
+        stat.S_ISREG(info.st_mode)
+        and not stat.S_ISLNK(info.st_mode)
+        and info.st_nlink == 1
+        and 1 <= info.st_size <= MAX_SOURCE_BYTES
+    )
+
+
+def _named_source_info(path: Path, *, reason: str) -> os.stat_result:
+    try:
+        info = path.lstat()
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise QualificationCommandError(reason) from exc
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    if resolved != absolute:
+        raise QualificationCommandError(reason)
+    return info
+
+
+def _verify_named_source(
+    path: Path,
+    expected: _SourceIdentity,
+) -> None:
+    info = _named_source_info(path, reason="source_changed")
+    if not _valid_source_info(info) or _source_identity(info) != expected:
+        raise QualificationCommandError("source_changed")
+
+
+def _read_source_file(path: Path) -> tuple[bytes, _SourceIdentity]:
+    """Read one bounded source descriptor and prove its pathname stayed fixed."""
+
+    initial = _named_source_info(path, reason="source_identity")
+    if not stat.S_ISREG(initial.st_mode) or stat.S_ISLNK(initial.st_mode) or initial.st_nlink != 1:
+        raise QualificationCommandError("source_identity")
+    if not 1 <= initial.st_size <= MAX_SOURCE_BYTES:
+        raise QualificationCommandError("source_bounds")
+    expected = _source_identity(initial)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
+        opened = os.fstat(descriptor)
+        named_opened = _named_source_info(path, reason="source_changed")
+        if (
+            not _valid_source_info(opened)
+            or not _valid_source_info(named_opened)
+            or _source_identity(opened) != expected
+            or _source_identity(named_opened) != expected
+        ):
+            raise QualificationCommandError("source_changed")
+        payload = bytearray()
+        while len(payload) < opened.st_size:
+            chunk = os.read(
+                descriptor,
+                min(64 * 1024, opened.st_size - len(payload)),
+            )
+            if not chunk:
+                raise QualificationCommandError("source_changed")
+            payload.extend(chunk)
+        if os.read(descriptor, 1):
+            raise QualificationCommandError("source_changed")
+        after = os.fstat(descriptor)
+        named_after = _named_source_info(path, reason="source_changed")
+        if (
+            not _valid_source_info(after)
+            or not _valid_source_info(named_after)
+            or _source_identity(after) != expected
+            or _source_identity(named_after) != expected
+        ):
+            raise QualificationCommandError("source_changed")
+        return bytes(payload), expected
+    except QualificationCommandError:
+        raise
+    except OSError as exc:
+        raise QualificationCommandError("source_changed") from exc
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError as exc:
+                raise QualificationCommandError("source_changed") from exc
+
+
+def _capture_source_tree() -> tuple[str, tuple[tuple[Path, _SourceIdentity], ...]]:
     digest = hashlib.sha256()
+    captured: list[tuple[Path, _SourceIdentity]] = []
     for relative in sorted((*SOURCE_PATHS, *FOCUSED_TESTS)):
         path = ROOT / relative
-        info = path.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or path.is_symlink():
-            raise QualificationCommandError("source_identity")
-        if info.st_size > MAX_SOURCE_BYTES:
-            raise QualificationCommandError("source_bounds")
+        payload, identity = _read_source_file(path)
+        captured.append((path, identity))
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(path.read_bytes())
+        digest.update(payload)
         digest.update(b"\0")
-    return "sha256:" + digest.hexdigest()
+    snapshot = tuple(captured)
+    for path, identity in snapshot:
+        _verify_named_source(path, identity)
+    return "sha256:" + digest.hexdigest(), snapshot
+
+
+def _verify_source_tree_snapshot(
+    snapshot: tuple[tuple[Path, _SourceIdentity], ...],
+) -> None:
+    for path, identity in snapshot:
+        _verify_named_source(path, identity)
+
+
+def _source_digest() -> str:
+    digest, _snapshot = _capture_source_tree()
+    return digest
 
 
 def _run_protocol_frames(iterations: int) -> dict[str, Any]:
@@ -253,7 +483,7 @@ def _run_focused_tests() -> bool:
             "pytest",
             "-q",
             "-k",
-            f"not {POSTWRITE_EVIDENCE_TEST}",
+            " and ".join(f"not {name}" for name in POSTWRITE_EVIDENCE_TESTS),
             *FOCUSED_TESTS,
         ],
         cwd=ROOT,
@@ -334,6 +564,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--efficiency-repeats", type=int, default=5)
     arguments = parser.parse_args(argv)
 
+    source_digest, source_snapshot = _capture_source_tree()
     protocol = _run_protocol_frames(arguments.protocol_frames)
     efficiency = _run_efficiency(arguments.efficiency_repeats)
     focused_suite_passed = _run_focused_tests()
@@ -342,7 +573,7 @@ def main(argv: list[str] | None = None) -> int:
         protocol_report=protocol,
         efficiency_report=efficiency,
         focused_suite_passed=focused_suite_passed,
-        source_digest=_source_digest(),
+        source_digest=source_digest,
         race_trials=arguments.race_trials,
         postcondition_trials=arguments.postcondition_trials,
         unknown_trials=arguments.unknown_trials,
@@ -350,6 +581,9 @@ def main(argv: list[str] | None = None) -> int:
         privacy_trials=arguments.privacy_trials,
         generated_at=generated_at,
     )
+    _verify_source_tree_snapshot(source_snapshot)
+    if _source_digest() != source_digest:
+        raise QualificationCommandError("source_changed")
     payload = (json.dumps(report, sort_keys=True, indent=2) + "\n").encode("utf-8")
     if arguments.output is not None:
         _atomic_private_write(_bounded_output(arguments.output), payload)

@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import stat
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +23,7 @@ from typing import Any, Callable
 
 try:
     import numpy as _np
+
     _NUMPY = True
 except ImportError:
     _np = None  # type: ignore[assignment]
@@ -92,6 +95,16 @@ Mercury, Pi, and shared .agents) are available only after the user explicitly en
 them. You are a working partner, not a passive chat interface.
 """
 
+PROTECTED_DEFAULT_IDENTITY = """# Algo CLI - Protected Product Identity
+
+You are Algo CLI: a local-first agent runtime for coding, research, and
+operational work. Plan, act with governed tools, verify results, and treat Echo
+Veil as the exclusive mutable agent-memory authority when it is selected.
+
+This identity text is shipped with Algo CLI source. It is product policy, not a
+user profile or a mutable local continuity record.
+"""
+
 DEFAULT_USER = """# About the User
 
 <!-- Edit this file to teach the CLI about yourself. The more specific, the better. -->
@@ -133,8 +146,18 @@ class CacheEntry:
 _CACHE: dict[Path, CacheEntry] = {}
 
 
-def scaffold_if_needed() -> list[Path]:
+def clear_plaintext_identity_cache() -> int:
+    """Release cached local identity bodies without reading their files."""
+
+    count = len(_CACHE)
+    _CACHE.clear()
+    return count
+
+
+def scaffold_if_needed(*, protected: bool = False) -> list[Path]:
     """Create missing identity files and refresh the untouched legacy identity."""
+    if protected:
+        return []
     created: list[Path] = []
     IDENTITY_DIR.mkdir(parents=True, exist_ok=True)
     for path, default in _DEFAULTS.items():
@@ -171,8 +194,10 @@ def read_cached(path: Path) -> str:
     return content
 
 
-def detect_changes() -> list[Path]:
+def detect_changes(*, protected: bool = False) -> list[Path]:
     """List identity files whose mtime differs from the cache. Stat-only, no reads."""
+    if protected:
+        return []
     changed: list[Path] = []
     for path in ALL_PATHS:
         if not path.exists():
@@ -187,8 +212,10 @@ def detect_changes() -> list[Path]:
     return changed
 
 
-def identity_mtime_key() -> tuple[int, ...]:
+def identity_mtime_key(*, protected: bool = False) -> tuple[int, ...]:
     """Stable fingerprint of identity file mtimes for context-usage cache keys."""
+    if protected:
+        return ()
     key: list[int] = []
     for path in ALL_PATHS:
         if not path.exists():
@@ -201,12 +228,21 @@ def identity_mtime_key() -> tuple[int, ...]:
     return tuple(key)
 
 
-def build_identity_block(retrieved_lessons: list[str] | None = None) -> str:
+def build_identity_block(
+    retrieved_lessons: list[str] | None = None,
+    *,
+    protected: bool = False,
+) -> str:
     """Assemble the identity prefix for the system prompt.
 
     If retrieved_lessons is None: full lessons-learned.md is inlined (fallback path).
     If retrieved_lessons is a list (possibly empty): use only those chunks.
     """
+    if protected:
+        return (
+            f"## Repo-shipped Product Identity\n{PROTECTED_DEFAULT_IDENTITY.strip()}"
+            f"\n\n## Repo-shipped Product Soul\n{DEFAULT_SOUL.strip()}"
+        )
     identity_text = read_cached(IDENTITY_PATH).strip()
     soul_text = read_cached(SOUL_PATH).strip()
     user_text = read_cached(USER_PATH).strip()
@@ -236,6 +272,27 @@ _QUERY_VEC_CACHE: WindowTinyLFUCache[tuple[str, int, str], list[float]] = Window
 )
 
 
+def purge_legacy_lessons_index() -> int:
+    """Remove the plaintext-derived lesson index without reading its payload."""
+
+    global _LESSONS_INDEX
+    try:
+        info = LESSONS_INDEX_PATH.lstat()
+    except FileNotFoundError:
+        _LESSONS_INDEX = None
+        _QUERY_VEC_CACHE.clear()
+        return 0
+    if stat.S_ISLNK(info.st_mode):
+        LESSONS_INDEX_PATH.unlink()
+    elif stat.S_ISREG(info.st_mode) and (not hasattr(os, "getuid") or info.st_uid == os.getuid()):
+        LESSONS_INDEX_PATH.unlink()
+    else:
+        raise OSError("legacy lessons index identity is unsafe")
+    _LESSONS_INDEX = None
+    _QUERY_VEC_CACHE.clear()
+    return 1
+
+
 def _chunk_lessons(text: str) -> list[str]:
     """Split lessons-learned.md into chunks at `## ` headings. Drops top-level title."""
     if not text.strip():
@@ -261,13 +318,15 @@ def _chunk_lessons(text: str) -> list[str]:
 def _cosine(a: list[float], b: list[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
-    dot = 0.0
-    na = 0.0
-    nb = 0.0
-    for x, y in zip(a, b):
-        dot += x * y
-        na += x * x
-        nb += y * y
+    scale_a = max(abs(value) for value in a)
+    scale_b = max(abs(value) for value in b)
+    if scale_a == 0.0 or scale_b == 0.0:
+        return 0.0
+    scaled_a = [value / scale_a for value in a]
+    scaled_b = [value / scale_b for value in b]
+    dot = math.fsum(x * y for x, y in zip(scaled_a, scaled_b))
+    na = math.fsum(value * value for value in scaled_a)
+    nb = math.fsum(value * value for value in scaled_b)
     if na == 0.0 or nb == 0.0:
         return 0.0
     return dot / (math.sqrt(na) * math.sqrt(nb))
@@ -450,10 +509,7 @@ def rebuild_lessons_index(
         "model": model,
         "embedding_model": model,
         "vector_dimensions": vector_dimensions,
-        "chunks": [
-            {"text": chunk, "vector": vector}
-            for chunk, vector in zip(chunks, normalised_vectors)
-        ],
+        "chunks": [{"text": chunk, "vector": vector} for chunk, vector in zip(chunks, normalised_vectors)],
     }
     _save_lessons_index(idx)
     _QUERY_VEC_CACHE.clear()
@@ -497,17 +553,39 @@ def retrieve_lessons(query: str, embed_fn: EmbedFn, model: str = DEFAULT_EMBED_M
     safe_vectors = [vector for vector in vectors if vector is not None]
     if _NUMPY and chunks:
         import numpy as np
-        mat = np.array(safe_vectors, dtype=np.float32)
-        qv = np.array(qvec, dtype=np.float32)
-        mat_norms = np.linalg.norm(mat, axis=1)
-        q_norm = float(np.linalg.norm(qv))
-        if q_norm <= 0.0:
+
+        mat = np.asarray(safe_vectors, dtype=np.float64)
+        qv = np.asarray(qvec, dtype=np.float64)
+        row_scales = np.max(np.abs(mat), axis=1)
+        q_scale = float(np.max(np.abs(qv)))
+        if not math.isfinite(q_scale) or q_scale <= 0.0:
+            return []
+        valid_rows = np.isfinite(row_scales) & (row_scales > 0.0)
+        scaled_mat = np.divide(
+            mat,
+            row_scales[:, None],
+            out=np.zeros_like(mat),
+            where=valid_rows[:, None],
+        )
+        scaled_qv = qv / q_scale
+        mat_norms = np.linalg.norm(scaled_mat, axis=1)
+        q_norm = float(np.linalg.norm(scaled_qv))
+        if not math.isfinite(q_norm) or q_norm <= 0.0:
             return []
         denom = mat_norms * q_norm
-        sims = np.divide(mat @ qv, denom, out=np.zeros_like(mat_norms), where=denom > 0).tolist()
-        scored: list[tuple[float, str]] = [
-            (float(s), chunks[i]["text"]) for i, s in enumerate(sims) if s > 0.0
-        ]
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            sims_array = np.divide(
+                scaled_mat @ scaled_qv,
+                denom,
+                out=np.zeros_like(mat_norms),
+                where=valid_rows & (denom > 0.0),
+            )
+        sims = np.clip(
+            np.nan_to_num(sims_array, nan=0.0, posinf=0.0, neginf=0.0),
+            -1.0,
+            1.0,
+        ).tolist()
+        scored: list[tuple[float, str]] = [(float(s), chunks[i]["text"]) for i, s in enumerate(sims) if s > 0.0]
     else:
         scored = []
         for chunk, vector in zip(chunks, safe_vectors):

@@ -13,7 +13,9 @@ from algo_cli import (
     agent_threads,
     execution_guardrails,
     git_evidence,
+    grace_key_store,
     harness,
+    irene_privacy_views,
     main,
     nathan_provider_protocol,
     run_contract,
@@ -21,6 +23,31 @@ from algo_cli import (
     tool_runtime,
 )
 from algo_cli.config import Config
+from algo_cli.grace_memory_receipts import ElsieReceiptAuthority
+from algo_cli.grace_key_store import StaticKeyStore
+from algo_cli.irene_privacy_views import PRIVACY_KEY_LABEL
+
+
+@pytest.fixture(autouse=True)
+def _isolated_elsie_receipt_authority(monkeypatch):
+    monkeypatch.setattr(irene_privacy_views, "_PRIVACY_KEY", b"p" * 32)
+    authority = ElsieReceiptAuthority.from_key_store(store=StaticKeyStore({PRIVACY_KEY_LABEL: b"p" * 32}))
+    monkeypatch.setattr(
+        ElsieReceiptAuthority,
+        "from_key_store",
+        classmethod(lambda _cls, **_kwargs: authority),
+    )
+    monkeypatch.setattr(
+        ElsieReceiptAuthority,
+        "from_existing_key_store",
+        classmethod(lambda _cls, **_kwargs: authority),
+    )
+
+    def forbid_live_receipt_store(*_args, **_kwargs):
+        raise AssertionError("pipeline tests must inject in-memory receipt stores")
+
+    monkeypatch.setattr(grace_key_store, "KeyringKeyStore", forbid_live_receipt_store)
+    monkeypatch.setattr(grace_key_store, "GraceReceiptAnchorStore", forbid_live_receipt_store)
 
 
 class FakeClient:
@@ -49,6 +76,56 @@ class ScriptedClient:
         return iter([{"message": response}])
 
 
+@pytest.mark.parametrize("team", [False, True])
+def test_direct_agent_boundaries_refuse_failed_echo_auxiliary_preflight(
+    monkeypatch,
+    team: bool,
+) -> None:
+    from algo_cli import elsie_echo_preflight
+
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    client = FakeClient(["## Block Output\nmust not run"])
+    errors: list[str] = []
+
+    def refuse(*_args, **_kwargs):
+        raise elsie_echo_preflight.EchoAuxiliaryPreflightError("private canary")
+
+    monkeypatch.setattr(
+        elsie_echo_preflight,
+        "prepare_echo_auxiliary_state",
+        refuse,
+    )
+    monkeypatch.setattr(agent_pipeline, "show_error", errors.append)
+    monkeypatch.setattr(
+        agent_pipeline.reflex,
+        "begin_agent_pipeline",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("pipeline state must not start before preflight")
+        ),
+    )
+
+    result = (
+        agent_pipeline.run_agent_team(
+            "Review protected state",
+            cfg,
+            client,
+            roles=["reviewer", "critic"],
+        )
+        if team
+        else agent_pipeline.run_agent_pipeline(
+            "Review protected state",
+            cfg,
+            client,
+            pipeline_name="review",
+        )
+    )
+
+    assert result.status == "failed"
+    assert client.calls == []
+    assert "private canary" not in result.error
+    assert errors == [result.error]
+
+
 def test_agent_loop_state_requires_balanced_provider_tool_results():
     state = agent_pipeline.AgentLoopState()
 
@@ -73,9 +150,7 @@ def test_agent_loop_state_requires_balanced_provider_tool_results():
 
 
 def test_provider_protocol_normalizes_provider_shapes_and_balances_results():
-    state = nathan_provider_protocol.ProviderToolLoopState(
-        loop_id="provider-fixture"
-    )
+    state = nathan_provider_protocol.ProviderToolLoopState(loop_id="provider-fixture")
     state.begin_model_round(0)
     state.record_model_event("content")
     state.record_model_event("reasoning")
@@ -127,9 +202,7 @@ def test_provider_protocol_normalizes_provider_shapes_and_balances_results():
 
 
 def test_provider_protocol_canonicalizes_duplicate_ids_and_quarantines_batch():
-    state = nathan_provider_protocol.ProviderToolLoopState(
-        loop_id="duplicate-fixture"
-    )
+    state = nathan_provider_protocol.ProviderToolLoopState(loop_id="duplicate-fixture")
     state.begin_model_round(0)
     calls = state.complete_model_round(
         [
@@ -145,9 +218,7 @@ def test_provider_protocol_canonicalizes_duplicate_ids_and_quarantines_batch():
     )
 
     assert calls[0]["id"] != calls[1]["id"]
-    assert state.protocol_violations == (
-        "duplicate_or_reused_call_id",
-    )
+    assert state.protocol_violations == ("duplicate_or_reused_call_id",)
     assert state.tool_batch_ceiling_codes() == (
         "provider_tool_protocol",
         "provider_tool_protocol",
@@ -155,9 +226,7 @@ def test_provider_protocol_canonicalizes_duplicate_ids_and_quarantines_batch():
 
 
 def test_provider_protocol_blocks_fallback_after_uncertain_mutation():
-    state = nathan_provider_protocol.ProviderToolLoopState(
-        loop_id="fallback-fixture"
-    )
+    state = nathan_provider_protocol.ProviderToolLoopState(loop_id="fallback-fixture")
     state.begin_model_round(0)
     calls = state.complete_model_round(
         [
@@ -180,9 +249,7 @@ def test_provider_protocol_blocks_fallback_after_uncertain_mutation():
 
 
 def test_provider_protocol_allows_fallback_before_any_tool_dispatch():
-    state = nathan_provider_protocol.ProviderToolLoopState(
-        loop_id="safe-fallback-fixture"
-    )
+    state = nathan_provider_protocol.ProviderToolLoopState(loop_id="safe-fallback-fixture")
     state.begin_model_round(0)
     state.record_model_event("content")
     state.interrupt("provider timed out", timed_out=True)
@@ -226,9 +293,7 @@ def test_final_claim_grounding_accepts_verified_mutation_claim() -> None:
         status="complete",
         output="## Block Output\nVerified implementation.",
         successful_writes=["main.py"],
-        git_evidence=(
-            "Verified Git state change introduced during this block."
-        ),
+        git_evidence=("Verified Git state change introduced during this block."),
     )
     final = agent_blocks.AgentBlock(
         role="final",
@@ -246,6 +311,7 @@ def test_final_claim_grounding_accepts_verified_mutation_claim() -> None:
 def _quiet_display(monkeypatch):
     def noop(*_args, **_kwargs):
         return None
+
     for name in (
         "show_agent_block_start",
         "show_agent_block_complete",
@@ -301,6 +367,167 @@ def test_run_agent_pipeline_records_resumable_thread(monkeypatch):
     assert record["turns"][-1]["output"] == "## Block Output\nfinal"
 
 
+def test_run_agent_pipeline_fails_closed_when_required_echo_recall_fails(
+    monkeypatch,
+):
+    from algo_cli import ada_memory_echo_veil
+
+    production_receipt_store_calls: list[str] = []
+
+    def forbid_production_receipt_store(name: str):
+        def forbidden(*_args, **_kwargs):
+            production_receipt_store_calls.append(name)
+            raise AssertionError(f"unexpected production receipt store: {name}")
+
+        return forbidden
+
+    monkeypatch.setattr(
+        grace_key_store,
+        "KeyringKeyStore",
+        forbid_production_receipt_store("keyring"),
+    )
+    monkeypatch.setattr(
+        grace_key_store,
+        "GraceReceiptAnchorStore",
+        forbid_production_receipt_store("anchor"),
+    )
+    cfg = Config(
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+    )
+    client = FakeClient(["## Block Output\nmust not run"])
+    receipt_store = StaticKeyStore({PRIVACY_KEY_LABEL: b"r" * 32})
+    errors: list[str] = []
+    _quiet_display(monkeypatch)
+    monkeypatch.setattr(
+        ada_memory_echo_veil,
+        "protected_prompt_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("sensitive backend detail")),
+    )
+    monkeypatch.setattr(
+        agent_pipeline,
+        "show_error",
+        lambda message: errors.append(message),
+    )
+
+    result = main.run_agent_pipeline(
+        "Review the protected runtime",
+        cfg,
+        client,
+        pipeline_name="review",
+        _receipt_key_store=receipt_store,
+        _receipt_anchor_store=receipt_store,
+    )
+    record = agent_threads.resolve_thread(
+        result.thread_id,
+        protected=True,
+        receipt_authority=ElsieReceiptAuthority.from_key_store(store=receipt_store),
+        anchor_store=receipt_store,
+    )
+
+    assert result.status == "failed"
+    assert result.error == ("Agent run stopped because required protected memory recall is unavailable.")
+    assert client.calls == []
+    assert production_receipt_store_calls == []
+    assert errors == [result.error]
+    assert "sensitive backend detail" not in result.error
+    assert record["status"] == "failed"
+    assert record["turns"][-1]["error"] == ""
+    assert record["turns"][-1]["error_receipt"].startswith("hmac-sha256:")
+
+
+def test_echo_agent_two_block_run_keeps_protected_context_out_of_thread_store(
+    monkeypatch,
+) -> None:
+    from algo_cli import ada_memory_echo_veil
+
+    canary = "ECHO_AGENT_CONTEXT_CANARY"
+    cfg = Config(
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+    )
+    client = FakeClient(
+        [
+            f"## Block Output\nreviewed {canary}",
+            f"## Block Output\nfinal {canary}",
+        ]
+    )
+    receipt_store = StaticKeyStore({PRIVACY_KEY_LABEL: b"s" * 32})
+    _quiet_display(monkeypatch)
+    monkeypatch.setattr(
+        ada_memory_echo_veil,
+        "protected_prompt_context",
+        lambda *_args, **_kwargs: canary,
+    )
+
+    result = main.run_agent_pipeline(
+        "Review protected evidence",
+        cfg,
+        client,
+        pipeline_name="review",
+        _receipt_key_store=receipt_store,
+        _receipt_anchor_store=receipt_store,
+    )
+    raw = agent_threads.threads_path().read_text(encoding="utf-8")
+    record = agent_threads.resolve_thread(
+        result.thread_id,
+        protected=True,
+        receipt_authority=ElsieReceiptAuthority.from_key_store(store=receipt_store),
+        anchor_store=receipt_store,
+    )
+
+    assert result.status == "complete"
+    assert any(canary in str(call["messages"]) for call in client.calls)
+    assert canary not in raw
+    assert record["protected_memory_authority"] is True
+    assert record["task"] == ""
+    assert record["output"] == ""
+    assert all(turn["task"] == "" and turn["output"] == "" for turn in record["turns"])
+    assert all(block["context_output"] == "" for block in record["blocks"])
+
+
+def test_echo_agent_run_never_loads_persisted_intuition_blocks(monkeypatch) -> None:
+    from algo_cli import ada_memory_echo_veil
+
+    canary = "PERSISTED_INTUITION_AGENT_CANARY"
+
+    class ForbiddenIntuition:
+        def recall(self, *_args, **_kwargs):
+            raise AssertionError(canary)
+
+    cfg = Config(
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+        intuition_recall_enabled=True,
+    )
+    client = FakeClient(
+        [
+            "## Block Output\nreview",
+            "## Block Output\nfinal",
+        ]
+    )
+    receipt_store = StaticKeyStore({PRIVACY_KEY_LABEL: b"t" * 32})
+    _quiet_display(monkeypatch)
+    monkeypatch.setattr(main, "_intuition_engine", ForbiddenIntuition())
+    monkeypatch.setattr(
+        ada_memory_echo_veil,
+        "protected_prompt_context",
+        lambda *_args, **_kwargs: "",
+    )
+
+    result = main.run_agent_pipeline(
+        "Review protected evidence",
+        cfg,
+        client,
+        pipeline_name="review",
+        _receipt_key_store=receipt_store,
+        _receipt_anchor_store=receipt_store,
+    )
+
+    assert result.status == "complete"
+    assert canary not in str(client.calls)
+
+
 def test_run_agent_block_falls_back_to_active_model_when_block_client_falls_back(monkeypatch):
     cfg = Config()
     cfg.model = "qwen3:latest"
@@ -325,7 +552,39 @@ def test_run_agent_block_injects_inference_harness_contract_for_eosd_task(monkey
     system_prompt = client.calls[0]["messages"][0]["content"]
     assert "## Inference Harness Integration Contract" in system_prompt
     assert "EOSD: decode loop before each speculative draft round" in system_prompt
-    assert "Do not claim these algorithms can be implemented through hosted Anthropic/OpenAI API calls alone." in system_prompt
+    assert (
+        "Do not claim these algorithms can be implemented through hosted Anthropic/OpenAI API calls alone."
+        in system_prompt
+    )
+
+
+def test_run_agent_block_injects_required_echo_memory_contract(monkeypatch):
+    cfg = Config(
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+    )
+    client = FakeClient(contents=["## Block Output\ncomplete"])
+    block = agent_blocks.AgentBlock(
+        role="plan",
+        prompt="p",
+        allowed_tools=agent_blocks.NO_TOOLS,
+    )
+    _quiet_display(monkeypatch)
+
+    main.run_agent_block(
+        block,
+        task="Use the previous protected decision",
+        completed=[],
+        cfg=cfg,
+        client=client,
+    )
+
+    system_prompt = client.calls[0]["messages"][0]["content"]
+    assert "Echo Veil is the exclusive mutable agent-memory authority" in system_prompt
+    assert "echo_veil_context" in system_prompt
+    assert "ranking_ambiguous=true" in system_prompt
+    assert "competing_memory_detected=true" in system_prompt
+    assert "Never consult or write a host plaintext fallback" in system_prompt
 
 
 def test_run_agent_block_skips_inference_harness_contract_for_ordinary_task(monkeypatch):
@@ -378,7 +637,6 @@ def test_run_agent_block_respects_mercury_external_opt_in(monkeypatch, tmp_path,
     assert bool(reads) is enabled
     if not enabled:
         assert harness.MERCURY_STOP_CONDITIONS_COMPACT in system_prompt
-
 
 
 def test_run_agent_block_rejects_disallowed_tool(monkeypatch):
@@ -468,9 +726,7 @@ def test_enforced_contract_keeps_never_mode_read_only_tools_available(
     _quiet_display(monkeypatch)
     monkeypatch.setattr(
         "builtins.input",
-        lambda _prompt: (_ for _ in ()).throw(
-            AssertionError("never mode must not prompt")
-        ),
+        lambda _prompt: (_ for _ in ()).throw(AssertionError("never mode must not prompt")),
     )
 
     def fake_execute(
@@ -858,6 +1114,9 @@ def test_journal_outcome_failure_quarantines_later_sibling(
     dispatched: list[tuple[str, str | None]] = []
 
     class FailingOutcomeJournal:
+        def digest_text(self, value, *, domain):
+            return contract.digest_sensitive_text(value, domain=domain)
+
         def model_round_started(self, *_args, **_kwargs):
             return None
 
@@ -865,18 +1124,10 @@ def test_journal_outcome_failure_quarantines_later_sibling(
             return None
 
         def tool_intent(self, **kwargs):
-            return SimpleNamespace(
-                payload={
-                    "step_id": (
-                        f"b0-r0-t{kwargs['tool_index']}"
-                    )
-                }
-            )
+            return SimpleNamespace(payload={"step_id": (f"b0-r0-t{kwargs['tool_index']}")})
 
         def tool_result(self, **_kwargs):
-            raise agent_run_journal.AgentRunJournalError(
-                "simulated durable write failure"
-            )
+            raise agent_run_journal.AgentRunJournalError("simulated durable write failure")
 
     def fake_execute(
         name,
@@ -980,7 +1231,11 @@ def test_run_agent_block_records_successful_write_evidence(monkeypatch):
     block = agent_blocks.AgentBlock(role="implement", prompt="p", allowed_tools=agent_blocks.IMPLEMENT_TOOLS)
     client = ScriptedClient(
         [
-            {"tool_calls": [{"function": {"name": "write_file", "arguments": {"path": "ollama_cli/main.py", "content": "x"}}}]},
+            {
+                "tool_calls": [
+                    {"function": {"name": "write_file", "arguments": {"path": "ollama_cli/main.py", "content": "x"}}}
+                ]
+            },
             {"content": "## Block Output\nImplemented."},
         ]
     )
@@ -1006,11 +1261,7 @@ def test_run_agent_block_nudges_then_completes_only_after_verifier(monkeypatch, 
     )
     client = ScriptedClient(
         [
-            {
-                "tool_calls": [
-                    {"function": {"name": "write_file", "arguments": {"path": "made.py", "content": "x"}}}
-                ]
-            },
+            {"tool_calls": [{"function": {"name": "write_file", "arguments": {"path": "made.py", "content": "x"}}}]},
             {"content": "## Block Output\nPremature claim."},
             {"tool_calls": [{"function": {"name": "git_diff", "arguments": {}}}]},
             {"content": "## Block Output\nVerified."},
@@ -1033,8 +1284,7 @@ def test_run_agent_block_nudges_then_completes_only_after_verifier(monkeypatch, 
     assert block.output == "## Block Output\nVerified."
     assert len(client.calls) == 4
     assert any(
-        "[Internal completion gate]" in str(message.get("content") or "")
-        for message in client.calls[2]["messages"]
+        "[Internal completion gate]" in str(message.get("content") or "") for message in client.calls[2]["messages"]
     )
 
 
@@ -1048,11 +1298,7 @@ def test_run_agent_block_replaces_unverified_claim_with_partial_warning(monkeypa
     )
     client = ScriptedClient(
         [
-            {
-                "tool_calls": [
-                    {"function": {"name": "write_file", "arguments": {"path": "made.py", "content": "x"}}}
-                ]
-            },
+            {"tool_calls": [{"function": {"name": "write_file", "arguments": {"path": "made.py", "content": "x"}}}]},
             {"content": "## Block Output\nFirst unsupported claim."},
             {"content": "## Block Output\nSecond unsupported claim."},
         ]
@@ -1315,7 +1561,9 @@ def test_required_change_allows_clean_attributable_git_delta():
         "b" * 64,
         empty,
     )
-    block = agent_blocks.AgentBlock(role="implement", prompt="p", requires_change=True, status="complete", output="done")
+    block = agent_blocks.AgentBlock(
+        role="implement", prompt="p", requires_change=True, status="complete", output="done"
+    )
 
     main.enforce_required_change_contract(block, before, after)
 
@@ -1385,7 +1633,9 @@ def test_required_change_rejects_recorded_write_when_git_is_unavailable():
 
 def test_required_change_rejects_no_write_when_git_is_unavailable():
     snapshot = git_evidence.GitSnapshot(False, "not a Git repository", None, "", "", ())
-    block = agent_blocks.AgentBlock(role="implement", prompt="p", requires_change=True, status="complete", output="Done.")
+    block = agent_blocks.AgentBlock(
+        role="implement", prompt="p", requires_change=True, status="complete", output="Done."
+    )
 
     main.enforce_required_change_contract(block, snapshot, snapshot)
 
@@ -1696,17 +1946,29 @@ def test_pipeline_recovery_skips_policy_denied_partial(monkeypatch):
 
 def test_recovery_plan_includes_bounded_attempt_summary():
     cfg = Config()
-    cfg.attempt_ledger = [
-        {"status": "failed", "tool": "write_file", "summary": "File exists."},
-        {"status": "worked", "tool": "read_file", "summary": "Read target."},
-    ]
+    tool_runtime.record_tool_attempt(
+        cfg,
+        name="write_file",
+        args={"path": "target.txt", "content": "secret"},
+        result="Error: File exists.",
+        status="failed",
+    )
+    tool_runtime.record_tool_attempt(
+        cfg,
+        name="read_file",
+        args={"path": "target.txt"},
+        result="Read target.",
+        status="worked",
+    )
     block = agent_blocks.AgentBlock(role="implement", prompt="p", requires_change=True)
 
     recovery = main.recovery_plan_block(block, cfg)
 
     assert recovery.allowed_tools == agent_blocks.NO_TOOLS
-    assert "FAILED write_file: File exists." in recovery.prompt
-    assert "WORKED read_file: Read target." in recovery.prompt
+    assert "FAILED write_file: status=failed" in recovery.prompt
+    assert "WORKED read_file: status=worked" in recovery.prompt
+    assert "secret" not in recovery.prompt
+    assert "File exists" not in recovery.prompt
 
 
 def test_required_change_write_failure_is_recoverable():
@@ -1797,12 +2059,8 @@ def test_parse_agent_team_invocation_supports_bounded_named_roles():
 
 
 def test_parse_agent_team_invocation_rejects_unbounded_or_duplicate_roles():
-    _roles, _task, too_many = main.parse_agent_team_invocation(
-        "--roles a,b,c,d,e Review the project"
-    )
-    _roles, _task, duplicate = main.parse_agent_team_invocation(
-        "--roles scout,scout Review the project"
-    )
+    _roles, _task, too_many = main.parse_agent_team_invocation("--roles a,b,c,d,e Review the project")
+    _roles, _task, duplicate = main.parse_agent_team_invocation("--roles scout,scout Review the project")
 
     assert "2-4" in too_many
     assert "unique" in duplicate
@@ -1849,10 +2107,7 @@ def test_agent_team_fans_out_specialists_then_passes_bounded_handoff(monkeypatch
     assert len(result.children) == 3
     parent = agent_threads.resolve_thread(result.thread_id)
     assert set(parent["children"]) == set(result.children)
-    children = [
-        agent_threads.resolve_thread(thread_id)
-        for thread_id in result.children
-    ]
+    children = [agent_threads.resolve_thread(thread_id) for thread_id in result.children]
     assert all(child["run_contract"]["mode"] == "enforced" for child in children)
     assert all(child["checkpoint"]["terminal"] is True for child in children)
 
@@ -1873,8 +2128,7 @@ def test_execute_agent_memory_seam_uses_original_task_and_completion_status(monk
     monkeypatch.setattr(
         agent_pipeline.memory_runtime,
         "capture_completed_user_turn",
-        lambda _cfg, text, **kwargs: capture_calls.append({"text": text, **kwargs})
-        or {"status": "rejected"},
+        lambda _cfg, text, **kwargs: capture_calls.append({"text": text, **kwargs}) or {"status": "rejected"},
     )
     cfg = Config()
 
@@ -1893,13 +2147,73 @@ def test_execute_agent_memory_seam_uses_original_task_and_completion_status(monk
         {
             "text": "Remember that our standard shell is zsh.",
             "completed": True,
+            "tool_calls": (),
             "source": "agent",
         },
         {
             "text": "Remember that our standard formatter is Ruff.",
             "completed": False,
+            "tool_calls": (),
             "source": "agent",
         },
+    ]
+
+
+def test_execute_agent_memory_seam_propagates_explicit_memory_tool_receipts(
+    monkeypatch,
+) -> None:
+    capture_calls: list[dict] = []
+
+    monkeypatch.setattr(
+        agent_pipeline,
+        "run_agent_pipeline",
+        lambda task, _cfg, _client, pipeline_name="default", **_kwargs: agent_pipeline.AgentRunResult(
+            thread_id="thread-1",
+            status="complete",
+            pipeline=pipeline_name,
+            output="done",
+            blocks=[
+                {
+                    "role": "implement",
+                    "status": "complete",
+                    "tool_call_receipts": [
+                        {
+                            "name": "remember",
+                            "status": "succeeded",
+                            "explicit_memory_write": True,
+                        }
+                    ],
+                }
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        agent_pipeline.memory_runtime,
+        "capture_completed_user_turn",
+        lambda _cfg, text, **kwargs: (
+            capture_calls.append({"text": text, **kwargs}) or {"status": "skipped", "reason": "explicit_memory_write"}
+        ),
+    )
+
+    agent_pipeline.execute_agent_command(
+        "Remember that our standard shell is zsh.",
+        Config(),
+        object(),
+    )
+
+    assert capture_calls == [
+        {
+            "text": "Remember that our standard shell is zsh.",
+            "completed": True,
+            "tool_calls": (
+                {
+                    "name": "remember",
+                    "status": "succeeded",
+                    "explicit_memory_write": True,
+                },
+            ),
+            "source": "agent",
+        }
     ]
 
 
@@ -2021,9 +2335,7 @@ def test_structured_resume_skips_verified_block_and_keeps_contract(
         ],
         checkpoint=journal.checkpoint_payload(),
     )
-    client = ScriptedClient(
-        [{"content": "## Block Output\nFinal from checkpoint."}]
-    )
+    client = ScriptedClient([{"content": "## Block Output\nFinal from checkpoint."}])
     _quiet_display(monkeypatch)
 
     result = agent_pipeline.execute_agent_command(
@@ -2032,17 +2344,11 @@ def test_structured_resume_skips_verified_block_and_keeps_contract(
         client,
     )
 
-    assert result.startswith(
-        f"Agent thread {record['id']}: complete"
-    )
+    assert result.startswith(f"Agent thread {record['id']}: complete")
     assert len(client.calls) == 1
-    assert "You are the final block" in (
-        client.calls[0]["messages"][0]["content"]
-    )
+    assert "You are the final block" in (client.calls[0]["messages"][0]["content"])
     assert context_output in client.calls[0]["messages"][1]["content"]
-    events = agent_run_journal.AgentRunJournal.load(
-        contract.run_nonce
-    ).records()
+    events = agent_run_journal.AgentRunJournal.load(contract.run_nonce).records()
     assert any(event.kind == "run_resumed" for event in events)
     assert events[-1].kind == "run_finished"
 
@@ -2167,6 +2473,264 @@ def test_structured_resume_fails_closed_on_workspace_drift(
     assert client.calls == []
 
 
+def test_protected_resume_reconciles_keyed_workspace_receipts(tmp_path) -> None:
+    cfg = Config(cwd=str(tmp_path))
+    cfg.echo_veil_enabled = True
+    task = "Review the protected runtime"
+    pipeline = agent_blocks.review_pipeline()
+    initial = git_evidence.GitSnapshot(
+        True,
+        None,
+        "a" * 40,
+        "## main",
+        "",
+        (),
+        "b" * 64,
+        "c" * 64,
+        0,
+        "d" * 64,
+    )
+    changed = git_evidence.GitSnapshot(
+        True,
+        None,
+        "a" * 40,
+        "## main\n M runtime.py",
+        "+changed",
+        (),
+        "e" * 64,
+        "c" * 64,
+        0,
+        "f" * 64,
+    )
+    store = StaticKeyStore({PRIVACY_KEY_LABEL: b"w" * 32})
+    contract = run_contract.compile_agent_run_contract(
+        task=task,
+        route=task_router.route_task(task),
+        pipeline_name="review",
+        blocks=pipeline,
+        cfg=cfg,
+        approval_mode="interactive",
+        snapshot=initial,
+        run_nonce="protected-resume-workspace",
+        issued_at="2026-07-23T12:00:00+00:00",
+        receipt_key_store=store,
+    )
+    journal = agent_run_journal.AgentRunJournal.create(
+        contract,
+        path=tmp_path / "protected-resume.jsonl",
+        receipt_key_store=store,
+        protected_expected=True,
+    )
+
+    state = agent_pipeline._validate_resume_contract(
+        task=task,
+        cfg=cfg,
+        pipeline=pipeline,
+        pipeline_name="review",
+        journal=journal,
+        snapshot=initial,
+    )
+
+    assert state.workspace_matches(initial) is True
+    with pytest.raises(
+        run_contract.RunContractViolation,
+        match="workspace state differs",
+    ):
+        agent_pipeline._validate_resume_contract(
+            task=task,
+            cfg=cfg,
+            pipeline=pipeline,
+            pipeline_name="review",
+            journal=journal,
+            snapshot=changed,
+        )
+
+
+@pytest.mark.parametrize(
+    ("contract_protected", "active_protected"),
+    ((True, False), (False, True)),
+)
+def test_pipeline_resume_refuses_digest_authority_changes_before_execution(
+    monkeypatch,
+    tmp_path,
+    contract_protected,
+    active_protected,
+) -> None:
+    task = "Review the protected runtime"
+    pipeline = agent_blocks.review_pipeline()
+    snapshot = git_evidence.GitSnapshot(
+        False,
+        "not a Git repository",
+        None,
+        "",
+        "",
+        (),
+    )
+    compile_cfg = Config(cwd=str(tmp_path))
+    compile_cfg.echo_veil_enabled = contract_protected
+    compile_cfg.echo_veil_protection = "required" if contract_protected else "optional"
+    active_cfg = Config(cwd=str(tmp_path))
+    active_cfg.echo_veil_enabled = active_protected
+    active_cfg.echo_veil_protection = "required" if active_protected else "optional"
+    store = StaticKeyStore({PRIVACY_KEY_LABEL: b"a" * 32})
+    contract = run_contract.compile_agent_run_contract(
+        task=task,
+        route=task_router.route_task(task),
+        pipeline_name="review",
+        blocks=pipeline,
+        cfg=compile_cfg,
+        approval_mode="interactive",
+        snapshot=snapshot,
+        run_nonce=f"authority-change-{contract_protected}-{active_protected}",
+        issued_at="2026-07-23T12:00:00+00:00",
+        receipt_key_store=store,
+    )
+    journal = agent_run_journal.AgentRunJournal.create(
+        contract,
+        path=tmp_path / f"authority-{contract_protected}-{active_protected}.jsonl",
+        receipt_key_store=store,
+        receipt_anchor_store=(store if contract_protected else None),
+        protected_expected=contract_protected,
+    )
+    client = FakeClient(["## Block Output\nmust not run"])
+    _quiet_display(monkeypatch)
+    monkeypatch.setattr(
+        git_evidence,
+        "capture_git_snapshot",
+        lambda _cwd: snapshot,
+    )
+
+    result = agent_pipeline.run_agent_pipeline(
+        task,
+        active_cfg,
+        client,
+        pipeline_name="review",
+        thread_id="authority-change",
+        resume_journal=journal,
+        resume_block_records=[],
+        _receipt_key_store=store,
+        _receipt_anchor_store=store,
+    )
+
+    assert result.status == "failed"
+    assert "digest authority differs" in result.error
+    assert client.calls == []
+
+
+def test_protected_pipeline_resume_waits_for_anchor_synchronization(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    class ToggleAnchorStore(StaticKeyStore):
+        fail_writes = False
+
+        def compare_and_set(
+            self,
+            journal_id,
+            *,
+            expected_digest,
+            value,
+        ):
+            if self.fail_writes:
+                raise RuntimeError("simulated anchor outage")
+            return super().compare_and_set(
+                journal_id,
+                expected_digest=expected_digest,
+                value=value,
+            )
+
+    cfg = Config(cwd=str(tmp_path))
+    cfg.echo_veil_enabled = True
+    task = "Review the protected runtime"
+    pipeline = agent_blocks.review_pipeline()
+    snapshot = git_evidence.GitSnapshot(
+        True,
+        None,
+        "a" * 40,
+        "## main",
+        "",
+        (),
+        "b" * 64,
+        "c" * 64,
+        0,
+        "d" * 64,
+    )
+    store = ToggleAnchorStore({PRIVACY_KEY_LABEL: b"g" * 32})
+    contract = run_contract.compile_agent_run_contract(
+        task=task,
+        route=task_router.route_task(task),
+        pipeline_name="review",
+        blocks=pipeline,
+        cfg=cfg,
+        approval_mode="interactive",
+        snapshot=snapshot,
+        run_nonce="protected-pipeline-anchor-gate",
+        issued_at="2026-07-23T12:00:00+00:00",
+        receipt_key_store=store,
+    )
+    path = tmp_path / "protected-pipeline-anchor.jsonl"
+    journal = agent_run_journal.AgentRunJournal.create(
+        contract,
+        path=path,
+        receipt_key_store=store,
+        protected_expected=True,
+    )
+    prior_anchor = store.load(journal.anchor_id)
+    store.fail_writes = True
+    with pytest.raises(
+        agent_run_journal.AgentRunJournalError,
+        match="anchor is unavailable",
+    ):
+        journal.context_bound(
+            {
+                "schema_version": 1,
+                "max_tokens": 10,
+                "base_tokens": 1,
+                "used_tokens": 1,
+                "included_sources": [],
+                "truncated_sources": [],
+                "omitted_sources": [],
+                "context_digest": "e" * 64,
+            }
+        )
+    loaded = agent_run_journal.AgentRunJournal.load(
+        contract.run_nonce,
+        path=path,
+        receipt_key_store=store,
+        protected_expected=True,
+    )
+    client = FakeClient(["## Block Output\nmust not run"])
+    _quiet_display(monkeypatch)
+    monkeypatch.setattr(
+        git_evidence,
+        "capture_git_snapshot",
+        lambda _cwd: snapshot,
+    )
+
+    result = agent_pipeline.run_agent_pipeline(
+        task,
+        cfg,
+        client,
+        pipeline_name="review",
+        resume_journal=loaded,
+        resume_block_records=[],
+        _receipt_key_store=store,
+        _receipt_anchor_store=store,
+    )
+
+    assert result.status == "failed"
+    assert "receipt anchor is unavailable" in result.error
+    assert client.calls == []
+    assert store.load(journal.anchor_id) == prior_anchor
+
+    entered = False
+    store.fail_writes = False
+    with loaded.execution_lease():
+        entered = True
+    assert entered is True
+    assert store.load(journal.anchor_id) != prior_anchor
+
+
 def test_structured_resume_rejects_tampered_thread_context(
     monkeypatch,
     tmp_path,
@@ -2206,9 +2770,7 @@ def test_structured_resume_rejects_tampered_thread_context(
         role="review",
         status="complete",
         verified=True,
-        context_digest=agent_run_journal.digest_text(
-            "## Block Output\nOriginal"
-        ),
+        context_digest=agent_run_journal.digest_text("## Block Output\nOriginal"),
         snapshot=snapshot,
     )
     record = agent_threads.create_thread(
@@ -2336,7 +2898,7 @@ def test_agent_fork_creates_and_activates_isolated_worktree(monkeypatch, tmp_pat
     }
     calls: dict[str, Any] = {}
 
-    monkeypatch.setattr(agent_threads, "resolve_thread", lambda _ref: record)
+    monkeypatch.setattr(agent_threads, "resolve_thread", lambda _ref, **_kwargs: record)
 
     def fake_restore(_record, loaded_cfg):
         loaded_cfg.cwd = str(parent_path)
@@ -2408,7 +2970,7 @@ def test_agent_fork_refuses_to_drop_dirty_parent_state(monkeypatch, tmp_path):
     }
     create_calls: list[str] = []
 
-    monkeypatch.setattr(agent_threads, "resolve_thread", lambda _ref: record)
+    monkeypatch.setattr(agent_threads, "resolve_thread", lambda _ref, **_kwargs: record)
 
     def fake_restore(_record, loaded_cfg):
         loaded_cfg.cwd = str(parent_path)
@@ -2453,7 +3015,7 @@ def test_agent_fork_refuses_missing_or_invalid_verified_head(monkeypatch, tmp_pa
     }
     create_calls: list[str] = []
 
-    monkeypatch.setattr(agent_threads, "resolve_thread", lambda _ref: record)
+    monkeypatch.setattr(agent_threads, "resolve_thread", lambda _ref, **_kwargs: record)
 
     def fake_restore(_record, loaded_cfg):
         loaded_cfg.cwd = str(parent_path)

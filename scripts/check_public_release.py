@@ -272,8 +272,8 @@ def scan_archive(path: Path) -> list[str]:
                 if info.is_dir():
                     continue
                 findings.extend(_scan_artifact_name(f"{path.name}!{info.filename}"))
-                with archive.open(info) as handle:
-                    data = handle.read(TEXT_LIMIT + 1)
+                with archive.open(info) as zip_member:
+                    data = zip_member.read(TEXT_LIMIT + 1)
                 findings.extend(_scan_item(f"{path.name}!{info.filename}", data))
         return findings
     try:
@@ -281,10 +281,15 @@ def scan_archive(path: Path) -> list[str]:
             for member in archive.getmembers():
                 if not member.isfile():
                     continue
-                handle = archive.extractfile(member)
-                if handle is not None:
+                tar_member_handle = archive.extractfile(member)
+                if tar_member_handle is not None:
                     findings.extend(_scan_artifact_name(f"{path.name}!{member.name}"))
-                    findings.extend(_scan_item(f"{path.name}!{member.name}", handle.read(TEXT_LIMIT + 1)))
+                    findings.extend(
+                        _scan_item(
+                            f"{path.name}!{member.name}",
+                            tar_member_handle.read(TEXT_LIMIT + 1),
+                        )
+                    )
     except tarfile.TarError:
         findings.append(f"{path}: unsupported artifact format")
     return findings

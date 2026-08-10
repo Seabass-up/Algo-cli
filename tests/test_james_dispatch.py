@@ -45,6 +45,65 @@ def test_dispatch_normalizes_observation_success(tmp_path) -> None:
     assert calls[0][0] == "read_file"
 
 
+def test_successful_echo_memory_write_sets_semantic_receipt(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    cfg = Config(cwd=str(tmp_path), auto_mode=True)
+    result = dispatch_action(
+        "echo_veil_remember",
+        {"payload": "protected fact"},
+        cfg,
+        dependencies=_dependencies(
+            tmp_path,
+            lambda *_args: '{"stored": true}',
+        ),
+        render=False,
+    )
+
+    assert result.outcome.status is OutcomeStatus.SUCCEEDED
+    assert result.outcome.explicit_memory_write is True
+    assert result.outcome.receipt()["explicit_memory_write"] is True
+
+
+def test_successful_wrapped_remember_sets_semantic_receipt(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    cfg = Config(cwd=str(tmp_path), auto_mode=True)
+    result = dispatch_action(
+        "session_command",
+        {"command": "/remember protected fact"},
+        cfg,
+        dependencies=_dependencies(
+            tmp_path,
+            lambda *_args: "Memory saved.",
+        ),
+        render=False,
+    )
+
+    assert result.outcome.status is OutcomeStatus.SUCCEEDED
+    assert result.outcome.explicit_memory_write is True
+
+
+def test_successful_protected_knowledge_note_sets_semantic_receipt(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    cfg = Config(cwd=str(tmp_path), auto_mode=True)
+    result = dispatch_action(
+        "write_knowledge_graph_note",
+        {"title": "Alias", "body": "Protected note"},
+        cfg,
+        dependencies=_dependencies(
+            tmp_path,
+            lambda *_args: "Protected knowledge note saved.",
+        ),
+        render=False,
+    )
+
+    assert result.outcome.status is OutcomeStatus.SUCCEEDED
+    assert result.outcome.explicit_memory_write is True
+    assert result.outcome.receipt()["explicit_memory_write"] is True
+
+
 def test_unknown_local_mutation_is_never_retried_automatically(monkeypatch, tmp_path) -> None:
     cfg = Config(cwd=str(tmp_path))
     prompts: list[str] = []

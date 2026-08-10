@@ -14248,10 +14248,14 @@ and hardening boundaries.
 
 ### Operator surface
 
-`/memory home`, `search`, `show`, and `doctor` are read-only. `add`,
-`supersede`, `promote`, `demote`, `archive`, and `reindex` are explicit
-mutations and require approval when model-invoked. `/memory benchmark` runs a
-temporary frozen corpus without reading or mutating operator memories.
+With legacy memory selected, `/memory home`, `search`, `show`, and `doctor` do
+not deliberately mutate the catalog. With Echo selected, construction and
+these observations may recover, migrate, prune, or account for lifecycle
+state. Model-invoked `/memory` lifecycle observations therefore require
+approval. `add`, `supersede`, `promote`, `demote`, `archive`, and `reindex` are
+explicit mutations; legacy catalog mutations are unavailable while Echo is
+authoritative. `/memory benchmark` runs a temporary frozen corpus only in
+legacy mode.
 
 The qualification reports exact Recall@3, paraphrase and multilingual semantic
 Recall@3, authority precision@1, MRR, stale-hit rate, unrelated-query rejection,

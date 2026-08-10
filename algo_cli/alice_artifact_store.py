@@ -59,6 +59,7 @@ _ARTIFACT_SUFFIX = ".alice"
 _MAX_MANIFEST_BYTES = 512 * 1024
 _INNER_HEADER_BYTES = 4
 _RUN_KEY_BYTES = 128
+_IDENTIFIER_ATTEMPTS = 128
 
 
 class ArtifactStoreError(RuntimeError):
@@ -182,11 +183,7 @@ class EncryptedArtifactRef:
             raise ValueError("artifact reference URI is invalid")
         if not _CONTENT_ID_RE.fullmatch(self.content_id):
             raise ValueError("artifact reference content identity is invalid")
-        if (
-            isinstance(self.byte_count, bool)
-            or not isinstance(self.byte_count, int)
-            or self.byte_count < 0
-        ):
+        if isinstance(self.byte_count, bool) or not isinstance(self.byte_count, int) or self.byte_count < 0:
             raise ValueError("artifact reference byte count is invalid")
         _validate_media_type(self.media_type)
         if (
@@ -295,9 +292,7 @@ def _b64_decode(value: Any, *, expected_bytes: int | None = None) -> bytes:
         decoded = base64.b64decode(value, altchars=b"-_", validate=True)
     except (TypeError, ValueError) as exc:
         raise ArtifactIntegrityError("private artifact base64 field is invalid") from exc
-    if _b64_encode(decoded) != value or (
-        expected_bytes is not None and len(decoded) != expected_bytes
-    ):
+    if _b64_encode(decoded) != value or (expected_bytes is not None and len(decoded) != expected_bytes):
         raise ArtifactIntegrityError("private artifact base64 field is non-canonical")
     return decoded
 
@@ -374,9 +369,7 @@ def _fsync_directory(path: Path) -> None:
 def _atomic_replace(path: Path, payload: bytes) -> None:
     _ensure_private_directory(path.parent)
     _ensure_regular_or_missing(path)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-    )
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     temporary = Path(temporary_name)
     try:
         if os.name == "posix":
@@ -405,9 +398,7 @@ def _publish_new(path: Path, payload: bytes) -> None:
     _ensure_regular_or_missing(path)
     if path.exists():
         raise ArtifactIntegrityError("artifact identifier collision")
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-    )
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     temporary = Path(temporary_name)
     try:
         if os.name == "posix":
@@ -715,9 +706,8 @@ class EncryptedArtifactStore:
         verifier = hmac.new(keys.capability, capability.token, hashlib.sha256).hexdigest()
         if not hmac.compare_digest(verifier, str(manifest.get("capability_verifier") or "")):
             raise ArtifactAccessDenied("artifact capability is invalid")
-        if (
-            float(capability.issued_at) != float(manifest["created_at"])
-            or float(capability.expires_at) != float(manifest["expires_at"])
+        if float(capability.issued_at) != float(manifest["created_at"]) or float(capability.expires_at) != float(
+            manifest["expires_at"]
         ):
             raise ArtifactAccessDenied("artifact capability timestamps are invalid")
 
@@ -781,9 +771,7 @@ class EncryptedArtifactStore:
         records = manifest["artifacts"].values()
         manifest["artifact_count"] = len(manifest["artifacts"])
         manifest["plaintext_bytes"] = sum(record["byte_count"] for record in records)
-        manifest["disk_bytes"] = sum(
-            record["disk_bytes"] for record in manifest["artifacts"].values()
-        )
+        manifest["disk_bytes"] = sum(record["disk_bytes"] for record in manifest["artifacts"].values())
 
     def _active_totals(
         self,
@@ -853,11 +841,19 @@ class EncryptedArtifactStore:
             )
             if active_runs >= self.policy.max_runs:
                 raise ArtifactQuotaExceeded("active run quota is exhausted")
-            selected_id = requested_id or secrets.token_hex(16)
-            while self._run_dir(selected_id).exists():
-                if requested_id is not None:
+            if requested_id is not None:
+                if self._run_dir(requested_id).exists():
                     raise ArtifactIntegrityError("requested artifact run already exists")
-                selected_id = secrets.token_hex(16)
+                selected_id = requested_id
+            else:
+                selected_id = ""
+                for _attempt in range(_IDENTIFIER_ATTEMPTS):
+                    candidate = secrets.token_hex(16)
+                    if not self._run_dir(candidate).exists():
+                        selected_id = candidate
+                        break
+                if not selected_id:
+                    raise ArtifactIntegrityError("artifact run identifier collisions exhausted")
             token = secrets.token_bytes(32)
             salt = secrets.token_bytes(32)
             keys = _derive_run_keys(master_key, salt, selected_id)
@@ -870,9 +866,7 @@ class EncryptedArtifactStore:
                 "updated_at": now,
                 "expires_at": expires_at,
                 "salt": _b64_encode(salt),
-                "capability_verifier": hmac.new(
-                    keys.capability, token, hashlib.sha256
-                ).hexdigest(),
+                "capability_verifier": hmac.new(keys.capability, token, hashlib.sha256).hexdigest(),
                 "revision": 1,
                 "artifact_count": 0,
                 "plaintext_bytes": 0,
@@ -938,13 +932,16 @@ class EncryptedArtifactStore:
             if total_plaintext + len(content) > self.policy.max_total_bytes:
                 raise ArtifactQuotaExceeded("artifact store plaintext quota is exhausted")
 
-            artifact_id = secrets.token_hex(16)
-            while self._artifact_path(capability.run_id, artifact_id).exists():
-                artifact_id = secrets.token_hex(16)
+            artifact_id = ""
+            for _attempt in range(_IDENTIFIER_ATTEMPTS):
+                candidate = secrets.token_hex(16)
+                if not self._artifact_path(capability.run_id, candidate).exists():
+                    artifact_id = candidate
+                    break
+            if not artifact_id:
+                raise ArtifactIntegrityError("artifact identifier collisions exhausted")
             expires_at = min(float(manifest["expires_at"]), now + requested_ttl)
-            content_id = "hmac-sha256:" + hmac.new(
-                keys.identity, content, hashlib.sha256
-            ).hexdigest()
+            content_id = "hmac-sha256:" + hmac.new(keys.identity, content, hashlib.sha256).hexdigest()
             header = {
                 "schema_version": ARTIFACT_SCHEMA_VERSION,
                 "run_id": capability.run_id,
@@ -1061,9 +1058,7 @@ class EncryptedArtifactStore:
             }
         )
         try:
-            plaintext = AESGCM(
-                _derive_artifact_key(keys.encryption, artifact_id)
-            ).decrypt(nonce, ciphertext, aad)
+            plaintext = AESGCM(_derive_artifact_key(keys.encryption, artifact_id)).decrypt(nonce, ciphertext, aad)
         except InvalidTag as exc:
             raise ArtifactIntegrityError("encrypted artifact authentication failed") from exc
         if len(plaintext) < _INNER_HEADER_BYTES:
@@ -1120,9 +1115,7 @@ class EncryptedArtifactStore:
             _validate_media_type(media_type)
         except ValueError as exc:
             raise ArtifactIntegrityError("encrypted artifact media type is invalid") from exc
-        calculated = "hmac-sha256:" + hmac.new(
-            keys.identity, content, hashlib.sha256
-        ).hexdigest()
+        calculated = "hmac-sha256:" + hmac.new(keys.identity, content, hashlib.sha256).hexdigest()
         if not hmac.compare_digest(calculated, content_id):
             raise ArtifactIntegrityError("encrypted artifact content identity failed")
         return header, content

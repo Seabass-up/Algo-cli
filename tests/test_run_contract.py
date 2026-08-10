@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
+import os
+import subprocess
+import sys
 
 import pytest
 
 from algo_cli import agent_blocks
 from algo_cli import git_evidence
+from algo_cli import grace_key_store
 from algo_cli import run_contract
 from algo_cli import task_router
 from algo_cli.config import Config
@@ -38,9 +43,13 @@ def _compile(
     pipeline: list[agent_blocks.AgentBlock] | None = None,
     policy: bool = True,
     approval_mode: str = "interactive",
+    protected: bool = False,
+    receipt_key_store=None,
+    run_nonce: str = FIXED_NONCE,
 ) -> run_contract.RunContract:
     cfg = Config(cwd=str(tmp_path), model="qwen3", num_ctx=8_192)
     cfg.algorithmic_tool_policy_enabled = policy
+    cfg.echo_veil_enabled = protected
     return run_contract.compile_agent_run_contract(
         task=task,
         route=task_router.route_task(task),
@@ -50,7 +59,8 @@ def _compile(
         approval_mode=approval_mode,  # type: ignore[arg-type]
         snapshot=_snapshot(),
         issued_at=FIXED_TIME,
-        run_nonce=FIXED_NONCE,
+        run_nonce=run_nonce,
+        receipt_key_store=receipt_key_store,
     )
 
 
@@ -60,13 +70,216 @@ def test_contract_is_canonical_stable_and_binds_every_field(tmp_path) -> None:
 
     assert first.canonical_bytes() == second.canonical_bytes()
     assert first.digest == second.digest
-    assert first.contract_id == (
-        f"run-contract-v{run_contract.RUN_CONTRACT_SCHEMA_VERSION}:"
-        f"{first.digest}"
-    )
+    assert first.contract_id == (f"run-contract-v{run_contract.RUN_CONTRACT_SCHEMA_VERSION}:{first.digest}")
     assert len(first.digest) == 64
     assert replace(first, speed_tier="priority").digest != first.digest
     assert "Fix the failing login test" not in first.canonical_bytes().decode()
+
+
+def test_protected_contract_uses_persistent_domain_separated_hmacs(
+    tmp_path,
+) -> None:
+    store = grace_key_store.StaticKeyStore({"irene-privacy-hmac-v1": b"k" * 32})
+    first = _compile(
+        tmp_path,
+        task="yes",
+        protected=True,
+        receipt_key_store=store,
+    )
+    second = _compile(
+        tmp_path,
+        task="yes",
+        protected=True,
+        receipt_key_store=store,
+        run_nonce="fedcba9876543210fedcba9876543210",
+    )
+
+    assert first.schema_version == run_contract.RUN_CONTRACT_SCHEMA_VERSION
+    assert first.sensitive_digests.schema_version == 1
+    assert first.sensitive_digests.scheme == "hmac-sha256-v1"
+    assert first.sensitive_digests.key_backend == "static"
+    assert first.sensitive_digests.key_id.startswith("sha256:")
+    assert first.task_digest == second.task_digest
+    assert first.blocks[0].prompt_digest == second.blocks[0].prompt_digest
+    assert first.workspace == second.workspace
+    assert first.workspace.initial_head == _snapshot().head
+    assert first.task_digest != run_contract.sensitive_digest_text(
+        "yes",
+        domain="block-prompt",
+        binding=first.sensitive_digests,
+        key_store=store,
+    )
+    assert first.task_digest not in {hashlib.sha256(word.encode()).hexdigest() for word in ("yes", "no")}
+    workspace_receipts = {
+        first.workspace.status_digest,
+        first.workspace.tracked_diff_digest,
+        first.workspace.untracked_digest,
+    }
+    assert len(workspace_receipts) == 3
+    assert not workspace_receipts.intersection(
+        {
+            _snapshot().status_digest,
+            _snapshot().tracked_diff_digest,
+            _snapshot().untracked_digest,
+        }
+    )
+    canonical = first.canonical_bytes().decode("utf-8")
+    assert '"yes"' not in canonical
+    assert _snapshot().status_digest not in canonical
+    assert _snapshot().tracked_diff_digest not in canonical
+    assert _snapshot().untracked_digest not in canonical
+
+
+def test_protected_receipts_are_stable_across_processes_with_the_same_key(
+    tmp_path,
+) -> None:
+    script = r"""
+import json
+import sys
+
+from algo_cli import agent_blocks, git_evidence, run_contract, task_router
+from algo_cli.config import Config
+from algo_cli.grace_key_store import StaticKeyStore
+from algo_cli.irene_privacy_views import PRIVACY_KEY_LABEL
+
+cwd, key_hex = sys.argv[1:]
+task = "yes"
+cfg = Config(cwd=cwd, model="qwen3", num_ctx=8192)
+cfg.echo_veil_enabled = True
+snapshot = git_evidence.GitSnapshot(
+    available=True,
+    error=None,
+    head="a" * 40,
+    status="## main",
+    tracked_diff="",
+    untracked_files=(),
+    tracked_diff_digest="b" * 64,
+    untracked_digest="c" * 64,
+    status_digest="d" * 64,
+)
+store = StaticKeyStore({PRIVACY_KEY_LABEL: bytes.fromhex(key_hex)})
+contract = run_contract.compile_agent_run_contract(
+    task=task,
+    route=task_router.route_task(task),
+    pipeline_name="review",
+    blocks=agent_blocks.review_pipeline(),
+    cfg=cfg,
+    approval_mode="interactive",
+    snapshot=snapshot,
+    issued_at="2026-07-23T12:00:00+00:00",
+    run_nonce="cross-process-protected-receipts",
+    receipt_key_store=store,
+)
+print(json.dumps({
+    "task": contract.task_digest,
+    "prompt": contract.blocks[0].prompt_digest,
+    "workspace": contract.workspace.status_digest,
+    "target": contract.digest_sensitive_text(
+        "yes",
+        domain="tool-target",
+        key_store=store,
+    ),
+}, sort_keys=True))
+"""
+    command = [
+        sys.executable,
+        "-c",
+        script,
+        str(tmp_path),
+        (b"x" * 32).hex(),
+    ]
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+
+    first = subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    ).stdout
+    second = subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    ).stdout
+
+    assert first == second
+
+
+def test_only_protected_contract_compilation_may_create_receipt_key(
+    tmp_path,
+) -> None:
+    class CountingStaticKeyStore(grace_key_store.StaticKeyStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.create_calls = 0
+            self.existing_calls = 0
+
+        def get_or_create(self, label, *, length=32):
+            self.create_calls += 1
+            return super().get_or_create(label, length=length)
+
+        def get_existing(self, label, *, length=32):
+            self.existing_calls += 1
+            return super().get_existing(label, length=length)
+
+    store = CountingStaticKeyStore()
+
+    contract = _compile(
+        tmp_path,
+        protected=True,
+        receipt_key_store=store,
+    )
+    create_calls = store.create_calls
+    contract.assert_sensitive_digest_key(key_store=store)
+    contract.digest_sensitive_text("yes", domain="task", key_store=store)
+
+    assert create_calls == 1
+    assert store.create_calls == create_calls
+    assert store.existing_calls > 1
+
+
+def test_protected_contract_verification_does_not_create_missing_key(
+    tmp_path,
+) -> None:
+    contract = _compile(
+        tmp_path,
+        protected=True,
+        receipt_key_store=grace_key_store.StaticKeyStore({"irene-privacy-hmac-v1": b"k" * 32}),
+    )
+    missing = grace_key_store.StaticKeyStore()
+
+    with pytest.raises(
+        run_contract.RunContractError,
+        match="persistent protected run-receipt key is unavailable",
+    ):
+        contract.assert_sensitive_digest_key(key_store=missing)
+    with pytest.raises(grace_key_store.KeyStoreError, match="absent"):
+        missing.get_existing("irene-privacy-hmac-v1")
+
+
+def test_protected_contract_fails_closed_without_persistent_key(
+    tmp_path,
+) -> None:
+    class VolatileStore:
+        def get_or_create(self, _label, *, length=32):
+            return grace_key_store.KeyMaterial(
+                b"v" * length,
+                persistent=False,
+                backend="volatile_process",
+            )
+
+    with pytest.raises(
+        run_contract.RunContractError,
+        match="persistent protected run-receipt key is unavailable",
+    ):
+        _compile(
+            tmp_path,
+            protected=True,
+            receipt_key_store=VolatileStore(),
+        )
 
 
 def test_contract_compiles_enforced_policy_and_bounded_blocks(tmp_path) -> None:
@@ -217,9 +430,7 @@ def test_contract_tracker_enforces_order_tools_and_wall_time(tmp_path) -> None:
         run_contract.RunContractViolation,
         match="per-round prompt budget",
     ):
-        tracker.start_model_round(
-            contract.budget.max_prompt_tokens_per_round + 1
-        )
+        tracker.start_model_round(contract.budget.max_prompt_tokens_per_round + 1)
     assert tracker.model_rounds == 1
     assert tracker.prompt_tokens == 256
 

@@ -17,9 +17,7 @@ from .retrieval_algorithms import BM25Index, lexical_tokens, stable_top_k
 from .tool_schema import estimate_tool_schema_tokens
 
 
-_DECLARATION_RE = re.compile(
-    r"(?im)^\s*allowed\s+tool(?:\s+classes)?\s*:\s*([^\r\n]+)"
-)
+_DECLARATION_RE = re.compile(r"(?im)^\s*allowed\s+tool(?:\s+classes)?\s*:\s*([^\r\n]+)")
 _CLASS_TO_TOOLS: dict[str, frozenset[str]] = {
     "filesystem": frozenset(
         {
@@ -39,21 +37,41 @@ _CLASS_TO_TOOLS: dict[str, frozenset[str]] = {
     "shell": frozenset({"run_shell"}),
     "web": frozenset({"web_search", "web_fetch"}),
     "network": frozenset({"web_search", "web_fetch", "x_search"}),
-    "memory": frozenset({"remember", "append_lesson", "update_user_profile"}),
+    "memory": frozenset(
+        {
+            "remember",
+            "append_lesson",
+            "write_knowledge_graph_note",
+            "update_user_profile",
+        }
+    ),
     "model": frozenset(
         {"embed_text", "vision_describe", "model_pull", "model_delete", "model_create", "model_copy", "model_show"}
     ),
     "harness": frozenset(
-        {"harness_refresh", "harness_stats", "harness_scorecard", "harness_competitive_rating", "harness_search", "harness_read"}
+        {
+            "harness_refresh",
+            "harness_stats",
+            "harness_scorecard",
+            "harness_competitive_rating",
+            "harness_search",
+            "harness_read",
+        }
     ),
-    "knowledge_graph": frozenset(
-        {"query_knowledge_graph", "reindex_knowledge_graph", "write_knowledge_graph_note"}
-    ),
+    "knowledge_graph": frozenset({"query_knowledge_graph", "reindex_knowledge_graph", "write_knowledge_graph_note"}),
     "session": frozenset({"available_actions", "session_slash", "session_command"}),
     "plugins": frozenset({"plugins_discover", "plugins_load"}),
     "credentials": frozenset({"credential_helpers_get", "credential_helpers_store"}),
     "social": frozenset(
-        {"x_search", "x_account_status", "x_account_draft_post", "x_account_draft_reply", "x_account_post", "x_account_reply", "x_account_post_action"}
+        {
+            "x_search",
+            "x_account_status",
+            "x_account_draft_post",
+            "x_account_draft_reply",
+            "x_account_post",
+            "x_account_reply",
+            "x_account_post_action",
+        }
     ),
 }
 
@@ -81,7 +99,9 @@ _SPECIALIZED_INTENT_GATES: tuple[tuple[str, frozenset[str], frozenset[str]], ...
     (
         "harness_",
         frozenset({"harness"}),
-        frozenset({"compare", "index", "memory", "rating", "record", "refresh", "score", "search", "skill", "stats", "wiki"}),
+        frozenset(
+            {"compare", "index", "memory", "rating", "record", "refresh", "score", "search", "skill", "stats", "wiki"}
+        ),
     ),
     (
         "screenshot_",
@@ -109,6 +129,25 @@ _SPECIALIZED_INTENT_GATES: tuple[tuple[str, frozenset[str], frozenset[str]], ...
     ("extensions_manifest_", frozenset(), frozenset({"extension", "manifest"})),
     ("credential_", frozenset(), frozenset({"credential", "keychain", "secret"})),
     ("google_", frozenset(), frozenset({"calendar", "docs", "drive", "gmail", "google", "sheets"})),
+    (
+        "echo_veil_",
+        frozenset({"echo"}),
+        frozenset(
+            {
+                "context",
+                "doctor",
+                "forget",
+                "inventory",
+                "list",
+                "memory",
+                "promote",
+                "recall",
+                "reindex",
+                "remember",
+                "refresh",
+            }
+        ),
+    ),
 )
 
 _QUERY_STOPWORDS = frozenset(
@@ -191,11 +230,7 @@ def declared_tool_classes(prompt: str) -> tuple[str, ...] | None:
     match = _DECLARATION_RE.search(prompt or "")
     if match is None:
         return None
-    values = tuple(
-        normalized
-        for raw in match.group(1).split(",")
-        if (normalized := _normalize_class(raw))
-    )
+    values = tuple(normalized for raw in match.group(1).split(",") if (normalized := _normalize_class(raw)))
     return values
 
 
@@ -247,11 +282,7 @@ def _specialized_intent_allowed(name: str, query_terms: set[str]) -> bool:
 def _expanded_query_terms(prompt: str) -> tuple[str, ...]:
     # Retrieval tokenizers may preserve trailing punctuation. Normalize here so
     # intent gates and exact-name boosts see ``account`` rather than ``account.``.
-    source_terms = tuple(
-        normalized
-        for term in lexical_tokens(prompt)
-        if (normalized := _normalize_class(term))
-    )
+    source_terms = tuple(normalized for term in lexical_tokens(prompt) if (normalized := _normalize_class(term)))
     source_term_set = set(source_terms)
     terms: list[str] = []
     seen: set[str] = set()
@@ -341,9 +372,7 @@ def select_tools_for_prompt(
     effective_limit = max(bounded_limit, len(selected_names))
     effective_schema_budget = max(
         int(schema_token_budget),
-        estimate_tool_schema_tokens(
-            [tool for tool in tools if getattr(tool, "__name__", "") in selected_names]
-        ),
+        estimate_tool_schema_tokens([tool for tool in tools if getattr(tool, "__name__", "") in selected_names]),
     )
     for tool in rank_tools_for_prompt(prompt, tools):
         if len(selected_names) >= effective_limit:
@@ -352,9 +381,7 @@ def select_tools_for_prompt(
         if name in selected_names:
             continue
         candidate_names = {*selected_names, name}
-        candidate_tools = [
-            item for item in tools if getattr(item, "__name__", "") in candidate_names
-        ]
+        candidate_tools = [item for item in tools if getattr(item, "__name__", "") in candidate_names]
         if estimate_tool_schema_tokens(candidate_tools) > effective_schema_budget:
             continue
         selected_names.add(name)

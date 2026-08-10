@@ -41,9 +41,7 @@ def test_request_estimate_accounts_for_visible_tool_schemas():
     without_tools = context_budget.estimate_usage_with_system_prompt("system", cfg)
     selected = tools.ALL_TOOLS[:3]
 
-    with_tools = context_budget.estimate_usage_with_system_prompt(
-        "system", cfg, tools=selected
-    )
+    with_tools = context_budget.estimate_usage_with_system_prompt("system", cfg, tools=selected)
 
     assert with_tools - without_tools == estimate_tool_schema_tokens(selected)
 
@@ -62,9 +60,7 @@ def test_oneshot_prompt_defers_interactive_capability_tutorials(monkeypatch):
     assert "## Grok / xAI model compatibility" not in automated
     assert "## PDF Handling" not in automated
     assert "Prefer action_program" in automated
-    assert context_budget.estimate_text_tokens(automated) < (
-        context_budget.estimate_text_tokens(interactive) * 0.45
-    )
+    assert context_budget.estimate_text_tokens(automated) < (context_budget.estimate_text_tokens(interactive) * 0.45)
 
 
 def test_adaptive_window_feeds_accounting():
@@ -89,9 +85,7 @@ def test_user_ctx_override_wins_over_adaptive():
     cfg = Config()
     cfg.model_adaptive = True
     cfg.num_ctx = 4096  # explicit /ctx override
-    runtime_cap, _ = model_info.effective_context_limits(
-        cfg, {"context_length": 131072, "parameter_size": "70B"}
-    )
+    runtime_cap, _ = model_info.effective_context_limits(cfg, {"context_length": 131072, "parameter_size": "70B"})
     assert runtime_cap == 4096
 
 
@@ -102,19 +96,14 @@ def test_compaction_fires_against_real_window(monkeypatch):
     cfg.model_adaptive = False
     # ~36k chars -> ~9k estimated tokens, spread over enough messages to keep
     # CONTEXT_KEEP_MESSAGES satisfied.
-    cfg.messages = [
-        {"role": "user" if i % 2 == 0 else "assistant", "content": "x" * 900}
-        for i in range(40)
-    ]
+    cfg.messages = [{"role": "user" if i % 2 == 0 else "assistant", "content": "x" * 900} for i in range(40)]
     monkeypatch.setattr(
         context_budget,
         "summarize_message_batch",
         lambda cfg_, batch, client, maintenance_client_fn=None: "summary of old turns",
     )
     monkeypatch.setattr(context_budget, "estimate_context_usage", lambda *a, **k: 9000)
-    compacted = context_budget.maybe_compact_context(
-        client=None, cfg=cfg, model_info=_big_native_info()
-    )
+    compacted = context_budget.maybe_compact_context(client=None, cfg=cfg, model_info=_big_native_info())
     assert compacted is True
     assert cfg.session_summary == "summary of old turns"
     assert len(cfg.messages) == context_budget.SMALL_CONTEXT_KEEP_MESSAGES
@@ -125,10 +114,7 @@ def test_no_compaction_when_under_threshold(monkeypatch):
     cfg.model_adaptive = False
     cfg.messages = [{"role": "user", "content": "hi"} for _ in range(20)]
     monkeypatch.setattr(context_budget, "estimate_context_usage", lambda *a, **k: 1000)
-    assert (
-        context_budget.maybe_compact_context(client=None, cfg=cfg, model_info=_big_native_info())
-        is False
-    )
+    assert context_budget.maybe_compact_context(client=None, cfg=cfg, model_info=_big_native_info()) is False
 
 
 def test_optional_context_blocks_fit_when_budget_allows():
@@ -185,4 +171,6 @@ def test_tool_result_message_tool_name_contributes_to_token_estimate():
     with_tool_name = tool_result_message("read_file", "x")
     without_tool_name = {"role": "tool", "name": "read_file", "content": "x"}
 
-    assert context_budget.estimate_message_tokens(with_tool_name) > context_budget.estimate_message_tokens(without_tool_name)
+    assert context_budget.estimate_message_tokens(with_tool_name) > context_budget.estimate_message_tokens(
+        without_tool_name
+    )

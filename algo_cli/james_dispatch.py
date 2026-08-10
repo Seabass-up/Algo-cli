@@ -30,10 +30,38 @@ from .samuel_policy_engine import resolve_action
 EffectVerifier = Callable[[ResolvedAction, str], bool | None]
 ToolInvoker = Callable[[str, dict[str, Any], Any], str]
 ApprovalCallback = Callable[..., bool]
-TRUSTED_ADAPTER_ACTIONS = frozenset(
-    {"x_account_post", "x_account_reply", "x_account_post_action"}
-)
+TRUSTED_ADAPTER_ACTIONS = frozenset({"x_account_post", "x_account_reply", "x_account_post_action"})
 _SAFE_VERIFIER_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_EXPLICIT_MEMORY_WRITE_ACTIONS = frozenset(
+    {
+        "remember",
+        "append_lesson",
+        "write_knowledge_graph_note",
+        "echo_veil_remember",
+        "echo_veil_refresh_live",
+        "echo_veil_promote",
+        "echo_veil_forget",
+        "echo_veil_reindex",
+    }
+)
+_MEMORY_MUTATION_SLASHES = frozenset({"/remember", "/forget"})
+_MEMORY_MUTATION_SUBCOMMANDS = frozenset({"add", "supersede", "promote", "demote", "archive", "reindex"})
+
+
+def _explicit_memory_write_effect(name: str, args: Mapping[str, Any]) -> bool:
+    normalized_name = str(name or "").strip().casefold()
+    if normalized_name in _EXPLICIT_MEMORY_WRITE_ACTIONS:
+        return True
+    if normalized_name != "session_command":
+        return False
+    command = args.get("command")
+    if not isinstance(command, str) or len(command.encode("utf-8", errors="replace")) > 4_096:
+        return False
+    parts = command.strip().split(maxsplit=2)
+    root = parts[0].casefold() if parts else ""
+    if root in _MEMORY_MUTATION_SLASHES:
+        return True
+    return root == "/memory" and len(parts) > 1 and parts[1].casefold() in _MEMORY_MUTATION_SUBCOMMANDS
 
 
 @dataclass
@@ -228,6 +256,11 @@ def _finalize(
     duration_ms: float,
     render: bool,
 ) -> DispatchResult:
+    if outcome.status is OutcomeStatus.SUCCEEDED and _explicit_memory_write_effect(
+        name,
+        preflight.signature_args,
+    ):
+        outcome = replace(outcome, explicit_memory_write=True)
     status = _attempt_status(outcome)
     result = outcome.model_text()
     if outcome.invoked:
@@ -675,11 +708,7 @@ def _run_external_effect(
         verifier_name = ""
         if verifier is not None:
             raw_verifier_name = str(getattr(verifier, "__name__", ""))
-            verifier_name = (
-                raw_verifier_name
-                if _SAFE_VERIFIER_ID.fullmatch(raw_verifier_name)
-                else "effect_verifier"
-            )
+            verifier_name = raw_verifier_name if _SAFE_VERIFIER_ID.fullmatch(raw_verifier_name) else "effect_verifier"
             try:
                 observed = verifier(action, raw_result)
             except Exception:
@@ -714,9 +743,7 @@ def _run_external_effect(
                     outcome,
                     verification=VerificationStatus.PASSED,
                     error_code=(
-                        _post_dispatch_termination_reason(post_termination)
-                        if post_termination is not None
-                        else ""
+                        _post_dispatch_termination_reason(post_termination) if post_termination is not None else ""
                     ),
                 ),
                 duration_ms,
@@ -1047,10 +1074,7 @@ def dispatch_action(
 
     if release_error is not None:
         release_error_code = f"lease_release_{type(release_error).__name__}"
-        if (
-            outcome.status is OutcomeStatus.SUCCEEDED
-            and outcome.verification is not VerificationStatus.PASSED
-        ):
+        if outcome.status is OutcomeStatus.SUCCEEDED and outcome.verification is not VerificationStatus.PASSED:
             outcome = normalize_action_outcome(
                 action,
                 outcome.result,

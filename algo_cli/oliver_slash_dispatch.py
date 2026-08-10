@@ -15,14 +15,16 @@ from prompt_toolkit.completion import Completer, Completion
 from . import display
 from .config import (
     CODE_RAG_CONSENT_VERSION,
+    MEMORY_AUTO_CAPTURE_CONSENT_VERSION,
     Config,
     code_rag_consent_granted,
+    memory_auto_capture_consent_granted,
     safe_conversation_name,
 )
 from . import code_rag
 from . import harness
 from . import identity
-from . import memory_candidates
+from . import julia_memory_candidates as memory_candidates
 from . import dorothy_perf_telemetry as perf_telemetry
 from . import reflex
 from . import skills
@@ -35,7 +37,10 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/host", "Set local Ollama host"),
     ("/cloud", "Set/toggle direct Ollama Cloud API mode: /cloud [on|off|status]"),
     ("/cloudauto", "Set/toggle cloud auto-connect: /cloudauto [on|off|status]"),
-    ("/google", "Run a Google Workspace command: drive-list, drive-search, drive-get, docs-get, sheets-values, calendar-list, gmail-list, gmail-get, help"),
+    (
+        "/google",
+        "Run a Google Workspace command: drive-list, drive-search, drive-get, docs-get, sheets-values, calendar-list, gmail-list, gmail-get, help",
+    ),
     ("/config", "Provider setup/status: /config [status|setup PROVIDER|auth PROVIDER ACTION]"),
     ("/model-check", "Report Algo CLI support for a Grok/xAI model name"),
     ("/x-account", "Manage X account via xurl: status, draft-post, draft-reply, post --confirm, reply --confirm"),
@@ -53,8 +58,8 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/dashboard", "Open the runtime overview"),
     ("/status", "Show current model, context usage, and active features"),
     ("/identity", "Show identity file status"),
-    ("/lesson", "Append a lesson to lessons-learned.md"),
-    ("/lessons", "Show lesson index status or 'reindex'"),
+    ("/lesson", "Store an explicit lesson in the active memory authority"),
+    ("/lessons", "Show legacy lesson status or 'reindex' when Echo is off"),
     ("/skills", "Review quarantined skills; 'crystallize' / 'approve' / 'reject'"),
     ("/intuition", "Manage embedded memory recall"),
     ("/intelligence", "Inspect repository intelligence: status, query, reindex"),
@@ -83,7 +88,10 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/ship all", "Commit, push, and open a draft pull request in one guarded flow"),
     ("/goal", "Work a task until complete: /goal [--rounds N] <task> | resume | status | clear"),
     ("/route", "Preview routing, Agent Blocks budget, and tool policy"),
-    ("/memory", "Governed Memory Home: home, search, add, show, supersede, promote, demote, archive, doctor, benchmark, reindex"),
+    (
+        "/memory",
+        "Governed Memory Home: home, search, add, show, supersede, promote, demote, archive, doctor, benchmark, reindex",
+    ),
     ("/memory-auto", "Inspect or toggle bounded automatic memory capture: /memory-auto [on|off|status]"),
     ("/remember", "Store a memory"),
     ("/memories", "List memories"),
@@ -272,7 +280,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
     # Use the original command (parts[0]) to compute arg offset
     # so that /CD, /Cd, /cD all work the same as /cd
     if command in _PATH_SLASH_COMMANDS:
-        arg = stripped[len(parts[0]):].strip()
+        arg = stripped[len(parts[0]) :].strip()
 
     if command in {"/exit", "/quit"}:
         raise EOFError
@@ -285,9 +293,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             if m._model_info_module.is_chatgpt_model(arg):
                 names, authenticated = m.chatgpt_model_names()
                 if not authenticated:
-                    m.show_error(
-                        "ChatGPT/Codex is not authenticated. Run `algo-cli config setup chatgpt`."
-                    )
+                    m.show_error("ChatGPT/Codex is not authenticated. Run `algo-cli config setup chatgpt`.")
                     return True, client
                 if not names:
                     m.show_error(
@@ -305,9 +311,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                     m.show_error("xAI is not configured. Run `algo-cli config setup xai`.")
                     return True, client
                 if not names:
-                    m.show_error(
-                        "Could not verify the xAI model catalog; the current model was left unchanged."
-                    )
+                    m.show_error("Could not verify the xAI model catalog; the current model was left unchanged.")
                     return True, client
                 if arg not in names:
                     m.show_error(
@@ -480,9 +484,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 if not m.chatgpt_client.is_codex_subscription_model(cfg.model):
                     m.show_error("The active model is not a ChatGPT/Codex reasoning model.")
                     return True, client
-                effort = m.chatgpt_client.reasoning_effort_for_model(
-                    cfg.model, cfg.chatgpt_reasoning_efforts
-                )
+                effort = m.chatgpt_client.reasoning_effort_for_model(cfg.model, cfg.chatgpt_reasoning_efforts)
                 m.show_info(f"Reasoning effort for {cfg.model}: {effort}")
                 return True, client
             if len(thinking_args) == 2:
@@ -507,9 +509,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         else:
             parsed = _parse_toggle_arg(arg, bool(cfg.show_thinking))
             if parsed is None:
-                m.show_error(
-                    "Usage: /thinking [on|off|status|efforts|effort [MODEL] LEVEL]"
-                )
+                m.show_error("Usage: /thinking [on|off|status|efforts|effort [MODEL] LEVEL]")
                 return True, client
             new_value, should_change = parsed
             if should_change:
@@ -517,9 +517,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 cfg.save()
             m.show_info(f"Thinking display: {'ON' if cfg.show_thinking else 'OFF'}")
             if m.chatgpt_client.is_codex_subscription_model(cfg.model):
-                effort = m.chatgpt_client.reasoning_effort_for_model(
-                    cfg.model, cfg.chatgpt_reasoning_efforts
-                )
+                effort = m.chatgpt_client.reasoning_effort_for_model(cfg.model, cfg.chatgpt_reasoning_efforts)
                 m.show_info(f"Reasoning effort for {cfg.model}: {effort}")
     elif command == "/verify":
         parsed = _parse_toggle_arg(arg, bool(cfg.verify_mode))
@@ -547,7 +545,11 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         if arg.strip().lower() != "reset":
             m.show_error("Usage: /metrics reset")
         else:
-            for key in [item for item in m.RUNTIME_STATUS if item == "last_metrics" or item.startswith("last_") and item.endswith("_metrics")]:
+            for key in [
+                item
+                for item in m.RUNTIME_STATUS
+                if item == "last_metrics" or item.startswith("last_") and item.endswith("_metrics")
+            ]:
                 m.RUNTIME_STATUS.pop(key, None)
             try:
                 perf_telemetry.PERF_HISTORY_FILE.unlink(missing_ok=True)
@@ -588,9 +590,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         for row in rows:
             if row["exists"]:
                 m.console.print(
-                    f"  [primary]{row['name']:<20}[/] "
-                    f"[muted]{row['size']:>6} B[/]  "
-                    f"[muted]{row['modified']}[/]"
+                    f"  [primary]{row['name']:<20}[/] [muted]{row['size']:>6} B[/]  [muted]{row['modified']}[/]"
                 )
             else:
                 m.console.print(f"  [muted]{row['name']:<20}  missing[/]")
@@ -598,12 +598,38 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         if not arg:
             m.show_error("Usage: /lesson <text>")
         else:
-            path = identity.append_lesson(arg)
-            m.capture_intuition_block(cfg, "lesson", arg, source="/lesson")
-            m.show_info(f"Lesson saved to {path}")
+            from .ada_memory_echo_veil import (
+                echo_veil_authority_selected,
+                remember_with_echo_veil,
+            )
+
+            if echo_veil_authority_selected(cfg):
+                try:
+                    created = remember_with_echo_veil(
+                        cfg,
+                        arg,
+                        source="explicit_lesson_slash",
+                    )
+                except Exception:
+                    m.show_error("Protected lesson storage is unavailable; no plaintext lesson was written.")
+                else:
+                    m.show_info("Protected lesson saved." if created else "Protected lesson already stored.")
+            else:
+                path = identity.append_lesson(arg)
+                m.capture_intuition_block(cfg, "lesson", arg, source="/lesson")
+                m.show_info(f"Lesson saved to {path}")
     elif command == "/lessons":
+        from .ada_memory_echo_veil import echo_veil_authority_selected
+
         lessons_sub = arg.strip().lower()
-        if lessons_sub == "reindex":
+        if echo_veil_authority_selected(cfg):
+            if lessons_sub in {"", "status", "show", "?"}:
+                m.show_info("Legacy plaintext lesson retrieval is inactive while Echo Veil owns memory.")
+            elif lessons_sub == "reindex":
+                m.show_error("Legacy lesson reindexing is disabled while Echo Veil owns memory.")
+            else:
+                m.show_error("Usage: /lessons [status|reindex]")
+        elif lessons_sub == "reindex":
             backend, _reason = m.resolve_embed_backend(cfg)
             if not m.host_is_local(cfg.host) or not m.ollama_server_ready(cfg.host):
                 m.show_error("Local Ollama is not reachable; cannot rebuild lesson embeddings.")
@@ -631,6 +657,9 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         else:
             m.show_error("Usage: /lessons [status|reindex]")
     elif command == "/skills":
+        from .ada_memory_echo_veil import echo_veil_authority_selected
+
+        protected = echo_veil_authority_selected(cfg)
         skill_parts = arg.strip().split(maxsplit=1)
         sub = skill_parts[0].lower() if skill_parts else ""
         skill_name = skill_parts[1].strip() if len(skill_parts) > 1 else ""
@@ -643,7 +672,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 )
             else:
                 m.show_info("Reviewing recent runs for skill discoveries…")
-                result = skills.crystallize(llm_fn)
+                result = skills.crystallize(llm_fn, protected=protected)
                 quarantined = result.get("quarantined", [])
                 if quarantined:
                     m.show_info(
@@ -658,16 +687,25 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             else:
                 try:
                     if sub == "approve":
-                        promoted = skills.promote_quarantined_skill(skill_name)
-                        m.show_info(
-                            f"Promoted skill {promoted.stem}. Run /harness refresh to index it."
+                        promoted = skills.promote_quarantined_skill(
+                            skill_name,
+                            protected=protected,
                         )
+                        m.show_info(f"Promoted skill {promoted.stem}. Run /harness refresh to index it.")
                     else:
-                        rejected = skills.reject_quarantined_skill(skill_name)
+                        rejected = skills.reject_quarantined_skill(
+                            skill_name,
+                            protected=protected,
+                        )
                         m.show_info(f"Rejected skill candidate {rejected.stem}.")
                 except (FileNotFoundError, FileExistsError, ValueError, OSError) as exc:
                     m.show_error(str(exc))
         elif sub in {"on", "off"}:
+            if sub == "on" and protected:
+                cfg.skill_crystallize_enabled = False
+                cfg.save()
+                m.show_error("Skill crystallization cannot consume Echo-protected content-free history.")
+                return True, client
             cfg.skill_crystallize_enabled = sub == "on"
             cfg.save()
             m.show_info(
@@ -680,12 +718,14 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                     "processed only by a local non-embedding Ollama model."
                 )
         elif sub in {"", "status", "show", "?"}:
-            status = skills.skills_status()
+            status = skills.skills_status(protected=protected)
             m.console.print(f"[muted]Skills directory:[/] {status['skills_dir']}")
             m.console.print(f"  crystallized   : [text]{status['skill_count']}[/]")
             m.console.print(f"  quarantined    : [text]{len(status['quarantined'])}[/]")
             m.console.print(f"  recorded runs  : [text]{status['run_count']}[/]")
-            m.console.print(f"  auto-crystallize: [text]{'on' if cfg.skill_crystallize_enabled else 'off'}[/] (every {max(1, int(cfg.skill_crystallize_every))} runs, {cfg.runs_since_crystallize} since last)")
+            m.console.print(
+                f"  auto-crystallize: [text]{'on' if cfg.skill_crystallize_enabled else 'off'}[/] (every {max(1, int(cfg.skill_crystallize_every))} runs, {cfg.runs_since_crystallize} since last)"
+            )
             if status["skills"]:
                 for name in status["skills"][:20]:
                     m.console.print(f"  [primary]{name}[/]")
@@ -721,10 +761,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             except OSError as exc:
                 m.show_error(f"Code retrieval disabled, but persisted index purge failed: {exc}")
             else:
-                m.show_info(
-                    "Working-directory code retrieval: OFF · "
-                    f"purged {removed} persisted index file(s)"
-                )
+                m.show_info(f"Working-directory code retrieval: OFF · purged {removed} persisted index file(s)")
         elif sub in {"status", "show", "?"}:
             enabled = code_rag_consent_granted(cfg)
             m.console.print(
@@ -793,10 +830,9 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         sub = arg.strip().lower()
         if sub in {"on", "off"}:
             cfg.memory_auto_capture_enabled = sub == "on"
+            cfg.memory_auto_capture_consent_version = MEMORY_AUTO_CAPTURE_CONSENT_VERSION if sub == "on" else 0
             cfg.save()
-            m.show_info(
-                f"Automatic memory capture: {'ON' if cfg.memory_auto_capture_enabled else 'OFF'}"
-            )
+            m.show_info(f"Automatic memory capture: {'ON' if memory_auto_capture_consent_granted(cfg) else 'OFF'}")
         elif sub in {"", "status", "show", "?"}:
             daily_limit = min(
                 memory_candidates.MAX_DAILY_WRITES,
@@ -812,7 +848,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             )
             m.show_info(
                 "Automatic memory capture: "
-                f"{'ON' if cfg.memory_auto_capture_enabled else 'OFF'} · "
+                f"{'ON' if memory_auto_capture_consent_granted(cfg) else 'OFF'} · "
                 f"daily limit {daily_limit} · "
                 f"fingerprint cap {entry_limit} · "
                 f"memory budget {char_limit} chars"
@@ -831,9 +867,9 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 m.show_error(str(exc))
             else:
                 if added:
-                    from .ada_memory_echo_veil import protection_required
+                    from .ada_memory_echo_veil import echo_veil_authority_selected
 
-                    if not protection_required(cfg):
+                    if not echo_veil_authority_selected(cfg):
                         m.capture_intuition_block(
                             cfg,
                             "memory",
@@ -845,25 +881,18 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                     m.show_info("Memory already stored.")
     elif command == "/memories":
         from .ada_memory_echo_veil import (
+            echo_veil_authority_selected,
             list_echo_veil_memories,
-            protection_required,
         )
 
-        if protection_required(cfg):
+        if echo_veil_authority_selected(cfg):
             try:
                 records = list_echo_veil_memories(cfg)
             except RuntimeError as exc:
-                m.show_error(
-                    "Required Echo Veil memory is unavailable "
-                    f"({type(exc).__name__})."
-                )
+                m.show_error(f"Echo Veil memory is unavailable ({type(exc).__name__}).")
             else:
                 display.show_memory(
-                    [
-                        str(record.get("payload") or "")
-                        for record in records
-                        if record.get("superseded_by") is None
-                    ]
+                    [str(record.get("payload") or "") for record in records if record.get("superseded_by") is None]
                 )
         else:
             display.show_memory(cfg.memories)
@@ -875,13 +904,9 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             from . import julia_memory_runtime as memory_runtime
 
             forgotten = memory_runtime.forget_memory_index(cfg, display_index - 1)
-            from .ada_memory_echo_veil import protection_required
+            from .ada_memory_echo_veil import echo_veil_authority_selected
 
-            m.show_info(
-                "Protected memory forgotten."
-                if protection_required(cfg)
-                else f"Forgot: {forgotten}"
-            )
+            m.show_info("Protected memory forgotten." if echo_veil_authority_selected(cfg) else f"Forgot: {forgotten}")
         except (ValueError, IndexError):
             m.show_error("Usage: /forget <number>")
         except Exception as exc:
@@ -911,6 +936,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             m.show_error("Usage: /mode [execute|explore|publish|status]")
     elif command == "/plugins":
         from .william_plugins import discover_plugins, plugin_status
+
         sub = arg.strip().lower() or "list"
         if sub in ("list", ""):
             discovered = discover_plugins()
@@ -919,6 +945,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             else:
                 from rich.table import Table as _Table
                 from rich.text import Text as _Text
+
                 table = _Table(title="Discovered Plugins")
                 table.add_column("Name", style="cyan")
                 table.add_column("Version", style="green")
@@ -939,6 +966,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             else:
                 from rich.table import Table as _Table
                 from rich.text import Text as _Text
+
                 table = _Table(title="Plugin Status")
                 table.add_column("Name", style="cyan")
                 table.add_column("State", style="yellow")
@@ -956,6 +984,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             m.show_error("Usage: /plugins [list|status]")
     elif command == "/credentials":
         from .credential_helpers import list_helpers, get_helper, get_credential
+
         raw_sub = arg.strip()
         sub = raw_sub.lower() or "list"
         if sub in ("list", ""):
@@ -964,6 +993,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 m.show_info("No credential helpers registered.")
             else:
                 from rich.table import Table as _Table
+
                 table = _Table(title="Credential Helpers")
                 table.add_column("Name", style="cyan")
                 table.add_column("Description")
@@ -986,6 +1016,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             m.show_error("Usage: /credentials [list|get <helper> <key>]")
     elif command == "/url-scheme":
         from .url_scheme import handle_deep_link, format_help
+
         url = arg.strip()
         if not url or url.lower() == "help":
             m.console.print(format_help())
@@ -1066,7 +1097,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             if value not in _TOGGLE_STATUS:
                 cfg.reasoning_auto_reflexion = toggle
                 cfg.save()
-            m.show_info(f'Auto-reflexion on failed blocks: {"ON" if toggle else "OFF"}')
+            m.show_info(f"Auto-reflexion on failed blocks: {'ON' if toggle else 'OFF'}")
         elif sub == "auto-verify":
             value = rest.strip().lower()
             if value not in _TOGGLE_ON | _TOGGLE_OFF | _TOGGLE_STATUS:
@@ -1076,7 +1107,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             if value not in _TOGGLE_STATUS:
                 cfg.reasoning_auto_verify = toggle
                 cfg.save()
-            m.show_info(f'Auto-verify implement blocks: {"ON" if toggle else "OFF"}')
+            m.show_info(f"Auto-verify implement blocks: {'ON' if toggle else 'OFF'}")
         elif sub == "chat":
             value = rest.strip().lower()
             if value not in _TOGGLE_ON | _TOGGLE_OFF | _TOGGLE_STATUS:
@@ -1087,7 +1118,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 cfg.reasoning_chat_enabled = toggle
                 cfg.save()
             m.show_info(
-                f'Reasoning chat preflight: {"ON" if toggle else "OFF"}'
+                f"Reasoning chat preflight: {'ON' if toggle else 'OFF'}"
                 + (f" (mode={cfg.reasoning_mode}; multi-call, runs each turn)" if toggle else "")
             )
         else:
@@ -1202,8 +1233,17 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             m.show_info(f"cwd: {cfg.cwd}")
         else:
             from .workspace_resolver import parse_path_arg
+            from .irene_memory_path_policy import protected_tool_policy_error
 
             target = parse_path_arg(arg)
+            protected_error = protected_tool_policy_error(
+                "session_slash",
+                {"command": f"/cd {arg}", "cwd": cfg.cwd},
+                cfg,
+            )
+            if protected_error is not None:
+                m.show_error(protected_error)
+                return True, client
             path = Path(target).expanduser()
             if not path.is_absolute():
                 path = Path(cfg.cwd) / path
@@ -1215,20 +1255,39 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 m.show_error(f"Not a directory: {path}")
     elif command == "/ls":
         from . import tools as tools_module
+        from .irene_memory_path_policy import protected_tool_policy_error
         from .workspace_resolver import parse_path_arg
 
         rel = parse_path_arg(arg) or "."
-        directory_listing = tools_module.list_directory(rel, cwd=cfg.cwd, limit=40)
+        protected_error = protected_tool_policy_error(
+            "session_slash",
+            {"command": f"/ls {arg}", "cwd": cfg.cwd},
+            cfg,
+        )
+        directory_listing = protected_error or tools_module.list_directory(
+            rel,
+            cwd=cfg.cwd,
+            limit=40,
+        )
         m.console.print(directory_listing)
     elif command == "/read":
         from . import tools as tools_module
+        from .irene_memory_path_policy import protected_tool_policy_error
         from .workspace_resolver import parse_path_arg
 
         rel = parse_path_arg(arg)
         if not rel:
             m.show_error("Usage: /read <path>")
         else:
-            file_contents = tools_module.read_file(rel, cwd=cfg.cwd)
+            protected_error = protected_tool_policy_error(
+                "session_slash",
+                {"command": f"/read {arg}", "cwd": cfg.cwd},
+                cfg,
+            )
+            file_contents = protected_error or tools_module.read_file(
+                rel,
+                cwd=cfg.cwd,
+            )
             m.console.print(file_contents)
     elif command == "/info":
         if arg.strip().lower() == "json":
@@ -1297,9 +1356,9 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         elif subcommand in {"", "status", "stats", "quality"}:
             m.console.print(harness_stats())
         elif subcommand in {"score", "scorecard", "grade", "rating"}:
-            m.console.print(harness_scorecard())
+            m.console.print(harness_scorecard(cfg=cfg))
         elif subcommand in {"compare", "competitive"}:
-            m.console.print(harness_competitive_rating())
+            m.console.print(harness_competitive_rating(cfg=cfg))
         elif subcommand == "external":
             external_arg = (subargs or "status").strip().lower()
             if external_arg in {"on", "off"}:
@@ -1310,20 +1369,14 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                     index_compute_lab=cfg.index_compute_lab_auto_inject,
                 )
                 harness.load_index(refresh=True)
-                m.show_info(
-                    "External harness sources: "
-                    f"{'ON' if cfg.external_harness_sources_enabled else 'OFF'}"
-                )
+                m.show_info(f"External harness sources: {'ON' if cfg.external_harness_sources_enabled else 'OFF'}")
                 if cfg.external_harness_sources_enabled:
                     m.show_info(
                         "Content from other local agent stores may be included in model prompts, "
                         "including requests sent to cloud providers."
                     )
             elif external_arg in {"", "status", "show", "?"}:
-                m.console.print(
-                    "External harness sources: "
-                    f"{'on' if cfg.external_harness_sources_enabled else 'off'}"
-                )
+                m.console.print(f"External harness sources: {'on' if cfg.external_harness_sources_enabled else 'off'}")
             else:
                 m.show_error("Usage: /harness external [on|off|status]")
         elif subcommand in {"build-rust", "rust"}:
@@ -1340,8 +1393,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 pending = total - matching
                 if matching == 0 and any(r.get("embedding") for r in (harness.load_index().get("records") or [])):
                     m.show_info(
-                        f"Backend/model change detected: all {total} records "
-                        f"will be re-embedded under {active_model}."
+                        f"Backend/model change detected: all {total} records will be re-embedded under {active_model}."
                     )
                 queue = harness.embedding_progress(active_model)
                 high_value = (
@@ -1355,9 +1407,11 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                     f"Embedding {pending} of {total} harness records with {active_model} ({backend}) "
                     f"using {harness.EMBED_PRIORITY_POLICY}.{high_value}"
                 )
+
                 def _prog(done: int, target: int) -> None:
                     if done == target or done % (max(1, target // 5)) == 0:
                         m.show_info(f"  embeddings: {done}/{target}")
+
                 result = harness.embed_index_records(
                     embed_fn,
                     active_model,
@@ -1365,7 +1419,9 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                     on_perf=lambda rec: m.log_embed_perf(rec, source="harness_embed_command", backend=backend),
                 )
                 if result.get("ready"):
-                    m.show_info(f"Embedded {result.get('embedded', 0)} records. Total now embedded: {result.get('total', 0)}.")
+                    m.show_info(
+                        f"Embedded {result.get('embedded', 0)} records. Total now embedded: {result.get('total', 0)}."
+                    )
                 elif result.get("reason") == "max_records_reached":
                     next_priority = str(result.get("next_priority") or "complete").replace("_", " ")
                     m.show_info(
@@ -1410,10 +1466,16 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             "verification before completion",
         ):
             m.console.print(f"[bold]Search:[/] {query}")
-            m.console.print(harness_search(query=query, limit=5))
+            m.console.print(harness_search(query=query, limit=5, cfg=cfg))
             m.console.print()
     elif command == "/reload":
-        reloaded_cfg = m.reload_runtime()
+        from .elsie_echo_preflight import EchoAuxiliaryPreflightError
+
+        try:
+            reloaded_cfg = m.reload_runtime()
+        except EchoAuxiliaryPreflightError:
+            m.show_error("Echo-protected auxiliary state could not be prepared safely; reload was refused.")
+            return True, client
         for field in fields(Config):
             if field.name in {"messages", "session_summary", "context_state", "attempt_ledger"}:
                 continue
@@ -1437,7 +1499,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         else:
             from .tools import harness_read
 
-            m.console.print(harness_read(arg))
+            m.console.print(harness_read(arg, cfg=cfg))
     else:
         return False, client
     return True, client

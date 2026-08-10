@@ -43,7 +43,8 @@ from .chat_protocol import (
     get_attr,
     normalize_tool_call,
 )
-from .config import Config
+from .config import Config, sanitize_attempt_ledger
+from .grace_memory_receipts import ElsieReceiptAuthority, ElsieReceiptError
 from .display import (
     console,
     finish_thinking_block,
@@ -115,20 +116,11 @@ def _final_output_claims_are_grounded(
     if block.role != "final":
         return True
     if any(
-        prior.status != "complete"
-        or bool(prior.verification_warning)
-        for prior in prior_blocks
+        prior.status != "complete" or bool(prior.verification_warning) for prior in prior_blocks
     ) and not _UNCERTAINTY_DISCLOSURE_RE.search(block.output):
         return False
-    mutation_blocks = [
-        prior
-        for prior in prior_blocks
-        if prior.requires_change
-    ]
-    if (
-        mutation_blocks
-        and _MUTATION_COMPLETION_CLAIM_RE.search(block.output)
-    ):
+    mutation_blocks = [prior for prior in prior_blocks if prior.requires_change]
+    if mutation_blocks and _MUTATION_COMPLETION_CLAIM_RE.search(block.output):
         return all(
             prior.status == "complete"
             and not prior.verification_warning
@@ -154,10 +146,7 @@ def _enforce_block_output_verification(
     if block.status == "complete" and not output_contract_verified:
         block.status = "partial"
         block.status_code = "output_contract_failed"
-        block.status_reason = (
-            "Block output did not satisfy the required "
-            "'## Block Output' evidence contract."
-        )
+        block.status_reason = "Block output did not satisfy the required '## Block Output' evidence contract."
         block.verification_warning = block.status_reason
     elif block.status == "complete" and not claim_grounded:
         block.status = "partial"
@@ -174,10 +163,7 @@ def _estimate_agent_request_tokens(
     messages: list[dict[str, Any]],
     tools: list[Any],
 ) -> int:
-    total = sum(
-        context_budget.estimate_message_tokens(message)
-        for message in messages
-    )
+    total = sum(context_budget.estimate_message_tokens(message) for message in messages)
     if tools:
         from .tool_schema import estimate_tool_schema_tokens
 
@@ -188,9 +174,7 @@ def _estimate_agent_request_tokens(
 def _model_chat_options(model: str, cfg: Config) -> dict[str, Any]:
     options: dict[str, Any] = {"temperature": cfg.temperature, "num_ctx": cfg.num_ctx}
     if _model_info_module.is_chatgpt_model(model):
-        options["reasoning_effort"] = chatgpt_client.reasoning_effort_for_model(
-            model, cfg.chatgpt_reasoning_efforts
-        )
+        options["reasoning_effort"] = chatgpt_client.reasoning_effort_for_model(model, cfg.chatgpt_reasoning_efforts)
     return options
 
 
@@ -216,15 +200,11 @@ class AgentRunResult:
         if self.children:
             lines.append(f"Child threads: {', '.join(self.children)}")
         if self.contract_id:
-            lines.append(
-                f"Run contract: {self.contract_id} ({self.contract_mode or 'unknown'})"
-            )
+            lines.append(f"Run contract: {self.contract_id} ({self.contract_mode or 'unknown'})")
         if self.error:
             lines.append(f"Error: {self.error}")
         if self.blocks:
-            block_text = ", ".join(
-                f"{item.get('role', '?')}={item.get('status', '?')}" for item in self.blocks
-            )
+            block_text = ", ".join(f"{item.get('role', '?')}={item.get('status', '?')}" for item in self.blocks)
             lines.append(f"Blocks: {block_text}")
         if self.output:
             lines.append(f"Output:\n{self.output[:12_000]}")
@@ -271,6 +251,9 @@ def run_agent_block(
     recovery_phase: str = "",
     recovery_attempt: int = 0,
 ) -> None:
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    protected_memory = echo_veil_authority_selected(cfg)
     block.status = "running"
     block.status_code = ""
     block.status_reason = ""
@@ -287,34 +270,21 @@ def run_agent_block(
     if run_contract is not None:
         try:
             if block_contract is None:
-                raise run_contracts.RunContractViolation(
-                    "run contract execution requires a block contract"
-                )
+                raise run_contracts.RunContractViolation("run contract execution requires a block contract")
             run_contract.assert_live_authority(
                 approval_mode=approval_mode_for_config(cfg),
                 safe_mode=bool(cfg.safe_mode),
                 session_preapproval=(
                     False
                     if approval_mode_for_config(cfg) == "never"
-                    else approval_mode_for_config(cfg) == "auto"
-                    or bool(cfg.auto_approve_active)
+                    else approval_mode_for_config(cfg) == "auto" or bool(cfg.auto_approve_active)
                 ),
             )
             if recovery_phase:
-                if (
-                    recovery_attempt < 1
-                    or recovery_attempt
-                    > block_contract.max_recovery_attempts
-                ):
-                    raise run_contracts.RunContractViolation(
-                        "recovery attempt exceeds the immutable run contract"
-                    )
+                if recovery_attempt < 1 or recovery_attempt > block_contract.max_recovery_attempts:
+                    raise run_contracts.RunContractViolation("recovery attempt exceeds the immutable run contract")
                 if recovery_phase == "plan":
-                    if (
-                        block.role != "recovery-plan"
-                        or block.allowed_tools
-                        or block.requires_change
-                    ):
+                    if block.role != "recovery-plan" or block.allowed_tools or block.requires_change:
                         raise run_contracts.RunContractViolation(
                             "live recovery plan differs from the immutable run contract"
                         )
@@ -322,81 +292,59 @@ def run_agent_block(
                     iteration_limit = 1
                 elif recovery_phase == "retry":
                     if (
-                        block.role
-                        != f"{block_contract.role}-retry"
-                        or frozenset(block_contract.configured_tools)
-                        != block.allowed_tools
-                        or block_contract.requires_change
-                        != block.requires_change
+                        block.role != f"{block_contract.role}-retry"
+                        or frozenset(block_contract.configured_tools) != block.allowed_tools
+                        or block_contract.requires_change != block.requires_change
                     ):
                         raise run_contracts.RunContractViolation(
                             "live recovery retry differs from the immutable run contract"
                         )
-                    runtime_tool_names = frozenset(
-                        block_contract.effective_tools(
-                            run_contract.mode
-                        )
-                    )
-                    iteration_limit = (
-                        block_contract.recovery_max_iterations
-                    )
+                    runtime_tool_names = frozenset(block_contract.effective_tools(run_contract.mode))
+                    iteration_limit = block_contract.recovery_max_iterations
                 else:
-                    raise run_contracts.RunContractViolation(
-                        "recovery phase is invalid"
-                    )
+                    raise run_contracts.RunContractViolation("recovery phase is invalid")
             else:
                 if block_contract.role != block.role:
-                    raise run_contracts.RunContractViolation(
-                        "live block role differs from the immutable run contract"
+                    raise run_contracts.RunContractViolation("live block role differs from the immutable run contract")
+                live_prompt_digest = (
+                    run_journal.digest_text(
+                        block.prompt,
+                        domain="block-prompt",
                     )
-                if (
-                    agent_run_journal.digest_text(block.prompt)
-                    != block_contract.prompt_digest
-                ):
+                    if run_journal is not None
+                    else run_contract.digest_sensitive_text(
+                        block.prompt,
+                        domain="block-prompt",
+                    )
+                )
+                if live_prompt_digest != block_contract.prompt_digest:
                     raise run_contracts.RunContractViolation(
                         "live block prompt differs from the immutable run contract"
                     )
-                if (
-                    frozenset(block_contract.configured_tools)
-                    != block.allowed_tools
-                ):
-                    raise run_contracts.RunContractViolation(
-                        "live block tools differ from the immutable run contract"
-                    )
+                if frozenset(block_contract.configured_tools) != block.allowed_tools:
+                    raise run_contracts.RunContractViolation("live block tools differ from the immutable run contract")
                 if block_contract.requires_change != block.requires_change:
                     raise run_contracts.RunContractViolation(
                         "live block mutation contract differs from the immutable run contract"
                     )
-                runtime_tool_names = frozenset(
-                    block_contract.effective_tools(run_contract.mode)
-                )
+                runtime_tool_names = frozenset(block_contract.effective_tools(run_contract.mode))
                 iteration_limit = block_contract.max_iterations
             policy_enforced = run_contract.mode == "enforced"
             policy = tool_policy.ToolPolicyDecision(
-                allowed_tools=(
-                    frozenset()
-                    if recovery_phase == "plan"
-                    else frozenset(block_contract.admitted_tools)
-                ),
-                denied_tools=(
-                    frozenset()
-                    if recovery_phase == "plan"
-                    else frozenset(block_contract.denied_tools)
-                ),
+                allowed_tools=(frozenset() if recovery_phase == "plan" else frozenset(block_contract.admitted_tools)),
+                denied_tools=(frozenset() if recovery_phase == "plan" else frozenset(block_contract.denied_tools)),
                 approval_required=(
-                    frozenset()
-                    if recovery_phase == "plan"
-                    else frozenset(
-                        block_contract.approval_required_tools
-                    )
+                    frozenset() if recovery_phase == "plan" else frozenset(block_contract.approval_required_tools)
                 ),
                 reasons=(
-                    ("contract-bound recovery plan",)
-                    if recovery_phase == "plan"
-                    else block_contract.policy_reasons
+                    ("contract-bound recovery plan",) if recovery_phase == "plan" else block_contract.policy_reasons
                 ),
             )
-        except run_contracts.RunContractViolation as exc:
+        except (
+            run_contracts.RunContractViolation,
+            run_contracts.RunContractError,
+            agent_run_journal.AgentRunJournalError,
+        ) as exc:
             block.status = "failed"
             block.status_code = "run_contract_violation"
             block.status_reason = str(exc)
@@ -411,35 +359,22 @@ def run_agent_block(
                 status_reason=block.status_reason,
                 status_code=block.status_code,
                 policy_summary="run contract rejected",
+                protected=protected_memory,
             )
             return
     else:
-        runtime_tool_names = (
-            policy.allowed_tools if policy_enforced else block.allowed_tools
-        )
-    allowed_tools = [
-        TOOL_MAP[name]
-        for name in sorted(runtime_tool_names)
-        if name in TOOL_MAP
-    ]
-    block_model = (
-        block_contract.model
-        if block_contract is not None
-        else block.model or cfg.model
-    )
+        runtime_tool_names = policy.allowed_tools if policy_enforced else block.allowed_tools
+    allowed_tools = [TOOL_MAP[name] for name in sorted(runtime_tool_names) if name in TOOL_MAP]
+    block_model = block_contract.model if block_contract is not None else block.model or cfg.model
     block_client = client_for_model(block_model, cfg, client)
     if block_client is client and block_model != cfg.model:
         if run_contract is not None:
             block.status = "failed"
             block.status_code = "run_contract_model_unavailable"
             block.status_reason = (
-                f"Contract model {block_model} is unavailable; runtime "
-                f"fallback to {cfg.model} was withheld."
+                f"Contract model {block_model} is unavailable; runtime fallback to {cfg.model} was withheld."
             )
-            block.output = (
-                "## Block Output\n\n"
-                f"{block.status_reason}"
-            )
+            block.output = f"## Block Output\n\n{block.status_reason}"
             block.duration_ms = 0.0
             show_agent_block_complete(
                 block.role,
@@ -450,6 +385,7 @@ def run_agent_block(
                 status_reason=block.status_reason,
                 status_code=block.status_code,
                 policy_summary="run contract rejected model fallback",
+                protected=protected_memory,
             )
             return
         block_model = cfg.model
@@ -473,6 +409,13 @@ def run_agent_block(
         include_external=cfg.external_harness_sources_enabled,
     )
     system_parts = [block.prompt]
+    from .ada_memory_echo_veil import (
+        protected_memory_operating_contract,
+        protection_required,
+    )
+
+    if protection_required(cfg):
+        system_parts.append(f"\n\n{protected_memory_operating_contract(cfg)}")
     if inference_harness.should_inject(task):
         system_parts.append(f"\n\n{inference_harness.context_block()}")
     if block.requires_change:
@@ -557,16 +500,12 @@ def run_agent_block(
                     partial_tool_calls.extend(calls)
             loop_state.complete_model_round(partial_tool_calls)
             if partial_tool_calls:
-                loop_state.cancel(
-                    "tool-free partial wrap-up attempted a tool call"
-                )
+                loop_state.cancel("tool-free partial wrap-up attempted a tool call")
                 partial_text = ""
             else:
                 loop_state.finish_without_tools()
         except KeyboardInterrupt:
-            loop_state.cancel(
-                "Agent Block partial wrap-up cancelled"
-            )
+            loop_state.cancel("Agent Block partial wrap-up cancelled")
             raise
         except Exception as exc:
             loop_state.interrupt(
@@ -579,12 +518,13 @@ def run_agent_block(
         if partial_text.strip():
             block.output = partial_text.strip()
         elif not block.output.strip():
-            block.output = "## Block Output\n\nPartial review: tool budget reached before a written summary was produced."
+            block.output = (
+                "## Block Output\n\nPartial review: tool budget reached before a written summary was produced."
+            )
         block.status = "partial"
         block.status_code = "max_iterations"
         block.status_reason = (
-            f"Iteration budget exhausted after {iteration_limit} cycles; "
-            "showing a tool-free partial summary."
+            f"Iteration budget exhausted after {iteration_limit} cycles; showing a tool-free partial summary."
         )
 
     try:
@@ -605,16 +545,14 @@ def run_agent_block(
             status_code=block.status_code,
             model=block_model if block.model else "",
             policy_summary=policy_summary,
+            protected=protected_memory,
         )
         return
-
 
     from .nathan_program_runtime import authorization_for_actions
 
     _program_auth_missing = object()
-    _previous_program_authorization = getattr(
-        cfg, "_algo_program_authorization", _program_auth_missing
-    )
+    _previous_program_authorization = getattr(cfg, "_algo_program_authorization", _program_auth_missing)
     setattr(
         cfg,
         "_algo_program_authorization",
@@ -631,18 +569,14 @@ def run_agent_block(
                         session_preapproval=(
                             False
                             if approval_mode_for_config(cfg) == "never"
-                            else approval_mode_for_config(cfg) == "auto"
-                            or bool(cfg.auto_approve_active)
+                            else approval_mode_for_config(cfg) == "auto" or bool(cfg.auto_approve_active)
                         ),
                     )
                 except run_contracts.RunContractViolation as exc:
                     block.status = "partial"
                     block.status_code = "run_contract_violation"
                     block.status_reason = str(exc)
-                    block.output = (
-                        "## Block Output\n\n"
-                        f"Run contract stopped execution: {exc}"
-                    )
+                    block.output = f"## Block Output\n\nRun contract stopped execution: {exc}"
                     break
             request_messages = messages
             if _model_info_module.is_gemini_model(block_model):
@@ -657,9 +591,7 @@ def run_agent_block(
                         contract_tracker.start_model_round(prompt_tokens)
                     if run_journal is not None:
                         if block_ordinal is None:
-                            raise run_contracts.RunContractViolation(
-                                "journaled block is missing its contract ordinal"
-                            )
+                            raise run_contracts.RunContractViolation("journaled block is missing its contract ordinal")
                         run_journal.model_round_started(
                             block_ordinal,
                             _,
@@ -670,19 +602,13 @@ def run_agent_block(
                     block.status = "partial"
                     block.status_code = "run_contract_prompt_budget"
                     block.status_reason = str(exc)
-                    block.output = (
-                        "## Block Output\n\n"
-                        f"Run contract stopped model dispatch: {exc}"
-                    )
+                    block.output = f"## Block Output\n\nRun contract stopped model dispatch: {exc}"
                     break
                 except agent_run_journal.AgentRunJournalError as exc:
                     block.status = "failed"
                     block.status_code = "run_journal_unavailable"
                     block.status_reason = str(exc)
-                    block.output = (
-                        "## Block Output\n\n"
-                        f"Durable run checkpoint failed before model dispatch: {exc}"
-                    )
+                    block.output = f"## Block Output\n\nDurable run checkpoint failed before model dispatch: {exc}"
                     break
             loop_state.begin_model_round(_)
             thinking_text = ""
@@ -758,10 +684,7 @@ def run_agent_block(
                     block.status = "failed"
                     block.status_code = "run_journal_unavailable"
                     block.status_reason = str(exc)
-                    block.output = (
-                        "## Block Output\n\n"
-                        f"Durable run checkpoint failed after model dispatch: {exc}"
-                    )
+                    block.output = f"## Block Output\n\nDurable run checkpoint failed after model dispatch: {exc}"
                     break
 
             if not tool_calls:
@@ -771,9 +694,7 @@ def run_agent_block(
                     if not completion_nudged and _ + 1 < iteration_limit:
                         completion_nudged = True
                         block.output = ""
-                        show_info(
-                            f"{block.role} completion deferred until a post-mutation verifier passes."
-                        )
+                        show_info(f"{block.role} completion deferred until a post-mutation verifier passes.")
                         messages.append(
                             {
                                 "role": "user",
@@ -832,17 +753,12 @@ def run_agent_block(
                     block.status = "partial"
                     block.status_code = "run_contract_tool_budget"
                     block.status_reason = str(exc)
-                    block.output = (
-                        "## Block Output\n\n"
-                        f"Run contract stopped tool dispatch: {exc}"
-                    )
+                    block.output = f"## Block Output\n\nRun contract stopped tool dispatch: {exc}"
                     break
             journal_steps: list[str] = []
             if run_journal is not None and block_ordinal is not None:
                 try:
-                    for tool_index, ((name, args), tool_call_id) in enumerate(
-                        batch
-                    ):
+                    for tool_index, ((name, args), tool_call_id) in enumerate(batch):
                         action = resolve_action(name, args, cwd=cfg.cwd)
                         event = run_journal.tool_intent(
                             ordinal=block_ordinal,
@@ -851,15 +767,12 @@ def run_agent_block(
                             action=name,
                             args=args,
                             call_id=tool_call_id or "",
-                            mutating=action.effect_class
-                            is not EffectClass.OBSERVE,
+                            mutating=action.effect_class is not EffectClass.OBSERVE,
                             idempotency=action.idempotency.value,
                             target=action.target,
                             attempt=recovery_attempt,
                         )
-                        journal_steps.append(
-                            str(event.payload.get("step_id") or "")
-                        )
+                        journal_steps.append(str(event.payload.get("step_id") or ""))
                 except Exception as exc:
                     for step_id in journal_steps:
                         try:
@@ -890,9 +803,7 @@ def run_agent_block(
                     loop_state.finish_tool_batch()
                     block.status = "failed"
                     block.status_code = "run_journal_unavailable"
-                    block.status_reason = (
-                        f"Durable tool intent checkpoint failed: {exc}"
-                    )
+                    block.status_reason = f"Durable tool intent checkpoint failed: {exc}"
                     block.output = (
                         "## Block Output\n\n"
                         f"Tool dispatch was withheld because its durable intent "
@@ -916,13 +827,9 @@ def run_agent_block(
                 )
                 for name, args in normalized_batch
             ]
-            has_disallowed_tool = any(
-                name not in runtime_tool_names for name, _args in normalized_batch
-            )
+            has_disallowed_tool = any(name not in runtime_tool_names for name, _args in normalized_batch)
             has_blocked_shell = any(decision.blocked for decision in shell_decisions)
-            batch_must_quarantine = (
-                any(protocol_ceilings) or has_disallowed_tool or has_blocked_shell
-            )
+            batch_must_quarantine = any(protocol_ceilings) or has_disallowed_tool or has_blocked_shell
             journal_result_failed = False
 
             def append_journal_result(
@@ -931,14 +838,18 @@ def run_agent_block(
                 result: str,
             ) -> None:
                 nonlocal journal_result_failed
-                if (
-                    run_journal is None
-                    or block_ordinal is None
-                    or index >= len(journal_steps)
-                ):
-                    return
-                outcome = getattr(execution, "outcome", None)
                 status = _pipeline_outcome_status(execution, result)
+                receipt_name = normalized_batch[index][0] if index < len(normalized_batch) else "unknown"
+                outcome = getattr(execution, "outcome", None)
+                block.tool_call_receipts.append(
+                    {
+                        "name": receipt_name,
+                        "status": status,
+                        "explicit_memory_write": bool(getattr(outcome, "explicit_memory_write", False)),
+                    }
+                )
+                if run_journal is None or block_ordinal is None or index >= len(journal_steps):
+                    return
                 verification_value = getattr(
                     getattr(outcome, "verification", None),
                     "value",
@@ -955,37 +866,20 @@ def run_agent_block(
                                 status == "succeeded",
                             )
                         ),
-                        verification=str(
-                            verification_value
-                            or (
-                                "passed"
-                                if status == "succeeded"
-                                else "failed"
-                            )
-                        ),
+                        verification=str(verification_value or ("passed" if status == "succeeded" else "failed")),
                         effect_id=str(getattr(outcome, "effect_id", "") or ""),
-                        idempotency_key=str(
-                            getattr(outcome, "idempotency_key", "") or ""
-                        ),
-                        error_code=str(
-                            getattr(outcome, "error_code", "") or ""
-                        ),
-                        deduplicated=bool(
-                            getattr(outcome, "deduplicated", False)
-                        ),
+                        idempotency_key=str(getattr(outcome, "idempotency_key", "") or ""),
+                        error_code=str(getattr(outcome, "error_code", "") or ""),
+                        deduplicated=bool(getattr(outcome, "deduplicated", False)),
                     )
                 except agent_run_journal.AgentRunJournalError as exc:
                     journal_result_failed = True
                     block.status = "failed"
                     block.status_code = "run_journal_unavailable"
                     block.status_reason = (
-                        f"Tool outcome may require reconciliation because its "
-                        f"durable checkpoint failed: {exc}"
+                        f"Tool outcome may require reconciliation because its durable checkpoint failed: {exc}"
                     )
-                    block.output = (
-                        "## Block Output\n\n"
-                        f"Tool outcome checkpoint failed after dispatch: {exc}"
-                    )
+                    block.output = f"## Block Output\n\nTool outcome checkpoint failed after dispatch: {exc}"
 
             for index, ((name, args), tool_call_id) in enumerate(batch):
                 if journal_result_failed:
@@ -1042,8 +936,7 @@ def run_agent_block(
                         block.status = "failed"
                         block.status_code = "policy_denied"
                     if name not in runtime_tool_names or (
-                        protocol_ceilings[index]
-                        and protocol_ceilings[index] != "batch_quarantined"
+                        protocol_ceilings[index] and protocol_ceilings[index] != "batch_quarantined"
                     ):
                         block.output = result
                     continue
@@ -1069,13 +962,10 @@ def run_agent_block(
                 append_journal_result(index, execution, _result)
                 outcome_status = _pipeline_outcome_status(execution, _result)
                 mutation_action = tool_policy.describes_mutation_action(name, args)
-                mutation_succeeded = (
-                    outcome_status == "succeeded"
-                    and (
-                        (name == "write_file" and str(_result).lstrip().startswith("Wrote "))
-                        or (name == "edit_file" and str(_result).lstrip().startswith("Edited "))
-                        or (name == "batch_edit" and str(_result).lstrip().startswith("Batch-edited "))
-                    )
+                mutation_succeeded = outcome_status == "succeeded" and (
+                    (name == "write_file" and str(_result).lstrip().startswith("Wrote "))
+                    or (name == "edit_file" and str(_result).lstrip().startswith("Edited "))
+                    or (name == "batch_edit" and str(_result).lstrip().startswith("Batch-edited "))
                 )
                 if mutation_succeeded:
                     written_path = str(args.get("path", "")).strip()
@@ -1138,12 +1028,15 @@ def run_agent_block(
             model=block_model if block.model else "",
             policy_summary=policy_summary,
             successful_writes=list(block.successful_writes),
+            protected=protected_memory,
         )
 
 
 AGENT_USAGE = "Usage: /agent [--pipeline NAME] <task>"
 AGENT_TEAM_USAGE = "Usage: /agent team [--roles ROLE,ROLE[,ROLE,ROLE]] <task>"
-AGENT_THREAD_USAGE = "Usage: /agent show THREAD | switch THREAD | resume THREAD [task] | fork THREAD [--same-worktree] <task>"
+AGENT_THREAD_USAGE = (
+    "Usage: /agent show THREAD | switch THREAD | resume THREAD [task] | fork THREAD [--same-worktree] <task>"
+)
 MIN_TEAM_ROLES = 2
 MAX_TEAM_ROLES = 4
 
@@ -1392,10 +1285,7 @@ def enforce_required_change_contract(
             "final-state verifier was available."
         )
         if reported_output:
-            block.output += (
-                "\n\nUnverified reported output:\n"
-                f"{reported_output}"
-            )
+            block.output += f"\n\nUnverified reported output:\n{reported_output}"
         return
 
     produced_change = git_evidence.has_verified_delta(before, after) or (
@@ -1411,19 +1301,27 @@ def enforce_required_change_contract(
         block.status_reason = "Required change not verified: a requested mutation was denied or blocked by policy."
     elif block.failed_writes:
         block.status_code = "write_blocked"
-        block.status_reason = "Required change not verified: write_file was attempted but failed before producing a verified change."
+        block.status_reason = (
+            "Required change not verified: write_file was attempted but failed before producing a verified change."
+        )
     elif not before.available or not after.available:
         block.status_code = "no_write_evidence"
         block.status_reason = "Required change not verified: Git evidence is unavailable and no successful write_file action was recorded."
     elif before.head != after.head:
         block.status_code = "attribution_unsafe"
-        block.status_reason = "Required change not verified: repository HEAD changed during execution, so attribution is unsafe."
+        block.status_reason = (
+            "Required change not verified: repository HEAD changed during execution, so attribution is unsafe."
+        )
     elif block.successful_writes:
         block.status_code = "no_verified_delta"
-        block.status_reason = "Required change not verified: recorded writes left no attributable final-state Git delta."
+        block.status_reason = (
+            "Required change not verified: recorded writes left no attributable final-state Git delta."
+        )
     else:
         block.status_code = "no_write_evidence"
-        block.status_reason = "Required change not verified: no successful write_file action or attributable Git delta was detected."
+        block.status_reason = (
+            "Required change not verified: no successful write_file action or attributable Git delta was detected."
+        )
     block.output = (
         "## Block Output\n\n"
         "No verified code change was produced. "
@@ -1468,7 +1366,7 @@ def should_recover_implementation(block: agent_blocks.AgentBlock) -> bool:
 
 
 def recovery_plan_block(failed_block: agent_blocks.AgentBlock, cfg: Config) -> agent_blocks.AgentBlock:
-    recent_attempts = cfg.attempt_ledger[-6:]
+    recent_attempts = sanitize_attempt_ledger(cfg.attempt_ledger)[-6:]
     attempt_lines = [
         f"- {item.get('status', '?').upper()} {item.get('tool', '?')}: {item.get('summary', '')}"
         for item in recent_attempts
@@ -1534,10 +1432,9 @@ def _block_record(block: agent_blocks.AgentBlock) -> dict[str, Any]:
         "status": block.status,
         "status_code": block.status_code,
         "status_reason": block.status_reason,
-        "context_output": block.context_output[
-            : agent_threads.MAX_BLOCK_CONTEXT_CHARS
-        ],
+        "context_output": block.context_output[: agent_threads.MAX_BLOCK_CONTEXT_CHARS],
         "tool_calls": block.tool_calls,
+        "tool_call_receipts": [dict(item) for item in block.tool_call_receipts],
         "duration_ms": block.duration_ms,
         "successful_writes": list(block.successful_writes),
         "verification_warning": block.verification_warning,
@@ -1559,9 +1456,7 @@ def _contract_thread_link(
         "run_nonce": contract.run_nonce,
         "mode": contract.mode,
         "approval_mode": contract.approval_mode,
-        "journal_file": agent_run_journal.journal_path(
-            contract.run_nonce
-        ).name,
+        "journal_file": agent_run_journal.journal_path(contract.run_nonce).name,
     }
 
 
@@ -1580,27 +1475,24 @@ def _hydrate_verified_blocks(
 
     checkpoints = journal.verified_blocks()
     if len(block_records) < len(checkpoints):
-        raise agent_run_journal.AgentRunJournalCorrupt(
-            "thread context is missing a verified block checkpoint"
-        )
+        raise agent_run_journal.AgentRunJournalCorrupt("thread context is missing a verified block checkpoint")
     hydrated: list[agent_blocks.AgentBlock] = []
     for checkpoint in checkpoints:
         if checkpoint.ordinal >= len(pipeline):
-            raise agent_run_journal.AgentRunJournalCorrupt(
-                "verified block is outside the current pipeline"
-            )
+            raise agent_run_journal.AgentRunJournalCorrupt("verified block is outside the current pipeline")
         raw = block_records[checkpoint.ordinal]
         if not isinstance(raw, dict):
-            raise agent_run_journal.AgentRunJournalCorrupt(
-                "verified thread block context is invalid"
-            )
+            raise agent_run_journal.AgentRunJournalCorrupt("verified thread block context is invalid")
         template = copy.deepcopy(pipeline[checkpoint.ordinal])
         context_output = str(raw.get("context_output") or "")
         if (
             str(raw.get("role") or "") != checkpoint.role
             or template.role != checkpoint.role
             or str(raw.get("status") or "") != "complete"
-            or agent_run_journal.digest_text(context_output)
+            or journal.checkpoint_digest_text(
+                context_output,
+                domain="block-context",
+            )
             != checkpoint.context_digest
         ):
             raise agent_run_journal.AgentRunJournalCorrupt(
@@ -1612,24 +1504,27 @@ def _hydrate_verified_blocks(
         template.context_output = context_output
         template.output = context_output
         template.tool_calls = int(raw.get("tool_calls") or 0)
+        raw_tool_receipts = raw.get("tool_call_receipts", [])
+        if isinstance(raw_tool_receipts, list):
+            template.tool_call_receipts = [
+                {
+                    "name": str(item.get("name") or ""),
+                    "status": str(item.get("status") or ""),
+                    "explicit_memory_write": item.get("explicit_memory_write") is True,
+                }
+                for item in raw_tool_receipts
+                if isinstance(item, dict)
+                and str(item.get("name") or "").strip()
+                and str(item.get("status") or "").strip()
+            ]
         template.duration_ms = float(raw.get("duration_ms") or 0.0)
-        template.successful_writes = [
-            str(item)
-            for item in raw.get("successful_writes", [])
-            if str(item).strip()
-        ]
-        template.verification_warning = str(
-            raw.get("verification_warning") or ""
-        )
+        template.successful_writes = [str(item) for item in raw.get("successful_writes", []) if str(item).strip()]
+        template.verification_warning = str(raw.get("verification_warning") or "")
         template.git_head = str(raw.get("git_head") or "")
         template.git_status = str(raw.get("git_status") or "")
         template.status_digest = str(raw.get("status_digest") or "")
-        template.tracked_diff_digest = str(
-            raw.get("tracked_diff_digest") or ""
-        )
-        template.untracked_digest = str(
-            raw.get("untracked_digest") or ""
-        )
+        template.tracked_diff_digest = str(raw.get("tracked_diff_digest") or "")
+        template.untracked_digest = str(raw.get("untracked_digest") or "")
         template.git_clean = bool(raw.get("git_clean", False))
         hydrated.append(template)
     return hydrated
@@ -1647,9 +1542,7 @@ def _validate_resume_contract(
     contract = journal.contract
     state = journal.resume_state()
     if state.terminal:
-        raise agent_run_journal.AgentRunJournalError(
-            "terminal Agent runs cannot be resumed in place"
-        )
+        raise agent_run_journal.AgentRunJournalError("terminal Agent runs cannot be resumed in place")
     if state.uncertain_mutation_steps:
         raise agent_run_journal.AgentRunJournalError(
             "a prior mutation outcome is uncertain and requires reconciliation"
@@ -1660,46 +1553,33 @@ def _validate_resume_contract(
         session_preapproval=(
             False
             if approval_mode_for_config(cfg) == "never"
-            else approval_mode_for_config(cfg) == "auto"
-            or bool(cfg.auto_approve_active)
+            else approval_mode_for_config(cfg) == "auto" or bool(cfg.auto_approve_active)
         ),
     )
-    if contract.task_digest != agent_run_journal.digest_text(task):
-        raise run_contracts.RunContractViolation(
-            "resume task differs from the immutable run contract"
-        )
+    if contract.task_digest != journal.digest_text(task, domain="task"):
+        raise run_contracts.RunContractViolation("resume task differs from the immutable run contract")
     if contract.pipeline != pipeline_name:
-        raise run_contracts.RunContractViolation(
-            "resume pipeline differs from the immutable run contract"
-        )
+        raise run_contracts.RunContractViolation("resume pipeline differs from the immutable run contract")
     current_root = str(Path(cfg.cwd).expanduser().resolve(strict=False))
     if current_root != contract.workspace.root:
-        raise run_contracts.RunContractViolation(
-            "resume workspace differs from the immutable run contract"
-        )
+        raise run_contracts.RunContractViolation("resume workspace differs from the immutable run contract")
     if len(pipeline) != len(contract.blocks):
-        raise run_contracts.RunContractViolation(
-            "resume pipeline shape differs from the immutable run contract"
-        )
-    for ordinal, (block, block_contract) in enumerate(
-        zip(pipeline, contract.blocks)
-    ):
+        raise run_contracts.RunContractViolation("resume pipeline shape differs from the immutable run contract")
+    for ordinal, (block, block_contract) in enumerate(zip(pipeline, contract.blocks)):
         if (
             block_contract.ordinal != ordinal
             or block.role != block_contract.role
-            or agent_run_journal.digest_text(block.prompt)
+            or journal.digest_text(
+                block.prompt,
+                domain="block-prompt",
+            )
             != block_contract.prompt_digest
-            or block.allowed_tools
-            != frozenset(block_contract.configured_tools)
+            or block.allowed_tools != frozenset(block_contract.configured_tools)
             or block.requires_change != block_contract.requires_change
         ):
-            raise run_contracts.RunContractViolation(
-                "resume block definition differs from the immutable run contract"
-            )
+            raise run_contracts.RunContractViolation("resume block definition differs from the immutable run contract")
     if not state.workspace_matches(snapshot):
-        raise run_contracts.RunContractViolation(
-            "workspace state differs from the last verified Agent checkpoint"
-        )
+        raise run_contracts.RunContractViolation("workspace state differs from the last verified Agent checkpoint")
     return state
 
 
@@ -1737,6 +1617,9 @@ def _start_thread_record(
     parent_id: str,
     contract: run_contracts.RunContract,
     checkpoint: dict[str, Any],
+    protected: bool,
+    receipt_authority: ElsieReceiptAuthority | None,
+    anchor_store: Any | None,
 ) -> str:
     workspace = _capture_thread_workspace(cfg)
     contract_link = _contract_thread_link(contract)
@@ -1750,6 +1633,9 @@ def _start_thread_record(
                 workspace=workspace,
                 run_contract=contract_link,
                 checkpoint=checkpoint,
+                protected=protected,
+                receipt_authority=receipt_authority,
+                anchor_store=anchor_store,
             )
             return thread_id
         record = agent_threads.create_thread(
@@ -1762,11 +1648,14 @@ def _start_thread_record(
             workspace=workspace,
             run_contract=contract_link,
             checkpoint=checkpoint,
+            protected=protected,
+            receipt_authority=receipt_authority,
+            anchor_store=anchor_store,
         )
         return str(record["id"])
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, ElsieReceiptError) as exc:
         logger.debug("Agent thread persistence unavailable: %s", exc)
-        show_info(f"Agent thread history unavailable for this run: {exc}")
+        show_info("Agent thread history is unavailable for this run.")
         return ""
 
 
@@ -1781,6 +1670,9 @@ def _finish_thread_record(
     workspace: dict[str, Any] | None = None,
     contract: run_contracts.RunContract | None = None,
     checkpoint: dict[str, Any] | None = None,
+    protected: bool = False,
+    receipt_authority: ElsieReceiptAuthority | None = None,
+    anchor_store: Any | None = None,
 ) -> bool:
     if not thread_id:
         return False
@@ -1793,15 +1685,14 @@ def _finish_thread_record(
             blocks=blocks,
             pipeline=pipeline,
             workspace=workspace,
-            run_contract=(
-                _contract_thread_link(contract)
-                if contract is not None
-                else None
-            ),
+            run_contract=(_contract_thread_link(contract) if contract is not None else None),
             checkpoint=checkpoint,
+            protected=protected,
+            receipt_authority=receipt_authority,
+            anchor_store=anchor_store,
         )
         return True
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, ElsieReceiptError) as exc:
         logger.debug("Could not finish agent thread record %s: %s", thread_id, exc)
         return False
 
@@ -1819,10 +1710,29 @@ def run_agent_pipeline(
     resume_journal: agent_run_journal.AgentRunJournal | None = None,
     resume_block_records: list[dict[str, Any]] | None = None,
     resume_direction: str = "",
+    _receipt_key_store: Any | None = None,
+    _receipt_anchor_store: Any | None = None,
 ) -> AgentRunResult:
     if not task.strip():
         show_error(AGENT_USAGE)
         return AgentRunResult(status="failed", pipeline=pipeline_name, error=AGENT_USAGE)
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .elsie_echo_preflight import (
+        EchoAuxiliaryPreflightError,
+        prepare_echo_auxiliary_state,
+    )
+
+    protected_expected = echo_veil_authority_selected(cfg)
+    try:
+        prepare_echo_auxiliary_state(
+            cfg,
+            receipt_key_store=_receipt_key_store,
+            receipt_anchor_store=_receipt_anchor_store,
+        )
+    except EchoAuxiliaryPreflightError:
+        error = "Agent run stopped because Echo-protected auxiliary state is unavailable."
+        show_error(error)
+        return AgentRunResult(status="failed", pipeline=pipeline_name, error=error)
     reflex.begin_agent_pipeline(cfg)
     if thread_id is None and not parent_id and not prior_context.strip():
         resolve_agent_workspace(task, cfg)
@@ -1830,13 +1740,18 @@ def run_agent_pipeline(
     completed: list[agent_blocks.AgentBlock] = []
     resolved = resolve_pipeline_for_cli(pipeline_name)
     if resolved is None:
-        return AgentRunResult(status="failed", pipeline=pipeline_name, error=f"Pipeline '{pipeline_name}' is unavailable.")
+        return AgentRunResult(
+            status="failed", pipeline=pipeline_name, error=f"Pipeline '{pipeline_name}' is unavailable."
+        )
     pipeline, _pipeline_source = resolved
     record_pipeline = thread_pipeline_label or pipeline_name
     route = task_router.route_task(task)
     journal_lease = ExitStack()
     try:
         initial_contract_snapshot = git_evidence.capture_git_snapshot(cfg.cwd)
+        thread_receipt_authority = (
+            ElsieReceiptAuthority.from_key_store(store=_receipt_key_store) if protected_expected else None
+        )
         if resume_journal is None:
             contract = run_contracts.compile_agent_run_contract(
                 task=task,
@@ -1846,12 +1761,22 @@ def run_agent_pipeline(
                 cfg=cfg,
                 approval_mode=approval_mode_for_config(cfg),
                 snapshot=initial_contract_snapshot,
+                receipt_key_store=_receipt_key_store,
             )
-            run_journal = agent_run_journal.AgentRunJournal.create(contract)
+            run_journal = agent_run_journal.AgentRunJournal.create(
+                contract,
+                receipt_key_store=_receipt_key_store,
+                receipt_anchor_store=_receipt_anchor_store,
+                protected_expected=protected_expected,
+            )
             journal_lease.enter_context(run_journal.execution_lease())
             contract_tracker = run_contracts.RunContractTracker(contract)
         else:
             run_journal = resume_journal
+            if run_journal.protected is not protected_expected:
+                raise agent_run_journal.AgentRunJournalError(
+                    "Agent journal digest authority differs from the active memory authority"
+                )
             journal_lease.enter_context(run_journal.execution_lease())
             resume_state = _validate_resume_contract(
                 task=task,
@@ -1876,14 +1801,13 @@ def run_agent_pipeline(
             )
             run_journal.run_resumed(
                 next_block_ordinal=resume_state.next_block_ordinal,
-                last_verified_sequence=(
-                    resume_state.last_verified_sequence
-                ),
+                last_verified_sequence=(resume_state.last_verified_sequence),
             )
     except (
         run_contracts.RunContractError,
         run_contracts.RunContractViolation,
         agent_run_journal.AgentRunJournalError,
+        ElsieReceiptError,
         OSError,
     ) as exc:
         journal_lease.close()
@@ -1902,12 +1826,12 @@ def run_agent_pipeline(
         parent_id=parent_id,
         contract=contract,
         checkpoint=_checkpoint_payload(run_journal),
+        protected=protected_expected,
+        receipt_authority=thread_receipt_authority,
+        anchor_store=_receipt_anchor_store,
     )
     if not active_thread_id:
-        error = (
-            "Agent run stopped because durable thread context could not be "
-            "created."
-        )
+        error = "Agent run stopped because durable thread context could not be created."
         try:
             run_journal.run_finished(
                 status="failed",
@@ -1926,10 +1850,7 @@ def run_agent_pipeline(
         )
     if active_thread_id:
         show_info(f"Agent thread {active_thread_id} · {record_pipeline}")
-    show_info(
-        f"Run contract {contract.digest[:12]} · {contract.mode} · "
-        f"approval {contract.approval_mode}"
-    )
+    show_info(f"Run contract {contract.digest[:12]} · {contract.mode} · approval {contract.approval_mode}")
     context_sources: list[agent_context.AgentContextSource] = []
     if resume_direction.strip():
         context_sources.append(
@@ -1959,38 +1880,108 @@ def run_agent_pipeline(
         )
     from . import main as _main
 
-    try:
-        memory_catalog = memory_runtime.MemoryCatalog()
-        from .ada_memory_echo_veil import protection_required
+    from .ada_memory_echo_veil import (
+        echo_veil_authority_selected,
+        protected_prompt_context,
+        protection_required,
+    )
 
-        if not protection_required(cfg):
-            memory_catalog.sync_legacy_facts(cfg.memories, authoritative=False)
-        memory_hits = memory_catalog.search(
-            task,
-            embed_fn=_main.intuition_embed_fn(cfg),
-            embedding_model=_main.harness.resolve_embed_model(cfg),
-            tiers={"curated", "history"},
-            scopes={memory_runtime.scope_for_workspace(cfg.cwd)},
-        )
-        memory_injection = memory_runtime.format_prompt_hits(memory_hits)
-        if memory_injection:
-            context_sources.append(
-                agent_context.AgentContextSource(
-                    name="governed_memory",
-                    title="Relevant System Memory",
-                    body=memory_injection,
-                    priority=80,
-                    trust="governed_memory",
-                    scope="workspace",
-                    freshness_rank=700,
-                    provenance="julia-memory-runtime",
+    echo_memory_authority = echo_veil_authority_selected(cfg)
+    required_memory_protection = protection_required(cfg)
+    if echo_memory_authority:
+        try:
+            memory_injection = protected_prompt_context(cfg, task, top_k=3)
+            if memory_injection:
+                context_sources.append(
+                    agent_context.AgentContextSource(
+                        name="protected_echo_memory",
+                        title="Protected Echo Veil Memory",
+                        body=memory_injection,
+                        priority=80,
+                        trust="governed_memory",
+                        scope="global",
+                        freshness_rank=700,
+                        provenance="echo-veil-scoped-v2",
+                    )
                 )
+        except Exception as exc:
+            if not required_memory_protection:
+                logger.debug(
+                    "Enabled Echo recall unavailable; optional memory omitted: %s",
+                    type(exc).__name__,
+                )
+                memory_injection = ""
+            else:
+                logger.debug(
+                    "Agent pipeline protected Echo recall failed: %s",
+                    type(exc).__name__,
+                )
+                error = "Agent run stopped because required protected memory recall is unavailable."
+                show_error(error)
+                block_records = [_block_record(block) for block in completed]
+                _finish_thread_record(
+                    active_thread_id,
+                    status="failed",
+                    output=completed[-1].output if completed else "",
+                    error=error,
+                    blocks=block_records,
+                    pipeline=record_pipeline,
+                    workspace=_capture_thread_workspace(cfg),
+                    contract=contract,
+                    checkpoint=_checkpoint_payload(run_journal),
+                    protected=protected_expected,
+                    receipt_authority=thread_receipt_authority,
+                    anchor_store=_receipt_anchor_store,
+                )
+                try:
+                    state = run_journal.resume_state()
+                    if not state.uncertain_mutation_steps:
+                        run_journal.run_finished(
+                            status="failed",
+                            last_verified_sequence=state.last_verified_sequence,
+                        )
+                except agent_run_journal.AgentRunJournalError:
+                    pass
+                journal_lease.close()
+                return AgentRunResult(
+                    thread_id=active_thread_id,
+                    status="failed",
+                    pipeline=record_pipeline,
+                    error=error,
+                    blocks=block_records,
+                    contract_id=contract.contract_id,
+                    contract_mode=contract.mode,
+                )
+    else:
+        try:
+            memory_catalog = memory_runtime.MemoryCatalog()
+            memory_catalog.sync_legacy_facts(cfg.memories, authoritative=False)
+            memory_hits = memory_catalog.search(
+                task,
+                embed_fn=_main.intuition_embed_fn(cfg),
+                embedding_model=_main.harness.resolve_embed_model(cfg),
+                tiers={"curated", "history"},
+                scopes={memory_runtime.scope_for_workspace(cfg.cwd)},
             )
-    except memory_runtime.MemorySystemError as exc:
-        logger.debug("Agent pipeline governed memory recall failed: %s", exc)
+            memory_injection = memory_runtime.format_prompt_hits(memory_hits)
+            if memory_injection:
+                context_sources.append(
+                    agent_context.AgentContextSource(
+                        name="governed_memory",
+                        title="Relevant System Memory",
+                        body=memory_injection,
+                        priority=80,
+                        trust="governed_memory",
+                        scope="workspace",
+                        freshness_rank=700,
+                        provenance="julia-memory-runtime",
+                    )
+                )
+        except memory_runtime.MemorySystemError as exc:
+            logger.debug("Agent pipeline governed memory recall failed: %s", exc)
 
-    engine = _main._intuition_engine
-    if engine is not None and cfg.intuition_recall_enabled:
+    engine = _main._intuition_engine_for(cfg)
+    if engine is not None and cfg.intuition_recall_enabled and not echo_memory_authority:
         try:
             recalled_blocks = engine.recall(
                 task,
@@ -2021,28 +2012,15 @@ def run_agent_pipeline(
             context_sources,
             max_tokens=max(
                 256,
-                int(
-                    contract.budget.max_prompt_tokens_per_round
-                    * 0.45
-                ),
+                int(contract.budget.max_prompt_tokens_per_round * 0.45),
             ),
         )
         pipeline_task = context_bundle.text
         run_journal.context_bound(context_bundle.receipt.payload())
         if context_bundle.receipt.truncated_sources:
-            show_info(
-                "Agent context truncated by budget: "
-                + ", ".join(
-                    context_bundle.receipt.truncated_sources
-                )
-            )
+            show_info("Agent context truncated by budget: " + ", ".join(context_bundle.receipt.truncated_sources))
         if context_bundle.receipt.omitted_sources:
-            show_info(
-                "Agent context omitted by budget: "
-                + ", ".join(
-                    context_bundle.receipt.omitted_sources
-                )
-            )
+            show_info("Agent context omitted by budget: " + ", ".join(context_bundle.receipt.omitted_sources))
     except (
         agent_context.AgentContextError,
         agent_run_journal.AgentRunJournalError,
@@ -2060,15 +2038,16 @@ def run_agent_pipeline(
             workspace=_capture_thread_workspace(cfg),
             contract=contract,
             checkpoint=_checkpoint_payload(run_journal),
+            protected=protected_expected,
+            receipt_authority=thread_receipt_authority,
+            anchor_store=_receipt_anchor_store,
         )
         try:
             state = run_journal.resume_state()
             if not state.uncertain_mutation_steps:
                 run_journal.run_finished(
                     status="failed",
-                    last_verified_sequence=(
-                        state.last_verified_sequence
-                    ),
+                    last_verified_sequence=(state.last_verified_sequence),
                 )
         except agent_run_journal.AgentRunJournalError:
             pass
@@ -2114,20 +2093,14 @@ def run_agent_pipeline(
                     else "run_journal_unavailable"
                 )
                 block.status_reason = str(exc)
-                block.output = (
-                    "## Block Output\n\n"
-                    f"Run contract rejected block execution: {exc}"
-                )
+                block.output = f"## Block Output\n\nRun contract rejected block execution: {exc}"
                 return
         before_git = (
-            (
-                initial_contract_snapshot
-                if ordinal == 0
-                else git_evidence.capture_git_snapshot(cfg.cwd)
-            )
+            (initial_contract_snapshot if ordinal == 0 else git_evidence.capture_git_snapshot(cfg.cwd))
             if block.requires_change or tool_policy.supports_mutation_audit(block.allowed_tools)
             else None
         )
+
         def completion_check(
             completed_block: agent_blocks.AgentBlock,
             baseline=before_git,
@@ -2148,22 +2121,15 @@ def run_agent_pipeline(
                 if ordinal is not None:
                     run_journal.verifier_result(
                         ordinal=ordinal,
-                        verifier=(
-                            "post_mutation"
-                            if completed_block.requires_change
-                            else "mutation_audit"
-                        ),
-                        status=(
-                            "passed"
-                            if completed_block.status == "complete"
-                            else "failed"
-                        ),
+                        verifier=("post_mutation" if completed_block.requires_change else "mutation_audit"),
+                        status=("passed" if completed_block.status == "complete" else "failed"),
                         snapshot=after_git,
                     )
             _enforce_block_output_verification(
                 completed_block,
                 completed,
             )
+
         run_agent_block(
             block,
             task=pipeline_task,
@@ -2174,12 +2140,8 @@ def run_agent_pipeline(
             completion_check=completion_check,
             run_contract=contract if selected_block_contract is not None else None,
             block_contract=selected_block_contract,
-            contract_tracker=(
-                contract_tracker if selected_block_contract is not None else None
-            ),
-            run_journal=(
-                run_journal if selected_block_contract is not None else None
-            ),
+            contract_tracker=(contract_tracker if selected_block_contract is not None else None),
+            run_journal=(run_journal if selected_block_contract is not None else None),
             block_ordinal=ordinal,
             recovery_phase=recovery_phase,
             recovery_attempt=recovery_attempt,
@@ -2191,10 +2153,7 @@ def run_agent_pipeline(
         ordinal: int,
     ) -> None:
         block_contract = contract.block(ordinal)
-        if (
-            block.status_code not in block_contract.recovery_codes
-            or block_contract.max_recovery_attempts < 1
-        ):
+        if block.status_code not in block_contract.recovery_codes or block_contract.max_recovery_attempts < 1:
             return
         retry_iterations = block_contract.recovery_max_iterations
         show_agent_recovery_start(
@@ -2232,6 +2191,7 @@ def run_agent_pipeline(
                 block.status_code = retry.status_code
                 block.status_reason = retry.status_reason
                 block.tool_calls += retry.tool_calls
+                block.tool_call_receipts.extend(retry.tool_call_receipts)
                 block.duration_ms += retry.duration_ms
                 block.successful_writes = list(
                     dict.fromkeys(
@@ -2255,11 +2215,7 @@ def run_agent_pipeline(
                 )
                 if retry_snapshot is not None:
                     block_final_snapshots[id(block)] = retry_snapshot
-            recovery_output = (
-                retry.output
-                if retry is not None
-                else "Recovery retry was not started."
-            )
+            recovery_output = retry.output if retry is not None else "Recovery retry was not started."
             block.output = (
                 "## Block Output\n\n"
                 "### Original attempt\n"
@@ -2274,9 +2230,7 @@ def run_agent_pipeline(
                 attempt=1,
                 status=block.status,
                 context_digest=agent_run_journal.digest_text(
-                    agent_blocks.compact_block_output(block.output)[
-                        : agent_threads.MAX_BLOCK_CONTEXT_CHARS
-                    ]
+                    agent_blocks.compact_block_output(block.output)[: agent_threads.MAX_BLOCK_CONTEXT_CHARS]
                 ),
             )
         except (
@@ -2286,86 +2240,61 @@ def run_agent_pipeline(
             block.status = "failed"
             block.status_code = "run_journal_unavailable"
             block.status_reason = f"Contract-bound recovery failed: {exc}"
-            block.output = (
-                "## Block Output\n\n"
-                f"{block.status_reason}"
-            )
+            block.output = f"## Block Output\n\n{block.status_reason}"
 
     def append_pipeline_block(
         block: agent_blocks.AgentBlock,
         *,
         ordinal: int | None = None,
     ) -> bool:
-        block.context_output = agent_blocks.compact_block_output(
-            block.output
-        )[: agent_threads.MAX_BLOCK_CONTEXT_CHARS]
+        block.context_output = agent_blocks.compact_block_output(block.output)[: agent_threads.MAX_BLOCK_CONTEXT_CHARS]
         if ordinal is not None:
             try:
                 snapshot = block_final_snapshots.pop(
                     id(block),
                     None,
                 ) or git_evidence.capture_git_snapshot(cfg.cwd)
-                output_verified = (
-                    _enforce_block_output_verification(
-                        block,
-                        completed,
-                    )
+                output_verified = _enforce_block_output_verification(
+                    block,
+                    completed,
                 )
                 agent_threads.update_thread(
                     active_thread_id,
                     status="running",
-                    blocks=[
-                        _block_record(item)
-                        for item in [*completed, block]
-                    ],
+                    blocks=[_block_record(item) for item in [*completed, block]],
                     workspace=_capture_thread_workspace(cfg, block),
                     run_contract=_contract_thread_link(contract),
                     checkpoint=_checkpoint_payload(run_journal),
+                    protected=protected_expected,
+                    receipt_authority=thread_receipt_authority,
+                    anchor_store=_receipt_anchor_store,
                 )
                 run_journal.verifier_result(
                     ordinal=ordinal,
-                    verifier=(
-                        "final_output"
-                        if block.role == "final"
-                        else "block_output"
-                    ),
-                    status=(
-                        "passed"
-                        if output_verified
-                        and block.status == "complete"
-                        else "failed"
-                    ),
+                    verifier=("final_output" if block.role == "final" else "block_output"),
+                    status=("passed" if output_verified and block.status == "complete" else "failed"),
                     snapshot=snapshot,
                 )
                 run_journal.block_finished(
                     ordinal=ordinal,
                     role=block.role,
                     status=block.status,
-                    verified=(
-                        block.status == "complete"
-                        and not block.verification_warning
-                        and output_verified
-                    ),
-                    context_digest=agent_run_journal.digest_text(
-                        block.context_output
-                    ),
+                    verified=(block.status == "complete" and not block.verification_warning and output_verified),
+                    context_digest=agent_run_journal.digest_text(block.context_output),
                     snapshot=snapshot,
                 )
             except (
                 OSError,
                 ValueError,
                 KeyError,
+                ElsieReceiptError,
                 agent_run_journal.AgentRunJournalError,
             ) as exc:
                 block.status = "failed"
                 block.status_code = "run_journal_unavailable"
-                block.status_reason = (
-                    f"Durable block checkpoint failed: {exc}"
-                )
+                block.status_reason = f"Durable block checkpoint failed: {exc}"
                 block.output = (
-                    "## Block Output\n\n"
-                    f"Block completion was withheld because its durable "
-                    f"checkpoint failed: {exc}"
+                    f"## Block Output\n\nBlock completion was withheld because its durable checkpoint failed: {exc}"
                 )
                 return False
         completed.append(block)
@@ -2374,15 +2303,15 @@ def run_agent_pipeline(
                 agent_threads.update_thread(
                     active_thread_id,
                     status="running",
-                    blocks=[
-                        _block_record(item)
-                        for item in completed
-                    ],
+                    blocks=[_block_record(item) for item in completed],
                     workspace=_capture_thread_workspace(cfg, block),
                     run_contract=_contract_thread_link(contract),
                     checkpoint=_checkpoint_payload(run_journal),
+                    protected=protected_expected,
+                    receipt_authority=thread_receipt_authority,
+                    anchor_store=_receipt_anchor_store,
                 )
-            except (OSError, ValueError, KeyError) as exc:
+            except (OSError, ValueError, KeyError, ElsieReceiptError) as exc:
                 # The staged context was persisted before the authoritative
                 # journal boundary, so resume can reconstruct this checkpoint
                 # even if the redundant metadata refresh is unavailable.
@@ -2393,9 +2322,7 @@ def run_agent_pipeline(
                 )
         return True
 
-    terminal_block: agent_blocks.AgentBlock | None = (
-        completed[-1] if completed else None
-    )
+    terminal_block: agent_blocks.AgentBlock | None = completed[-1] if completed else None
     cancelled = False
     run_error = ""
     try:
@@ -2412,32 +2339,16 @@ def run_agent_pipeline(
                 if should_recover_implementation(block):
                     run_typed_recovery(block, ordinal=ordinal)
                     if block.status not in {"complete", "partial"}:
-                        detail = (
-                            f" ({block.status_reason})"
-                            if block.status_reason
-                            else ""
-                        )
-                        show_error(
-                            f"Agent pipeline stopped at {block.role}: "
-                            f"{block.status}{detail}"
-                        )
+                        detail = f" ({block.status_reason})" if block.status_reason else ""
+                        show_error(f"Agent pipeline stopped at {block.role}: {block.status}{detail}")
                         break
                 if not append_pipeline_block(block, ordinal=ordinal):
-                    show_error(
-                        f"Agent pipeline stopped at {block.role}: "
-                        f"{block.status_reason}"
-                    )
+                    show_error(f"Agent pipeline stopped at {block.role}: {block.status_reason}")
                     break
                 if block.status_code == "verification_missing":
-                    show_error(
-                        f"Agent pipeline stopped at {block.role}: post-mutation verification is missing."
-                    )
+                    show_error(f"Agent pipeline stopped at {block.role}: post-mutation verification is missing.")
                     break
-            if (
-                completed
-                and completed[-1].role == "final"
-                and all(block.status == "complete" for block in completed)
-            ):
+            if completed and completed[-1].role == "final" and all(block.status == "complete" for block in completed):
                 show_agent_pipeline_complete(
                     completed[-1].output,
                     block_count=len(completed),
@@ -2457,11 +2368,7 @@ def run_agent_pipeline(
         persisted_blocks = list(completed)
         if terminal_block is not None and terminal_block not in persisted_blocks:
             persisted_blocks.append(terminal_block)
-        output = (
-            completed[-1].output
-            if completed
-            else terminal_block.output if terminal_block is not None else ""
-        )
+        output = completed[-1].output if completed else terminal_block.output if terminal_block is not None else ""
         if cancelled:
             status = "cancelled"
             error = "Agent pipeline cancelled."
@@ -2474,7 +2381,11 @@ def run_agent_pipeline(
         elif any(block.status == "partial" for block in persisted_blocks):
             status = "partial"
             error = next(
-                (block.status_reason for block in persisted_blocks if block.status == "partial" and block.status_reason),
+                (
+                    block.status_reason
+                    for block in persisted_blocks
+                    if block.status == "partial" and block.status_reason
+                ),
                 "",
             )
         elif completed and completed[-1].role == "final":
@@ -2493,20 +2404,10 @@ def run_agent_pipeline(
             resume_state = run_journal.resume_state()
             if resume_state.uncertain_mutation_steps:
                 status = "failed"
-                error = (
-                    "A mutation outcome lacks a durable checkpoint and must "
-                    "be reconciled before resume."
-                )
-            elif (
-                status == "complete"
-                and resume_state.next_block_ordinal
-                != len(contract.blocks)
-            ):
+                error = "A mutation outcome lacks a durable checkpoint and must be reconciled before resume."
+            elif status == "complete" and resume_state.next_block_ordinal != len(contract.blocks):
                 status = "failed"
-                error = (
-                    "Agent completion was withheld because not every "
-                    "contract block reached a verified checkpoint."
-                )
+                error = "Agent completion was withheld because not every contract block reached a verified checkpoint."
             checkpoint = _checkpoint_payload(run_journal)
             thread_persisted = _finish_thread_record(
                 active_thread_id,
@@ -2518,6 +2419,9 @@ def run_agent_pipeline(
                 workspace=workspace,
                 contract=contract,
                 checkpoint=checkpoint,
+                protected=protected_expected,
+                receipt_authority=thread_receipt_authority,
+                anchor_store=_receipt_anchor_store,
             )
             if not thread_persisted:
                 status = "failed"
@@ -2529,25 +2433,24 @@ def run_agent_pipeline(
                 try:
                     run_journal.run_finished(
                         status=status,
-                        last_verified_sequence=(
-                            resume_state.last_verified_sequence
-                        ),
+                        last_verified_sequence=(resume_state.last_verified_sequence),
                     )
                     agent_threads.update_thread(
                         active_thread_id,
                         checkpoint=_checkpoint_payload(run_journal),
+                        protected=protected_expected,
+                        receipt_authority=thread_receipt_authority,
+                        anchor_store=_receipt_anchor_store,
                     )
                 except (
                     OSError,
                     ValueError,
                     KeyError,
+                    ElsieReceiptError,
                     agent_run_journal.AgentRunJournalError,
                 ) as exc:
                     status = "failed"
-                    error = (
-                        "Agent run journal could not be finalized: "
-                        f"{exc}"
-                    )
+                    error = f"Agent run journal could not be finalized: {exc}"
                     _finish_thread_record(
                         active_thread_id,
                         status=status,
@@ -2558,9 +2461,13 @@ def run_agent_pipeline(
                         workspace=workspace,
                         contract=contract,
                         checkpoint=_checkpoint_payload(run_journal),
+                        protected=protected_expected,
+                        receipt_authority=thread_receipt_authority,
+                        anchor_store=_receipt_anchor_store,
                     )
         except (
             OSError,
+            ElsieReceiptError,
             agent_run_journal.AgentRunJournalError,
         ) as exc:
             status = "failed"
@@ -2575,6 +2482,9 @@ def run_agent_pipeline(
                 workspace=workspace,
                 contract=contract,
                 checkpoint={},
+                protected=protected_expected,
+                receipt_authority=thread_receipt_authority,
+                anchor_store=_receipt_anchor_store,
             )
         finally:
             journal_lease.close()
@@ -2614,6 +2524,9 @@ def _finish_specialist_thread(
     block: agent_blocks.AgentBlock,
     *,
     error: str = "",
+    protected: bool = False,
+    receipt_authority: ElsieReceiptAuthority | None = None,
+    anchor_store: Any | None = None,
 ) -> None:
     if not thread_id:
         return
@@ -2625,8 +2538,11 @@ def _finish_specialist_thread(
             output=block.output,
             error=error or block.status_reason,
             blocks=[_block_record(block)],
+            protected=protected,
+            receipt_authority=receipt_authority,
+            anchor_store=anchor_store,
         )
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, ElsieReceiptError) as exc:
         logger.debug("Could not finish specialist thread %s: %s", thread_id, exc)
 
 
@@ -2638,6 +2554,10 @@ def _run_contract_bound_specialist(
     client: Any,
     block: agent_blocks.AgentBlock,
     thread_id: str,
+    receipt_key_store: Any | None = None,
+    receipt_anchor_store: Any | None = None,
+    thread_receipt_authority: ElsieReceiptAuthority | None = None,
+    protected: bool = False,
 ) -> agent_blocks.AgentBlock:
     """Run one team specialist with the same contract/journal loop as Agent."""
 
@@ -2654,8 +2574,16 @@ def _run_contract_bound_specialist(
             cfg=cfg,
             approval_mode=approval_mode_for_config(cfg),
             snapshot=initial_snapshot,
+            receipt_key_store=receipt_key_store,
         )
-        journal = agent_run_journal.AgentRunJournal.create(contract)
+        from .ada_memory_echo_veil import echo_veil_authority_selected
+
+        journal = agent_run_journal.AgentRunJournal.create(
+            contract,
+            receipt_key_store=receipt_key_store,
+            receipt_anchor_store=receipt_anchor_store,
+            protected_expected=echo_veil_authority_selected(cfg),
+        )
         lease.enter_context(journal.execution_lease())
         tracker = run_contracts.RunContractTracker(contract)
         agent_threads.begin_turn(
@@ -2666,16 +2594,16 @@ def _run_contract_bound_specialist(
             workspace=_capture_thread_workspace(cfg),
             run_contract=_contract_thread_link(contract),
             checkpoint=_checkpoint_payload(journal),
+            protected=protected,
+            receipt_authority=thread_receipt_authority,
+            anchor_store=receipt_anchor_store,
         )
         context_bundle = agent_context.build_agent_context(
             task,
             [],
             max_tokens=max(
                 256,
-                int(
-                    contract.budget.max_prompt_tokens_per_round
-                    * 0.45
-                ),
+                int(contract.budget.max_prompt_tokens_per_round * 0.45),
             ),
         )
         journal.context_bound(context_bundle.receipt.payload())
@@ -2694,29 +2622,20 @@ def _run_contract_bound_specialist(
             run_journal=journal,
             block_ordinal=0,
         )
-        block.context_output = agent_blocks.compact_block_output(
-            block.output
-        )[: agent_threads.MAX_BLOCK_CONTEXT_CHARS]
+        block.context_output = agent_blocks.compact_block_output(block.output)[: agent_threads.MAX_BLOCK_CONTEXT_CHARS]
         final_snapshot = git_evidence.capture_git_snapshot(cfg.cwd)
         output_verified = _block_output_is_verified(block)
-        if (
-            block.status == "complete"
-            and agent_run_journal.workspace_view(initial_snapshot)
-            != agent_run_journal.workspace_view(final_snapshot)
-        ):
+        if block.status == "complete" and agent_run_journal.workspace_view(
+            initial_snapshot
+        ) != agent_run_journal.workspace_view(final_snapshot):
             block.status = "partial"
             block.status_code = "specialist_workspace_drift"
-            block.status_reason = (
-                "Workspace changed during the read-only specialist run."
-            )
+            block.status_reason = "Workspace changed during the read-only specialist run."
             block.verification_warning = block.status_reason
         if block.status == "complete" and not output_verified:
             block.status = "partial"
             block.status_code = "output_contract_failed"
-            block.status_reason = (
-                "Specialist output did not satisfy the required "
-                "'## Block Output' evidence contract."
-            )
+            block.status_reason = "Specialist output did not satisfy the required '## Block Output' evidence contract."
             block.verification_warning = block.status_reason
         agent_threads.update_thread(
             thread_id,
@@ -2725,35 +2644,29 @@ def _run_contract_bound_specialist(
             workspace=_capture_thread_workspace(cfg, block),
             run_contract=_contract_thread_link(contract),
             checkpoint=_checkpoint_payload(journal),
+            protected=protected,
+            receipt_authority=thread_receipt_authority,
+            anchor_store=receipt_anchor_store,
         )
         journal.verifier_result(
             ordinal=0,
             verifier="block_output",
-            status=(
-                "passed"
-                if block.status == "complete" and output_verified
-                else "failed"
-            ),
+            status=("passed" if block.status == "complete" and output_verified else "failed"),
             snapshot=final_snapshot,
         )
         journal.block_finished(
             ordinal=0,
             role=block.role,
             status=block.status,
-            verified=(
-                block.status == "complete"
-                and output_verified
-                and not block.verification_warning
-            ),
-            context_digest=agent_run_journal.digest_text(
-                block.context_output
-            ),
+            verified=(block.status == "complete" and output_verified and not block.verification_warning),
+            context_digest=agent_run_journal.digest_text(block.context_output),
             snapshot=final_snapshot,
         )
         state = journal.resume_state()
         terminal_status = (
             block.status
-            if block.status in {
+            if block.status
+            in {
                 "complete",
                 "partial",
                 "failed",
@@ -2771,15 +2684,14 @@ def _run_contract_bound_specialist(
             workspace=_capture_thread_workspace(cfg, block),
             contract=contract,
             checkpoint=_checkpoint_payload(journal),
+            protected=protected,
+            receipt_authority=thread_receipt_authority,
+            anchor_store=receipt_anchor_store,
         )
         if not persisted:
-            raise agent_run_journal.AgentRunJournalError(
-                "specialist terminal state was not persisted"
-            )
+            raise agent_run_journal.AgentRunJournalError("specialist terminal state was not persisted")
         if state.uncertain_mutation_steps:
-            raise agent_run_journal.AgentRunJournalError(
-                "read-only specialist recorded an uncertain mutation"
-            )
+            raise agent_run_journal.AgentRunJournalError("read-only specialist recorded an uncertain mutation")
         journal.run_finished(
             status=terminal_status,
             last_verified_sequence=state.last_verified_sequence,
@@ -2787,20 +2699,16 @@ def _run_contract_bound_specialist(
         agent_threads.update_thread(
             thread_id,
             checkpoint=_checkpoint_payload(journal),
+            protected=protected,
+            receipt_authority=thread_receipt_authority,
+            anchor_store=receipt_anchor_store,
         )
     except Exception as exc:
         block.status = "failed"
-        block.status_code = (
-            block.status_code or "specialist_contract_error"
-        )
+        block.status_code = block.status_code or "specialist_contract_error"
         block.status_reason = str(exc)
-        block.output = (
-            block.output
-            or f"## Block Output\n\nSpecialist failed: {exc}"
-        )
-        block.context_output = agent_blocks.compact_block_output(
-            block.output
-        )[: agent_threads.MAX_BLOCK_CONTEXT_CHARS]
+        block.output = block.output or f"## Block Output\n\nSpecialist failed: {exc}"
+        block.context_output = agent_blocks.compact_block_output(block.output)[: agent_threads.MAX_BLOCK_CONTEXT_CHARS]
         if contract is not None and journal is not None:
             _finish_thread_record(
                 thread_id,
@@ -2812,12 +2720,18 @@ def _run_contract_bound_specialist(
                 workspace=_capture_thread_workspace(cfg, block),
                 contract=contract,
                 checkpoint=_checkpoint_payload(journal),
+                protected=protected,
+                receipt_authority=thread_receipt_authority,
+                anchor_store=receipt_anchor_store,
             )
         else:
             _finish_specialist_thread(
                 thread_id,
                 block,
                 error=block.status_reason,
+                protected=protected,
+                receipt_authority=thread_receipt_authority,
+                anchor_store=receipt_anchor_store,
             )
     finally:
         lease.close()
@@ -2830,6 +2744,8 @@ def run_agent_team(
     client: Any,
     *,
     roles: list[str] | None = None,
+    _receipt_key_store: Any | None = None,
+    _receipt_anchor_store: Any | None = None,
 ) -> AgentRunResult:
     """Fan out independent read-only specialists, then integrate in one pipeline."""
 
@@ -2852,6 +2768,25 @@ def run_agent_team(
         show_error(error)
         return AgentRunResult(status="failed", pipeline="team", error=error)
 
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .elsie_echo_preflight import (
+        EchoAuxiliaryPreflightError,
+        prepare_echo_auxiliary_state,
+    )
+
+    protected = echo_veil_authority_selected(cfg)
+    try:
+        prepare_echo_auxiliary_state(
+            cfg,
+            receipt_key_store=_receipt_key_store,
+            receipt_anchor_store=_receipt_anchor_store,
+        )
+        thread_receipt_authority = ElsieReceiptAuthority.from_key_store(store=_receipt_key_store) if protected else None
+    except (EchoAuxiliaryPreflightError, ElsieReceiptError):
+        error = "Agent team stopped because Echo-protected auxiliary state is unavailable."
+        show_error(error)
+        return AgentRunResult(status="failed", pipeline="team", error=error)
+
     parent_id = ""
     child_ids: list[str] = []
     child_by_role: dict[str, str] = {}
@@ -2865,6 +2800,9 @@ def run_agent_team(
             status="running",
             title=f"Team: {' '.join(task.split())[:72]}",
             workspace=workspace,
+            protected=protected,
+            receipt_authority=thread_receipt_authority,
+            anchor_store=_receipt_anchor_store,
         )
         parent_id = str(parent["id"])
         for role in selected_roles:
@@ -2878,16 +2816,16 @@ def run_agent_team(
                 start_turn=False,
                 title=f"{role}: {' '.join(task.split())[:64]}",
                 workspace=workspace,
+                protected=protected,
+                receipt_authority=thread_receipt_authority,
+                anchor_store=_receipt_anchor_store,
             )
             child_id = str(child["id"])
             child_ids.append(child_id)
             child_by_role[role] = child_id
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, ElsieReceiptError) as exc:
         logger.debug("Could not initialize complete team thread tree: %s", exc)
-        error = (
-            "Agent team stopped because its durable thread tree could not "
-            f"be created: {exc}"
-        )
+        error = "Agent team stopped because its durable thread tree could not be created."
         show_error(error)
         return AgentRunResult(
             thread_id=parent_id,
@@ -2923,6 +2861,10 @@ def run_agent_team(
                     client=member_client,
                     block=block,
                     thread_id=child_by_role[role],
+                    receipt_key_store=_receipt_key_store,
+                    receipt_anchor_store=_receipt_anchor_store,
+                    thread_receipt_authority=thread_receipt_authority,
+                    protected=protected,
                 )
         except Exception as exc:
             block.status = "failed"
@@ -2952,11 +2894,24 @@ def run_agent_team(
                     status="cancelled",
                     status_reason="Team run cancelled.",
                 )
-                _finish_specialist_thread(child_by_role.get(role, ""), block)
+                _finish_specialist_thread(
+                    child_by_role.get(role, ""),
+                    block,
+                    protected=protected,
+                    receipt_authority=thread_receipt_authority,
+                    anchor_store=_receipt_anchor_store,
+                )
             if parent_id:
                 try:
-                    agent_threads.update_thread(parent_id, status="cancelled", error="Team run cancelled.")
-                except (OSError, ValueError, KeyError):
+                    agent_threads.update_thread(
+                        parent_id,
+                        status="cancelled",
+                        error="Team run cancelled.",
+                        protected=protected,
+                        receipt_authority=thread_receipt_authority,
+                        anchor_store=_receipt_anchor_store,
+                    )
+                except (OSError, ValueError, KeyError, ElsieReceiptError):
                     pass
             show_error("Agent team cancelled.")
             return AgentRunResult(
@@ -2973,8 +2928,15 @@ def run_agent_team(
         error = "All specialist threads failed; integration was not started."
         if parent_id:
             try:
-                agent_threads.update_thread(parent_id, status="failed", error=error)
-            except (OSError, ValueError, KeyError):
+                agent_threads.update_thread(
+                    parent_id,
+                    status="failed",
+                    error=error,
+                    protected=protected,
+                    receipt_authority=thread_receipt_authority,
+                    anchor_store=_receipt_anchor_store,
+                )
+            except (OSError, ValueError, KeyError, ElsieReceiptError):
                 pass
         show_error(error)
         return AgentRunResult(
@@ -2994,9 +2956,7 @@ def run_agent_team(
         )
     handoff = "\n\n".join(handoff_parts)
     integration_pipeline = (
-        route.suggested_pipeline
-        if route.task_type in {"coding", "research", "review"}
-        else "research"
+        route.suggested_pipeline if route.task_type in {"coding", "research", "review"} else "research"
     )
     show_info(
         f"Agent team {parent_id or '(unrecorded)'}: specialists joined; "
@@ -3010,6 +2970,8 @@ def run_agent_team(
         thread_id=parent_id or None,
         prior_context=handoff,
         thread_pipeline_label=f"team:{integration_pipeline}",
+        _receipt_key_store=_receipt_key_store,
+        _receipt_anchor_store=_receipt_anchor_store,
     )
     result.children = child_ids
     return result
@@ -3022,14 +2984,18 @@ def _thread_list_text(records: list[dict[str, Any]]) -> str:
     for record in records:
         parent = f" <- {record['parent_id']}" if record.get("parent_id") else ""
         lines.append(
-            f"- {record['id']}{parent} [{record['status']}] {record['role']} · "
-            f"{record['pipeline']} · {record['title']}"
+            f"- {record['id']}{parent} [{record['status']}] {record['role']} · {record['pipeline']} · {record['title']}"
         )
     return "\n".join(lines)
 
 
-def show_agent_threads() -> str:
-    records = agent_threads.list_threads(limit=20)
+def show_agent_threads(cfg: Config) -> str:
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    records = agent_threads.list_threads(
+        limit=20,
+        protected=echo_veil_authority_selected(cfg),
+    )
     if not records:
         message = "No agent threads recorded. Run /agent TASK or /agent team TASK."
         show_info(message)
@@ -3052,8 +3018,13 @@ def show_agent_threads() -> str:
     return _thread_list_text(records)
 
 
-def show_agent_thread(thread_ref: str) -> str:
-    record = agent_threads.resolve_thread(thread_ref)
+def show_agent_thread(thread_ref: str, cfg: Config) -> str:
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    record = agent_threads.resolve_thread(
+        thread_ref,
+        protected=echo_veil_authority_selected(cfg),
+    )
     table = Table(title=f"Agent Thread {record['id']}", box=box.SIMPLE, show_header=False, padding=(0, 1))
     table.add_column("Field", style="muted")
     table.add_column("Value", style="text", overflow="fold")
@@ -3116,6 +3087,10 @@ def _pipeline_for_thread(record: dict[str, Any]) -> str:
 
 def _journal_for_thread(
     record: dict[str, Any],
+    *,
+    protected_expected: bool,
+    receipt_key_store: Any | None = None,
+    receipt_anchor_store: Any | None = None,
 ) -> agent_run_journal.AgentRunJournal | None:
     link = record.get("run_contract")
     if not isinstance(link, dict) or not link:
@@ -3124,17 +3099,15 @@ def _journal_for_thread(
     digest = str(link.get("digest") or "").strip()
     contract_id = str(link.get("contract_id") or "").strip()
     if not run_nonce or not digest or not contract_id:
-        raise agent_run_journal.AgentRunJournalCorrupt(
-            "thread run-contract link is incomplete"
-        )
-    journal = agent_run_journal.AgentRunJournal.load(run_nonce)
-    if (
-        journal.contract.digest != digest
-        or journal.contract.contract_id != contract_id
-    ):
-        raise agent_run_journal.AgentRunJournalCorrupt(
-            "thread run-contract link does not match the private journal"
-        )
+        raise agent_run_journal.AgentRunJournalCorrupt("thread run-contract link is incomplete")
+    journal = agent_run_journal.AgentRunJournal.load(
+        run_nonce,
+        receipt_key_store=receipt_key_store,
+        receipt_anchor_store=receipt_anchor_store,
+        protected_expected=protected_expected,
+    )
+    if journal.contract.digest != digest or journal.contract.contract_id != contract_id:
+        raise agent_run_journal.AgentRunJournalCorrupt("thread run-contract link does not match the private journal")
     return journal
 
 
@@ -3144,10 +3117,23 @@ def _completed_agent_result_for_tool(
     task: str,
     cfg: Config,
 ) -> str:
+    tool_calls = tuple(
+        {
+            "name": str(receipt.get("name") or ""),
+            "status": str(receipt.get("status") or ""),
+            "explicit_memory_write": receipt.get("explicit_memory_write") is True,
+        }
+        for block in result.blocks
+        for receipt in (
+            block.get("tool_call_receipts", []) if isinstance(block.get("tool_call_receipts", []), list) else []
+        )
+        if isinstance(receipt, dict)
+    )
     memory_result = memory_runtime.capture_completed_user_turn(
         cfg,
         task,
         completed=result.status == "complete",
+        tool_calls=tool_calls,
         source="agent",
     )
     flush_perf_records()
@@ -3156,7 +3142,14 @@ def _completed_agent_result_for_tool(
     return result.for_tool()
 
 
-def execute_agent_command(arg: str, cfg: Config, client: Any) -> str:
+def execute_agent_command(
+    arg: str,
+    cfg: Config,
+    client: Any,
+    *,
+    _receipt_key_store: Any | None = None,
+    _receipt_anchor_store: Any | None = None,
+) -> str:
     """Execute `/agent` for either the TUI or a parent runtime model."""
 
     text = (arg or "").strip()
@@ -3175,10 +3168,10 @@ def execute_agent_command(arg: str, cfg: Config, client: Any) -> str:
         show_info(message)
         return message
     if lowered in {"threads", "list", "status"}:
-        return show_agent_threads()
+        return show_agent_threads(cfg)
     if lowered.startswith("show "):
         try:
-            return show_agent_thread(text.split(maxsplit=1)[1])
+            return show_agent_thread(text.split(maxsplit=1)[1], cfg)
         except KeyError as exc:
             message = str(exc).strip("'")
             show_error(message)
@@ -3188,7 +3181,12 @@ def execute_agent_command(arg: str, cfg: Config, client: Any) -> str:
         return f"Error: {AGENT_THREAD_USAGE}"
     if lowered.startswith("switch "):
         try:
-            record = agent_threads.resolve_thread(text.split(maxsplit=1)[1])
+            from .ada_memory_echo_veil import echo_veil_authority_selected
+
+            record = agent_threads.resolve_thread(
+                text.split(maxsplit=1)[1],
+                protected=echo_veil_authority_selected(cfg),
+            )
             restored = worktree_runtime.activate_thread_workspace(record, cfg)
         except (KeyError, worktree_runtime.WorktreeError) as exc:
             message = str(exc).strip("'")
@@ -3210,7 +3208,14 @@ def execute_agent_command(arg: str, cfg: Config, client: Any) -> str:
             show_error(error)
             return f"Error: {error}"
         return _completed_agent_result_for_tool(
-            run_agent_team(task, cfg, client, roles=roles or None),
+            run_agent_team(
+                task,
+                cfg,
+                client,
+                roles=roles or None,
+                _receipt_key_store=_receipt_key_store,
+                _receipt_anchor_store=_receipt_anchor_store,
+            ),
             task=task,
             cfg=cfg,
         )
@@ -3230,7 +3235,12 @@ def execute_agent_command(arg: str, cfg: Config, client: Any) -> str:
                 show_error(AGENT_THREAD_USAGE)
                 return f"Error: {AGENT_THREAD_USAGE}"
             try:
-                record = agent_threads.resolve_thread(parts[1])
+                from .ada_memory_echo_veil import echo_veil_authority_selected
+
+                record = agent_threads.resolve_thread(
+                    parts[1],
+                    protected=echo_veil_authority_selected(cfg),
+                )
             except KeyError as exc:
                 message = str(exc).strip("'")
                 show_error(message)
@@ -3239,17 +3249,19 @@ def execute_agent_command(arg: str, cfg: Config, client: Any) -> str:
             structured_state = None
             if action == "resume":
                 try:
-                    structured_journal = _journal_for_thread(record)
+                    structured_journal = _journal_for_thread(
+                        record,
+                        protected_expected=echo_veil_authority_selected(cfg),
+                        receipt_key_store=_receipt_key_store,
+                        receipt_anchor_store=_receipt_anchor_store,
+                    )
                     if structured_journal is not None:
                         structured_state = structured_journal.resume_state()
                         if structured_state.terminal:
                             structured_journal = None
                             structured_state = None
                 except agent_run_journal.AgentRunJournalError as exc:
-                    message = (
-                        "Could not verify the durable Agent checkpoint: "
-                        f"{exc}"
-                    )
+                    message = f"Could not verify the durable Agent checkpoint: {exc}"
                     show_error(message)
                     return f"Error: {message}"
             if structured_state is not None:
@@ -3257,16 +3269,11 @@ def execute_agent_command(arg: str, cfg: Config, client: Any) -> str:
                     message = (
                         "This Agent run has an uncertain mutation outcome. "
                         "Inspect the workspace and start a new run only after "
-                        "reconciling the recorded step IDs: "
-                        + ", ".join(
-                            structured_state.uncertain_mutation_steps
-                        )
+                        "reconciling the recorded step IDs: " + ", ".join(structured_state.uncertain_mutation_steps)
                     )
                     show_error(message)
                     return f"Error: {message}"
-                target = Path(
-                    structured_state.contract.workspace.root
-                ).expanduser().resolve(strict=False)
+                target = Path(structured_state.contract.workspace.root).expanduser().resolve(strict=False)
                 if not target.is_dir():
                     message = f"Thread workspace is missing: {target}"
                     show_error(message)
@@ -3286,13 +3293,9 @@ def execute_agent_command(arg: str, cfg: Config, client: Any) -> str:
                     return f"Error: {message}"
             if restored:
                 show_info(
-                    f"Restored thread {record['id']} workspace: "
-                    f"{record.get('workspace', {}).get('branch') or cfg.cwd}"
+                    f"Restored thread {record['id']} workspace: {record.get('workspace', {}).get('branch') or cfg.cwd}"
                 )
-            task = " ".join(parts[2:]).strip() or (
-                "Continue from the latest verified state and finish "
-                "remaining work."
-            )
+            task = " ".join(parts[2:]).strip() or ("Continue from the latest verified state and finish remaining work.")
             if action == "fork" and restored and not same_worktree:
                 source_state = worktree_runtime.capture_workspace(cfg.cwd)
                 if not source_state.get("available"):
@@ -3332,9 +3335,7 @@ def execute_agent_command(arg: str, cfg: Config, client: Any) -> str:
                     message = f"Could not isolate forked thread: {exc}"
                     show_error(message)
                     return f"Error: {message}"
-                show_info(
-                    f"Fork workspace {fork_workspace['id']} · {fork_workspace['branch']}"
-                )
+                show_info(f"Fork workspace {fork_workspace['id']} · {fork_workspace['branch']}")
             elif action == "fork" and not restored and not same_worktree:
                 show_info(
                     "Legacy thread has no recorded Git workspace; fork is using the current cwd. "
@@ -3346,10 +3347,7 @@ def execute_agent_command(arg: str, cfg: Config, client: Any) -> str:
             if structured_journal is not None:
                 run_task = str(record.get("task") or "").strip()
                 if not run_task:
-                    message = (
-                        "Durable Agent checkpoint has no original task to "
-                        "bind during resume."
-                    )
+                    message = "Durable Agent checkpoint has no original task to bind during resume."
                     show_error(message)
                     return f"Error: {message}"
                 resume_kwargs = {
@@ -3365,6 +3363,8 @@ def execute_agent_command(arg: str, cfg: Config, client: Any) -> str:
                 thread_id=record["id"] if action == "resume" else None,
                 parent_id=record["id"] if action == "fork" else "",
                 prior_context=handoff,
+                _receipt_key_store=_receipt_key_store,
+                _receipt_anchor_store=_receipt_anchor_store,
                 **resume_kwargs,
             )
             return _completed_agent_result_for_tool(
@@ -3377,7 +3377,14 @@ def execute_agent_command(arg: str, cfg: Config, client: Any) -> str:
         show_error(error)
         return f"Error: {error}"
     return _completed_agent_result_for_tool(
-        run_agent_pipeline(task, cfg, client, pipeline_name=pipeline_name),
+        run_agent_pipeline(
+            task,
+            cfg,
+            client,
+            pipeline_name=pipeline_name,
+            _receipt_key_store=_receipt_key_store,
+            _receipt_anchor_store=_receipt_anchor_store,
+        ),
         task=task,
         cfg=cfg,
     )

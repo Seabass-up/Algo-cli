@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import argparse
@@ -31,17 +30,19 @@ from .config import (
     CODE_RAG_CONSENT_VERSION,
     CONFIG_DIR,
     Config,
+    LegacyMigrationError,
     PROMPT_HISTORY_FILE,
     load_runtime_env,
     has_legacy_data,
     perform_legacy_migration,
     get_legacy_backup_dir,
+    load_legacy_migration_receipt,
     migrate_legacy_sidecar_files,
     NEW_ENV_PREFIX,
     OLD_ENV_PREFIX,
-    LEGACY_CONFIG_DIR,
     _atomic_write_text,
     code_rag_consent_granted,
+    echo_authority_selected_for_persistence,
 )
 from . import agent_blocks  # noqa: F401 — tests patch main.agent_blocks
 from . import agent_context
@@ -56,7 +57,7 @@ from . import nathan_provider_protocol
 from . import julia_memory_runtime as memory_runtime
 from . import reasoning_bridge
 from . import reconciliation
-from . import task_ledger
+from . import ada_task_ledger as task_ledger
 from . import skills
 from . import task_router  # noqa: F401 — tests use main.task_router
 from . import verify as _verify_module
@@ -202,6 +203,7 @@ from . import small_context
 def _last_chat_token_usage() -> int | None:
     return _last_chat_token_usage_for(RUNTIME_STATUS)
 
+
 ALL_TOOLS = tools_module.ALL_TOOLS
 TOOL_MAP = tools_module.TOOL_MAP
 logger = logging.getLogger(__name__)
@@ -228,7 +230,82 @@ def _make_engine(cls: type | None) -> Any:
         return None
 
 
-_intuition_engine = _make_engine(_IntuitionEngineCls)
+_INTUITION_UNINITIALIZED = object()
+_intuition_engine: Any = _INTUITION_UNINITIALIZED
+
+
+def _discard_plaintext_intuition_engine() -> None:
+    """Best-effort release of cached plaintext before dropping Intuition.
+
+    Python cannot guarantee zeroization of immutable objects.  Clearing the
+    engine's own mutable containers and instance dictionary nevertheless
+    releases the references Algo CLI controls before the authority changes.
+    """
+
+    global _intuition_engine
+    engine = _intuition_engine
+    if engine is _INTUITION_UNINITIALIZED:
+        return
+    try:
+        state = vars(engine)
+    except TypeError:
+        state = None
+    if isinstance(state, dict):
+        for value in tuple(state.values()):
+            if type(value) is dict:
+                value.clear()
+            elif type(value) is list:
+                value.clear()
+            elif type(value) is set:
+                value.clear()
+            elif type(value) is bytearray:
+                value.clear()
+        state.clear()
+    _intuition_engine = _INTUITION_UNINITIALIZED
+
+
+def _intuition_engine_for(cfg: Config) -> Any:
+    """Lazily load plaintext Intuition only after Echo policy is known."""
+
+    global _intuition_engine
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    if echo_veil_authority_selected(cfg):
+        # Drop any prior in-memory plaintext authority when a reload selects
+        # Echo.  A later explicit transition away from Echo may construct a
+        # fresh engine, but protected runs never retain or inspect it.
+        _discard_plaintext_intuition_engine()
+        return None
+    if _intuition_engine is _INTUITION_UNINITIALIZED:
+        _intuition_engine = _make_engine(_IntuitionEngineCls)
+    return _intuition_engine
+
+
+def _drop_plaintext_intuition_if_protected(cfg: Config) -> None:
+    """Discard a previously loaded Intuition engine on an Echo transition."""
+
+    global _intuition_engine
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    if echo_veil_authority_selected(cfg):
+        _discard_plaintext_intuition_engine()
+
+
+def _scaffold_plaintext_identity_if_allowed(cfg: Config) -> list[Path]:
+    """Create legacy identity files only when Echo does not own continuity."""
+
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    if echo_veil_authority_selected(cfg):
+        return []
+    return identity.scaffold_if_needed()
+
+
+def _changed_plaintext_identity_files(*, protected: bool) -> list[Path]:
+    """Avoid even local identity metadata access under protected authority."""
+
+    return [] if protected else identity.detect_changes()
+
 
 CLOUD_MODEL_CHOICES = [
     "glm-4.6:cloud",
@@ -285,7 +362,7 @@ PROMPT_HISTORY_COMPACT_EVERY = 32
 class SafeFileHistory(FileHistory):
     """Wrap prompt_toolkit FileHistory so invalid surrogate text never gets persisted."""
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, *, cfg: Config | None = None) -> None:
         history_path = Path(path)
         history_path.parent.mkdir(parents=True, exist_ok=True)
         if history_path.is_symlink():
@@ -294,11 +371,63 @@ class SafeFileHistory(FileHistory):
             os.chmod(history_path.parent, 0o700)
             if history_path.exists():
                 os.chmod(history_path, 0o600)
+        self._echo_authority = bool(cfg is not None and echo_authority_selected_for_persistence(cfg))
         self._stores_since_compaction = 0
         super().__init__(path)
+        if self._echo_authority and history_path.exists():
+            self._purge_protected_history()
+
+    @staticmethod
+    def _protected_history_command(value: str) -> bool:
+        text = str(value or "").strip()
+        if not text.startswith("/"):
+            return False
+        parts = text.split(maxsplit=2)
+        root = parts[0].casefold()
+        if root in {
+            "/remember",
+            "/memories",
+            "/forget",
+            "/lesson",
+            "/agent",
+            "/goal",
+        }:
+            return True
+        if root == "/intuition":
+            subcommand = parts[1].casefold() if len(parts) > 1 else ""
+            return subcommand == "add"
+        if root != "/memory":
+            return False
+        subcommand = parts[1].casefold() if len(parts) > 1 else ""
+        return subcommand not in {"help", "?"}
+
+    def _project_history_entry(self, value: str) -> str | None:
+        safe = sanitize_prompt_text(value)[:PROMPT_HISTORY_MAX_ENTRY_CHARS]
+        if self._echo_authority and self._protected_history_command(safe):
+            return None
+        return safe
+
+    def _purge_protected_history(self) -> None:
+        path = Path(str(self.filename))
+        try:
+            if path.stat().st_size > PROMPT_HISTORY_MAX_BYTES:
+                newest: list[str] = []
+            else:
+                newest = [item for item in self.load_history_strings() if not self._protected_history_command(item)][
+                    :PROMPT_HISTORY_MAX_ENTRIES
+                ]
+        except OSError:
+            newest = []
+        payload = "".join(self._history_block(item.replace("\r", "")) for item in reversed(newest))
+        _atomic_write_text(path, payload)
+        if os.name == "posix":
+            os.chmod(path, 0o600)
+        self._loaded_strings = list(newest)
 
     def store_string(self, string: str) -> None:
-        safe = sanitize_prompt_text(string)[:PROMPT_HISTORY_MAX_ENTRY_CHARS]
+        safe = self._project_history_entry(string)
+        if safe is None:
+            return
         super().store_string(safe)
         path = Path(str(self.filename))
         if os.name == "posix":
@@ -312,7 +441,10 @@ class SafeFileHistory(FileHistory):
             self._compact_private_history()
 
     def append_string(self, string: str) -> None:
-        super().append_string(sanitize_prompt_text(string))
+        safe = self._project_history_entry(string)
+        if safe is None:
+            return
+        super().append_string(safe)
 
     @staticmethod
     def _history_block(value: str) -> str:
@@ -345,10 +477,7 @@ class SafeFileHistory(FileHistory):
 
 def _chip(label: str, value: str, *, fg: str, bg: str, value_fg: str) -> str:
     del bg
-    return (
-        f'<style fg="{fg}"><b>{escape(label)}</b></style>'
-        f'<style fg="{value_fg}"> {escape(value)}</style>'
-    )
+    return f'<style fg="{fg}"><b>{escape(label)}</b></style><style fg="{value_fg}"> {escape(value)}</style>'
 
 
 _LAST_REFRESH_TIME: float = 0.0
@@ -366,9 +495,7 @@ def refresh_runtime_status(cfg: Config, client: Any | None = None, *, force: boo
         return
     _LAST_REFRESH_TIME = now
     model_info = _model_info_module.resolve_model_info(cfg, client)
-    used, total, remaining, runtime_cap, native_ctx = context_status(
-        cfg, client=client, model_info=model_info
-    )
+    used, total, remaining, runtime_cap, native_ctx = context_status(cfg, client=client, model_info=model_info)
     if total > 0:
         pct_left = int((remaining / total) * 100)
         context = f"{used}/{total} ({pct_left}% left)"
@@ -441,11 +568,7 @@ def _format_short_count(value: Any) -> str:
 
 
 def _connectivity_dot(cfg: Config, palette: dict[str, str]) -> str:
-    if (
-        _model_info_module.is_xai_model(cfg.model)
-        or _model_info_module.is_chatgpt_model(cfg.model)
-        or cfg.cloud
-    ):
+    if _model_info_module.is_xai_model(cfg.model) or _model_info_module.is_chatgpt_model(cfg.model) or cfg.cloud:
         color = palette["info"]
     else:
         cached = SERVER_READY_CACHE.get(cfg.host)
@@ -673,10 +796,7 @@ def handle_embed_command(arg: str, cfg: Config, client: Client) -> None:
 
     if cfg.cloud:
         start_supplemental_gateway(cfg)
-    available = [
-        name for name in local_model_names(cfg)
-        if name.lower() not in harness.DEPRECATED_EMBED_MODELS
-    ]
+    available = [name for name in local_model_names(cfg) if name.lower() not in harness.DEPRECATED_EMBED_MODELS]
     model = resolve_multimodal_model(
         cfg,
         explicit_model=ns.model,
@@ -691,13 +811,13 @@ def handle_embed_command(arg: str, cfg: Config, client: Client) -> None:
     try:
         response: Any = tools_module.gateway_embed(text, model, ns.truncate, ns.dimensions)
         if response is None:
-            response = Client(host=cfg.host).embed(model=model, input=text, truncate=ns.truncate, dimensions=ns.dimensions)
+            response = Client(host=cfg.host).embed(
+                model=model, input=text, truncate=ns.truncate, dimensions=ns.dimensions
+            )
     except Exception as exc:
         show_error(f"Error generating embeddings: {exc}")
         return
-    payload = tools_module.unpack_embed_response(
-        response, model, text, truncate=ns.truncate, dimensions=ns.dimensions
-    )
+    payload = tools_module.unpack_embed_response(response, model, text, truncate=ns.truncate, dimensions=ns.dimensions)
     console.print(json.dumps(payload, indent=2))
 
 
@@ -832,7 +952,9 @@ def run_xai_status() -> None:
     else:
         show_info("xAI API: not configured. Run `algo-cli config setup xai` to add an API key.")
     if status.get("legacy_oauth_detected"):
-        show_info("Legacy xAI OAuth settings were found but are not used for API calls; reconfigure with `algo-cli config setup xai`.")
+        show_info(
+            "Legacy xAI OAuth settings were found but are not used for API calls; reconfigure with `algo-cli config setup xai`."
+        )
 
 
 def run_config_command(arg: str = "") -> None:
@@ -853,7 +975,9 @@ def run_google_login(arg: str = "") -> bool:
     tokens_split = (arg or "").split()
     no_browser = "--no-browser" in tokens_split
     manual_only = "--manual" in tokens_split
-    redirect_port = google_workspace_auth.GOOGLE_REDIRECT_PORT if manual_only else google_workspace_auth.select_redirect_port()
+    redirect_port = (
+        google_workspace_auth.GOOGLE_REDIRECT_PORT if manual_only else google_workspace_auth.select_redirect_port()
+    )
     if redirect_port is None:
         show_error("No Google Workspace loopback port is free. Close anything bound to 56251-56270 or use --manual.")
         return False
@@ -883,9 +1007,7 @@ def run_google_login(arg: str = "") -> bool:
         except Exception as exc:
             show_info(f"Google loopback did not arrive automatically: {google_workspace_auth.safe_error_message(exc)}")
         if not callback:
-            show_info(
-                "Loopback redirect did not arrive. Copy the callback URL and paste it now."
-            )
+            show_info("Loopback redirect did not arrive. Copy the callback URL and paste it now.")
             try:
                 pasted = input("Google callback URL (or blank to cancel): ").strip()
             except (EOFError, KeyboardInterrupt):
@@ -959,7 +1081,9 @@ def run_google_callback(arg: str = "") -> None:
             show_error("Usage: /google-callback --file PATH")
             return
         try:
-            callback_text = Path(tokens_split[idx + 1]).expanduser().read_text(encoding="utf-8", errors="replace").strip()
+            callback_text = (
+                Path(tokens_split[idx + 1]).expanduser().read_text(encoding="utf-8", errors="replace").strip()
+            )
         except OSError as exc:
             show_error(f"Could not read callback file: {exc}")
             return
@@ -991,14 +1115,16 @@ def run_google_callback(arg: str = "") -> None:
 
 
 def run_google_logout() -> bool:
-    had_tokens = google_workspace_auth.load_tokens() is not None
-    if google_workspace_auth.clear_tokens():
-        show_info("Google Workspace tokens cleared.")
-        return True
-    if had_tokens:
-        show_error("Could not clear stored Google Workspace tokens.")
+    had_state = google_workspace_auth.stored_auth_state_present()
+    google_workspace_auth.clear_tokens()
+    google_workspace_auth.clear_pending_login()
+    if google_workspace_auth.stored_auth_state_present():
+        show_error("Could not clear all stored Google Workspace authentication state.")
         return False
-    show_info("No stored Google Workspace tokens to clear.")
+    if had_state:
+        show_info("Google Workspace authentication state cleared.")
+        return True
+    show_info("No stored Google Workspace authentication state to clear.")
     return True
 
 
@@ -1195,7 +1321,9 @@ def run_google(arg: str = "") -> None:
             html_file = _google_pop_option(args, "--html-file")
             text_file = _google_pop_option(args, "--text-file")
             if not to or not subject:
-                show_error("Usage: /google gmail-draft --to EMAIL --subject SUBJECT [--html-file PATH | --text-file PATH | BODY...] [--cc EMAIL] [--bcc EMAIL]")
+                show_error(
+                    "Usage: /google gmail-draft --to EMAIL --subject SUBJECT [--html-file PATH | --text-file PATH | BODY...] [--cc EMAIL] [--bcc EMAIL]"
+                )
                 return
             if html_file and text_file:
                 show_error("Use either --html-file or --text-file, not both.")
@@ -1208,7 +1336,9 @@ def run_google(arg: str = "") -> None:
                 text_body = Path(text_file).expanduser().read_text(encoding="utf-8", errors="replace")
             else:
                 text_body = " ".join(args).strip()
-            draft = client.gmail_create_draft(to=to, subject=subject, html_body=html_body, text_body=text_body, cc=cc, bcc=bcc)
+            draft = client.gmail_create_draft(
+                to=to, subject=subject, html_body=html_body, text_body=text_body, cc=cc, bcc=bcc
+            )
             message = draft.get("message") or {}
             show_info(f"Gmail draft created: draft_id={draft.get('id', '?')} message_id={message.get('id', '?')}")
         else:
@@ -1243,8 +1373,7 @@ def run_chatgpt_login(arg: str = "") -> bool:
     redirect_port = chatgpt_auth.CHATGPT_REDIRECT_PORT if manual_only else chatgpt_auth.select_redirect_port()
     if redirect_port is None:
         show_error(
-            "ChatGPT loopback redirect port 1455 is not available. Retry with "
-            "`algo-cli config setup chatgpt --manual`."
+            "ChatGPT loopback redirect port 1455 is not available. Retry with `algo-cli config setup chatgpt --manual`."
         )
         return False
     try:
@@ -1315,7 +1444,7 @@ def _show_chatgpt_models_after_login() -> None:
 
 
 def run_chatgpt_logout() -> bool:
-    had_tokens = chatgpt_auth.load_tokens() is not None
+    had_tokens = chatgpt_auth.stored_auth_state_present()
     if chatgpt_auth.clear_tokens():
         chatgpt_client.reset_model_request_scope_cache()
         show_info("ChatGPT tokens cleared.")
@@ -1370,14 +1499,18 @@ def run_model_check(arg: str = "", *, active_model: str = "") -> None:
         + ("yes (redacted)" if auth.get("api_key_configured") else "no — run `algo-cli config setup xai`")
     )
     in_fallback = bare in XAI_MODEL_CHOICES
-    lines.append(f"In XAI_MODEL_CHOICES fallback list: {'yes' if in_fallback else 'no (may still work if /v1/models lists it)'}")
+    lines.append(
+        f"In XAI_MODEL_CHOICES fallback list: {'yes' if in_fallback else 'no (may still work if /v1/models lists it)'}"
+    )
     if is_multi_agent_model(name):
         lines.append("API route: POST https://api.x.ai/v1/responses (multi-agent)")
         lines.append("Harness: prior tool calls/results folded into text; no client-side tools on this path.")
         lines.append("Timeout: up to 3600s per request in xai_client.chat().")
     else:
         lines.append("API route: POST https://api.x.ai/v1/chat/completions (OpenAI-compatible)")
-    lines.append("Billing: xAI API calls may consume paid API usage; the key is used only after you select a Grok model or call xAI tools.")
+    lines.append(
+        "Billing: xAI API calls may consume paid API usage; the key is used only after you select a Grok model or call xAI tools."
+    )
     lines.append("Sources: algo_cli/main.py (XAI_MODEL_CHOICES), xai_client.py, tests/test_xai_client.py")
     for line in lines:
         console.print(line)
@@ -1553,6 +1686,7 @@ def xai_model_names() -> tuple[list[str], bool]:
         return [], False
     try:
         from . import xai_client
+
         response = xai_client.get_models()
     except Exception as exc:
         logger.debug("xAI model discovery failed: %s", exc)
@@ -1573,7 +1707,9 @@ def xai_model_names() -> tuple[list[str], bool]:
     return sorted(set(names)), True
 
 
-def collect_dashboard_state(client: Client, cfg: Config) -> tuple[list[dict[str, str]], list[dict[str, str]], list[str]]:
+def collect_dashboard_state(
+    client: Client, cfg: Config
+) -> tuple[list[dict[str, str]], list[dict[str, str]], list[str]]:
     installed_models: list[dict[str, str]] = []
     running_models: list[dict[str, str]] = []
     event_lines: list[str] = []
@@ -1608,7 +1744,9 @@ def collect_dashboard_state(client: Client, cfg: Config) -> tuple[list[dict[str,
                     {
                         "name": str(get_attr(item, "name", None) or get_attr(item, "model", None) or "?"),
                         "size_vram": _format_bytes(get_attr(item, "size_vram", None) or get_attr(item, "size", None)),
-                        "context": str(get_attr(item, "context_length", None) or get_attr(details, "parameter_size", None) or "?"),
+                        "context": str(
+                            get_attr(item, "context_length", None) or get_attr(details, "parameter_size", None) or "?"
+                        ),
                     }
                 )
         except Exception as exc:
@@ -1706,6 +1844,14 @@ def reload_runtime() -> Config:
     global tools_module, ALL_TOOLS, TOOL_MAP
 
     cfg = Config.load()
+    from .elsie_echo_preflight import prepare_echo_auxiliary_state
+
+    # The pre-reload pass prevents stale plaintext-derived records from being
+    # consumed by any module teardown/reload hook.  Reloading harness replaces
+    # its in-memory index authority, so repeat the same fail-closed preparation
+    # against the newly loaded module before configuring context roots.
+    prepare_echo_auxiliary_state(cfg)
+    _drop_plaintext_intuition_if_protected(cfg)
     for module_name in (
         "algo_cli.tools",
         "algo_cli.harness",
@@ -1722,6 +1868,8 @@ def reload_runtime() -> Config:
     tools_module = sys.modules["algo_cli.tools"]
     ALL_TOOLS = tools_module.ALL_TOOLS
     TOOL_MAP = tools_module.TOOL_MAP
+    prepare_echo_auxiliary_state(cfg)
+    _drop_plaintext_intuition_if_protected(cfg)
     harness.configure_context_sources(
         external=cfg.external_harness_sources_enabled,
         index_compute_lab=cfg.index_compute_lab_auto_inject,
@@ -1795,17 +1943,13 @@ def handle_diff_command() -> None:
         return
     for block in reversed(blocks):
         if block.requires_change and (block.git_evidence or "").strip():
-            console.print(
-                f"[bold]Diff captured by [{block.role}] block[/] — status: [text]{block.status}[/]"
-            )
+            console.print(f"[bold]Diff captured by [{block.role}] block[/] — status: [text]{block.status}[/]")
             if block.status_reason:
                 console.print(f"[muted]reason:[/] {block.status_reason}")
             if block.verification_warning:
                 console.print(f"[warning]verification:[/] {block.verification_warning}")
             if block.successful_writes:
-                console.print(
-                    f"[muted]successful_writes:[/] {', '.join(block.successful_writes)}"
-                )
+                console.print(f"[muted]successful_writes:[/] {', '.join(block.successful_writes)}")
             console.print()
             console.print(block.git_evidence.strip())
             return
@@ -1821,13 +1965,11 @@ def handle_changes_command() -> None:
     if not blocks:
         show_info("No pipeline activity in this session. Run /agent first.")
         return
-    console.print(
-        f"[bold]Pipeline activity[/] — {len(blocks)} block{'s' if len(blocks) != 1 else ''}"
-    )
+    console.print(f"[bold]Pipeline activity[/] — {len(blocks)} block{'s' if len(blocks) != 1 else ''}")
     for block in blocks:
         duration_s = (block.duration_ms or 0) / 1000
-        status_style = "success" if block.status == "complete" else (
-            "warning" if block.status == "partial" else "error"
+        status_style = (
+            "success" if block.status == "complete" else ("warning" if block.status == "partial" else "error")
         )
         console.print(
             f"  [bold][{block.role}][/]  [{status_style}]{block.status}[/]"
@@ -1839,13 +1981,9 @@ def handle_changes_command() -> None:
         if block.verification_warning:
             console.print(f"      [warning]verification:[/] {block.verification_warning}")
         if block.successful_writes:
-            console.print(
-                f"      [muted]writes:[/] {', '.join(block.successful_writes)}"
-            )
+            console.print(f"      [muted]writes:[/] {', '.join(block.successful_writes)}")
         if block.mutation_actions:
-            console.print(
-                f"      [muted]mutation_actions:[/] {', '.join(block.mutation_actions)}"
-            )
+            console.print(f"      [muted]mutation_actions:[/] {', '.join(block.mutation_actions)}")
 
 
 def handle_context_command(arg: str, cfg: Config, client: Client) -> None:
@@ -1901,12 +2039,24 @@ HARNESS_TOP_K = 6
 # Tracks Gemini models we've already shown the workaround notice for this session.
 _GEMINI_WORKAROUND_NOTICE_SHOWN: set[str] = set()
 
-READ_ONLY_TOOLS = frozenset({
-    "read_file", "read_pdf", "render_pdf_pages", "list_directory",
-    "search_files", "git_status", "git_diff", "harness_search", "harness_read", "harness_stats",
-    "available_actions", "action_search",
-    "model_show",
-})
+READ_ONLY_TOOLS = frozenset(
+    {
+        "read_file",
+        "read_pdf",
+        "list_directory",
+        "search_files",
+        "git_status",
+        "git_diff",
+        "harness_search",
+        "harness_read",
+        "harness_stats",
+        "available_actions",
+        "action_search",
+        "echo_veil_list",
+        "echo_veil_doctor",
+        "model_show",
+    }
+)
 
 
 def _main_dispatch_dependencies() -> DispatchDependencies:
@@ -1996,9 +2146,7 @@ def make_local_embed_fn(cfg: Config, model: str) -> identity.EmbedFn:
             return []
         # Prefer the supplemental gateway for batch embedding.
         if tools_module.gateway_ready():
-            response = tools_module.gateway_embed_batch(
-                texts, model, True, dimensions
-            )
+            response = tools_module.gateway_embed_batch(texts, model, True, dimensions)
             if response is not None:
                 embeddings = get_attr(response, "embeddings", []) or []
                 if embeddings:
@@ -2125,12 +2273,17 @@ def capture_intuition_block(
     source: str,
     force: bool = False,
 ) -> str | None:
-    if _intuition_engine is None:
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    if echo_veil_authority_selected(cfg):
+        return None
+    intuition_engine = _intuition_engine_for(cfg)
+    if intuition_engine is None:
         return None
     if not force and not cfg.intuition_capture_enabled:
         return None
     try:
-        return _intuition_engine.capture_block(
+        return intuition_engine.capture_block(
             block_type,
             content,
             source=source,
@@ -2144,10 +2297,27 @@ def capture_intuition_block(
 
 def handle_icl_command(arg: str, cfg: Config) -> None:
     """index-compute-lab auto-inject and status (/icl)."""
-    from . import index_compute_lab
-
     parts = (arg or "status").strip().split(maxsplit=1)
     sub = (parts[0].lower() if parts else "status") or "status"
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    if echo_veil_authority_selected(cfg):
+        if sub == "status":
+            show_info("index-compute-lab is inactive while Echo Veil is the exclusive memory authority.")
+        elif sub == "off":
+            cfg.index_compute_lab_auto_inject = False
+            cfg.save()
+            harness.configure_context_sources(
+                external=cfg.external_harness_sources_enabled,
+                index_compute_lab=False,
+            )
+            show_info("index-compute-lab auto-inject: OFF")
+        else:
+            show_error("index-compute-lab access is disabled while Echo Veil is the exclusive memory authority.")
+        return
+
+    from . import index_compute_lab
+
     if sub in {"on", "off"}:
         cfg.index_compute_lab_auto_inject = sub == "on"
         cfg.save()
@@ -2177,7 +2347,19 @@ def handle_icl_command(arg: str, cfg: Config) -> None:
 def handle_intuition_command(arg: str, cfg: Config) -> None:
     sub, _, rest = (arg or "status").strip().partition(" ")
     sub = sub.lower() or "status"
-    if _intuition_engine is None:
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    if echo_veil_authority_selected(cfg):
+        if sub == "status":
+            show_info("Intuition is inactive while Echo Veil is the exclusive memory authority.")
+        else:
+            show_error(
+                "Intuition is disabled while Echo Veil is the exclusive memory authority; "
+                "plaintext Intuition data was not accessed or changed."
+            )
+        return
+    intuition_engine = _intuition_engine_for(cfg)
+    if intuition_engine is None:
         show_error("Intuition engine is unavailable.")
         return
 
@@ -2186,12 +2368,12 @@ def handle_intuition_command(arg: str, cfg: Config) -> None:
         cfg.intuition_recall_enabled = enabled
         cfg.intuition_capture_enabled = enabled
         cfg.save()
-        _intuition_engine.config["recall_enabled"] = enabled
+        intuition_engine.config["recall_enabled"] = enabled
         show_info(f"Intuition recall/capture: {'ON' if enabled else 'OFF'}")
         return
 
     if sub == "status":
-        status = _intuition_engine.status()
+        status = intuition_engine.status()
         console.print(f"[muted]Intuition index:[/] {status['index_path']}")
         console.print(f"  recall enabled : [text]{cfg.intuition_recall_enabled}[/]")
         console.print(f"  capture enabled: [text]{cfg.intuition_capture_enabled}[/]")
@@ -2205,7 +2387,7 @@ def handle_intuition_command(arg: str, cfg: Config) -> None:
         return
 
     if sub == "list":
-        blocks = _intuition_engine.list_blocks()
+        blocks = intuition_engine.list_blocks()
         if not blocks:
             show_info("No intuition blocks saved.")
             return
@@ -2236,7 +2418,7 @@ def handle_intuition_command(arg: str, cfg: Config) -> None:
         if not block_id:
             show_error("Usage: /intuition forget <id>")
             return
-        removed = _intuition_engine.forget_block(block_id)
+        removed = intuition_engine.forget_block(block_id)
         if removed is None:
             show_error(f"No intuition block found: {block_id}")
         else:
@@ -2248,17 +2430,17 @@ def handle_intuition_command(arg: str, cfg: Config) -> None:
         if embed_fn is None:
             show_error("Local Ollama is not reachable; cannot reindex intuition blocks.")
             return
-        result = _intuition_engine.reindex(embed_fn, embedding_model=harness.resolve_embed_model(cfg))
+        result = intuition_engine.reindex(
+            embed_fn,
+            embedding_model=harness.resolve_embed_model(cfg),
+        )
         if result.get("ok"):
             show_info(
                 f"Reindexed {result.get('updated', 0)}/{result.get('total', 0)} intuition blocks "
                 f"with {harness.resolve_embed_model(cfg)}."
             )
         else:
-            show_error(
-                f"Reindex incomplete: {result.get('updated', 0)} updated, "
-                f"{result.get('failed', 0)} failed."
-            )
+            show_error(f"Reindex incomplete: {result.get('updated', 0)} updated, {result.get('failed', 0)} failed.")
         return
 
     if sub == "add":
@@ -2397,19 +2579,44 @@ def handle_kernel_command(arg: str = "") -> None:
     show_error("Usage: /kernel list | /kernel show NAME | /kernel check [NAME]")
 
 
-def maybe_crystallize_skills(cfg: Config) -> None:
+def maybe_crystallize_skills(
+    cfg: Config,
+    *,
+    receipt_authority: Any | None = None,
+    anchor_store: Any | None = None,
+) -> None:
     """Every N substantive runs, review recent run history and crystallize new skills."""
     if not cfg.skill_crystallize_enabled:
         return
     if cfg.runs_since_crystallize < max(1, int(cfg.skill_crystallize_every)):
         return
-    llm_fn = make_local_maintenance_llm_fn(cfg)
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .grace_memory_receipts import ElsieReceiptError
+
+    protected = echo_veil_authority_selected(cfg)
+    llm_fn = make_local_maintenance_llm_fn(cfg) if not protected else (lambda _system, _user: "[]")
     if llm_fn is None:
         return
     cfg.runs_since_crystallize = 0
     cfg.save()
     show_info("Crystallizing skills from recent runs…")
-    result = skills.crystallize(llm_fn)
+    try:
+        result = skills.crystallize(
+            llm_fn,
+            protected=protected,
+            receipt_authority=receipt_authority,
+            anchor_store=anchor_store,
+        )
+    except (ElsieReceiptError, OSError, ValueError):
+        if not protected:
+            raise
+        cfg.skill_crystallize_enabled = False
+        try:
+            cfg.save()
+        except OSError:
+            pass
+        show_error("Protected skill history could not be authenticated; automatic crystallization was disabled.")
+        return
     quarantined = result.get("quarantined", [])
     if quarantined:
         show_info(
@@ -2470,12 +2677,14 @@ def ensure_harness_index(cfg: Config, local_names: list[str] | None = None, *, m
         f"{active_model} ({backend}) using {harness.EMBED_PRIORITY_POLICY}.{queue_note}"
     )
     last_pct = -10
+
     def _progress(done: int, target: int) -> None:
         nonlocal last_pct
         pct = int(done * 100 / max(1, target))
         if pct - last_pct >= 10:
             show_info(f"  harness embeddings: {done}/{target} ({pct}%)")
             last_pct = pct
+
     result = harness.embed_index_records(
         embed_fn,
         active_model,
@@ -2553,7 +2762,7 @@ def run_harness_benchmark_embed(cfg: Config, arg: str) -> None:
     overall_start = time.perf_counter()
     try:
         for start in range(0, count, batch_size):
-            chunk = texts[start:start + batch_size]
+            chunk = texts[start : start + batch_size]
             chunk_start = time.perf_counter()
             embed_fn(chunk)
             per_batch_ms.append(round((time.perf_counter() - chunk_start) * 1000, 2))
@@ -2568,16 +2777,9 @@ def run_harness_benchmark_embed(cfg: Config, arg: str) -> None:
     p95 = sorted_batches[p95_index] if sorted_batches else 0.0
     per_record_mean_ms = round(total_ms / max(1, count), 2)
 
-    show_info(
-        f"Benchmark complete: count={count} model={model} batch_size={batch_size}"
-    )
-    show_info(
-        f"  total={total_ms}ms  per-record-mean={per_record_mean_ms}ms  "
-        f"single-record-baseline={single_ms}ms"
-    )
-    show_info(
-        f"  batch latency p50={p50}ms  p95={p95}ms  batches={len(per_batch_ms)}"
-    )
+    show_info(f"Benchmark complete: count={count} model={model} batch_size={batch_size}")
+    show_info(f"  total={total_ms}ms  per-record-mean={per_record_mean_ms}ms  single-record-baseline={single_ms}ms")
+    show_info(f"  batch latency p50={p50}ms  p95={p95}ms  batches={len(per_batch_ms)}")
 
     log_embed_perf(
         {
@@ -2599,6 +2801,10 @@ def run_harness_benchmark_embed(cfg: Config, arg: str) -> None:
 
 def ensure_lessons_index(cfg: Config) -> bool:
     """Rebuild the lessons embedding index if stale. Returns True if index is ready."""
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    if echo_veil_authority_selected(cfg):
+        return False
     if not identity.LESSONS_PATH.exists():
         return False
     requested_model = harness.resolve_embed_model(cfg)
@@ -2623,10 +2829,36 @@ def ensure_lessons_index(cfg: Config) -> bool:
     return False
 
 
-
-
-def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
+def agent_loop(
+    client: Client,
+    cfg: Config,
+    user_message: str,
+    *,
+    _receipt_key_store: Any | None = None,
+    _receipt_anchor_store: Any | None = None,
+) -> None:
     agent_loop_started = time.perf_counter()
+    from .elsie_echo_preflight import (
+        EchoAuxiliaryPreflightError,
+        prepare_echo_auxiliary_state,
+    )
+
+    try:
+        prepare_echo_auxiliary_state(
+            cfg,
+            receipt_key_store=_receipt_key_store,
+            receipt_anchor_store=_receipt_anchor_store,
+        )
+    except EchoAuxiliaryPreflightError:
+        show_error("This turn stopped before model execution because Echo-protected auxiliary state is unavailable.")
+        return
+    from .ada_memory_echo_veil import (
+        echo_veil_authority_selected,
+        protection_required,
+    )
+
+    echo_memory_authority = echo_veil_authority_selected(cfg)
+    required_memory_protection = protection_required(cfg)
     if json_sink() is None:
         console.rule(style="border")
     persisted_user_message = user_message
@@ -2660,7 +2892,9 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
         full_schema_tokens=full_schema_tokens,
         reduction_pct=schema_reduction_pct,
     )
-    for changed_path in identity.detect_changes():
+    for changed_path in _changed_plaintext_identity_files(
+        protected=echo_memory_authority,
+    ):
         show_info(f"↻ identity updated · {changed_path.name}")
     # Single memoized embed function shared by both retrieval calls (same model).
     # Saves one Ollama round-trip when both modules embed the same user message.
@@ -2686,75 +2920,74 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
     if not cfg.cloud and not _model_info_module.is_xai_model(cfg.model):
         _turn_local_models = local_model_names(cfg)
 
-    retrieved_lessons: list[str] | None = None
-    if ensure_lessons_index(cfg):
+    retrieved_lessons: list[str] | None = [] if echo_memory_authority else None
+    if not echo_memory_authority and ensure_lessons_index(cfg):
         retrieved_lessons = identity.retrieve_lessons(
             context_query_message, _shared_embed, _embed_model, k=LESSONS_TOP_K
         )
     # Governed memory recall is independent from the optional Intuition layer.
     # Pinned facts are already injected by context_budget; only curated/history
     # records are retrieved here so the prompt does not contain duplicates.
-    try:
-        memory_catalog = memory_runtime.MemoryCatalog()
-        from .ada_memory_echo_veil import protection_required
-
-        if not protection_required(cfg):
+    if not echo_memory_authority:
+        try:
+            memory_catalog = memory_runtime.MemoryCatalog()
             memory_catalog.sync_legacy_facts(cfg.memories, authoritative=False)
-        memory_embed_fn = (
-            _shared_embed
-            if host_is_local(cfg.host) and ollama_server_ready(cfg.host)
-            else None
-        )
-        memory_hits = memory_catalog.search(
-            context_query_message,
-            embed_fn=memory_embed_fn,
-            embedding_model=_embed_model,
-            tiers={"curated", "history"},
-            scopes={memory_runtime.scope_for_workspace(cfg.cwd)},
-        )
-        memory_block = memory_runtime.format_prompt_hits(memory_hits)
-        if memory_block:
-            optional_context_blocks.append(
-                OptionalContextBlock("memory", "Relevant System Memory", memory_block)
+            memory_embed_fn = _shared_embed if host_is_local(cfg.host) and ollama_server_ready(cfg.host) else None
+            memory_hits = memory_catalog.search(
+                context_query_message,
+                embed_fn=memory_embed_fn,
+                embedding_model=_embed_model,
+                tiers={"curated", "history"},
+                scopes={memory_runtime.scope_for_workspace(cfg.cwd)},
             )
-    except memory_runtime.MemorySystemError as exc:
-        logger.debug("Governed memory recall failed: %s", exc)
+            memory_block = memory_runtime.format_prompt_hits(memory_hits)
+            if memory_block:
+                optional_context_blocks.append(
+                    OptionalContextBlock(
+                        "memory",
+                        "Relevant System Memory",
+                        memory_block,
+                    )
+                )
+        except memory_runtime.MemorySystemError as exc:
+            logger.debug("Governed memory recall failed: %s", exc)
     retrieved_context: list[dict[str, Any]] | None = None
     from .session_mode import normalize_mode
 
     _session_mode = normalize_mode(cfg.session_mode)
-    harness_tools_available = any(
-        getattr(tool, "__name__", "").startswith("harness_") for tool in active_tools
-    )
+    harness_tools_available = any(getattr(tool, "__name__", "").startswith("harness_") for tool in active_tools)
     if (
         _session_mode != "execute"
         and (json_sink() is None or harness_tools_available)
         and ensure_harness_index(cfg, _turn_local_models)
     ):
         retrieved_context = harness.hybrid_search(
-            context_query_message, _shared_embed, _embed_model, k=HARNESS_TOP_K
+            context_query_message,
+            _shared_embed,
+            _embed_model,
+            k=HARNESS_TOP_K,
+            excluded_kinds=({"memory"} if echo_memory_authority else None),
         )
         context_block = harness.format_retrieved_context(retrieved_context or [])
         if context_block:
-            optional_context_blocks.append(
-                OptionalContextBlock("harness", "Relevant Context", context_block)
-            )
-    if _intuition_engine is not None:
+            optional_context_blocks.append(OptionalContextBlock("harness", "Relevant Context", context_block))
+    intuition_engine = _intuition_engine_for(cfg)
+    if intuition_engine is not None and not echo_memory_authority:
         try:
-            recalled_blocks = _intuition_engine.recall(
+            recalled_blocks = intuition_engine.recall(
                 context_query_message,
                 enabled=cfg.intuition_recall_enabled,
                 embed_fn=_shared_embed if cfg.intuition_recall_enabled else None,
             )
             if recalled_blocks:
                 show_recalled_context(recalled_blocks)
-                injection = _intuition_engine.format_for_injection(recalled_blocks)
+                injection = intuition_engine.format_for_injection(recalled_blocks)
                 if injection:
                     optional_context_blocks.append(OptionalContextBlock("intuition", "", injection))
                     context_query_message = f"{context_query_message}\n\n{injection}"
         except Exception as exc:
             logger.debug("Intuition run failed: %s", exc)
-    if cfg.index_compute_lab_auto_inject:
+    if cfg.index_compute_lab_auto_inject and not echo_memory_authority:
         from . import index_compute_lab
 
         lab_block = index_compute_lab.context_for_query(context_query_message)
@@ -2763,7 +2996,8 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 OptionalContextBlock("index-compute-lab", "Knowledge Graph (index-compute-lab)", lab_block)
             )
     if (
-        getattr(cfg, "code_rag_enabled", False)
+        not echo_memory_authority
+        and getattr(cfg, "code_rag_enabled", False)
         and getattr(cfg, "code_rag_consent_version", 0) == CODE_RAG_CONSENT_VERSION
         and code_rag_consent_granted(cfg)
         and host_is_local(cfg.host)
@@ -2774,9 +3008,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
             code_hits = code_rag.retrieve(cfg.cwd, persisted_user_message, _shared_embed, _embed_model, k=4)
             code_block = code_rag.format_code_context(code_hits)
             if code_block:
-                optional_context_blocks.append(
-                    OptionalContextBlock("code", "Working-Directory Code", code_block)
-                )
+                optional_context_blocks.append(OptionalContextBlock("code", "Working-Directory Code", code_block))
         except Exception as exc:
             logger.debug("Code RAG failed: %s", exc)
     if getattr(cfg, "reasoning_chat_enabled", False):
@@ -2875,15 +3107,13 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
             )
         )
     try:
-        context_admission = (
-            agent_context.admit_agent_context_sources(
-                broker_sources,
-                allowed_scopes={
-                    "global",
-                    "workspace",
-                    "session",
-                },
-            )
+        context_admission = agent_context.admit_agent_context_sources(
+            broker_sources,
+            allowed_scopes={
+                "global",
+                "workspace",
+                "session",
+            },
         )
         optional_context_blocks = [
             OptionalContextBlock(
@@ -2893,37 +3123,22 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
             )
             for source in context_admission.sources
         ]
-        broker_omitted_contexts = list(
-            context_admission.omitted_sources
-        )
+        broker_omitted_contexts = list(context_admission.omitted_sources)
         cfg.context_state["context_broker"] = {
-            "schema_version": (
-                agent_context.AGENT_CONTEXT_SCHEMA_VERSION
-            ),
-            "admitted_sources": [
-                source.name
-                for source in context_admission.sources
-            ],
+            "schema_version": (agent_context.AGENT_CONTEXT_SCHEMA_VERSION),
+            "admitted_sources": [source.name for source in context_admission.sources],
             "omitted_sources": broker_omitted_contexts,
-            "source_metadata": [
-                item.payload()
-                for item in context_admission.source_metadata
-            ],
+            "source_metadata": [item.payload() for item in context_admission.source_metadata],
         }
     except agent_context.AgentContextError as exc:
         logger.debug(
             "Context broker rejected optional chat context: %s",
             exc,
         )
-        broker_omitted_contexts = [
-            block.name
-            for block in optional_context_blocks
-        ]
+        broker_omitted_contexts = [block.name for block in optional_context_blocks]
         optional_context_blocks = []
         cfg.context_state["context_broker"] = {
-            "schema_version": (
-                agent_context.AGENT_CONTEXT_SCHEMA_VERSION
-            ),
+            "schema_version": (agent_context.AGENT_CONTEXT_SCHEMA_VERSION),
             "admitted_sources": [],
             "omitted_sources": broker_omitted_contexts,
             "error": type(exc).__name__,
@@ -3007,10 +3222,13 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
             if block.name in included_contexts
         }
         identity_tokens = estimate_text_tokens(
-            identity.build_identity_block(retrieved_lessons=retrieved_lessons)
+            identity.build_identity_block(
+                retrieved_lessons=retrieved_lessons,
+                protected=echo_memory_authority,
+            )
         )
-        memory_tokens = estimate_text_tokens(
-            "\n".join(str(item) for item in cfg.memories)
+        memory_tokens = (
+            0 if echo_memory_authority else estimate_text_tokens("\n".join(str(item) for item in cfg.memories))
         )
         system_tokens = estimate_text_tokens(system_prompt)
         return {
@@ -3025,9 +3243,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
             "tool_results": tool_result_tokens,
             "verification_receipts": verification_tokens,
             "other_optional": sum(
-                value
-                for name, value in optional_tokens.items()
-                if name not in {"code", "harness", "index-compute-lab"}
+                value for name, value in optional_tokens.items() if name not in {"code", "harness", "index-compute-lab"}
             ),
             "artifact_referenced_chars": artifact_referenced_chars,
         }
@@ -3055,6 +3271,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                         optional_blocks=optional_context_blocks,
                         session_summary=cfg.session_summary,
                         messages=cfg.messages,
+                        echo_authority=echo_memory_authority,
                     )
                 except OSError as exc:
                     logger.debug("Small-context ledger write failed: %s", exc)
@@ -3091,9 +3308,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
     from .nathan_program_runtime import authorization_for_actions
 
     _program_auth_missing = object()
-    _previous_program_authorization = getattr(
-        cfg, "_algo_program_authorization", _program_auth_missing
-    )
+    _previous_program_authorization = getattr(cfg, "_algo_program_authorization", _program_auth_missing)
     setattr(
         cfg,
         "_algo_program_authorization",
@@ -3110,9 +3325,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
         # verified state. This prevents a correct run from being reported as
         # partial solely because its verifier consumed the last work turn.
         for _ in range(max_iterations + 1):
-            context_build_started = (
-                agent_loop_started if iterations_used == 0 else time.perf_counter()
-            )
+            context_build_started = agent_loop_started if iterations_used == 0 else time.perf_counter()
             finalization_turn = _ == max_iterations
             if finalization_turn:
                 completion = execution_guardrails.completion_decision()
@@ -3135,26 +3348,34 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                     }
                 )
             iterations_used += 1
-            chars_before_prune = sum(
-                len(str(message.get("content") or "")) for message in cfg.messages
-            )
+            chars_before_prune = sum(len(str(message.get("content") or "")) for message in cfg.messages)
             prune_stale_tool_messages(cfg)
-            chars_after_prune = sum(
-                len(str(message.get("content") or "")) for message in cfg.messages
-            )
+            chars_after_prune = sum(len(str(message.get("content") or "")) for message in cfg.messages)
             superseded_chars = max(0, chars_before_prune - chars_after_prune)
             last_user = persisted_user_message
             for msg in reversed(cfg.messages):
                 if msg.get("role") == "user":
                     last_user = str(msg.get("content") or persisted_user_message)
                     break
-            system_prompt = build_system_prompt(
-                cfg,
-                retrieved_lessons=retrieved_lessons,
-                active_model_info=_active_model_info,
-                user_message=last_user,
+            try:
+                system_prompt = build_system_prompt(
+                    cfg,
+                    retrieved_lessons=retrieved_lessons,
+                    active_model_info=_active_model_info,
+                    user_message=last_user,
+                )
+            except Exception as exc:
+                if not required_memory_protection:
+                    raise
+                logger.debug(
+                    "Required Echo Veil system context failed: %s",
+                    type(exc).__name__,
+                )
+                show_error("This turn stopped before model execution because required protected memory is unavailable.")
+                break
+            request_user_message, precomputed_used, included_contexts, omitted_contexts = _fit_request_user_message(
+                system_prompt
             )
-            request_user_message, precomputed_used, included_contexts, omitted_contexts = _fit_request_user_message(system_prompt)
             if maybe_compact_context(
                 client,
                 cfg,
@@ -3162,13 +3383,27 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 model_info=_active_model_info,
             ):
                 invalidate_context_usage_cache()
-                system_prompt = build_system_prompt(
-                    cfg,
-                    retrieved_lessons=retrieved_lessons,
-                    active_model_info=_active_model_info,
-                    user_message=last_user,
+                try:
+                    system_prompt = build_system_prompt(
+                        cfg,
+                        retrieved_lessons=retrieved_lessons,
+                        active_model_info=_active_model_info,
+                        user_message=last_user,
+                    )
+                except Exception as exc:
+                    if not required_memory_protection:
+                        raise
+                    logger.debug(
+                        "Required Echo Veil compacted context failed: %s",
+                        type(exc).__name__,
+                    )
+                    show_error(
+                        "This turn stopped before model execution because required protected memory is unavailable."
+                    )
+                    break
+                request_user_message, precomputed_used, included_contexts, omitted_contexts = _fit_request_user_message(
+                    system_prompt
                 )
-                request_user_message, precomputed_used, included_contexts, omitted_contexts = _fit_request_user_message(system_prompt)
             request_messages = [{"role": "system", "content": system_prompt}] + cfg.messages
             if request_user_message != persisted_user_message:
                 for i in range(len(request_messages) - 1, -1, -1):
@@ -3266,7 +3501,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                         record_usage(
                             prompt_tokens=get_attr(chunk, "prompt_eval_count", None),
                             completion_tokens=get_attr(chunk, "eval_count", None),
-                    )
+                        )
                     message = get_attr(chunk, "message", {})
                     thinking = get_attr(message, "thinking", "")
                     content = get_attr(message, "content", "")
@@ -3290,10 +3525,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                         tool_calls.extend(calls)
                     # Forward-compat: capture any message-level thought_signature
                     # for round-tripping when the SDK starts exposing it.
-                    sig = (
-                        get_attr(message, "thought_signature", None)
-                        or get_attr(message, "thoughtSignature", None)
-                    )
+                    sig = get_attr(message, "thought_signature", None) or get_attr(message, "thoughtSignature", None)
                     if sig:
                         message_signature = sig
             except Exception as exc:
@@ -3308,6 +3540,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
             event_sink = json_sink()
             emit_round = getattr(event_sink, "model_round", None)
             if callable(emit_round):
+
                 def _duration_ms(name: str) -> float | None:
                     try:
                         value = provider_metrics.get(name)
@@ -3320,13 +3553,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                     system_prompt,
                     included_contexts,
                 )
-                round_phase = (
-                    "finalization"
-                    if finalization_turn
-                    else "execution"
-                    if tool_calls
-                    else "response"
-                )
+                round_phase = "finalization" if finalization_turn else "execution" if tool_calls else "response"
                 round_receipt = {
                     "round": iterations_used,
                     "phase": round_phase,
@@ -3343,9 +3570,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                     "message_count": len(request_messages),
                     "tool_schema_count": 0 if finalization_turn else len(active_tools),
                     "superseded_chars": superseded_chars,
-                    "artifact_referenced_chars": context_sources.pop(
-                        "artifact_referenced_chars"
-                    ),
+                    "artifact_referenced_chars": context_sources.pop("artifact_referenced_chars"),
                     "context_sources": context_sources,
                 }
                 emit_round(**round_receipt)
@@ -3393,9 +3618,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                 break
 
             if finalization_turn and tool_calls:
-                loop_state.cancel(
-                    "finalization turn attempted a tool call"
-                )
+                loop_state.cancel("finalization turn attempted a tool call")
                 final_content = ""
                 show_error("Finalization turn attempted an additional tool call; completion withheld.")
                 break
@@ -3475,9 +3698,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                     name,
                     dispatched.result,
                     outcome_status=dispatched.outcome.status,
-                    duration_ms=(
-                        dispatched.duration_ms if dispatched.outcome.invoked else None
-                    ),
+                    duration_ms=(dispatched.duration_ms if dispatched.outcome.invoked else None),
                     call_id=tool_call_id,
                 )
                 cfg.messages.append(dispatched.message)
@@ -3487,6 +3708,7 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
                         "name": name,
                         "status": dispatched.status,
                         "args": _run_args_preview(args, name=name),
+                        "explicit_memory_write": dispatched.outcome.explicit_memory_write,
                     }
                 )
                 tool_calls_since_reflection += 1
@@ -3610,16 +3832,34 @@ def agent_loop(client: Client, cfg: Config, user_message: str) -> None:
     # Post-run: record the completed run, then periodically crystallize skills.
     if cfg.skill_crystallize_enabled and run_tool_calls and turn_completed_normally:
         run_duration_ms = round((time.perf_counter() - run_started) * 1000, 2)
-        skills.record_run(
-            goal=user_message,
-            tool_calls=run_tool_calls,
-            outcome=final_content,
-            iterations=iterations_used,
-            duration_ms=run_duration_ms,
-        )
+        from .grace_memory_receipts import ElsieReceiptAuthority, ElsieReceiptError
+
+        receipt_authority = None
+        try:
+            if echo_memory_authority and _receipt_key_store is not None:
+                receipt_authority = ElsieReceiptAuthority.from_key_store(store=_receipt_key_store)
+            skills.record_run(
+                goal=user_message,
+                tool_calls=run_tool_calls,
+                outcome=final_content,
+                iterations=iterations_used,
+                duration_ms=run_duration_ms,
+                protected=echo_memory_authority,
+                receipt_authority=receipt_authority,
+                anchor_store=_receipt_anchor_store,
+            )
+        except (ElsieReceiptError, OSError, ValueError):
+            if not echo_memory_authority:
+                raise
+            show_error("Protected skill history could not be authenticated; run history was not saved.")
+            return
         cfg.runs_since_crystallize += 1
         cfg.save()
-        maybe_crystallize_skills(cfg)
+        maybe_crystallize_skills(
+            cfg,
+            receipt_authority=receipt_authority,
+            anchor_store=_receipt_anchor_store,
+        )
 
 
 GOAL_COMPLETE_MARKER = "GOAL COMPLETE"
@@ -3669,6 +3909,19 @@ def parse_goal_args(arg: str) -> tuple[str, int]:
 
 def _drive_goal(client: Client, cfg: Config, record: task_ledger.GoalRecord, *, first_prompt: str) -> None:
     """Run rounds for an (already-persisted) goal record until done/blocked/cap."""
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .grace_memory_receipts import ElsieReceiptError
+
+    protected = echo_veil_authority_selected(cfg)
+
+    def persist_goal() -> bool:
+        try:
+            task_ledger.save_goal(record, protected=protected)
+        except (ElsieReceiptError, OSError, ValueError):
+            show_error("Protected goal state could not be authenticated or saved; goal mode stopped.")
+            return False
+        return True
+
     prompt = first_prompt
     remaining = record.max_rounds - record.rounds_done
     if remaining <= 0:
@@ -3687,52 +3940,92 @@ def _drive_goal(client: Client, cfg: Config, record: task_ledger.GoalRecord, *, 
             record.status = task_ledger.STATUS_STOPPED
             record.reason = "interrupted by user"
             record.add_round("(interrupted)")
-            task_ledger.save_goal(record)
+            persist_goal()
             show_info(f"Goal stopped after round {round_number}. Resume with /goal resume.")
             return
         final = _last_assistant_content(cfg)
         record.add_round(final[:500])
         if GOAL_COMPLETE_MARKER in final:
             record.status = task_ledger.STATUS_COMPLETE
-            task_ledger.save_goal(record)
+            if not persist_goal():
+                return
             show_info(f"Goal marked complete after {round_number} round(s).")
             return
         blocked_at = final.find(GOAL_BLOCKED_MARKER)
         if blocked_at != -1:
-            reason_lines = final[blocked_at + len(GOAL_BLOCKED_MARKER):].strip().splitlines()
+            reason_lines = final[blocked_at + len(GOAL_BLOCKED_MARKER) :].strip().splitlines()
             reason = reason_lines[0] if reason_lines else "(no reason given)"
             record.status = task_ledger.STATUS_BLOCKED
             record.reason = reason
-            task_ledger.save_goal(record)
+            if not persist_goal():
+                return
             show_error(f"Goal blocked: {reason}")
             return
         record.status = task_ledger.STATUS_RUNNING
-        task_ledger.save_goal(record)
+        if not persist_goal():
+            return
         prompt = _GOAL_CONTINUE_PROMPT
     record.status = task_ledger.STATUS_STOPPED
     record.reason = "round cap reached"
-    task_ledger.save_goal(record)
+    if not persist_goal():
+        return
     show_error(
         f"Goal not marked complete after {record.max_rounds} rounds. "
         "Continue with /goal resume [--rounds N], or /goal clear to drop it."
     )
 
 
-def show_goal_status() -> None:
-    record = task_ledger.load_goal()
+def _prepare_goal_command_state(cfg: Config) -> bool:
+    """Run the Echo auxiliary gate before any direct goal-store operation."""
+
+    from .elsie_echo_preflight import (
+        EchoAuxiliaryPreflightError,
+        prepare_echo_auxiliary_state,
+    )
+
+    try:
+        prepare_echo_auxiliary_state(cfg)
+    except EchoAuxiliaryPreflightError:
+        show_error("Echo-protected auxiliary state is unavailable; goal command was refused.")
+        return False
+    return True
+
+
+def show_goal_status(cfg: Config, *, _preflighted: bool = False) -> None:
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    if not _preflighted and not _prepare_goal_command_state(cfg):
+        return
+
+    protected = echo_veil_authority_selected(cfg)
+    from .grace_memory_receipts import ElsieReceiptError
+
+    try:
+        record = task_ledger.load_goal(protected=protected)
+    except (ElsieReceiptError, OSError, ValueError):
+        show_error("Protected goal state could not be authenticated; status was withheld.")
+        return
     if record is None:
         show_info("No active goal. Start one with /goal <task>.")
         return
-    console.print(f"[bold primary]Goal:[/] {record.goal}")
-    console.print(f"  status : [text]{record.status}[/]")
-    console.print(f"  rounds : [text]{record.rounds_done}/{record.max_rounds}[/]")
-    if record.cwd:
-        console.print(f"  cwd    : [text]{record.cwd}[/]")
-    if record.reason:
-        console.print(f"  reason : [text]{record.reason}[/]")
-    if record.history:
-        last = record.history[-1]
-        console.print(f"  last   : [muted]{str(last.get('summary', ''))[:160]}[/]")
+    try:
+        projected = task_ledger.goal_status_projection(record, protected=protected)
+    except ElsieReceiptError:
+        show_error("Protected goal state could not be authenticated; status was withheld.")
+        return
+    console.print(f"[bold primary]Goal:[/] {projected['goal']}")
+    console.print(f"  status : [text]{projected['status']}[/]")
+    console.print(f"  rounds : [text]{projected['rounds_done']}/{projected['max_rounds']}[/]")
+    if projected["cwd"]:
+        console.print(f"  cwd    : [text]{projected['cwd']}[/]")
+    if projected["reason"]:
+        console.print(f"  reason : [text]{projected['reason']}[/]")
+    elif projected["reason_receipt"]:
+        console.print(f"  reason : [muted]{projected['reason_receipt']}[/]")
+    if projected["last_summary"]:
+        console.print(f"  last   : [muted]{projected['last_summary']}[/]")
+    elif projected["last_summary_receipt"]:
+        console.print(f"  last   : [muted]{projected['last_summary_receipt']}[/]")
     if record.is_open:
         console.print("[muted]Resume with /goal resume; drop with /goal clear.[/]")
 
@@ -3742,24 +4035,39 @@ def run_goal_loop(client: Client, cfg: Config, arg: str) -> None:
 
     Subcommands: /goal status, /goal resume [--rounds N], /goal clear.
     """
+    if not _prepare_goal_command_state(cfg):
+        return
     stripped = (arg or "").strip()
     sub = stripped.split(maxsplit=1)[0].lower() if stripped else ""
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .grace_memory_receipts import ElsieReceiptError
+
+    protected = echo_veil_authority_selected(cfg)
 
     if sub == "status":
-        show_goal_status()
+        show_goal_status(cfg, _preflighted=True)
         return
     if sub == "clear":
-        show_info("Cleared active goal." if task_ledger.clear_goal() else "No active goal to clear.")
+        try:
+            cleared = task_ledger.clear_goal(protected=protected)
+        except (ElsieReceiptError, OSError, ValueError):
+            show_error("Protected goal state could not be authenticated; clear was refused.")
+            return
+        show_info("Cleared active goal." if cleared else "No active goal to clear.")
         return
     if sub == "resume":
-        record = task_ledger.load_goal()
+        try:
+            record = task_ledger.load_goal(protected=protected)
+        except (ElsieReceiptError, OSError, ValueError):
+            show_error("Protected goal state could not be authenticated; resume was refused.")
+            return
         if record is None:
             show_error("No saved goal to resume. Start one with /goal <task>.")
             return
         if not record.is_open:
             show_error(f"Saved goal is '{record.status}', not resumable. Use /goal <task> to start fresh.")
             return
-        _, extra_rounds = parse_goal_args(stripped[len(sub):])
+        _, extra_rounds = parse_goal_args(stripped[len(sub) :])
         if "--rounds" in stripped:
             record.max_rounds = record.rounds_done + extra_rounds
         if record.cwd:
@@ -3770,11 +4078,17 @@ def run_goal_loop(client: Client, cfg: Config, arg: str) -> None:
 
     goal, max_rounds = parse_goal_args(stripped)
     if not goal:
-        show_error("Usage: /goal [--rounds N] <task>  |  /goal resume|status|clear  "
-                   f"(default rounds: {GOAL_DEFAULT_MAX_ROUNDS}; Ctrl+C stops)")
+        show_error(
+            "Usage: /goal [--rounds N] <task>  |  /goal resume|status|clear  "
+            f"(default rounds: {GOAL_DEFAULT_MAX_ROUNDS}; Ctrl+C stops)"
+        )
         return
     record = task_ledger.GoalRecord(goal=goal, max_rounds=max_rounds, cwd=cfg.cwd)
-    task_ledger.save_goal(record)
+    try:
+        task_ledger.save_goal(record, protected=protected)
+    except (ElsieReceiptError, OSError, ValueError):
+        show_error("Protected goal state could not be authenticated; goal mode was not started.")
+        return
     _drive_goal(client, cfg, record, first_prompt=f"GOAL: {goal}{_GOAL_INSTRUCTIONS}")
 
 
@@ -3807,19 +4121,41 @@ def print_harness_results(
         active_model = harness.DEFAULT_EMBED_MODEL
         matching, _total = harness.embedded_count(active_model)
     if cfg is not None and embed_fn is not None and matching > 0:
-        results = harness.hybrid_search(query, embed_fn, active_model, k=12, harness=harness_name, kind=kind)
+        from .ada_memory_echo_veil import echo_veil_authority_selected
+
+        echo_memory_authority = echo_veil_authority_selected(cfg)
+        results = harness.hybrid_search(
+            query,
+            embed_fn,
+            active_model,
+            k=12,
+            harness=harness_name,
+            kind=kind,
+            excluded_kinds=({"memory"} if echo_memory_authority else None),
+        )
         if results:
             lines = [f"[dim]hybrid (RRF) results for:[/] {query}", ""]
             for rec in results:
                 harness_kind = " · ".join(filter(None, [rec.get("harness"), rec.get("kind")]))
                 score = rec.get("score", 0.0)
-                lines.append(f"  [primary]{rec.get('id', '')}[/]  {rec.get('title', '')}  [muted]{harness_kind}  rrf={score:.4f}[/]")
+                lines.append(
+                    f"  [primary]{rec.get('id', '')}[/]  {rec.get('title', '')}  [muted]{harness_kind}  rrf={score:.4f}[/]"
+                )
                 if rec.get("snippet"):
                     lines.append(f"    [muted]{rec['snippet'][:160]}[/]")
             console.print("\n".join(lines))
             return
     from .tools import harness_search
-    console.print(harness_search(query=query, harness_name=harness_name, kind=kind, limit=12))
+
+    console.print(
+        harness_search(
+            query=query,
+            harness_name=harness_name,
+            kind=kind,
+            limit=12,
+            cfg=cfg,
+        )
+    )
 
 
 def build_rust_indexer() -> None:
@@ -3868,9 +4204,7 @@ def build_rust_indexer() -> None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Agent runtime for tools, durable context, and verified work."
-    )
+    parser = argparse.ArgumentParser(description="Agent runtime for tools, durable context, and verified work.")
     parser.add_argument("--model", help="Model to use for this session.")
     parser.add_argument("--host", help="Local Ollama host.")
     parser.add_argument("--cloud", action="store_true", help="Use Ollama Cloud client defaults.")
@@ -3903,7 +4237,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="auto",
         help="In --oneshot, use adaptive deliberation (default), force model thinking on, or force it off.",
     )
-    parser.add_argument("prompt", nargs="*", help="Prompt for --oneshot mode. If omitted, read from stdin. Use `update` for the latest release, `doctor` for readiness diagnostics, `plugin list` for plugins, `credential list` for credential helpers, or `url-scheme <url>` for URL scheme parsing.")
+    parser.add_argument(
+        "prompt",
+        nargs="*",
+        help="Prompt for --oneshot mode. If omitted, read from stdin. Use `update` for the latest release, `doctor` for readiness diagnostics, `plugin list` for plugins, `credential list` for credential helpers, or `url-scheme <url>` for URL scheme parsing.",
+    )
     ns = parser.parse_args(argv)
     # Normalize nargs="*" list into a single string for downstream code
     if ns.prompt:
@@ -3936,6 +4274,7 @@ def _run_oneshot_entry(args: argparse.Namespace) -> int:
     if args.thinking != "auto":
         overrides["show_thinking"] = args.thinking == "on"
     from . import oliver_oneshot as _oneshot_module
+
     return _oneshot_module.run_oneshot(
         prompt=prompt,
         approval_mode=args.approval_mode,
@@ -3965,6 +4304,7 @@ def _force_utf8_console() -> None:
     try:
         if sys.platform == "win32":
             import ctypes
+
             kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
             # CP_UTF8 = 65001
             kernel32.SetConsoleOutputCP(65001)
@@ -4002,16 +4342,17 @@ def main() -> None:
 
     # Migration must precede every command surface. In particular, a first
     # invocation of ``algo-cli config`` must see legacy credentials/settings.
-    already_migrated = (CONFIG_DIR / ".migrated_from_legacy").exists()
     migrated = False
-    if has_legacy_data() and not already_migrated:
-        migrated = perform_legacy_migration()
+    if has_legacy_data():
+        try:
+            migrated = perform_legacy_migration()
+        except LegacyMigrationError:
+            show_error("Legacy state could not be migrated without weakening protected memory; startup stopped.")
+            raise SystemExit(1) from None
 
     sidecar = migrate_legacy_sidecar_files()
     if sidecar:
-        show_info(
-            f"Imported legacy config file(s) into {CONFIG_DIR}: {', '.join(sidecar)}"
-        )
+        show_info(f"Imported legacy config file(s) into {CONFIG_DIR}: {', '.join(sidecar)}")
 
     load_runtime_env(override=True)
     raw_argv = sys.argv[1:]
@@ -4022,6 +4363,7 @@ def main() -> None:
     args = parse_args()
     if args.version:
         from .version_manifest import build_manifest, format_version_string
+
         console.print(format_version_string(build_manifest()))
         return
     if (args.prompt or "").strip().casefold() == "update" and not args.oneshot:
@@ -4030,6 +4372,17 @@ def main() -> None:
         _exit = _run_oneshot_entry(args)
         sys.exit(_exit)
     cfg = Config.load()
+    from .elsie_echo_preflight import (
+        EchoAuxiliaryPreflightError,
+        prepare_echo_auxiliary_state,
+    )
+
+    try:
+        prepare_echo_auxiliary_state(cfg)
+    except EchoAuxiliaryPreflightError:
+        show_error("Echo-protected auxiliary state could not be prepared safely; startup stopped.")
+        raise SystemExit(1) from None
+    _drop_plaintext_intuition_if_protected(cfg)
     harness.configure_context_sources(
         external=cfg.external_harness_sources_enabled,
         index_compute_lab=cfg.index_compute_lab_auto_inject,
@@ -4052,23 +4405,29 @@ def main() -> None:
             raise SystemExit(1)
         return
 
-    created = identity.scaffold_if_needed()
+    created = _scaffold_plaintext_identity_if_allowed(cfg)
     if created:
-        show_info(f"Scaffolded identity in {identity.IDENTITY_DIR} ({len(created)} files). Edit USER.md to teach the CLI about yourself.")
-    skills.ensure_dirs()
-    from . import index_compute_lab
-
-    if index_compute_lab.ensure_harness_roots_file():
         show_info(
-            "Removed legacy index-compute-lab entry from harness_roots.json "
-            f"(lab is indexed dynamically from {index_compute_lab.resolve_lab_root()}). "
-            "Run /harness refresh to drop duplicate atom records."
+            f"Scaffolded identity in {identity.IDENTITY_DIR} ({len(created)} files). Edit USER.md to teach the CLI about yourself."
         )
+    skills.ensure_dirs()
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    if not echo_veil_authority_selected(cfg):
+        from . import index_compute_lab
+
+        if index_compute_lab.ensure_harness_roots_file():
+            show_info(
+                "Removed legacy index-compute-lab entry from harness_roots.json "
+                f"(lab is indexed dynamically from {index_compute_lab.resolve_lab_root()}). "
+                "Run /harness refresh to drop duplicate atom records."
+            )
 
     # --- Subcommand: plugin list ---
     _prompt_lower = (args.prompt or "").strip().lower()
     if _prompt_lower.startswith("plugin ") and not args.oneshot:
         from .william_plugins import discover_plugins, plugin_status
+
         sub = _prompt_lower.split(maxsplit=1)[1].strip() if " " in _prompt_lower else ""
         if sub in ("", "list"):
             discovered = discover_plugins()
@@ -4115,6 +4474,7 @@ def main() -> None:
     # --- Subcommand: credential list ---
     if _prompt_lower.startswith("credential ") and not args.oneshot:
         from .credential_helpers import list_helpers, get_helper
+
         sub = _prompt_lower.split(maxsplit=1)[1].strip() if " " in _prompt_lower else ""
         if sub in ("", "list"):
             helpers = sorted(list_helpers())
@@ -4137,6 +4497,7 @@ def main() -> None:
                 return
             _command, _verb, helper, key = parts
             from .credential_helpers import get_credential
+
             val = get_credential(helper, key)
             if val is None:
                 console.print(f"[dim]No credential found for '{key}' in helper '{helper}'[/dim]")
@@ -4150,6 +4511,7 @@ def main() -> None:
     # --- Subcommand: url-scheme <url> ---
     if _prompt_lower.startswith("url-scheme ") and not args.oneshot:
         from .url_scheme import handle_deep_link, format_help
+
         url = args.prompt.strip().split(maxsplit=1)[1] if " " in args.prompt.strip() else ""
         if not url or url == "help":
             console.print(format_help())
@@ -4159,9 +4521,9 @@ def main() -> None:
             console.print(f"[red]Invalid URL: {result.get('error', 'unknown error')}[/red]")
             return
         console.print(f"[green]Action:[/green] {result.get('action', '?')}")
-        if result.get('target'):
+        if result.get("target"):
             console.print(f"[green]Target:[/green] {result['target']}")
-        if result.get('query'):
+        if result.get("query"):
             console.print(f"[green]Query:[/green] {result['query']}")
         return
     try:
@@ -4173,12 +4535,23 @@ def main() -> None:
 
     # Report migration after banner/theme initialization so the message is visible.
     if migrated:
-        show_info(
-            f"Data migrated from legacy location {LEGACY_CONFIG_DIR} → new default {CONFIG_DIR}."
-        )
-        show_info(
-            f"Full backup preserved at {get_legacy_backup_dir()} (originals untouched)."
-        )
+        migration_receipt = load_legacy_migration_receipt()
+        show_info("Legacy configuration was migrated to the new Algo CLI config directory.")
+        if migration_receipt.get("echo_authority_selected") is True:
+            blocked = sum(
+                int(value)
+                for value in migration_receipt.get(
+                    "blocked_artifact_counts",
+                    {},
+                ).values()
+            )
+            show_info(
+                "Echo authority was selected, so only safe settings were projected. "
+                f"{blocked} legacy artifact(s) remain in the original directory for "
+                "explicit review; no plaintext backup shadow was created."
+            )
+        elif migration_receipt.get("backup_created") is True:
+            show_info(f"A bounded legacy backup was preserved at {get_legacy_backup_dir()} (originals untouched).")
         show_info(
             "You are now using the new default config directory. "
             "Legacy OLLAMA_CLI_* environment variables and the `ollama-cli` command "
@@ -4204,10 +4577,11 @@ def main() -> None:
 
     try:
         from prompt_toolkit import PromptSession
+
         slash_completer = SlashCommandCompleter(SLASH_COMMANDS)
         palette = theme_colors(cfg.theme)
         session: PromptSession[str] | None = PromptSession(
-            history=SafeFileHistory(str(PROMPT_HISTORY_FILE)),
+            history=SafeFileHistory(str(PROMPT_HISTORY_FILE), cfg=cfg),
             completer=slash_completer,
             complete_while_typing=True,
             complete_style=CompleteStyle.MULTI_COLUMN,
@@ -4223,9 +4597,7 @@ def main() -> None:
         try:
             refresh_runtime_status(cfg, client)
             user_input = (
-                session.prompt(" ❯ ", complete_style=CompleteStyle.MULTI_COLUMN)
-                if session
-                else input(" ❯ ")
+                session.prompt(" ❯ ", complete_style=CompleteStyle.MULTI_COLUMN) if session else input(" ❯ ")
             ).strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]Bye.[/]")

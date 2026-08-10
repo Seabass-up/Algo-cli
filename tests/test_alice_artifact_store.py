@@ -126,9 +126,7 @@ def test_round_trip_is_ciphertext_only_capability_scoped_and_private(tmp_path) -
     if os.name == "posix":
         assert stat.S_IMODE(root.stat().st_mode) == 0o700
         assert stat.S_IMODE(_manifest_file(root, capability).stat().st_mode) == 0o600
-        assert stat.S_IMODE(
-            _artifact_file(root, capability, first.artifact_id).stat().st_mode
-        ) == 0o600
+        assert stat.S_IMODE(_artifact_file(root, capability, first.artifact_id).stat().st_mode) == 0o600
 
 
 def test_same_capability_and_key_resume_after_store_restart(tmp_path) -> None:
@@ -141,6 +139,33 @@ def test_same_capability_and_key_resume_after_store_restart(tmp_path) -> None:
 
     assert restarted.read(capability, ref) == b"restart-safe"
     assert restarted.cleanup().corrupt_runs == 0
+
+
+def test_identifier_collision_retries_are_bounded_and_never_overwrite(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "alice"
+    store = _store(root)
+    run_id = "a" * 32
+    capability = store.create_run(run_id=run_id, ttl_seconds=120)
+    ref = store.put(capability, b"original", media_type="text/plain")
+    manifest = _manifest_file(root, capability)
+    artifact = _artifact_file(root, capability, ref.artifact_id)
+    original_manifest = manifest.read_bytes()
+    original_artifact = artifact.read_bytes()
+
+    monkeypatch.setattr("algo_cli.alice_artifact_store.secrets.token_hex", lambda _n: run_id)
+    with pytest.raises(ArtifactIntegrityError, match="collisions exhausted"):
+        store.create_run(ttl_seconds=120)
+
+    monkeypatch.setattr(
+        "algo_cli.alice_artifact_store.secrets.token_hex",
+        lambda _n: ref.artifact_id,
+    )
+    with pytest.raises(ArtifactIntegrityError, match="collisions exhausted"):
+        store.put(capability, b"replacement", media_type="text/plain")
+
+    assert manifest.read_bytes() == original_manifest
+    assert artifact.read_bytes() == original_artifact
+    assert store.read(capability, ref) == b"original"
 
 
 def test_wrong_capability_wrong_run_and_wrong_master_key_fail_closed(tmp_path) -> None:
@@ -336,9 +361,7 @@ def test_concurrent_processes_cannot_race_past_store_quota(tmp_path) -> None:
     assert cleanup.active_plaintext_bytes == 8
 
 
-def test_revocation_is_persisted_before_best_effort_ciphertext_deletion(
-    monkeypatch, tmp_path
-) -> None:
+def test_revocation_is_persisted_before_best_effort_ciphertext_deletion(monkeypatch, tmp_path) -> None:
     root = tmp_path / "alice"
     store = _store(root)
     capability = store.create_run(ttl_seconds=120)

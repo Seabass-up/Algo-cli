@@ -11,6 +11,7 @@ import sys
 import pytest
 
 from algo_cli.evals.tool_context_efficiency import run_tool_context_efficiency_benchmark
+from algo_cli.evals import nathan_agent_runtime_hardening as nathan_runtime_benchmark
 from algo_cli.henry_hardening_qualification import (
     build_qualification_report,
     protocol_metric,
@@ -168,6 +169,248 @@ def test_source_fingerprint_is_content_only_and_stable() -> None:
     assert str(ROOT) not in first
 
 
+def test_generation_rejects_source_mutation_during_execution_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.py"
+    source.write_text("source-bound payload\n", encoding="utf-8")
+    output = tmp_path / "hardening" / "grace-m8-local-qualification.json"
+    monkeypatch.setattr(SCRIPT, "ROOT", tmp_path)
+    monkeypatch.setattr(SCRIPT, "SOURCE_PATHS", ("source.py",))
+    monkeypatch.setattr(SCRIPT, "FOCUSED_TESTS", ())
+
+    def mutate_source(_iterations: int) -> dict[str, object]:
+        information = source.stat()
+        source.chmod((information.st_mode & 0o777) ^ 0o100)
+        return {}
+
+    monkeypatch.setattr(SCRIPT, "_run_protocol_frames", mutate_source)
+    monkeypatch.setattr(SCRIPT, "_run_efficiency", lambda _repeats: {})
+    monkeypatch.setattr(SCRIPT, "_run_focused_tests", lambda: True)
+    monkeypatch.setattr(SCRIPT, "build_qualification_report", lambda **_arguments: {"status": "blocked"})
+
+    with pytest.raises(SCRIPT.QualificationCommandError, match="source_changed"):
+        SCRIPT.main(["--output", str(output)])
+
+    assert not output.exists()
+
+
+def test_generation_rejects_source_mutation_in_report_builder_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.py"
+    source.write_text("source-bound payload\n", encoding="utf-8")
+    output = tmp_path / "hardening" / "grace-m8-local-qualification.json"
+    monkeypatch.setattr(SCRIPT, "ROOT", tmp_path)
+    monkeypatch.setattr(SCRIPT, "SOURCE_PATHS", ("source.py",))
+    monkeypatch.setattr(SCRIPT, "FOCUSED_TESTS", ())
+    monkeypatch.setattr(SCRIPT, "_run_protocol_frames", lambda _iterations: {})
+    monkeypatch.setattr(SCRIPT, "_run_efficiency", lambda _repeats: {})
+    monkeypatch.setattr(SCRIPT, "_run_focused_tests", lambda: True)
+
+    def mutate_source(**_arguments: object) -> dict[str, object]:
+        source.write_text("changed during report construction\n", encoding="utf-8")
+        return {"status": "blocked"}
+
+    monkeypatch.setattr(SCRIPT, "build_qualification_report", mutate_source)
+
+    with pytest.raises(SCRIPT.QualificationCommandError, match="source_changed"):
+        SCRIPT.main(["--output", str(output)])
+
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "fifo"])
+def test_source_fingerprint_rejects_links_and_special_files(
+    tmp_path: Path,
+    monkeypatch,
+    kind: str,
+) -> None:
+    source = tmp_path / "source.py"
+    target = tmp_path / "target.py"
+    target.write_text("pass\n", encoding="utf-8")
+    if kind == "symlink":
+        source.symlink_to(target)
+    elif kind == "hardlink":
+        os.link(target, source)
+    else:
+        os.mkfifo(source)
+    monkeypatch.setattr(SCRIPT, "ROOT", tmp_path)
+    monkeypatch.setattr(SCRIPT, "SOURCE_PATHS", ("source.py",))
+    monkeypatch.setattr(SCRIPT, "FOCUSED_TESTS", ())
+
+    with pytest.raises(SCRIPT.QualificationCommandError, match="source_identity"):
+        SCRIPT._source_digest()
+
+
+def test_source_fingerprint_rejects_oversized_input(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source.py"
+    source.write_bytes(b"12345")
+    monkeypatch.setattr(SCRIPT, "ROOT", tmp_path)
+    monkeypatch.setattr(SCRIPT, "SOURCE_PATHS", ("source.py",))
+    monkeypatch.setattr(SCRIPT, "FOCUSED_TESTS", ())
+    monkeypatch.setattr(SCRIPT, "MAX_SOURCE_BYTES", 4)
+
+    with pytest.raises(SCRIPT.QualificationCommandError, match="source_bounds"):
+        SCRIPT._source_digest()
+
+
+def test_source_fingerprint_open_is_nonblocking_and_rejects_fifo_swap(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source.py"
+    source.write_text("pass\n", encoding="utf-8")
+    monkeypatch.setattr(SCRIPT, "ROOT", tmp_path)
+    monkeypatch.setattr(SCRIPT, "SOURCE_PATHS", ("source.py",))
+    monkeypatch.setattr(SCRIPT, "FOCUSED_TESTS", ())
+    real_open = SCRIPT.os.open
+    swapped = False
+
+    def swap_before_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if Path(path) == source and not swapped:
+            swapped = True
+            assert flags & SCRIPT.os.O_NONBLOCK
+            source.unlink()
+            os.mkfifo(source)
+        if dir_fd is None:
+            return real_open(path, flags, mode)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(SCRIPT.os, "open", swap_before_open)
+
+    with pytest.raises(SCRIPT.QualificationCommandError, match="source_changed"):
+        SCRIPT._source_digest()
+    assert swapped is True
+
+
+@pytest.mark.parametrize("mutation", ["swap", "timestamp", "mode"])
+def test_source_fingerprint_rejects_mutation_during_descriptor_read(
+    tmp_path: Path,
+    monkeypatch,
+    mutation: str,
+) -> None:
+    source = tmp_path / "source.py"
+    source.write_text("bounded source\n", encoding="utf-8")
+    source.chmod(0o644)
+    monkeypatch.setattr(SCRIPT, "ROOT", tmp_path)
+    monkeypatch.setattr(SCRIPT, "SOURCE_PATHS", ("source.py",))
+    monkeypatch.setattr(SCRIPT, "FOCUSED_TESTS", ())
+    real_read = SCRIPT.os.read
+    mutated = False
+
+    def mutate_then_read(descriptor: int, size: int) -> bytes:
+        nonlocal mutated
+        if not mutated:
+            mutated = True
+            if mutation == "swap":
+                replacement = tmp_path / "replacement.py"
+                replacement.write_bytes(source.read_bytes())
+                os.replace(replacement, source)
+            elif mutation == "timestamp":
+                info = source.stat()
+                os.utime(
+                    source,
+                    ns=(info.st_atime_ns, info.st_mtime_ns + 2_000_000_000),
+                )
+            else:
+                source.chmod(0o600)
+        return real_read(descriptor, size)
+
+    monkeypatch.setattr(SCRIPT.os, "read", mutate_then_read)
+
+    with pytest.raises(SCRIPT.QualificationCommandError, match="source_changed"):
+        SCRIPT._source_digest()
+    assert mutated is True
+
+
+def test_source_fingerprint_closes_descriptor_when_read_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source.py"
+    source.write_text("pass\n", encoding="utf-8")
+    monkeypatch.setattr(SCRIPT, "ROOT", tmp_path)
+    monkeypatch.setattr(SCRIPT, "SOURCE_PATHS", ("source.py",))
+    monkeypatch.setattr(SCRIPT, "FOCUSED_TESTS", ())
+    real_open = SCRIPT.os.open
+    real_close = SCRIPT.os.close
+    opened: list[int] = []
+    closed: list[int] = []
+
+    def tracked_open(path, flags, mode=0o777, *, dir_fd=None):
+        descriptor = real_open(path, flags, mode) if dir_fd is None else real_open(path, flags, mode, dir_fd=dir_fd)
+        if Path(path) == source:
+            opened.append(descriptor)
+        return descriptor
+
+    def fail_read(descriptor: int, _size: int) -> bytes:
+        if descriptor in opened:
+            raise OSError("simulated read failure")
+        raise AssertionError("unexpected descriptor")
+
+    def tracked_close(descriptor: int) -> None:
+        if descriptor in opened:
+            closed.append(descriptor)
+        real_close(descriptor)
+
+    monkeypatch.setattr(SCRIPT.os, "open", tracked_open)
+    monkeypatch.setattr(SCRIPT.os, "read", fail_read)
+    monkeypatch.setattr(SCRIPT.os, "close", tracked_close)
+
+    with pytest.raises(SCRIPT.QualificationCommandError, match="source_changed"):
+        SCRIPT._source_digest()
+    assert opened == closed
+
+
+def test_source_fingerprint_rechecks_earlier_paths_after_complete_read(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    first = tmp_path / "first.py"
+    second = tmp_path / "second.py"
+    first.write_text("first\n", encoding="utf-8")
+    second.write_text("second\n", encoding="utf-8")
+    monkeypatch.setattr(SCRIPT, "ROOT", tmp_path)
+    monkeypatch.setattr(SCRIPT, "SOURCE_PATHS", ("first.py", "second.py"))
+    monkeypatch.setattr(SCRIPT, "FOCUSED_TESTS", ())
+    real_read_source = SCRIPT._read_source_file
+
+    def mutate_earlier_after_read(path: Path):
+        result = real_read_source(path)
+        if path == second:
+            first.write_text("changed\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(SCRIPT, "_read_source_file", mutate_earlier_after_read)
+
+    with pytest.raises(SCRIPT.QualificationCommandError, match="source_changed"):
+        SCRIPT._source_digest()
+
+
+def test_source_fingerprint_rejects_symlinked_directory_ancestor(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    (actual / "source.py").write_text("pass\n", encoding="utf-8")
+    linked = tmp_path / "linked"
+    linked.symlink_to(actual, target_is_directory=True)
+    monkeypatch.setattr(SCRIPT, "ROOT", linked)
+    monkeypatch.setattr(SCRIPT, "SOURCE_PATHS", ("source.py",))
+    monkeypatch.setattr(SCRIPT, "FOCUSED_TESTS", ())
+
+    with pytest.raises(SCRIPT.QualificationCommandError, match="source_identity"):
+        SCRIPT._source_digest()
+
+
 def test_native_package_is_fully_covered_by_source_fingerprint() -> None:
     covered = set(SCRIPT.SOURCE_PATHS)
     native_files = {
@@ -177,6 +420,160 @@ def test_native_package_is_fully_covered_by_source_fingerprint() -> None:
         if path.is_file() and path.suffix in {".c", ".h", ".swift"}
     }
     assert native_files <= covered
+
+
+def test_hosted_browser_qualification_is_fully_source_bound() -> None:
+    hosted_script_path = ROOT / "scripts" / "henry_boron_hosted_qualification.py"
+    scripts_path = str(hosted_script_path.parent)
+    module_name = "henry_boron_hosted_source_manifest_test"
+    sys.path.insert(0, scripts_path)
+    try:
+        spec = importlib.util.spec_from_file_location(module_name, hosted_script_path)
+        assert spec is not None and spec.loader is not None
+        hosted = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = hosted
+        spec.loader.exec_module(hosted)
+    finally:
+        sys.modules.pop(module_name, None)
+        sys.path.remove(scripts_path)
+
+    covered = set(SCRIPT.SOURCE_PATHS) | set(SCRIPT.FOCUSED_TESTS)
+    assert len(set(SCRIPT.SOURCE_PATHS)) == len(SCRIPT.SOURCE_PATHS)
+    assert len(set(SCRIPT.FOCUSED_TESTS)) == len(SCRIPT.FOCUSED_TESTS)
+    assert len(covered) == len(SCRIPT.SOURCE_PATHS) + len(SCRIPT.FOCUSED_TESTS)
+    assert set(hosted.SOURCE_PATHS) <= covered
+    assert "docs/boron-browser-isolation-contract.md" in covered
+    assert {
+        "algo_cli/resources/boron_browser/carbon_native_browser.Dockerfile",
+        "algo_cli/resources/boron_browser/carbon_native_browser.Dockerfile.dockerignore",
+    } <= set(SCRIPT.SOURCE_PATHS)
+
+
+def test_echo_alice_pdf_privacy_controls_are_fully_qualified() -> None:
+    covered = set(SCRIPT.SOURCE_PATHS) | set(SCRIPT.FOCUSED_TESTS)
+    required_sources = {
+        "pyproject.toml",
+        "uv.lock",
+        "algo_cli/action_registry.py",
+        "algo_cli/ada_echo_veil_identity.py",
+        "algo_cli/ada_memory_echo_veil.py",
+        "algo_cli/ada_task_ledger.py",
+        "algo_cli/agent_blocks.py",
+        "algo_cli/agent_pipeline.py",
+        "algo_cli/agent_run_journal.py",
+        "algo_cli/agent_threads.py",
+        "algo_cli/alice_artifact_store.py",
+        "algo_cli/arthur_outcomes.py",
+        "algo_cli/chatgpt_auth.py",
+        "algo_cli/code_rag.py",
+        "algo_cli/config.py",
+        "algo_cli/context_budget.py",
+        "algo_cli/deliberation.py",
+        "algo_cli/display.py",
+        "algo_cli/elsie_echo_preflight.py",
+        "algo_cli/google_workspace_auth.py",
+        "algo_cli/grace_memory_receipts.py",
+        "algo_cli/harness.py",
+        "algo_cli/identity.py",
+        "algo_cli/irene_memory_path_policy.py",
+        "algo_cli/james_dispatch.py",
+        "algo_cli/julia_memory_runtime.py",
+        "algo_cli/julia_memory_candidates.py",
+        "algo_cli/main.py",
+        "algo_cli/reasoning/react.py",
+        "algo_cli/run_contract.py",
+        "algo_cli/session_commands.py",
+        "algo_cli/skills.py",
+        "algo_cli/small_context.py",
+        "algo_cli/tool_context.py",
+        "algo_cli/tools.py",
+        "docs/ada-algo-cli-memory-lifecycle-contract.md",
+        "docs/echo-veil-security-status.md",
+        "docs/external-agent-store-operations.md",
+        "docs/privacy-and-context.md",
+        "scripts/henry_echo_veil_dependency_audit.py",
+        "tests/conftest.py",
+    }
+    required_tests = {
+        "tests/test_ada_memory_echo_veil.py",
+        "tests/test_ada_task_ledger_echo.py",
+        "tests/test_agent_pipeline.py",
+        "tests/test_agent_run_journal.py",
+        "tests/test_agent_threads.py",
+        "tests/test_alice_artifact_store.py",
+        "tests/test_chatgpt_auth.py",
+        "tests/test_code_rag.py",
+        "tests/test_config.py",
+        "tests/test_context_accounting.py",
+        "tests/test_display.py",
+        "tests/test_elsie_echo_preflight.py",
+        "tests/test_goal_mode.py",
+        "tests/test_google_workspace_wiring.py",
+        "tests/test_grace_memory_receipts.py",
+        "tests/test_harness.py",
+        "tests/test_henry_echo_veil_dependency_audit.py",
+        "tests/test_identity.py",
+        "tests/test_irene_memory_path_policy.py",
+        "tests/test_james_dispatch.py",
+        "tests/test_julia_curated_memory_contracts.py",
+        "tests/test_julia_memory_candidates.py",
+        "tests/test_julia_memory_runtime.py",
+        "tests/test_main_helpers.py",
+        "tests/test_pdf_render_artifacts.py",
+        "tests/test_reasoning_bridge.py",
+        "tests/test_run_contract.py",
+        "tests/test_session_command_output.py",
+        "tests/test_skills.py",
+        "tests/test_small_context.py",
+        "tests/test_tool_context.py",
+        "tests/test_tools.py",
+    }
+
+    assert required_sources <= set(SCRIPT.SOURCE_PATHS)
+    assert required_tests <= set(SCRIPT.FOCUSED_TESTS)
+    assert required_sources | required_tests <= covered
+
+
+def test_nathan_runtime_qualification_is_fully_source_bound() -> None:
+    source_paths = set(SCRIPT.SOURCE_PATHS)
+    focused_tests = set(SCRIPT.FOCUSED_TESTS)
+    covered = source_paths | focused_tests
+
+    assert set(nathan_runtime_benchmark.SOURCE_PATHS) <= covered
+    assert {
+        "algo_cli/chat_protocol.py",
+        "algo_cli/git_evidence.py",
+        "algo_cli/private_event_store.py",
+        "algo_cli/samuel_policy.py",
+        "algo_cli/spawn_budget.py",
+    } <= source_paths
+    assert {
+        "tests/test_git_evidence.py",
+        "tests/test_private_event_store.py",
+        "tests/test_samuel_policy.py",
+        "tests/test_spawn_budget.py",
+    } <= focused_tests
+
+
+def test_m8_execution_dependencies_are_source_bound_and_exercised() -> None:
+    source_paths = set(SCRIPT.SOURCE_PATHS)
+    focused_tests = set(SCRIPT.FOCUSED_TESTS)
+
+    assert {
+        "algo_cli/ada_control_journal.py",
+        "algo_cli/chatgpt_client.py",
+        "algo_cli/evals/tool_context_efficiency.py",
+        "algo_cli/evelyn_context_supersession.py",
+        "algo_cli/model_aliases.py",
+        "algo_cli/model_info.py",
+    } <= source_paths
+    assert {
+        "tests/test_ada_control_journal.py",
+        "tests/test_chatgpt_client.py",
+        "tests/test_evelyn_context_supersession.py",
+        "tests/test_model_info.py",
+        "tests/test_tool_context_efficiency.py",
+    } <= focused_tests
 
 
 def test_operator_script_help_runs_from_outside_checkout(tmp_path: Path) -> None:
@@ -197,7 +594,7 @@ def test_operator_script_help_runs_from_outside_checkout(tmp_path: Path) -> None
     assert "frozen M8 local qualification matrix" in completed.stdout
 
 
-def test_generation_suite_defers_only_the_postwrite_evidence_gate(monkeypatch) -> None:
+def test_generation_suite_defers_only_postwrite_evidence_gates(monkeypatch) -> None:
     captured: list[str] = []
 
     class Completed:
@@ -210,8 +607,11 @@ def test_generation_suite_defers_only_the_postwrite_evidence_gate(monkeypatch) -
     monkeypatch.setattr(SCRIPT.subprocess, "run", fake_run)
     assert SCRIPT._run_focused_tests() is True
     expression = captured[captured.index("-k") + 1]
-    assert expression == f"not {SCRIPT.POSTWRITE_EVIDENCE_TEST}"
-    assert SCRIPT.POSTWRITE_EVIDENCE_TEST == ("test_recorded_local_evidence_is_current_complete_and_honestly_blocked")
+    assert expression == " and ".join(f"not {name}" for name in SCRIPT.POSTWRITE_EVIDENCE_TESTS)
+    assert SCRIPT.POSTWRITE_EVIDENCE_TESTS == (
+        "test_recorded_local_evidence_is_current_complete_and_honestly_blocked",
+        "test_repository_report_is_exact_and_freeze_workflow_enforces_it",
+    )
 
 
 def test_recorded_local_evidence_is_current_complete_and_honestly_blocked() -> None:

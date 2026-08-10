@@ -1,0 +1,9 @@
+**
+!algo_cli/
+!algo_cli/__init__.py
+!algo_cli/xenon_browser_broker.py
+!algo_cli/xenon_browser_egress.py
+!algo_cli/xenon_browser_entry.py
+!algo_cli/resources/
+!algo_cli/resources/boron_browser/
+!algo_cli/resources/boron_browser/xenon_egress_broker.sh

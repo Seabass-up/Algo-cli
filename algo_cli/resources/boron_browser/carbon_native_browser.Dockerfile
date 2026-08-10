@@ -8,8 +8,8 @@ ARG CHROMIUM_COMMON_DEB_URL=https://security.debian.org/debian-security/pool/upd
 ARG CHROMIUM_COMMON_DEB_SHA256=77c97940e17b90394ea4065a0dce0daffa00f28f1209d1fc14be4333e8daa1ae
 ARG CHROMIUM_SANDBOX_DEB_URL=https://security.debian.org/debian-security/pool/updates/main/c/chromium/chromium-sandbox_150.0.7871.124-1~deb12u1_arm64.deb
 ARG CHROMIUM_SANDBOX_DEB_SHA256=95bd9cfa5c74ff008bbaa31c4fce0c415d918d79261b3d7bb79eabac6d405352
-ARG CRYPTOGRAPHY_WHEEL_URL=https://files.pythonhosted.org/packages/09/41/3797cfaf69cae04a13ee78ebd83f0678d9c02b4779d21ce24445326f1a69/cryptography-49.0.0-cp311-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl
-ARG CRYPTOGRAPHY_WHEEL_SHA256=36d1709f992593689b45bda411498d62c6e365f2ca00b84657d4dadd24de16db
+ARG CRYPTOGRAPHY_WHEEL_URL=https://files.pythonhosted.org/packages/57/ef/8f2df13c7216bcad3e1c74e07f6e193d93e998e114f524a53877c9af27ad/cryptography-50.0.0-cp311-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl
+ARG CRYPTOGRAPHY_WHEEL_SHA256=fd9192b7b70c573d7f214eb1ae35e00d359f6f5e4b27c7e21e30de1fc6204645
 ARG CFFI_WHEEL_URL=https://files.pythonhosted.org/packages/22/d7/1a74539db16d8bfd839ff1515948948efbb162e574650fd3d846896eea95/cffi-2.1.0-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.whl
 ARG CFFI_WHEEL_SHA256=88023dfe18799507b73f1dbb0d14326a17465de1bc9c9c7655c22845e9ddc3a2
 ARG PYCPARSER_WHEEL_URL=https://files.pythonhosted.org/packages/0c/c3/44f3fbbfa403ea2a7c779186dc20772604442dde72947e7d01069cbe98e3/pycparser-3.0-py3-none-any.whl
@@ -50,7 +50,7 @@ COPY algo_cli/resources/boron_browser/boron_managed_policy.json /etc/chromium/po
 
 RUN chmod 0555 /opt/algo/bin/boron-browser-wrapper \
     && chmod 0444 /etc/chromium/policies/managed/boron-managed-policy.json \
-    && /usr/bin/python3 -B -I -c 'import cryptography; import algo_cli.boron_browser_entry; assert cryptography.__version__ == "49.0.0"' \
+    && /usr/bin/python3 -B -I -c 'import cryptography; import algo_cli.boron_browser_entry; assert cryptography.__version__ == "50.0.0"' \
     && test "$(dpkg-query -W -f='${Version}' chromium)" = "${CHROMIUM_VERSION}" \
     && test "$(dpkg-query -W -f='${Version}' chromium-common)" = "${CHROMIUM_VERSION}" \
     && test "$(dpkg-query -W -f='${Version}' chromium-sandbox)" = "${CHROMIUM_VERSION}"
@@ -64,7 +64,7 @@ LABEL org.opencontainers.image.title="Algo CLI Carbon native managed browser" \
       com.algo-cli.browser.version="150.0.7871.124" \
       com.algo-cli.browser.release-at-ms="1784186325000" \
       com.algo-cli.browser.deb.sha256="sha256:774473b94c99d695304892b4dc52d700191929b46ba67192e1b95cdddc5744b2" \
-      com.algo-cli.cryptography.version="49.0.0" \
+      com.algo-cli.cryptography.version="50.0.0" \
       com.algo-cli.code.sha256="${BORON_CODE_DIGEST}"
 
 USER 1000:1000

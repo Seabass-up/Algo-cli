@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -14,9 +16,11 @@ from algo_cli import config
 from algo_cli.config import (
     CODE_RAG_CONSENT_VERSION,
     DEFAULT_CHAT_STREAM_TIMEOUT_SECONDS,
+    MEMORY_AUTO_CAPTURE_CONSENT_VERSION,
     Config,
     code_rag_consent_granted,
     load_runtime_env,
+    memory_auto_capture_consent_granted,
 )
 
 
@@ -32,7 +36,9 @@ def test_defaults():
     assert cfg.algorithmic_tool_policy_enabled is True
     assert cfg.echo_veil_capacity == 400
     assert cfg.echo_veil_production is False
-    assert cfg.memory_auto_capture_enabled is True
+    assert cfg.memory_auto_capture_enabled is False
+    assert cfg.memory_auto_capture_consent_version == 0
+    assert memory_auto_capture_consent_granted(cfg) is False
     assert cfg.memory_auto_daily_limit == 5
     assert cfg.memory_auto_entry_limit == 64
     assert cfg.memory_auto_char_limit == 12_000
@@ -53,7 +59,8 @@ def test_save_load_roundtrip():
     cfg.algorithmic_tool_policy_enabled = True
     cfg.echo_veil_capacity = 12
     cfg.echo_veil_production = True
-    cfg.memory_auto_capture_enabled = False
+    cfg.memory_auto_capture_enabled = True
+    cfg.memory_auto_capture_consent_version = MEMORY_AUTO_CAPTURE_CONSENT_VERSION
     cfg.memory_auto_daily_limit = 3
     cfg.memory_auto_entry_limit = 24
     cfg.memory_auto_char_limit = 8_000
@@ -70,7 +77,8 @@ def test_save_load_roundtrip():
     assert reloaded.algorithmic_tool_policy_enabled is True
     assert reloaded.echo_veil_capacity == 12
     assert reloaded.echo_veil_production is True
-    assert reloaded.memory_auto_capture_enabled is False
+    assert reloaded.memory_auto_capture_enabled is True
+    assert memory_auto_capture_consent_granted(reloaded) is True
     assert reloaded.memory_auto_daily_limit == 3
     assert reloaded.memory_auto_entry_limit == 24
     assert reloaded.memory_auto_char_limit == 8_000
@@ -120,6 +128,38 @@ def test_outdated_code_rag_consent_version_fails_closed() -> None:
 
     assert loaded.code_rag_enabled is False
     assert code_rag_consent_granted(loaded) is False
+
+
+def test_legacy_memory_auto_capture_boolean_does_not_migrate_as_consent() -> None:
+    config.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    config.CONFIG_FILE.write_text(
+        json.dumps({"memory_auto_capture_enabled": True}),
+        encoding="utf-8",
+    )
+
+    loaded = Config.load()
+
+    assert loaded.memory_auto_capture_enabled is False
+    assert loaded.memory_auto_capture_consent_version == 0
+    assert memory_auto_capture_consent_granted(loaded) is False
+
+
+def test_outdated_memory_auto_capture_consent_fails_closed() -> None:
+    config.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    config.CONFIG_FILE.write_text(
+        json.dumps(
+            {
+                "memory_auto_capture_enabled": True,
+                "memory_auto_capture_consent_version": 99,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = Config.load()
+
+    assert loaded.memory_auto_capture_enabled is False
+    assert memory_auto_capture_consent_granted(loaded) is False
 
 
 def test_reconcile_memory_facts_is_atomic_normalized_and_idempotent():
@@ -179,6 +219,117 @@ def test_messages_and_memories_not_in_config_file():
     # messages/memories are intentionally excluded from config.json
     reloaded = Config.load()
     assert reloaded.messages == []
+
+
+def test_echo_config_load_save_drops_legacy_plaintext_attempts_and_summary() -> None:
+    canary = "LEGACY_RAW_ECHO_PAYLOAD_CANARY"
+    config.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    config.CONFIG_FILE.write_text(
+        json.dumps(
+            {
+                "echo_veil_enabled": True,
+                "echo_veil_protection": "required",
+                "session_summary": canary,
+                "attempt_ledger": [
+                    {
+                        "status": "failed",
+                        "tool": "echo_veil_recall",
+                        "args_preview": canary,
+                        "summary": canary,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = Config.load()
+    loaded.save()
+    persisted = config.CONFIG_FILE.read_text(encoding="utf-8")
+
+    assert loaded.session_summary == ""
+    assert loaded.attempt_ledger == []
+    assert canary not in persisted
+
+
+def test_echo_conversation_persistence_projects_direct_wrapped_and_unpaired_tools() -> None:
+    args_canary = "PROTECTED_ARGUMENT_CANARY"
+    result_canary = "PROTECTED_RESULT_WITHOUT_PROVIDER_MARKER"
+    wrapped_canary = "WRAPPED_MEMORY_QUERY_CANARY"
+    unpaired_canary = "UNPAIRED_TOOL_RESULT_CANARY"
+    cfg = Config(
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+        session_summary=result_canary,
+        messages=[
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "echo-call",
+                        "function": {
+                            "name": "echo_veil_recall",
+                            "arguments": json.dumps({"query": args_canary}),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "echo-call",
+                "content": json.dumps({"records": [{"payload": result_canary}]}),
+            },
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "wrapped-call",
+                        "function": {
+                            "name": "session_command",
+                            "arguments": json.dumps({"command": f"/memory search {wrapped_canary}"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "wrapped-call",
+                "content": wrapped_canary,
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "legacy-unpaired",
+                "content": unpaired_canary,
+            },
+        ],
+    )
+
+    path = cfg.save_conversation("protected")
+    persisted = path.read_text(encoding="utf-8")
+
+    assert args_canary not in persisted
+    assert result_canary not in persisted
+    assert wrapped_canary not in persisted
+    assert unpaired_canary not in persisted
+    assert args_canary in json.dumps(cfg.messages)
+    assert cfg.session_summary == result_canary
+
+    legacy = json.loads(persisted)
+    legacy["messages"][-1]["content"] = unpaired_canary
+    legacy["session_summary"] = result_canary
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    loaded = Config(
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+    )
+    loaded.load_conversation("protected")
+    migrated = path.read_text(encoding="utf-8")
+
+    assert result_canary not in migrated
+    assert unpaired_canary not in migrated
+    assert result_canary not in json.dumps(loaded.messages)
+    assert unpaired_canary not in json.dumps(loaded.messages)
+    assert loaded.session_summary == ""
 
 
 def test_memory_save_is_atomic_and_forget_does_not_readd_existing_file_state():
@@ -241,12 +392,121 @@ def test_remember_fact_preserves_concurrent_process_writes(tmp_path):
 
 def test_corrupt_memory_file_is_preserved_and_not_silently_deleted():
     config.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    config.MEMORY_FILE.write_text("[\"ok\",", encoding="utf-8")
+    config.MEMORY_FILE.write_text('["ok",', encoding="utf-8")
 
     loaded = Config.load()
 
     assert loaded.memories == []
     assert config.MEMORY_FILE.with_suffix(config.MEMORY_FILE.suffix + ".corrupt").exists()
+
+
+def test_corrupt_config_is_not_duplicated_before_echo_authority_is_known() -> None:
+    canary = "CORRUPT_CONFIG_PROTECTED_CANARY"
+    config.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    config.CONFIG_FILE.write_text(
+        '{"echo_veil_protection":"required","payload":"' + canary,
+        encoding="utf-8",
+    )
+    config.MEMORY_FILE.write_text('["' + canary + '"]', encoding="utf-8")
+
+    loaded = Config.load()
+
+    assert loaded.echo_veil_enabled is True
+    assert loaded.echo_veil_protection == "required"
+    assert loaded.memories == []
+    assert canary in config.CONFIG_FILE.read_text(encoding="utf-8")
+    assert not config.CONFIG_FILE.with_suffix(".json.corrupt").exists()
+
+
+def test_unsafe_or_oversize_config_fails_closed_without_loading_plaintext_memory(
+    tmp_path,
+) -> None:
+    canary = "UNSAFE_CONFIG_MEMORY_CANARY"
+    config.MEMORY_FILE.write_text(json.dumps([canary]), encoding="utf-8")
+    outside = tmp_path / "outside-config.json"
+    outside.write_text(
+        '{"echo_veil_enabled":false,"echo_veil_protection":"optional"}',
+        encoding="utf-8",
+    )
+    config.CONFIG_FILE.symlink_to(outside)
+
+    symlinked = Config.load()
+    assert symlinked.echo_veil_enabled is True
+    assert symlinked.echo_veil_protection == "required"
+    assert symlinked.memories == []
+
+    config.CONFIG_FILE.unlink()
+    config.CONFIG_FILE.write_bytes(
+        b'{"echo_veil_enabled":false,"padding":"' + (b"x" * (config.MAX_JSON_STATE_BYTES + 1)) + b'"}'
+    )
+    oversized = Config.load()
+    assert oversized.echo_veil_enabled is True
+    assert oversized.echo_veil_protection == "required"
+    assert oversized.memories == []
+
+
+def test_json_state_loader_rejects_symlink_and_oversize_inputs(tmp_path) -> None:
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"poison":true}', encoding="utf-8")
+    config.CONFIG_FILE.symlink_to(outside)
+
+    assert config._load_json_file(config.CONFIG_FILE, {"safe": True}) == {"safe": True}
+    config.CONFIG_FILE.unlink()
+    config.CONFIG_FILE.write_text('{"value":"' + ("x" * 128) + '"}', encoding="utf-8")
+    assert config._load_json_file(
+        config.CONFIG_FILE,
+        {"safe": True},
+        max_bytes=64,
+    ) == {"safe": True}
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX FIFO identity contract")
+def test_json_state_loader_rejects_fifo_without_blocking() -> None:
+    os.mkfifo(config.CONFIG_FILE, 0o600)
+
+    assert config._load_json_file(config.CONFIG_FILE, {"safe": True}) == {"safe": True}
+
+
+def test_json_state_loader_rejects_path_replacement_during_descriptor_read(
+    monkeypatch,
+) -> None:
+    original_document = {"value": "a" * 70_000}
+    config.CONFIG_FILE.write_text(json.dumps(original_document), encoding="utf-8")
+    displaced = config.CONFIG_FILE.with_suffix(".original")
+    original_read = config.os.read
+    swapped = False
+
+    def swapping_read(descriptor: int, size: int) -> bytes:
+        nonlocal swapped
+        chunk = original_read(descriptor, size)
+        if chunk and not swapped:
+            swapped = True
+            config.CONFIG_FILE.rename(displaced)
+            config.CONFIG_FILE.write_text('{"value":"replacement"}', encoding="utf-8")
+        return chunk
+
+    monkeypatch.setattr(config.os, "read", swapping_read)
+
+    assert config._load_json_file(config.CONFIG_FILE, {"safe": True}) == {"safe": True}
+    assert swapped is True
+    assert not config.CONFIG_FILE.with_suffix(".json.corrupt").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX owner-only mode contract")
+def test_config_writes_force_owner_only_directories_and_files(config_dir) -> None:
+    os.chmod(config_dir, 0o755)
+    previous = os.umask(0o022)
+    try:
+        cfg = Config(messages=[{"role": "user", "content": "safe"}])
+        cfg.save()
+        conversation = cfg.save_conversation("private")
+    finally:
+        os.umask(previous)
+
+    assert stat.S_IMODE(config_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE(config.CONFIG_FILE.stat().st_mode) == 0o600
+    assert stat.S_IMODE(config.HISTORY_DIR.stat().st_mode) == 0o700
+    assert stat.S_IMODE(conversation.stat().st_mode) == 0o600
 
 
 def test_json_loader_handles_invalid_utf8_and_unreadable_paths(tmp_path):
@@ -345,10 +605,7 @@ def test_save_conversation_rejects_empty_name():
 def test_load_runtime_env(tmp_path):
     env_file = tmp_path / "env"
     env_file.write_text(
-        "# a comment\n"
-        "export OLLAMA_CLI_TEST_KEY=value1\n"
-        'QUOTED="value two"\n'
-        "EMPTY=\n",
+        '# a comment\nexport OLLAMA_CLI_TEST_KEY=value1\nQUOTED="value two"\nEMPTY=\n',
         encoding="utf-8",
     )
     loaded = load_runtime_env(env_file, override=True)
@@ -394,6 +651,7 @@ def test_load_runtime_env_falls_back_to_dotenv(monkeypatch, tmp_path):
 
 # --- Rebrand dual-support tests (ALGO_CLI_* + ~/.algo_cli preference) ---
 
+
 def test_new_env_prefix_takes_precedence(monkeypatch, tmp_path):
     new_dir = tmp_path / "algo_new"
     monkeypatch.setenv("ALGO_CLI_CONFIG_DIR", str(new_dir))
@@ -403,6 +661,7 @@ def test_new_env_prefix_takes_precedence(monkeypatch, tmp_path):
     # Re-import to pick up env changes (config resolves at import time)
     import importlib
     import algo_cli.config as cfgmod
+
     importlib.reload(cfgmod)
 
     assert cfgmod.CONFIG_DIR == new_dir
@@ -415,6 +674,7 @@ def test_old_env_prefix_still_works_when_no_new(monkeypatch, tmp_path):
 
     import importlib
     import algo_cli.config as cfgmod
+
     importlib.reload(cfgmod)
 
     assert cfgmod.CONFIG_DIR == old_dir
@@ -435,10 +695,231 @@ def test_has_legacy_data_and_migration_helpers(tmp_path, monkeypatch):
     assert ".ollama_cli.backup" in str(backup)
 
 
+def test_echo_selected_legacy_migration_projects_only_safe_configuration(tmp_path, monkeypatch) -> None:
+    legacy = tmp_path / ".ollama_cli"
+    current = tmp_path / ".algo_cli"
+    backup = tmp_path / ".ollama_cli.backup"
+    canary = "LEGACY_ECHO_MIGRATION_CANARY"
+    legacy.mkdir()
+    (legacy / "config.json").write_text(
+        json.dumps(
+            {
+                "model": "qwen3",
+                "theme": "tokyo-night",
+                "echo_veil_enabled": True,
+                "echo_veil_protection": "required",
+                "skill_crystallize_enabled": True,
+                "session_summary": canary,
+                "attempt_ledger": [{"raw": canary}],
+                "messages": [{"role": "tool", "content": canary}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (legacy / "memory.json").write_text(canary, encoding="utf-8")
+    (legacy / "run_history.jsonl").write_text(canary, encoding="utf-8")
+    (legacy / "prompt_history.txt").write_text(canary, encoding="utf-8")
+    (legacy / "skills").mkdir()
+    (legacy / "skills" / "derived.md").write_text(canary, encoding="utf-8")
+    monkeypatch.setattr(config, "LEGACY_CONFIG_DIR", legacy)
+    monkeypatch.setattr(config, "CONFIG_DIR", current)
+    monkeypatch.setattr(config, "get_legacy_backup_dir", lambda: backup)
+
+    assert config.perform_legacy_migration() is True
+
+    migrated = json.loads((current / "config.json").read_text(encoding="utf-8"))
+    assert migrated["echo_veil_enabled"] is True
+    assert migrated["echo_veil_protection"] == "required"
+    assert migrated["skill_crystallize_enabled"] is False
+    assert "session_summary" not in migrated
+    assert "attempt_ledger" not in migrated
+    assert "messages" not in migrated
+    assert canary not in "".join(
+        path.read_text(encoding="utf-8", errors="ignore") for path in current.rglob("*") if path.is_file()
+    )
+    assert not backup.exists()
+    assert canary in (legacy / "memory.json").read_text(encoding="utf-8")
+    receipt = json.loads((current / ".legacy_migration_receipt.json").read_text(encoding="utf-8"))
+    assert receipt["echo_authority_selected"] is True
+    assert receipt["original_retained"] is True
+    assert receipt["backup_created"] is False
+    assert receipt["explicit_review_required"] is True
+    assert receipt["inventory_truncated"] is False
+    assert receipt["blocked_artifact_counts"]["memory"] >= 2
+    assert all("/" not in key and "\\" not in key for key in receipt["artifact_counts"])
+    if os.name == "posix":
+        assert stat.S_IMODE(current.stat().st_mode) == 0o700
+        assert stat.S_IMODE((current / "config.json").stat().st_mode) == 0o600
+
+
+def test_echo_selected_sidecar_migration_refuses_plaintext_shadow_copy(tmp_path, monkeypatch) -> None:
+    legacy = tmp_path / ".ollama_cli"
+    current = tmp_path / ".algo_cli"
+    canary = "LEGACY_ECHO_SIDECAR_CANARY"
+    legacy.mkdir()
+    (legacy / "config.json").write_text(
+        '{"echo_veil_enabled":true,"echo_veil_protection":"required"}',
+        encoding="utf-8",
+    )
+    (legacy / "chatgpt_auth.json").write_text(canary, encoding="utf-8")
+    monkeypatch.setattr(config, "LEGACY_CONFIG_DIR", legacy)
+    monkeypatch.setattr(config, "CONFIG_DIR", current)
+
+    assert config.migrate_legacy_sidecar_files() == []
+    assert not current.exists()
+
+
+def test_malformed_legacy_config_fails_closed_without_partial_migration(tmp_path, monkeypatch) -> None:
+    legacy = tmp_path / ".ollama_cli"
+    current = tmp_path / ".algo_cli"
+    legacy.mkdir()
+    (legacy / "config.json").write_text('{"echo_veil_enabled":', encoding="utf-8")
+    monkeypatch.setattr(config, "LEGACY_CONFIG_DIR", legacy)
+    monkeypatch.setattr(config, "CONFIG_DIR", current)
+    monkeypatch.setattr(
+        config,
+        "get_legacy_backup_dir",
+        lambda: tmp_path / ".ollama_cli.backup",
+    )
+
+    with pytest.raises(config.LegacyMigrationError) as raised:
+        config.perform_legacy_migration()
+    assert "echo_veil" not in str(raised.value)
+    assert not current.exists()
+
+
+@pytest.mark.parametrize(
+    "failed_name",
+    [
+        config.LEGACY_MIGRATION_INCOMPLETE_FILE,
+        ".legacy_migration_receipt.json",
+        "config.json",
+        config.LEGACY_MIGRATION_COMPLETE_FILE,
+    ],
+)
+def test_echo_legacy_migration_partial_publication_never_downgrades_startup(
+    tmp_path,
+    monkeypatch,
+    failed_name: str,
+) -> None:
+    legacy = tmp_path / ".ollama_cli"
+    current = tmp_path / ".algo_cli"
+    legacy.mkdir()
+    (legacy / "config.json").write_text(
+        '{"echo_veil_enabled":true,"echo_veil_protection":"required"}',
+        encoding="utf-8",
+    )
+    (legacy / "memory.json").write_text("PARTIAL_MIGRATION_CANARY", encoding="utf-8")
+    monkeypatch.setattr(config, "LEGACY_CONFIG_DIR", legacy)
+    monkeypatch.setattr(config, "CONFIG_DIR", current)
+    monkeypatch.setattr(
+        config,
+        "get_legacy_backup_dir",
+        lambda: tmp_path / ".ollama_cli.backup",
+    )
+    original_link = config.os.link
+
+    def fail_selected(source, destination, **kwargs):
+        if Path(destination).name == failed_name:
+            raise OSError("simulated publication failure")
+        return original_link(source, destination, **kwargs)
+
+    monkeypatch.setattr(config.os, "link", fail_selected)
+
+    with pytest.raises(config.LegacyMigrationError):
+        config.perform_legacy_migration()
+    if current.exists():
+        assert not (current / config.LEGACY_MIGRATION_COMPLETE_FILE).exists()
+
+    with pytest.raises(config.LegacyMigrationError):
+        config.perform_legacy_migration()
+
+
+def test_echo_legacy_migration_post_completion_fsync_failure_remains_blocked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy = tmp_path / ".ollama_cli"
+    current = tmp_path / ".algo_cli"
+    legacy.mkdir()
+    (legacy / "config.json").write_text(
+        '{"echo_veil_enabled":true,"echo_veil_protection":"required"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "LEGACY_CONFIG_DIR", legacy)
+    monkeypatch.setattr(config, "CONFIG_DIR", current)
+    monkeypatch.setattr(
+        config,
+        "get_legacy_backup_dir",
+        lambda: tmp_path / ".ollama_cli.backup",
+    )
+    original_link = config.os.link
+    original_fsync = config.os.fsync
+    completion_linked = False
+
+    def track_completion(source, destination, **kwargs):
+        nonlocal completion_linked
+        result = original_link(source, destination, **kwargs)
+        if Path(destination).name == config.LEGACY_MIGRATION_COMPLETE_FILE:
+            completion_linked = True
+        return result
+
+    def fail_after_completion(descriptor: int) -> None:
+        if completion_linked:
+            raise OSError("simulated post-completion durability failure")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(config.os, "link", track_completion)
+    monkeypatch.setattr(config.os, "fsync", fail_after_completion)
+
+    with pytest.raises(config.LegacyMigrationError):
+        config.perform_legacy_migration()
+
+    assert (current / config.LEGACY_MIGRATION_COMPLETE_FILE).is_file()
+    assert (current / config.LEGACY_MIGRATION_INCOMPLETE_FILE).is_file()
+    with pytest.raises(config.LegacyMigrationError):
+        config.perform_legacy_migration()
+
+
+@pytest.mark.parametrize("with_incomplete", [False, True])
+def test_completed_legacy_migration_without_config_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    with_incomplete: bool,
+) -> None:
+    legacy = tmp_path / ".ollama_cli"
+    current = tmp_path / ".algo_cli"
+    legacy.mkdir()
+    (legacy / "config.json").write_text(
+        '{"echo_veil_enabled":true,"echo_veil_protection":"required"}',
+        encoding="utf-8",
+    )
+    current.mkdir(mode=0o700)
+    completion = current / config.LEGACY_MIGRATION_COMPLETE_FILE
+    completion.write_bytes(b"Legacy configuration migrated by Algo CLI.\n")
+    completion.chmod(0o600)
+    if with_incomplete:
+        incomplete = current / config.LEGACY_MIGRATION_INCOMPLETE_FILE
+        incomplete.write_bytes(b"Algo CLI legacy migration publication is incomplete.\n")
+        incomplete.chmod(0o600)
+    monkeypatch.setattr(config, "LEGACY_CONFIG_DIR", legacy)
+    monkeypatch.setattr(config, "CONFIG_DIR", current)
+
+    with pytest.raises(config.LegacyMigrationError):
+        config.perform_legacy_migration()
+
+    with pytest.raises(config.LegacyMigrationError):
+        config.perform_legacy_migration()
+
+
 def test_sidecar_migration_includes_provider_credentials(tmp_path, monkeypatch):
     legacy = tmp_path / ".ollama_cli"
     current = tmp_path / ".algo_cli"
     legacy.mkdir()
+    (legacy / "config.json").write_text(
+        '{"echo_veil_enabled":false,"echo_veil_protection":"optional"}',
+        encoding="utf-8",
+    )
     for name in (
         "chatgpt_auth.json",
         "google_workspace_auth.json",
@@ -458,6 +939,27 @@ def test_sidecar_migration_includes_provider_credentials(tmp_path, monkeypatch):
         "google_workspace_auth.json",
         "google_workspace_pending_login.json",
         "env",
-        "codex-chatgpt",
     }
-    assert (current / "codex-chatgpt" / "auth.json").is_file()
+    assert not (current / "codex-chatgpt").exists()
+    if os.name == "posix":
+        assert stat.S_IMODE(current.stat().st_mode) == 0o700
+        for name in moved:
+            assert stat.S_IMODE((current / name).stat().st_mode) == 0o600
+
+
+def test_sidecar_migration_rejects_symlink_source(tmp_path, monkeypatch) -> None:
+    legacy = tmp_path / ".ollama_cli"
+    current = tmp_path / ".algo_cli"
+    outside = tmp_path / "outside-auth.json"
+    legacy.mkdir()
+    (legacy / "config.json").write_text(
+        '{"echo_veil_enabled":false,"echo_veil_protection":"optional"}',
+        encoding="utf-8",
+    )
+    outside.write_text("SIDECAR_SYMLINK_CANARY", encoding="utf-8")
+    (legacy / "chatgpt_auth.json").symlink_to(outside)
+    monkeypatch.setattr(config, "LEGACY_CONFIG_DIR", legacy)
+    monkeypatch.setattr(config, "CONFIG_DIR", current)
+
+    assert config.migrate_legacy_sidecar_files() == []
+    assert not current.exists()

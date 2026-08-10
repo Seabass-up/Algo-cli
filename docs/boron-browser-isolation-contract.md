@@ -80,6 +80,121 @@ a CRX plus key in an automatically deleted temporary directory. This validates
 manifest/CSP/package acceptance, not installation, pairing, runtime grant
 behavior, or readiness.
 
+### Current source candidate — 2026-08-09
+
+The dated Chrome 150 Linux and macOS results above remain historical evidence
+for those exact probes. The current Linux/amd64 source candidate instead pins
+Google Chrome `151.0.7922.108`, whose official VersionHistory serving start is
+`2026-08-06T20:04:27.459919Z`, and `cryptography` `50.0.0`. These are inspected
+source and local-candidate properties, not a new hosted execution result.
+
+The candidate closes several source-level provenance gaps:
+
+- Each browser and broker Dockerfile has its own deny-by-default build-context
+  allowlist: the adjacent `.dockerignore` starts with `**` and admits only that
+  role's required files.
+- The hosted qualifier opens the root, every ancestor, and every declared
+  source with no-follow descriptors, validates immutable file identities, and
+  constructs one bounded canonical USTAR archive from those held bytes. Both
+  images consume those exact archive bytes on Buildx standard input with
+  context `-`; no live checkout or staging pathname is available to either
+  build.
+- Registry evidence keeps the OCI index digest, selected `linux/amd64` platform
+  manifest digest, and local image-config digest as distinct identities. The
+  full qualification-source digest over the complete declared source set is
+  required in both image labels, the build evidence, every live-session row,
+  and the reconstructed final report.
+- Registry-retrieved OCI indexes, attestation manifests, and in-toto layers are
+  fetched by immutable digest and rehashed against their descriptors. The raw
+  statements are semantically checked as exactly one BuildKit SLSA v0.2
+  predicate and one SPDX 2.2 or 2.3 document with the expected singleton
+  subject, source, revision, platform, materials, and packages; build flags,
+  copied metadata, and opaque attestation blobs are not accepted as evidence.
+- The reachable LLB graph binds the frontend
+  `docker/dockerfile:1.26.0@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32`
+  and scanner
+  `docker/buildkit-syft-scanner:1.11.0@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68`;
+  conflicting or additional frontend/scanner materials fail closed.
+- Debian package resolution no longer follows the live `bookworm` mirrors.
+  Both Chrome-151 images replace the base image's mirror configuration with
+  the exact Debian Snapshot imports `20260712T202631Z` (main and updates) and
+  `20260712T194830Z` (security), the last imports before the base image's own
+  `20260713T000000Z` source annotation. APT verifies the signed Release
+  metadata with the base image's Debian archive keyring; the Dockerfiles also
+  require the exact three `InRelease` SHA-256 values, install every requested
+  package at an explicit version, and fail unless the final sorted dpkg set is
+  exactly 228 entries with digest
+  `sha256:8de022828059888145925f8fc14424eb1f8b9a2d01d5bb24abff9d2d0d60a1d9`
+  for Boron or 122 entries with digest
+  `sha256:945e9057beb01efbdcf89ca6ba002f260eb6bda40f5d535337e7ca7dc6eed640`
+  for Xenon. The snapshot bootstrap uses HTTP because the slim base does not
+  yet contain CA roots; APT's Release signature and package hashes provide
+  authenticity, while a network attacker can still deny availability.
+  Chrome and Python artifacts are subsequently fetched over HTTPS and checked
+  against their independent SHA-256 pins.
+- This stronger resolution boundary is deliberately not described as a
+  hermetic or reproducible build. BuildKit does not list bytes downloaded by a
+  Dockerfile `RUN` as provenance materials, and the dpkg lock binds package
+  names and versions rather than every post-install filesystem byte. Both
+  images label `hermetic=false` and `reproducible=false`; the evidence builder
+  rejects a BuildKit predicate that says `reproducible=true`. A future
+  hermetic claim requires all network artifacts to enter BuildKit as
+  digest-addressed materials (or an equivalently attested offline package
+  context) and a successful independent bit-for-bit rebuild.
+- The candidate GHCR workflow is guarded to a push from the pinned repository
+  and repository ID at the exact protected `main` revision. It pins Buildx
+  `v0.36.1` by its exact commit and Linux/amd64 release-asset SHA-256
+  `48af8a397ebd60178778bf63611dbcebe5f5e7a9be90eb9147b24b9587455778`,
+  and BuildKit `v0.32.2` by OCI-index digest
+  `sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8`,
+  uses an isolated Docker configuration directory, resets BuildKit's default
+  insecure entitlements, and requires the separately reviewed
+  `browser-hardening` GitHub Environment. A no-privilege authority job fails a
+  protected-main run unless the repository readiness marker is explicitly set;
+  it then verifies the live GitHub Environment API reports protected branches,
+  a nonempty required-reviewer rule with self-review prevention, and disabled
+  admin bypass. The publisher and attester remain skipped rather than
+  auto-creating an unprotected Environment.
+- Retained CI artifacts are named with the producing run attempt and passed to
+  consumers by immutable artifact ID. Because the hosted report and Sigstore
+  certificate both bind the attempt, recovering a failed Boron validation or
+  attestation requires **Re-run all jobs**; re-running only a downstream job
+  must fail rather than combine attempt-one evidence with attempt-two authority.
+- The Buildx binary, Git checkout, index, working tree, and untracked-file state
+  are checked before GHCR authentication. After qualification, an explicit
+  blocking `docker logout ghcr.io` and strict isolated-config inspection must
+  prove that no authentication entry, credential helper, or credential store
+  remains before evidence upload. The exact Buildx builder must also be removed
+  and proven uninspectable. Action post hooks are only defense in depth.
+- Live teardown quiesces every producer before cleanup, verifies exact
+  session-and-role ownership, mutates Docker objects only by immutable ID,
+  falls back to bounded force removal, and suppresses evidence if any resource
+  cannot be proven absent. Report publication likewise remains descriptor-bound
+  and rolls back the final path after any late integrity or durability failure.
+- Any July artifact produced through the former `command | tee` plus
+  `if: always()`/warn-on-missing path is invalidated for qualification. That path
+  could retain or attest failure-shaped output without proving that the
+  qualification command passed. The candidate requires a successful direct
+  report write, exact report reconstruction, error-on-missing upload, digest
+  revalidation, and digest-bound attestation.
+
+This section is a source/local candidate record only. No new hosted run has
+executed, HARD-050, HARD-052, and HARD-053 remain unverified, and no public
+browser-use claim is supported. Authoritative closure still requires evidence
+from an approved protected GitHub Environment with working package access, a
+real GHCR authenticate/publish/pull/logout lifecycle, five distinct
+fresh-ephemeral sessions, independent reconstruction of the retained report,
+and the report-digest GitHub attestation.
+
+At the candidate date, the `browser-hardening` Environment and
+`BORON_HARDENING_ENVIRONMENT_READY=true` repository marker are not configured,
+so the protected-main authority job is intentionally red and no publisher can
+run. Configure the Environment first with required reviewers and admin bypass
+disabled, restrict it to protected branches, enable self-review prevention,
+audit it, then set the marker. The dedicated browser-contract job is also not
+yet a required ruleset check; the existing required runtime-quality job
+exercises the same tests, but that does not substitute for hosted evidence.
+
 ## Target and lifecycle binding
 
 `algo_cli/carbon_browser_binding.py` signs a closed binding over:
@@ -226,20 +341,22 @@ Still unverified:
 - the hardened public browser image/wrapper and dual-homed egress broker have
   not completed a hosted live session on native amd64 Linux; the local Apple-
   Silicon gate rejects emulation explicitly after a diagnostic run showed the
-  Chrome sandbox fail inside QEMU. The pinned `ubuntu-24.04` Boron CI contract
-  now requires one source-bound build and five distinct fresh-ephemeral live
-  sessions, cross-binds each live browser image, broker image, broker binary,
-  and release observation to that exact build, rejects tag substitution,
-  image changes, and topology reuse, retains denominators and p50/p95 duration,
-  and attests the report on push. The remote repository still registers only
-  its pre-hardening workflows, so that cell has not yet executed;
+  Chrome sandbox fail inside QEMU. The 2026-08-09 candidate source defines a
+  pinned `ubuntu-24.04` protected-main GHCR cell with one source-bound build,
+  five distinct fresh-ephemeral live sessions, exact image/release/topology
+  cross-binding, report reconstruction, and digest-bound attestation. There is
+  still no authoritative evidence that a protected Environment admitted the
+  job, package access succeeded, GHCR publish/pull/logout completed, the five
+  sessions passed, or GitHub attested the reconstructed report;
 - no selected-tab package has been installed, paired, and exercised in stable
   Chrome with a production-signed native host and generated manifest;
 - WebSocket denial is typed and broker-facing but has not been proven through a
   live TLS/browser path;
-- native signing, notarization, TCC, Keychain keys, installed readiness, SBOM,
-  and provenance are M6/M7 work;
-- completion-rate and token/screenshot benchmarks remain M8 work.
+- native signing, notarization, TCC, Keychain keys, and installed readiness
+  remain unverified; registry SBOM and provenance validation exist in candidate
+  source but have no qualifying hosted registry evidence;
+- production-browser completion-rate and token/screenshot benchmarks remain
+  unexecuted.
 
 HARD-051 and HARD-054 have direct package/process evidence. HARD-050, HARD-052,
 and HARD-053 remain unverified until their respective end-to-end live gates
@@ -285,3 +402,20 @@ Accessed 2026-07-19:
   derived:
   <https://playwright.dev/docs/docker> and
   <https://github.com/microsoft/playwright/blob/v1.61.0/utils/docker/seccomp_profile.json>
+
+Accessed 2026-08-09:
+
+- Docker Build attestation storage, SLSA provenance fields, and Buildx stdin
+  context behavior:
+  <https://docs.docker.com/build/metadata/attestations/>,
+  <https://docs.docker.com/build/metadata/attestations/slsa-provenance/>,
+  <https://docs.docker.com/build/metadata/attestations/slsa-definitions/>, and
+  <https://docs.docker.com/reference/cli/docker/buildx/build/>
+- Debian Snapshot usage and timestamp semantics:
+  <https://snapshot.debian.org/>
+- Official Buildx v0.36.1 release and source revision:
+  <https://github.com/docker/buildx/releases/tag/v0.36.1> and
+  <https://github.com/docker/buildx/tree/v0.36.1>
+- Official BuildKit v0.32.2 source used to bind attestation-manifest and
+  provenance-material behavior:
+  <https://github.com/moby/buildkit/tree/v0.32.2>

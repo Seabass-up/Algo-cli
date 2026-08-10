@@ -1,11 +1,26 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.26.0@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
+FROM --platform=linux/amd64 docker/dockerfile:1.26.0@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32 AS dockerfile_frontend_pin
+# Keep the pinned frontend in the reachable LLB graph so BuildKit records it
+# as a provenance material without copying it into the runtime image.
 FROM --platform=linux/amd64 debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e
 
-ARG CHROME_VERSION=150.0.7871.128-1
-ARG CHROME_DEB_URL=https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_150.0.7871.128-1_amd64.deb
-ARG CHROME_DEB_SHA256=83ed59c85878ebb8fa53915ebe7066cafc58d1c04c1c95449486e6f9d99a1efb
-ARG CRYPTOGRAPHY_WHEEL_URL=https://files.pythonhosted.org/packages/e6/8b/43011f7ebe515a8aa20d61f290a326cd890c2e738e16e59eaff8d9c3a412/cryptography-49.0.0-cp311-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-ARG CRYPTOGRAPHY_WHEEL_SHA256=0e959b578856a3924bc0cbb710fc12c387b9412a951389f3ca61704a9e25f325
+ARG DEBIAN_SNAPSHOT=20260712T202631Z
+ARG DEBIAN_SECURITY_SNAPSHOT=20260712T194830Z
+ARG DEBIAN_BOOKWORM_INRELEASE_SHA256=77737fa4b34f2693e982cc9ee35736816c35a7778fc2d326cc1bbf5b301fe1aa
+ARG DEBIAN_UPDATES_INRELEASE_SHA256=1027134746585f4f75c7170a957ebcb83582ea0a1dcb1b36ceeb3da0009e1b04
+ARG DEBIAN_SECURITY_INRELEASE_SHA256=d25ac813817a3b28e2a35defaf0eeb29a747017b5ab013ff597e0b5dc5b667c0
+ARG CA_CERTIFICATES_VERSION=20230311+deb12u1
+ARG CURL_VERSION=7.88.1-10+deb12u15
+ARG LIBNSS3_TOOLS_VERSION=2:3.87.1-1+deb12u2
+ARG PASSWD_VERSION=1:4.13+dfsg1-1+deb12u2
+ARG PYTHON3_VERSION=3.11.2-1+b1
+ARG DPKG_LOCK_SHA256=8de022828059888145925f8fc14424eb1f8b9a2d01d5bb24abff9d2d0d60a1d9
+ARG DPKG_LOCK_ENTRIES=228
+ARG CHROME_VERSION=151.0.7922.108-1
+ARG CHROME_DEB_URL=https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_151.0.7922.108-1_amd64.deb
+ARG CHROME_DEB_SHA256=bfb6e6d345055eb481a50db423256fa2732ce010f785a56c327e213a638efdef
+ARG CRYPTOGRAPHY_WHEEL_URL=https://files.pythonhosted.org/packages/d9/41/029086c34d91052fc3b88bcc8056f709a7c915c7a23b235a54eb800b1c97/cryptography-50.0.0-cp311-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+ARG CRYPTOGRAPHY_WHEEL_SHA256=06a32a980526a6ab9a4b9bf8f7385800791e2bb960903cb6b530e4817509a3b7
 ARG CFFI_WHEEL_URL=https://files.pythonhosted.org/packages/fb/d2/4398416cd699b35167947c6e22aca52c47e69ad5695073c9f1f2c52e04aa/cffi-2.1.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
 ARG CFFI_WHEEL_SHA256=aa7a1b53a2a4452ada2d1b5dade9960b2522f1e61293a811a077439e39029565
 ARG PYCPARSER_WHEEL_URL=https://files.pythonhosted.org/packages/0c/c3/44f3fbbfa403ea2a7c779186dc20772604442dde72947e7d01069cbe98e3/pycparser-3.0-py3-none-any.whl
@@ -13,12 +28,43 @@ ARG PYCPARSER_WHEEL_SHA256=b727414169a36b7d524c1c3e31839a521725078d7b2ff03865684
 ARG BORON_CODE_DIGEST
 ARG DEBIAN_FRONTEND=noninteractive
 
-RUN test -n "${BORON_CODE_DIGEST}" \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl libnss3-tools passwd python3 \
+RUN --mount=type=bind,from=dockerfile_frontend_pin,source=/bin/dockerfile-frontend,target=/tmp/dockerfile-frontend,readonly \
+    test -x /tmp/dockerfile-frontend \
+    && test -n "${BORON_CODE_DIGEST}" \
+    && printf '%s\n' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/" \
+        'Suites: bookworm bookworm-updates' \
+        'Components: main' \
+        'Check-Valid-Until: no' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        '' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SECURITY_SNAPSHOT}/" \
+        'Suites: bookworm-security' \
+        'Components: main' \
+        'Check-Valid-Until: no' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        > /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Languages=none -o Acquire::Retries=5 update \
+    && printf '%s  %s\n' \
+        "${DEBIAN_BOOKWORM_INRELEASE_SHA256}" "/var/lib/apt/lists/snapshot.debian.org_archive_debian_${DEBIAN_SNAPSHOT}_dists_bookworm_InRelease" \
+        "${DEBIAN_UPDATES_INRELEASE_SHA256}" "/var/lib/apt/lists/snapshot.debian.org_archive_debian_${DEBIAN_SNAPSHOT}_dists_bookworm-updates_InRelease" \
+        "${DEBIAN_SECURITY_INRELEASE_SHA256}" "/var/lib/apt/lists/snapshot.debian.org_archive_debian-security_${DEBIAN_SECURITY_SNAPSHOT}_dists_bookworm-security_InRelease" \
+        | sha256sum --check --strict \
+    && apt-get install -y --no-install-recommends \
+        "ca-certificates=${CA_CERTIFICATES_VERSION}" \
+        "curl=${CURL_VERSION}" \
+        "libnss3-tools=${LIBNSS3_TOOLS_VERSION}" \
+        "passwd=${PASSWD_VERSION}" \
+        "python3=${PYTHON3_VERSION}" \
     && curl --fail --location --proto '=https' --tlsv1.2 --output /tmp/google-chrome.deb "${CHROME_DEB_URL}" \
     && printf '%s  %s\n' "${CHROME_DEB_SHA256}" /tmp/google-chrome.deb | sha256sum --check --strict \
     && apt-get install -y --no-install-recommends /tmp/google-chrome.deb \
+    && test -z "$(dpkg --audit)" \
+    && dpkg-query -W -f='${binary:Package}=${Version}\n' | LC_ALL=C sort > /tmp/dpkg.lock \
+    && test "$(awk 'END { print NR }' /tmp/dpkg.lock)" = "${DPKG_LOCK_ENTRIES}" \
+    && printf '%s  %s\n' "${DPKG_LOCK_SHA256}" /tmp/dpkg.lock | sha256sum --check --strict \
     && mkdir -p /usr/local/lib/python3.11/dist-packages /opt/algo/bin /opt/algo/chrome \
     && curl --fail --location --proto '=https' --tlsv1.2 --output /tmp/cryptography.whl "${CRYPTOGRAPHY_WHEEL_URL}" \
     && curl --fail --location --proto '=https' --tlsv1.2 --output /tmp/cffi.whl "${CFFI_WHEEL_URL}" \
@@ -32,7 +78,9 @@ RUN test -n "${BORON_CODE_DIGEST}" \
     && ln -s /opt/google/chrome/chrome /opt/algo/chrome/chrome \
     && groupadd --gid 1000 algo \
     && useradd --uid 1000 --gid 1000 --home-dir /home/algo --no-create-home --shell /usr/sbin/nologin algo \
-    && rm -rf /var/lib/apt/lists/* /tmp/*.whl /tmp/google-chrome.deb
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /etc/apt/sources.list.d/* \
+        /usr/share/keyrings/google-chrome.gpg /tmp/*.whl /tmp/google-chrome.deb /tmp/dpkg.lock
 
 COPY algo_cli/__init__.py /usr/local/lib/python3.11/dist-packages/algo_cli/__init__.py
 COPY algo_cli/boron_browser_wrapper.py /usr/local/lib/python3.11/dist-packages/algo_cli/boron_browser_wrapper.py
@@ -42,7 +90,7 @@ COPY algo_cli/resources/boron_browser/boron_managed_policy.json /etc/opt/chrome/
 
 RUN chmod 0555 /opt/algo/bin/boron-browser-wrapper \
     && chmod 0444 /etc/opt/chrome/policies/managed/boron-managed-policy.json \
-    && /usr/bin/python3 -B -I -c 'import cryptography; import algo_cli.boron_browser_entry; assert cryptography.__version__ == "49.0.0"' \
+    && /usr/bin/python3 -B -I -c 'import cryptography; import algo_cli.boron_browser_entry; assert cryptography.__version__ == "50.0.0"' \
     && test "$(dpkg-query -W -f='${Version}' google-chrome-stable)" = "${CHROME_VERSION}"
 
 LABEL org.opencontainers.image.title="Algo CLI Boron managed browser" \
@@ -50,10 +98,16 @@ LABEL org.opencontainers.image.title="Algo CLI Boron managed browser" \
       org.opencontainers.image.base.digest="sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e" \
       com.algo-cli.role="managed-browser" \
       com.algo-cli.protocol="1" \
-      com.algo-cli.browser.version="150.0.7871.128" \
-      com.algo-cli.browser.release-at-ms="1784235227785" \
-      com.algo-cli.browser.deb.sha256="sha256:83ed59c85878ebb8fa53915ebe7066cafc58d1c04c1c95449486e6f9d99a1efb" \
-      com.algo-cli.cryptography.version="49.0.0" \
+      com.algo-cli.browser.version="151.0.7922.108" \
+      com.algo-cli.browser.release-at-ms="1786046667459" \
+      com.algo-cli.browser.deb.sha256="sha256:bfb6e6d345055eb481a50db423256fa2732ce010f785a56c327e213a638efdef" \
+      com.algo-cli.cryptography.version="50.0.0" \
+      com.algo-cli.debian.snapshot="20260712T202631Z" \
+      com.algo-cli.debian.security-snapshot="20260712T194830Z" \
+      com.algo-cli.dpkg.lock.sha256="sha256:8de022828059888145925f8fc14424eb1f8b9a2d01d5bb24abff9d2d0d60a1d9" \
+      com.algo-cli.dpkg.lock.entries="228" \
+      com.algo-cli.build.hermetic="false" \
+      com.algo-cli.build.reproducible="false" \
       com.algo-cli.code.sha256="${BORON_CODE_DIGEST}"
 
 USER 1000:1000

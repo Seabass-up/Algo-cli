@@ -71,7 +71,6 @@ _SAFE_SESSION_COMMANDS = frozenset(
         "/hsearch",
         "/identity",
         "/info",
-        "/memories",
         "/perf",
         "/selfcheck",
         "/status",
@@ -130,28 +129,21 @@ def session_command_requires_approval(command_line: str) -> bool:
     if command == "/cd":
         return True
     if command in {"/intelligence", "/intel", "/intelagence"}:
-        return not (
-            arg in {"", "status", "show", "?", "guide", "help"}
-            or arg.startswith("query ")
-        )
+        return not (arg in {"", "status", "show", "?", "guide", "help"} or arg.startswith("query "))
     if command == "/kernel":
         return not (
-            arg in {"", "list", "show", "check", "?", "help"}
-            or arg.startswith("show ")
-            or arg.startswith("check ")
+            arg in {"", "list", "show", "check", "?", "help"} or arg.startswith("show ") or arg.startswith("check ")
         )
     if command == "/memory":
-        return not (
-            arg in {"", "home", "status", "show-home", "doctor", "benchmark", "help", "?"}
-            or arg.startswith("search ")
-            or arg.startswith("show ")
-        )
+        # Echo construction, doctor, inventory, recall, and context may run
+        # recovery, migration, expiry pruning, or usage accounting. Only the
+        # static help surface is lifecycle-neutral.
+        return arg not in {"help", "?"}
     if command in _EMPTY_ARG_TOGGLES:
         return arg not in {"status", "show", "?"}
     if command == "/agent":
         return not (
-            arg in {"help", "--help", "-h", "?", "threads", "list", "status", "show"}
-            or arg.startswith("show ")
+            arg in {"help", "--help", "-h", "?", "threads", "list", "status", "show"} or arg.startswith("show ")
         )
     if command == "/worktree":
         return arg not in {"", "status", "show", "list", "help", "?"}

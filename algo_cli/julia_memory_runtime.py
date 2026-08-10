@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config as config_module
-from . import memory_candidates
+from . import julia_memory_candidates as memory_candidates
 from .config import Config
 from .dorothy_perf_telemetry import record_perf_event
 
@@ -341,12 +341,7 @@ def _read_state_bytes(path: Path, *, max_bytes: int) -> bytes | None:
         or before.st_size > max_bytes
     ):
         raise MemorySystemError(f"Memory state file is unsafe or oversized: {path.name}")
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_BINARY", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor: int | None = None
     try:
         descriptor = os.open(path, flags)
@@ -354,8 +349,7 @@ def _read_state_bytes(path: Path, *, max_bytes: int) -> bytes | None:
         if (
             not stat.S_ISREG(opened.st_mode)
             or opened.st_nlink != 1
-            or (opened.st_dev, opened.st_ino, opened.st_size)
-            != (before.st_dev, before.st_ino, before.st_size)
+            or (opened.st_dev, opened.st_ino, opened.st_size) != (before.st_dev, before.st_ino, before.st_size)
         ):
             raise MemorySystemError(f"Memory state changed while opening: {path.name}")
         data = bytearray()
@@ -977,21 +971,11 @@ class MemoryCatalog:
             removed_ids = {
                 str(record.get("id") or "")
                 for record in records
-                if (
-                    requested_ids is not None
-                    and str(record.get("id") or "") in requested_ids
-                )
-                or (
-                    normalized_content is not None
-                    and _normalized(record.get("content")) == normalized_content
-                )
+                if (requested_ids is not None and str(record.get("id") or "") in requested_ids)
+                or (normalized_content is not None and _normalized(record.get("content")) == normalized_content)
             }
             if removed_ids:
-                retained = [
-                    record
-                    for record in records
-                    if str(record.get("id") or "") not in removed_ids
-                ]
+                retained = [record for record in records if str(record.get("id") or "") not in removed_ids]
                 _prune_record_links(retained, removed_ids)
                 # The vector sidecar is derived state. Persist its deletion
                 # first so a crash can leave only a rebuildable missing vector,
@@ -1238,14 +1222,9 @@ class MemoryCatalog:
                 str(record.get("id") or ""): cached[str(record.get("id") or "")]
                 for record in records
                 if str(record.get("id") or "") in cached
-                and cached[str(record.get("id") or "")]["content_hash"]
-                == _content_hash(record.get("content"))
+                and cached[str(record.get("id") or "")]["content_hash"] == _content_hash(record.get("content"))
             }
-            missing_all = [
-                record
-                for record in records
-                if str(record.get("id") or "") not in usable_cached
-            ]
+            missing_all = [record for record in records if str(record.get("id") or "") not in usable_cached]
             lazy_limit = min(
                 MAX_LAZY_EMBED_RECORDS,
                 max(1, MAX_INDEX_VECTOR_VALUES // dimensions),
@@ -1276,24 +1255,17 @@ class MemoryCatalog:
                         latest = self._load_index()
                     except MemorySystemError:
                         latest = _empty_index()
-                    latest_records = (
-                        dict(latest["records"])
-                        if latest.get("model") == clean_model
-                        else {}
-                    )
+                    latest_records = dict(latest["records"]) if latest.get("model") == clean_model else {}
                     merged = {
                         record_id: entry
                         for record_id, entry in latest_records.items()
                         if record_id in current_by_id
-                        and entry["content_hash"]
-                        == _content_hash(current_by_id[record_id].get("content"))
+                        and entry["content_hash"] == _content_hash(current_by_id[record_id].get("content"))
                         and len(entry["embedding"]) == dimensions
                     }
                     for record_id, entry in pending.items():
                         current = current_by_id.get(record_id)
-                        if current is not None and entry["content_hash"] == _content_hash(
-                            current.get("content")
-                        ):
+                        if current is not None and entry["content_hash"] == _content_hash(current.get("content")):
                             merged[record_id] = entry
                     merged = self._bounded_index_records(
                         merged,
@@ -1333,9 +1305,7 @@ class MemoryCatalog:
             return []
         if type(top_k) is not int or isinstance(top_k, bool) or not 1 <= top_k <= 50:
             raise MemorySystemError("Memory search top_k must be between 1 and 50.")
-        if tiers is not None and (
-            not isinstance(tiers, (set, frozenset)) or not tiers or not tiers <= VALID_TIERS
-        ):
+        if tiers is not None and (not isinstance(tiers, (set, frozenset)) or not tiers or not tiers <= VALID_TIERS):
             raise MemorySystemError("Memory search tiers are invalid.")
         allowed_scopes: set[str] | None = None
         if scopes is not None:
@@ -1456,9 +1426,7 @@ class MemoryCatalog:
             if first_vector is None:
                 return {"ready": False, "reason": "invalid embedding response", "indexed": 0}
             expected_dimensions = len(first_vector)
-            selected = selected[
-                : min(MAX_INDEX_RECORDS, max(1, MAX_INDEX_VECTOR_VALUES // expected_dimensions))
-            ]
+            selected = selected[: min(MAX_INDEX_RECORDS, max(1, MAX_INDEX_VECTOR_VALUES // expected_dimensions))]
             first = selected[0]
             indexed[str(first.get("id") or "")] = {
                 "content_hash": _content_hash(first.get("content")),
@@ -1643,6 +1611,141 @@ def _parse_add(parts: list[str]) -> tuple[str, str, str, str]:
     return tier, scope, slot, " ".join(content_parts)
 
 
+def _protected_memory_command_text(
+    subcommand: str,
+    remainder: list[str],
+    cfg: Any,
+) -> str:
+    """Execute /memory without constructing the legacy plaintext catalog."""
+
+    from .ada_memory_echo_veil import (
+        context_with_echo_veil,
+        doctor_with_echo_veil,
+        format_protected_prompt_context,
+        get_echo_veil_readiness,
+        list_echo_veil_memories,
+        promote_with_echo_veil,
+        recall_response_with_echo_veil,
+        reindex_with_echo_veil,
+        refresh_live_with_echo_veil,
+    )
+
+    if subcommand in {"home", "status", "show-home"}:
+        records = list_echo_veil_memories(cfg)
+        active = [record for record in records if record.get("superseded_by") is None]
+        counts: dict[str, int] = {}
+        for memory_record in active:
+            layer_name = str(memory_record.get("memory_layer") or "unknown")
+            counts[layer_name] = counts.get(layer_name, 0) + 1
+        status = doctor_with_echo_veil(cfg)
+        return (
+            "Echo Veil protected memory\n"
+            f"Mode: {status.get('mode', 'unknown')} · "
+            f"degraded {bool(status.get('degraded', False))}\n"
+            f"Active: {len(active)} · total {len(records)} · "
+            f"layers {json.dumps(counts, sort_keys=True)}\n"
+            "Use /memory search QUERY, /memory show ID, /memory context QUERY, "
+            "/memory refresh ID PAYLOAD, /memory promote ID --to LAYER "
+            "--reason REASON, or /memory doctor."
+        )
+    if subcommand in {"help", "?"}:
+        return (
+            "/memory home | search QUERY | show ID | context QUERY | doctor\n"
+            "/memory refresh ID PAYLOAD\n"
+            "/memory promote ID --to short_term|long_term --reason REASON\n"
+            "Use /remember FACT for a protected Short-Term write and /forget N "
+            "for protected erasure. Legacy memory commands remain blocked."
+        )
+    if subcommand == "doctor":
+        return json.dumps(
+            get_echo_veil_readiness(
+                cfg if isinstance(cfg, dict) else cfg.__dict__,
+                live_probe=True,
+            ),
+            indent=2,
+            sort_keys=True,
+        )
+    if subcommand == "search":
+        query = " ".join(remainder)
+        if not query:
+            raise MemorySystemError("Usage: /memory search QUERY")
+        response = recall_response_with_echo_veil(cfg, query, top_k=8)
+        rendered = format_protected_prompt_context(response)
+        return rendered or "No answerable protected memory found."
+    if subcommand == "show":
+        if len(remainder) != 1:
+            raise MemorySystemError("Usage: /memory show ID")
+        selected_record = next(
+            (item for item in list_echo_veil_memories(cfg) if str(item.get("vine_id") or "") == remainder[0]),
+            None,
+        )
+        if selected_record is None:
+            raise MemorySystemError("Protected memory was not found.")
+        return json.dumps(
+            selected_record,
+            indent=2,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    if subcommand == "context":
+        query = " ".join(remainder)
+        if not query:
+            raise MemorySystemError("Usage: /memory context QUERY")
+        return json.dumps(
+            context_with_echo_veil(cfg, query),
+            indent=2,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    if subcommand == "refresh":
+        if len(remainder) < 2:
+            raise MemorySystemError("Usage: /memory refresh ID PAYLOAD")
+        result = refresh_live_with_echo_veil(
+            cfg,
+            remainder[0],
+            " ".join(remainder[1:]),
+            source="user_explicit",
+        )
+        return json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True)
+    if subcommand == "promote":
+        if len(remainder) < 5 or remainder[1] != "--to":
+            raise MemorySystemError("Usage: /memory promote ID --to short_term|long_term --reason REASON")
+        try:
+            reason_index = remainder.index("--reason", 3)
+        except ValueError as exc:
+            raise MemorySystemError("Protected promotion requires --reason REASON.") from exc
+        target_layer = remainder[2]
+        reason = " ".join(remainder[reason_index + 1 :]).strip()
+        if reason_index != 3 or not reason:
+            raise MemorySystemError("Usage: /memory promote ID --to short_term|long_term --reason REASON")
+        result = promote_with_echo_veil(
+            cfg,
+            remainder[0],
+            target_layer,
+            reason=reason,
+            source="user_explicit",
+        )
+        return json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True)
+    if subcommand == "reindex":
+        return json.dumps(
+            reindex_with_echo_veil(cfg),
+            indent=2,
+            sort_keys=True,
+        )
+    if subcommand == "benchmark":
+        raise MemorySystemError(
+            "The legacy plaintext benchmark is disabled while Echo Veil "
+            "is authoritative; run Echo Veil's protected quality gate."
+        )
+    if subcommand in {"add", "supersede", "demote", "archive"}:
+        raise MemorySystemError(
+            "This legacy /memory mutation is prohibited while Echo Veil "
+            "is authoritative. Use /remember, /forget, protected refresh, "
+            "or protected promotion."
+        )
+    raise MemorySystemError("Unknown /memory command. Use /memory help.")
+
+
 def command_text(
     arg: str,
     cfg: Any,
@@ -1658,24 +1761,12 @@ def command_text(
         raise MemorySystemError(f"Unable to parse /memory arguments: {exc}") from exc
     subcommand = parts[0].lower() if parts else "home"
     remainder = parts[1:]
-    from .ada_memory_echo_veil import protection_required
+    from .ada_memory_echo_veil import echo_veil_authority_selected
 
-    required_protection = protection_required(cfg)
-    if required_protection and subcommand in {
-        "add",
-        "supersede",
-        "promote",
-        "demote",
-        "archive",
-        "reindex",
-    }:
-        raise MemorySystemError(
-            "This legacy /memory mutation is prohibited while Echo Veil "
-            "protection is required. Use /remember and /forget."
-        )
+    if echo_veil_authority_selected(cfg):
+        return _protected_memory_command_text(subcommand, remainder, cfg)
     catalog = MemoryCatalog()
-    if not required_protection:
-        catalog.sync_legacy_facts(getattr(cfg, "memories", ()), authoritative=False)
+    catalog.sync_legacy_facts(getattr(cfg, "memories", ()), authoritative=False)
     if subcommand in {"home", "status", "show-home"}:
         return home_text(catalog, getattr(cfg, "memories", ()))
     if subcommand in {"help", "?"}:
@@ -1769,18 +1860,21 @@ def remember_fact(
     *,
     source: str = "user_explicit",
 ) -> bool:
-    """Persist one pinned fact through the legacy and governed stores."""
+    """Persist one fact through the configured authoritative memory store."""
 
     clean_fact = _validate_content(fact)
-    from .ada_memory_echo_veil import protection_required, remember_with_echo_veil
+    from .ada_memory_echo_veil import (
+        echo_veil_authority_selected,
+        protection_required,
+        remember_with_echo_veil,
+    )
 
-    if protection_required(cfg):
+    if echo_veil_authority_selected(cfg):
         try:
             return remember_with_echo_veil(cfg, clean_fact, source=source)
         except RuntimeError as exc:
-            raise MemorySystemError(
-                "Required Echo Veil protection is unavailable; memory write refused."
-            ) from exc
+            policy = "Required" if protection_required(cfg) else "Enabled"
+            raise MemorySystemError(f"{policy} Echo Veil is unavailable; memory write refused.") from exc
     catalog = MemoryCatalog()
     current = _latest_legacy_facts(cfg)
     catalog.sync_legacy_facts(current, authoritative=False)
@@ -1832,27 +1926,19 @@ def forget_memory_index(cfg: Config, index: int) -> str:
     """Apply fail-recoverable hard-delete semantics to both memory stores."""
 
     from .ada_memory_echo_veil import (
-        create_echo_veil_layer,
+        echo_veil_authority_selected,
+        forget_with_echo_veil,
         list_echo_veil_memories,
-        protection_required,
     )
 
-    if protection_required(cfg):
-        records = [
-            record
-            for record in list_echo_veil_memories(cfg)
-            if record.get("superseded_by") is None
-        ]
+    if echo_veil_authority_selected(cfg):
+        records = [record for record in list_echo_veil_memories(cfg) if record.get("superseded_by") is None]
         record = records[index]
         vine_id = str(record.get("vine_id") or "")
         payload = str(record.get("payload") or "")
-        layer = create_echo_veil_layer(cfg)
-        if layer is None:
-            raise MemorySystemError("Required Echo Veil memory is unavailable.")
-        result = layer.forget(vine_id)
+        result = forget_with_echo_veil(cfg, vine_id)
         if not result.get("forgotten"):
             raise MemorySystemError("Echo Veil memory was not found.")
-        cfg.memories = [item for item in cfg.memories if str(item) != payload]
         return payload
 
     removed = _latest_legacy_facts(cfg)[index]
@@ -1864,14 +1950,12 @@ def forget_memory_index(cfg: Config, index: int) -> str:
     return removed
 
 
-_EXPLICIT_MEMORY_TOOLS = frozenset({"remember", "append_lesson"})
-_SUCCESSFUL_TOOL_STATUSES = frozenset({"worked"})
+_SUCCESSFUL_TOOL_STATUSES = frozenset({"succeeded", "worked"})
 
 
 def _successful_explicit_memory_write(tool_calls: Sequence[Mapping[str, Any]]) -> bool:
     return any(
-        str(call.get("name") or "") in _EXPLICIT_MEMORY_TOOLS
-        and str(call.get("status") or "") in _SUCCESSFUL_TOOL_STATUSES
+        call.get("explicit_memory_write") is True and str(call.get("status") or "") in _SUCCESSFUL_TOOL_STATUSES
         for call in tool_calls
     )
 
@@ -1936,16 +2020,21 @@ def capture_completed_user_turn(
         return result
 
     try:
+        from .ada_memory_echo_veil import echo_veil_authority_selected
+
+        protected = echo_veil_authority_selected(cfg)
+        existing_memory = () if protected else tuple(str(item) for item in cfg.memories)
         return memory_candidates.process_memory_candidates(
             original_user_text,
-            tuple(str(item) for item in cfg.memories),
+            existing_memory,
             config_module.MEMORY_CANDIDATE_STATE_FILE,
-            bool(cfg.memory_auto_capture_enabled),
+            config_module.memory_auto_capture_consent_granted(cfg),
             lambda fact: remember_fact(cfg, fact, source="auto_capture"),
             telemetry=lambda result: _record_result(result, source=safe_source),
             daily_limit=int(cfg.memory_auto_daily_limit),
             entry_limit=int(cfg.memory_auto_entry_limit),
             char_limit=int(cfg.memory_auto_char_limit),
+            protected=protected,
         )
     except Exception as exc:  # Completion must never fail because memory capture did.
         logger.debug("Automatic memory capture failed: %s", exc)

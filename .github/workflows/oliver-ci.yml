@@ -27,22 +27,34 @@ jobs:
           version: "0.11.26"
           enable-cache: true
       - name: Install locked project and quality tools
-        run: uv sync --frozen --no-editable --extra dev --extra supply-chain --reinstall-package algo-cli-runtime
+        run: uv sync --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil --reinstall-package algo-cli-runtime
       - name: Installed-source parity (blocking)
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain python -I scripts/oliver_installed_source_parity.py
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil python -I scripts/oliver_installed_source_parity.py
       - name: Ruff (blocking)
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain ruff check algo_cli tests scripts
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil ruff check algo_cli tests scripts
       - name: Public source scan (blocking)
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain python scripts/check_public_release.py
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil python scripts/check_public_release.py
       - name: Reachable history scan (blocking)
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain python scripts/check_public_history.py --allow-contributor-identities
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil python scripts/check_public_history.py --allow-contributor-identities
       - name: Release version source (blocking)
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain python scripts/check_release_version.py
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil python scripts/check_release_version.py
       - name: Locked Python dependency audit (blocking)
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain pip-audit --local --strict --progress-spinner off
+        run: |
+          uv export --quiet --frozen --format requirements-txt \
+            --extra dev --extra supply-chain --no-emit-project \
+            --no-emit-package echo-veil \
+            --output-file "${RUNNER_TEMP}/algo-cli-auditable-requirements.txt"
+          uv run --frozen --no-editable --extra dev --extra supply-chain \
+            pip-audit \
+            --requirement "${RUNNER_TEMP}/algo-cli-auditable-requirements.txt" \
+            --require-hashes --disable-pip --strict --progress-spinner off
+      - name: Echo Veil pinned-source and installed RECORD audit (blocking)
+        run: >-
+          uv run --frozen --no-editable --extra dev --extra supply-chain
+          --extra echo-veil python -I scripts/henry_echo_veil_dependency_audit.py
       - name: Runtime mypy contract (blocking)
         run: >-
-          uv run --frozen --no-editable --extra dev --extra supply-chain mypy
+          uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil mypy
           algo_cli/main.py
           algo_cli/tools.py
           algo_cli/harness.py
@@ -100,6 +112,7 @@ jobs:
           scripts/henry_austin_signing_runner.py
           scripts/ada_austin_signing_lifecycle_receipt.py
           scripts/henry_github_hardening_readiness.py
+          scripts/henry_echo_veil_dependency_audit.py
           scripts/nathan_agent_runtime_qualification.py
           scripts/austin_native_package_audit.py
           --ignore-missing-imports
@@ -108,13 +121,13 @@ jobs:
           --show-error-codes
       - name: Agent runtime hardening qualification (blocking)
         run: >-
-          uv run --frozen --no-editable --extra dev --extra supply-chain
+          uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil
           python scripts/nathan_agent_runtime_qualification.py --quiet
       - name: Compile check
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain python -m compileall -q algo_cli ollama_cli
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil python -m compileall -q algo_cli ollama_cli
       - name: Full suite with branch coverage floor
         run: >-
-          uv run --frozen --no-editable --extra dev --extra supply-chain pytest tests
+          uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil pytest tests
           --cov
           --cov-branch
           --cov-report=term-missing:skip-covered
@@ -123,7 +136,7 @@ jobs:
       - name: Upload coverage evidence
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
-          name: coverage-python-3.12-linux
+          name: coverage-python-3.12-linux-attempt-${{ github.run_attempt }}
           path: coverage.xml
           if-no-files-found: error
 
@@ -154,11 +167,11 @@ jobs:
           version: "0.11.26"
           enable-cache: true
       - name: Install locked project
-        run: uv sync --frozen --no-editable --extra dev --reinstall-package algo-cli-runtime
+        run: uv sync --frozen --no-editable --extra dev --extra echo-veil --reinstall-package algo-cli-runtime
       - name: Installed-source parity
-        run: uv run --frozen --no-editable --extra dev python -I scripts/oliver_installed_source_parity.py
+        run: uv run --frozen --no-editable --extra dev --extra echo-veil python -I scripts/oliver_installed_source_parity.py
       - name: Run full suite
-        run: uv run --frozen --no-editable --extra dev pytest tests
+        run: uv run --frozen --no-editable --extra dev --extra echo-veil pytest tests
 
   native:
     name: Native helper checks
@@ -195,11 +208,11 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
           govulncheck ./...
 
-  browser-isolation:
-    name: Boron public-browser boundary
+  browser-contracts:
+    name: Boron browser contracts
     needs: quality
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -213,43 +226,330 @@ jobs:
           enable-cache: true
       - name: Install locked browser audit environment
         run: uv sync --frozen --no-editable --extra dev --reinstall-package algo-cli-runtime
-      - name: Verify Docker and focused contracts
+      - name: Verify focused no-publish contracts
+        run: uv run --frozen --no-editable --extra dev pytest -q tests/test_boron_browser_isolation.py tests/test_boron_browser_images.py tests/test_xenon_browser_egress.py tests/test_xenon_browser_broker.py tests/test_boron_browser_wrapper.py tests/test_boron_browser_entry.py tests/test_henry_boron_hosted_qualification.py
+
+  browser-authority:
+    name: Boron protected-environment authority
+    if: ${{ github.event_name == 'push' && github.repository == 'Seabass-up/Algo-cli' && github.ref == 'refs/heads/main' }}
+    needs: browser-contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require externally reviewed Boron environment readiness
+        env:
+          BORON_HARDENING_ENVIRONMENT_READY: ${{ vars.BORON_HARDENING_ENVIRONMENT_READY }}
+          HENRY_REPOSITORY_ID: ${{ github.repository_id }}
+          HENRY_REF_PROTECTED: ${{ github.ref_protected }}
+          HENRY_SOURCE_SHA: ${{ github.sha }}
+          HENRY_WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
+          set -euo pipefail
+          test "${HENRY_REPOSITORY_ID}" = "1297752684"
+          test "${HENRY_REF_PROTECTED}" = "true"
+          test "${HENRY_WORKFLOW_SHA}" = "${HENRY_SOURCE_SHA}"
+          test "${BORON_HARDENING_ENVIRONMENT_READY}" = "true"
+          response="${RUNNER_TEMP}/henry-boron-environment.json"
+          umask 077
+          curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+            --max-time 20 --max-filesize 65536 \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            --output "${response}" \
+            https://api.github.com/repos/Seabass-up/Algo-cli/environments/browser-hardening
+          python3 -I - "${response}" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          def closed_object(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise ValueError
+                  result[key] = value
+              return result
+
+          try:
+              payload = Path(sys.argv[1]).read_bytes()
+              if not 1 <= len(payload) <= 65_536:
+                  raise ValueError
+              document = json.loads(payload, object_pairs_hook=closed_object)
+              if type(document) is not dict:
+                  raise ValueError
+              policy = document.get("deployment_branch_policy")
+              rules = document.get("protection_rules")
+              if type(rules) is not list:
+                  raise ValueError
+              reviewers = [
+                  rule
+                  for rule in rules
+                  if type(rule) is dict and rule.get("type") == "required_reviewers"
+              ]
+              reviewer_rows = reviewers[0].get("reviewers") if len(reviewers) == 1 else None
+              if (
+                  document.get("name") != "browser-hardening"
+                  or document.get("can_admins_bypass") is not False
+                  or type(policy) is not dict
+                  or policy.get("protected_branches") is not True
+                  or policy.get("custom_branch_policies") is not False
+                  or len(reviewers) != 1
+                  or reviewers[0].get("prevent_self_review") is not True
+                  or type(reviewer_rows) is not list
+                  or not reviewer_rows
+                  or any(
+                      type(row) is not dict
+                      or row.get("type") not in {"User", "Team"}
+                      or type(row.get("reviewer")) is not dict
+                      or type(row["reviewer"].get("id")) is not int
+                      or row["reviewer"]["id"] <= 0
+                      for row in reviewer_rows
+                  )
+              ):
+                  raise ValueError
+          except (OSError, UnicodeError, ValueError):
+              raise SystemExit("Boron environment authority verification failed") from None
+          PY
+
+  browser-isolation:
+    name: Boron public-browser boundary
+    if: ${{ github.event_name == 'push' && github.repository == 'Seabass-up/Algo-cli' && github.repository_id == '1297752684' && github.ref == 'refs/heads/main' && github.ref_protected && github.workflow_sha == github.sha && vars.BORON_HARDENING_ENVIRONMENT_READY == 'true' }}
+    needs: [browser-contracts, browser-authority]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment:
+      name: browser-hardening
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      evidence-artifact-id: ${{ steps.boron-evidence.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.26"
+          enable-cache: true
+      - name: Prepare isolated Docker authentication directory
+        run: |
+          docker_config="${RUNNER_TEMP}/henry-boron-docker-config"
+          install -d -m 0700 "${docker_config}"
+          printf '%s\n' "DOCKER_CONFIG=${docker_config}" >> "${GITHUB_ENV}"
+      - id: henry-buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          version: v0.36.1
+          cache-binary: false
+          driver: docker-container
+          driver-opts: image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          buildkitd-flags: --log-format text
+          keep-state: false
+          cleanup: false
+      - name: Install locked browser qualification environment
+        run: uv sync --frozen --no-editable --extra dev --reinstall-package algo-cli-runtime
+      - id: henry-docker-authority
+        name: Verify exact Git and native Docker authority
+        env:
+          HENRY_BUILDX_NAME: ${{ steps.henry-buildx.outputs.name }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "${GITHUB_SHA}"
+          git update-index --refresh
+          git diff --quiet --no-ext-diff --no-textconv "${GITHUB_SHA}" --
+          git diff --cached --quiet --no-ext-diff --no-textconv "${GITHUB_SHA}" --
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          buildx_plugin="${DOCKER_CONFIG}/cli-plugins/docker-buildx"
+          test -f "${buildx_plugin}"
+          test ! -L "${buildx_plugin}"
+          buildx_digest="$(sha256sum -- "${buildx_plugin}" | awk '{print $1}')"
+          test "${buildx_digest}" = "48af8a397ebd60178778bf63611dbcebe5f5e7a9be90eb9147b24b9587455778"
           docker version
-          docker buildx version
-          uv run --frozen --no-editable --extra dev pytest -q tests/test_boron_browser_isolation.py tests/test_boron_browser_images.py tests/test_xenon_browser_egress.py tests/test_xenon_browser_broker.py tests/test_boron_browser_wrapper.py tests/test_boron_browser_entry.py tests/test_henry_boron_hosted_qualification.py
+          buildx_version="$(docker buildx version)"
+          test "${buildx_version}" = "github.com/docker/buildx v0.36.1 1d8dde89b8aba914e05e45366770736fea1fd690"
+          buildkit_identity="$(docker buildx inspect --bootstrap)"
+          grep -Eq '^[[:space:]]*BuildKit:[[:space:]]+v0\.32\.2$' <<< "${buildkit_identity}"
+          [[ "${HENRY_BUILDX_NAME}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]]
+          buildx_container_name="buildx_buildkit_${HENRY_BUILDX_NAME}0"
+          buildx_container_id="$(timeout --signal=TERM --kill-after=5s 15s docker container inspect --format '{{.Id}}' "${buildx_container_name}")"
+          [[ "${buildx_container_id}" =~ ^[0-9a-f]{64}$ ]]
+          buildx_volume_name="${buildx_container_name}_state"
+          observed_volume_name="$(timeout --signal=TERM --kill-after=5s 15s docker volume inspect --format '{{.Name}}' "${buildx_volume_name}")"
+          test "${observed_volume_name}" = "${buildx_volume_name}"
+          echo "container-id=${buildx_container_id}" >> "${GITHUB_OUTPUT}"
+          echo "volume-name=${buildx_volume_name}" >> "${GITHUB_OUTPUT}"
+      - name: Authenticate the protected publisher to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          logout: true
       - name: Run repeated source-bound hosted qualification
-        run: >-
-          uv run --frozen --no-editable --extra dev python
-          scripts/henry_boron_hosted_qualification.py --repetitions 5
-          | tee "${RUNNER_TEMP}/grace-boron-hosted-qualification.json"
+        run: |
+          set -euo pipefail
+          uv run --frozen --no-editable --extra dev python -I -B -S \
+            scripts/henry_boron_hosted_qualification.py --repetitions 5 \
+            --output-report "${RUNNER_TEMP}/grace-boron-hosted-qualification.json"
+          uv run --frozen --no-editable --extra dev python -I -B -S \
+            scripts/henry_boron_hosted_qualification.py \
+            --verify-report "${RUNNER_TEMP}/grace-boron-hosted-qualification.json"
+      - name: End and verify Henry GHCR and Buildx authority
+        if: ${{ always() }}
+        env:
+          HENRY_BUILDX_CONTAINER_ID: ${{ steps.henry-docker-authority.outputs.container-id }}
+          HENRY_BUILDX_NAME: ${{ steps.henry-buildx.outputs.name }}
+          HENRY_BUILDX_VOLUME_NAME: ${{ steps.henry-docker-authority.outputs.volume-name }}
+        run: |
+          set -uo pipefail
+          cleanup_failed=0
+          if ! timeout --signal=TERM --kill-after=5s 30s docker logout ghcr.io; then
+            cleanup_failed=1
+          fi
+          if ! python -I - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import stat
+
+          path = Path(os.environ["DOCKER_CONFIG"]) / "config.json"
+          try:
+              info = path.lstat()
+              payload = path.read_bytes()
+              if (
+                  stat.S_ISLNK(info.st_mode)
+                  or not stat.S_ISREG(info.st_mode)
+                  or info.st_nlink != 1
+                  or not 1 <= len(payload) <= 16_384
+              ):
+                  raise ValueError
+
+              def closed_object(pairs):
+                  result = {}
+                  for key, value in pairs:
+                      if key in result:
+                          raise ValueError
+                      result[key] = value
+                  return result
+
+              document = json.loads(payload, object_pairs_hook=closed_object)
+              if type(document) is not dict:
+                  raise ValueError
+              auths = document.get("auths", {})
+              helpers = document.get("credHelpers", {})
+              if type(auths) is not dict or type(helpers) is not dict:
+                  raise ValueError
+              if auths or helpers or document.get("credsStore"):
+                  raise ValueError
+          except FileNotFoundError:
+              pass
+          except (OSError, UnicodeError, ValueError):
+              raise SystemExit("GHCR credential cleanup verification failed") from None
+          PY
+          then
+            cleanup_failed=1
+          fi
+          if [[ ! "${HENRY_BUILDX_NAME}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]]; then
+            cleanup_failed=1
+          elif [[ ! "${HENRY_BUILDX_CONTAINER_ID}" =~ ^[0-9a-f]{64}$ ]]; then
+            cleanup_failed=1
+          elif [[ "${HENRY_BUILDX_VOLUME_NAME}" != "buildx_buildkit_${HENRY_BUILDX_NAME}0_state" ]]; then
+            cleanup_failed=1
+          elif ! timeout --signal=TERM --kill-after=5s 15s docker version >/dev/null 2>&1; then
+            cleanup_failed=1
+          else
+            if ! timeout --signal=TERM --kill-after=5s 45s docker buildx rm --force --timeout 30s "${HENRY_BUILDX_NAME}"; then
+              cleanup_failed=1
+            fi
+            if ! builder_names="$(timeout --signal=TERM --kill-after=5s 15s docker buildx ls --format '{{.Name}}')"; then
+              cleanup_failed=1
+            fi
+            if ! container_ids="$(timeout --signal=TERM --kill-after=5s 15s docker container ls --all --no-trunc --format '{{.ID}}')"; then
+              cleanup_failed=1
+            fi
+            if ! volume_names="$(timeout --signal=TERM --kill-after=5s 15s docker volume ls --format '{{.Name}}')"; then
+              cleanup_failed=1
+            fi
+            if grep -Fqx -- "${HENRY_BUILDX_NAME}" <<< "${builder_names:-}"; then
+              cleanup_failed=1
+            fi
+            if grep -Fqx -- "${HENRY_BUILDX_CONTAINER_ID}" <<< "${container_ids:-}"; then
+              cleanup_failed=1
+            fi
+            if grep -Fqx -- "${HENRY_BUILDX_VOLUME_NAME}" <<< "${volume_names:-}"; then
+              cleanup_failed=1
+            fi
+          fi
+          test "${cleanup_failed}" -eq 0
       - name: Retain Boron evidence
-        if: always()
+        id: boron-evidence
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
-          name: boron-browser-boundary
+          name: boron-browser-boundary-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/grace-boron-hosted-qualification.json
-          if-no-files-found: warn
+          if-no-files-found: error
 
-  browser-evidence-attestation:
-    name: Attest Boron hosted evidence
-    if: ${{ github.event_name == 'push' }}
+  browser-evidence-validation:
+    name: Validate Boron hosted evidence
+    if: ${{ github.event_name == 'push' && github.repository == 'Seabass-up/Algo-cli' && github.repository_id == '1297752684' && github.ref == 'refs/heads/main' && github.ref_protected && github.workflow_sha == github.sha && vars.BORON_HARDENING_ENVIRONMENT_READY == 'true' }}
     needs: browser-isolation
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
+    outputs:
+      report-digest: ${{ steps.validate.outputs.report-digest }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.26"
+          enable-cache: true
+      - name: Install locked browser audit environment
+        run: uv sync --frozen --no-editable --extra dev --reinstall-package algo-cli-runtime
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.browser-isolation.outputs.evidence-artifact-id }}
+          path: ${{ runner.temp }}/boron-browser-boundary
+      - name: Revalidate exact hosted evidence and emit its immutable subject digest
+        id: validate
+        run: |
+          set -euo pipefail
+          digest="$(uv run --frozen --no-editable --extra dev python -I -B -S \
+            scripts/henry_boron_hosted_qualification.py \
+            --verify-report \
+            "${RUNNER_TEMP}/boron-browser-boundary/grace-boron-hosted-qualification.json" \
+            --subject-digest-only)"
+          [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'report-digest=%s\n' "${digest}" >> "${GITHUB_OUTPUT}"
+
+  browser-evidence-attestation:
+    name: Attest Boron hosted evidence
+    if: ${{ github.event_name == 'push' && github.repository == 'Seabass-up/Algo-cli' && github.repository_id == '1297752684' && github.ref == 'refs/heads/main' && github.ref_protected && github.workflow_sha == github.sha && vars.BORON_HARDENING_ENVIRONMENT_READY == 'true' }}
+    needs: browser-evidence-validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment:
+      name: browser-hardening
+    permissions:
+      contents: read
       id-token: write
       attestations: write
     steps:
-      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
-        with:
-          name: boron-browser-boundary
-          path: ${{ runner.temp }}/boron-browser-boundary
       - name: Attest hosted browser qualification
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
         with:
-          subject-path: ${{ runner.temp }}/boron-browser-boundary/grace-boron-hosted-qualification.json
+          subject-name: grace-boron-hosted-qualification.json
+          subject-digest: ${{ needs.browser-evidence-validation.outputs.report-digest }}
           create-storage-record: false
 
   macos-native:
@@ -275,10 +575,11 @@ jobs:
           swift test --package-path native/austin
           swift build --package-path native/austin --configuration release
       - name: Ada replay-store process-kill qualification
-        run: >-
-          uv run --frozen --no-editable --extra dev python
-          scripts/henry_austin_ada_crash_qualification.py --trials 3
-          | tee "${RUNNER_TEMP}/ada-native-crash-qualification.json"
+        run: |
+          set -euo pipefail
+          uv run --frozen --no-editable --extra dev python \
+            scripts/henry_austin_ada_crash_qualification.py --trials 3 \
+            | tee "${RUNNER_TEMP}/ada-native-crash-qualification.json"
       - name: Stage, audit, and negatively probe native boundaries
         run: |
           ./script/austin_build_and_run.sh neon-probe
@@ -287,7 +588,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
-          name: ada-native-crash-qualification
+          name: ada-native-crash-qualification-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ada-native-crash-qualification.json
           if-no-files-found: error
 
@@ -321,6 +622,8 @@ jobs:
     needs: quality
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      distributions-artifact-id: ${{ steps.package-distributions.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -345,16 +648,17 @@ jobs:
         run: |
           uv run --frozen --no-editable --extra release python -m twine check dist/*.whl dist/*.tar.gz
           uv run --frozen --no-editable --extra release python scripts/check_public_release.py --artifacts-only --artifact dist/*.whl --artifact dist/*.tar.gz
-      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+      - id: package-distributions
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
-          name: python-package-distributions
+          name: python-package-distributions-attempt-${{ github.run_attempt }}
           path: |
             dist/*.whl
             dist/*.tar.gz
           if-no-files-found: error
       - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
-          name: release-supply-chain-evidence
+          name: release-supply-chain-evidence-attempt-${{ github.run_attempt }}
           path: |
             dist/algo-cli-runtime.lock.cdx.json
             dist/SHA256SUMS
@@ -378,7 +682,7 @@ jobs:
           python-version: "3.12"
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
-          name: python-package-distributions
+          artifact-ids: ${{ needs.package.outputs.distributions-artifact-id }}
           path: dist/
       - name: Install and exercise wheel in an isolated home
         run: python scripts/oliver_smoke_wheel_install.py dist

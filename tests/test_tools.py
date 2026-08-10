@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import StringIO
+import inspect
 import json
 import os
 import subprocess
@@ -31,6 +32,195 @@ def test_cap_truncates():
     long = tools._cap("x" * 50, limit=10)
     assert long.startswith("x" * 10)
     assert "truncated" in long
+
+
+def test_append_lesson_routes_to_echo_without_plaintext_shadow(monkeypatch):
+    from algo_cli import ada_memory_echo_veil, identity
+
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(
+        ada_memory_echo_veil,
+        "remember_with_echo_veil",
+        lambda _cfg, fact, *, source: captured.update({"fact": fact, "source": source}) or True,
+    )
+    monkeypatch.setattr(
+        identity,
+        "append_lesson",
+        lambda _text: (_ for _ in ()).throw(AssertionError("plaintext lesson must not be written")),
+    )
+
+    assert tools.append_lesson("  explicit lesson  ", cfg=cfg) == "Protected lesson saved."
+    assert captured == {
+        "fact": "explicit lesson",
+        "source": "explicit_lesson_tool",
+    }
+
+
+def test_append_lesson_fails_closed_when_echo_write_is_unavailable(monkeypatch):
+    from algo_cli import ada_memory_echo_veil, identity
+
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    monkeypatch.setattr(
+        ada_memory_echo_veil,
+        "remember_with_echo_veil",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("secret-canary")),
+    )
+    monkeypatch.setattr(
+        identity,
+        "append_lesson",
+        lambda _text: (_ for _ in ()).throw(AssertionError("plaintext fallback must not run")),
+    )
+
+    result = tools.append_lesson("secret-canary", cfg=cfg)
+    assert result == ("Error: protected lesson storage is unavailable; no plaintext lesson was written.")
+    assert "secret-canary" not in result
+
+
+def test_update_user_profile_refuses_echo_without_plaintext_write(monkeypatch):
+    from algo_cli import identity
+
+    canary = "PROTECTED_USER_PROFILE_CANARY"
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    monkeypatch.setattr(
+        identity,
+        "write_user_profile",
+        lambda _content: (_ for _ in ()).throw(AssertionError("protected profile must not reach plaintext identity")),
+    )
+
+    result = tools.update_user_profile(canary, cfg=cfg)
+
+    assert result == (
+        "Error: update_user_profile is unavailable while Echo Veil is the "
+        "exclusive memory authority; use an explicit reviewed Echo memory "
+        "action instead."
+    )
+    assert canary not in result
+
+
+def test_update_user_profile_runtime_refuses_before_dispatch(monkeypatch):
+    canary = "RUNTIME_PROTECTED_USER_PROFILE_CANARY"
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    invoked: list[bool] = []
+    monkeypatch.setitem(
+        tool_runtime.TOOL_MAP,
+        "update_user_profile",
+        lambda **_kwargs: invoked.append(True) or "unsafe",
+    )
+
+    result = tool_runtime.run_tool(
+        "update_user_profile",
+        {"content": canary},
+        cfg,
+    )
+
+    assert "update_user_profile is unavailable" in result
+    assert canary not in result
+    assert invoked == []
+
+
+def test_update_user_profile_preserves_echo_disabled_compatibility(monkeypatch):
+    from algo_cli import identity
+
+    writes: list[str] = []
+    monkeypatch.setattr(
+        identity,
+        "write_user_profile",
+        lambda content: writes.append(content) or "/private/USER.md",
+    )
+    cfg = Config(echo_veil_enabled=False, echo_veil_protection="optional")
+
+    result = tool_runtime.run_tool(
+        "update_user_profile",
+        {"content": "# About the User\n\nCompatibility"},
+        cfg,
+    )
+
+    assert result == "Wrote 31 chars to /private/USER.md"
+    assert writes == ["# About the User\n\nCompatibility"]
+
+
+def test_knowledge_graph_note_routes_to_echo_without_plaintext_shadow(monkeypatch):
+    from algo_cli import ada_memory_echo_veil
+
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(
+        ada_memory_echo_veil,
+        "remember_with_echo_veil",
+        lambda _cfg, fact, *, source: captured.update({"fact": fact, "source": source}) or True,
+    )
+    monkeypatch.setattr(
+        tools._index_compute_lab,
+        "write_graph_note",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("plaintext graph note must not be written")),
+    )
+
+    result = tool_runtime.run_tool(
+        "write_knowledge_graph_note",
+        {"title": "Alias", "body": "Use the protected name."},
+        cfg,
+    )
+
+    assert result == "Protected knowledge note saved."
+    assert captured == {
+        "fact": "Alias\n\nUse the protected name.",
+        "source": "explicit_knowledge_graph_note",
+    }
+
+
+def test_knowledge_graph_note_fails_closed_without_plaintext_fallback(monkeypatch):
+    from algo_cli import ada_memory_echo_veil
+
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    monkeypatch.setattr(
+        ada_memory_echo_veil,
+        "remember_with_echo_veil",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("private")),
+    )
+    monkeypatch.setattr(
+        tools._index_compute_lab,
+        "write_graph_note",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("plaintext fallback must not run")),
+    )
+
+    result = tools.write_knowledge_graph_note("private", "canary", cfg=cfg)
+
+    assert result == ("Error: protected knowledge-note storage is unavailable; no plaintext graph note was written.")
+    assert "canary" not in result
+
+
+def test_x_search_under_echo_is_current_turn_only_and_never_cached(
+    monkeypatch,
+) -> None:
+    from algo_cli import xai_auth, xai_client
+
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    monkeypatch.setattr(xai_auth, "get_valid_token", lambda: "configured")
+    monkeypatch.setattr(
+        xai_client,
+        "active_xai_client",
+        lambda: SimpleNamespace(
+            search=lambda **_kwargs: {
+                "content": "CURRENT_TURN_X_RESULT_CANARY",
+                "citations": ["https://x.com/example/status/1"],
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        tools,
+        "_atomic_write_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("protected X search must not persist a cache")),
+    )
+
+    result = tool_runtime.run_tool(
+        "x_search",
+        {"query": "CURRENT_TURN_X_QUERY_CANARY", "max_results": 3},
+        cfg,
+    )
+
+    assert "CURRENT_TURN_X_RESULT_CANARY" in result
+    assert "cached to" not in result
 
 
 def test_deny_command_re():
@@ -217,8 +407,8 @@ def test_run_shell_safe_mode_blocks_destructive():
     "command",
     [
         "python -c \"import shutil; shutil.rmtree('build')\"",
-        "powershell -Command \"ri -Recurse -Force build\"",
-        "cmd /c \"del output.txt\"",
+        'powershell -Command "ri -Recurse -Force build"',
+        'cmd /c "del output.txt"',
         "robocopy source target /MIR",
         "git -C repo push origin feature/runtime",
     ],
@@ -419,12 +609,16 @@ def test_web_fetch_worker_releases_the_limiter_it_acquired(monkeypatch):
 def test_failed_attempt_skip_is_not_self_perpetuating():
     cfg = Config()
     signature = tool_runtime.tool_attempt_signature("read_file", {"path": "missing.txt"})
-    cfg.attempt_ledger.append({"signature": signature, "status": "failed", "timestamp": time.time(), "summary": "missing"})
+    cfg.attempt_ledger.append(
+        {"signature": signature, "status": "failed", "timestamp": time.time(), "summary": "missing"}
+    )
 
     first = tool_runtime.find_failed_attempt(cfg, signature)
     assert first is not None
 
-    cfg.attempt_ledger.append({"signature": signature, "status": "skipped", "timestamp": time.time(), "summary": "skipped"})
+    cfg.attempt_ledger.append(
+        {"signature": signature, "status": "skipped", "timestamp": time.time(), "summary": "skipped"}
+    )
 
     assert tool_runtime.find_failed_attempt(cfg, signature) is None
 
@@ -432,7 +626,9 @@ def test_failed_attempt_skip_is_not_self_perpetuating():
 def test_denied_attempt_does_not_block_retry():
     cfg = Config()
     signature = tool_runtime.tool_attempt_signature("run_shell", {"command": "pytest"})
-    cfg.attempt_ledger.append({"signature": signature, "status": "denied", "timestamp": time.time(), "summary": "denied"})
+    cfg.attempt_ledger.append(
+        {"signature": signature, "status": "denied", "timestamp": time.time(), "summary": "denied"}
+    )
 
     assert tool_runtime.find_failed_attempt(cfg, signature) is None
 
@@ -715,7 +911,9 @@ def test_available_actions_exposes_harness_maintenance_loop():
     assert "/hsearch QUERY" in commands
     assert "/hread RECORD_ID" in commands
     assert any("/harness status" in item and "/harness embed" in item for item in payload["slash_command_guidance"])
-    assert any("/harness status" in item and "/harness embed" in item for item in payload["model_callable_tools"]["session"])
+    assert any(
+        "/harness status" in item and "/harness embed" in item for item in payload["model_callable_tools"]["session"]
+    )
     assert any("harness_stats" in item and "harness_refresh" in item for item in payload["verification_layer"])
 
 
@@ -872,11 +1070,14 @@ def test_plugin_load_and_credential_store_require_approval(monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "n")
 
     assert tool_runtime.ask_approval("plugins_load", {"plugin_name": "demo"}, cfg) is False
-    assert tool_runtime.ask_approval(
-        "credential_helpers_store",
-        {"helper": "env", "key": "TOKEN", "value": "super-secret"},
-        cfg,
-    ) is False
+    assert (
+        tool_runtime.ask_approval(
+            "credential_helpers_store",
+            {"helper": "env", "key": "TOKEN", "value": "super-secret"},
+            cfg,
+        )
+        is False
+    )
     assert len(prompts) == 1
     output = capsys.readouterr().out
     assert "trusted user handoff" in output
@@ -957,7 +1158,11 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
             {"id": "algo-cli:skill:harness-search-first.md", "harness": "algo-cli", "kind": "skill"},
         ],
     )
-    monkeypatch.setattr(tools, "query_knowledge_graph", lambda _query: "project:algo-cli  (187 edges)")
+    monkeypatch.setattr(
+        tools,
+        "query_knowledge_graph",
+        lambda _query, cfg=None: "project:algo-cli  (187 edges)",
+    )
     monkeypatch.setattr(
         harness_retrieval_benchmark,
         "run_harness_retrieval_benchmark",
@@ -989,14 +1194,27 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
             "status": "pass",
             "reason": "",
             "required_checks": [
-                "bm25_lexical", "exact_vector", "rrf_fusion", "stable_top_k",
-                "window_tinylfu", "embedding_priority", "memory_admission",
+                "bm25_lexical",
+                "exact_vector",
+                "rrf_fusion",
+                "stable_top_k",
+                "window_tinylfu",
+                "embedding_priority",
+                "memory_admission",
             ],
             "summary": {"required": 7, "passed": 7, "failed": 0},
-            "checks": {name: {"status": "pass", "required": True} for name in (
-                "bm25_lexical", "exact_vector", "rrf_fusion", "stable_top_k",
-                "window_tinylfu", "embedding_priority", "memory_admission",
-            )},
+            "checks": {
+                name: {"status": "pass", "required": True}
+                for name in (
+                    "bm25_lexical",
+                    "exact_vector",
+                    "rrf_fusion",
+                    "stable_top_k",
+                    "window_tinylfu",
+                    "embedding_priority",
+                    "memory_admission",
+                )
+            },
         },
     )
 
@@ -1041,9 +1259,7 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
 
     stats_payload["echo_veil"]["enabled"] = True
     enabled_but_unwired = json.loads(tools.harness_scorecard())
-    enabled_statuses = {
-        check["name"]: check["status"] for check in enabled_but_unwired["checks"]
-    }
+    enabled_statuses = {check["name"]: check["status"] for check in enabled_but_unwired["checks"]}
     assert enabled_but_unwired["score"] == 9.0
     assert enabled_but_unwired["overall_status"] == "blocked"
     assert enabled_statuses["project memory/wiki coverage"] == "fail"
@@ -1089,13 +1305,64 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
 
     counterfeit_pass = json.loads(tools.harness_scorecard())
 
-    counterfeit_statuses = {
-        check["name"]: check["status"] for check in counterfeit_pass["checks"]
-    }
+    counterfeit_statuses = {check["name"]: check["status"] for check in counterfeit_pass["checks"]}
     assert counterfeit_pass["score"] == 8.0
     assert counterfeit_pass["overall_status"] == "blocked"
     assert counterfeit_statuses["retrieval benchmark"] == "fail"
     assert counterfeit_statuses["algorithm effectiveness"] == "fail"
+
+
+def test_protected_harness_scorecard_never_reads_legacy_knowledge_graph(monkeypatch):
+    calls: list[str] = []
+
+    def forbidden_query(*_args, **_kwargs):
+        calls.append("legacy-graph")
+        raise AssertionError("legacy graph must not be read under Echo authority")
+
+    monkeypatch.setattr(tools, "query_knowledge_graph", forbidden_query)
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+
+    payload = json.loads(tools.harness_scorecard(cfg=cfg))
+
+    graph_check = next(check for check in payload["checks"] if check["name"] == "knowledge graph")
+    assert graph_check["status"] == "unavailable"
+    assert "disabled under Echo Veil" in graph_check["evidence"]
+    assert calls == []
+
+
+@pytest.mark.parametrize("tool_name", ["harness_scorecard", "harness_competitive_rating"])
+def test_scorecard_family_cfg_is_runtime_injected_and_hidden_from_schema(monkeypatch, tool_name):
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    seen: list[Config | None] = []
+    registered = tools.TOOL_MAP[tool_name]
+    monkeypatch.setitem(
+        tools.TOOL_MAP,
+        tool_name,
+        lambda cfg=None: seen.append(cfg) or '{"status":"ok"}',
+    )
+
+    assert tool_runtime.run_tool(tool_name, {}, cfg) == '{"status":"ok"}'
+    assert seen == [cfg]
+    assert "cfg" not in inspect.signature(registered).parameters
+
+
+def test_direct_harness_scorecard_aliases_forward_runtime_cfg(monkeypatch):
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    seen: list[tuple[str, Config | None]] = []
+    monkeypatch.setattr(
+        tools,
+        "harness_scorecard",
+        lambda cfg=None: seen.append(("score", cfg)) or "score",
+    )
+    monkeypatch.setattr(
+        tools,
+        "harness_competitive_rating",
+        lambda cfg=None: seen.append(("compare", cfg)) or "compare",
+    )
+
+    assert tools._direct_read_only_session_result("/harness score", cfg=cfg) == "score"
+    assert tools._direct_read_only_session_result("/harness compare", cfg=cfg) == "compare"
+    assert seen == [("score", cfg), ("compare", cfg)]
 
 
 def test_harness_index_integrity_rejects_duplicate_ids_and_nonfinite_vectors(monkeypatch):
@@ -1227,18 +1494,14 @@ def test_run_shell_allows_benign():
 
 
 def test_isolated_process_group_kwargs_are_portable(monkeypatch):
-    assert tools._isolated_process_group_kwargs("posix") == {
-        "start_new_session": True
-    }
+    assert tools._isolated_process_group_kwargs("posix") == {"start_new_session": True}
 
     monkeypatch.delattr(
         tools.subprocess,
         "CREATE_NEW_PROCESS_GROUP",
         raising=False,
     )
-    assert tools._isolated_process_group_kwargs("nt") == {
-        "creationflags": 0x00000200
-    }
+    assert tools._isolated_process_group_kwargs("nt") == {"creationflags": 0x00000200}
 
 
 def test_run_shell_timeout_terminates_isolated_process_tree(tmp_path, monkeypatch):
@@ -1450,12 +1713,15 @@ def test_gateway_payload_limits_fail_closed_before_open(monkeypatch):
         lambda *_args, **_kwargs: pytest.fail("invalid payload reached transport"),
     )
 
-    assert tools.gateway_embed_batch(
-        ["x"] * (tools.MAX_GATEWAY_BATCH_ITEMS + 1),
-        "m1",
-        True,
-        None,
-    ) is None
+    assert (
+        tools.gateway_embed_batch(
+            ["x"] * (tools.MAX_GATEWAY_BATCH_ITEMS + 1),
+            "m1",
+            True,
+            None,
+        )
+        is None
+    )
     assert tools.gateway_embed("x", " m1 ", True, None) is None
     assert tools.gateway_embed("x", "m1", True, 0) is None
     assert tools.gateway_embed("x" * tools.MAX_GATEWAY_REQUEST_BYTES, "m1", True, None) is None
@@ -1582,8 +1848,8 @@ def test_search_files_fallback_caps(tmp_path, monkeypatch):
 
     out = tools.search_files("needle", path=str(tmp_path))
     assert "app.py" in out
-    assert "node_modules" not in out          # heavy dir pruned
-    assert "big.log" not in out               # over the size cap
+    assert "node_modules" not in out  # heavy dir pruned
+    assert "big.log" not in out  # over the size cap
 
 
 def test_search_files_supports_single_file_target(tmp_path):
@@ -1786,6 +2052,37 @@ def test_query_knowledge_graph_expands_harness_meta_query_when_no_canonicals(mon
 
     assert "project:algo-cli" in out
     assert calls == ["rate your harness", "Algo CLI harness self-evaluation capability audit"]
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["query_knowledge_graph", "reindex_knowledge_graph"],
+)
+def test_echo_authority_refuses_legacy_knowledge_graph_before_access(
+    monkeypatch,
+    tool_name: str,
+) -> None:
+    cfg = Config(
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+    )
+    monkeypatch.setattr(
+        tools._index_compute_lab,
+        "run_ask",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("protected graph query reached legacy storage")),
+    )
+    monkeypatch.setattr(
+        tools._index_compute_lab,
+        "run_pipeline",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("protected graph reindex reached legacy storage")
+        ),
+    )
+
+    args = {"question": "private graph"} if tool_name == "query_knowledge_graph" else {}
+    result = tool_runtime.run_tool(tool_name, args, cfg)
+
+    assert "disabled while Echo Veil" in result
 
 
 def test_x_search_requires_auth(monkeypatch):

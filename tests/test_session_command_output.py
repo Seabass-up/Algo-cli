@@ -48,8 +48,8 @@ def test_session_command_returns_harness_payload(
     session_cfg: Config,
 ) -> None:
     monkeypatch.setattr(tools, "harness_stats", lambda: "HARNESS STATUS\nrecords=624")
-    monkeypatch.setattr(tools, "harness_scorecard", lambda: "HARNESS SCORE\nscore=9")
-    monkeypatch.setattr(tools, "harness_competitive_rating", lambda: "HARNESS COMPARE\nrank=2")
+    monkeypatch.setattr(tools, "harness_scorecard", lambda cfg=None: "HARNESS SCORE\nscore=9")
+    monkeypatch.setattr(tools, "harness_competitive_rating", lambda cfg=None: "HARNESS COMPARE\nrank=2")
 
     result = tools.session_command(command, cfg=session_cfg)
 
@@ -74,7 +74,7 @@ def test_session_command_preserves_machine_parseable_harness_json(
         "overall_status": "ready",
         "checks": [{"name": "long evidence", "evidence": "word " * 40}],
     }
-    monkeypatch.setattr(tools, "harness_scorecard", lambda: json.dumps(payload, indent=2))
+    monkeypatch.setattr(tools, "harness_scorecard", lambda cfg=None: json.dumps(payload, indent=2))
 
     result = tools.session_command("/harness score", cfg=session_cfg)
 
@@ -194,9 +194,7 @@ def test_session_command_redacts_credentials_from_captured_errors(
 ) -> None:
     class _GoogleClient:
         def calendar_events_list(self, **_kwargs: object) -> dict[str, object]:
-            raise RuntimeError(
-                "Authorization: Bearer bearer-secret access_token=access-secret"
-            )
+            raise RuntimeError("Authorization: Bearer bearer-secret access_token=access-secret")
 
     monkeypatch.setattr(main.google_workspace_auth, "get_valid_token", lambda: "live-token")
     monkeypatch.setattr(main.google_workspace, "GoogleWorkspaceClient", _GoogleClient)
@@ -286,9 +284,7 @@ def test_noncaptured_session_command_keeps_console_rendering(
             cfg=session_cfg,
         )
 
-    assert result == (
-        "Executed: /google gmail-draft --to a@example.test --subject test body"
-    )
+    assert result == ("Executed: /google gmail-draft --to a@example.test --subject test body")
     assert "interactive-secret" not in result
     assert captured.get().strip() == "access_token=interactive-secret"
 

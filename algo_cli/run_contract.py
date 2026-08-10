@@ -11,6 +11,7 @@ closed envelope that later runtime layers enforce and include in receipts.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import math
 import threading
@@ -24,14 +25,20 @@ from typing import Any, Callable, Literal, Sequence
 from . import agent_blocks
 from . import chatgpt_client
 from . import git_evidence
+from . import grace_key_store
 from . import model_info
 from . import samuel_policy
 from . import spawn_budget
 from . import task_router
 from .config import Config
+from .irene_privacy_views import PRIVACY_KEY_LABEL
 
 
-RUN_CONTRACT_SCHEMA_VERSION = 3
+RUN_CONTRACT_SCHEMA_VERSION = 4
+LEGACY_RUN_CONTRACT_SCHEMA_VERSION = 3
+SENSITIVE_DIGEST_SCHEMA_VERSION = 1
+SENSITIVE_DIGEST_DERIVATION_DOMAIN = b"algo-cli-agent-run-receipts-key-v1"
+SENSITIVE_DIGEST_MESSAGE_DOMAIN = b"algo-cli-agent-run-receipt-v1"
 ContractMode = Literal["shadow", "enforced"]
 ApprovalMode = Literal["interactive", "never", "auto"]
 MutationScope = Literal["none", "workspace"]
@@ -46,6 +53,12 @@ _MAX_TOOL_CALLS = 2_048
 _MAX_PARALLELISM = 4
 _MAX_WALL_TIME_SECONDS = 7_200.0
 _MAX_TOKEN_BUDGET = 100_000_000
+_SENSITIVE_DIGEST_SCHEMES = frozenset({"sha256-v1", "hmac-sha256-v1"})
+_WORKSPACE_DIGEST_DOMAINS = {
+    "status_digest": "workspace-status",
+    "tracked_diff_digest": "workspace-tracked-diff",
+    "untracked_digest": "workspace-untracked",
+}
 
 
 class RunContractError(ValueError):
@@ -54,6 +67,53 @@ class RunContractError(ValueError):
 
 class RunContractViolation(RuntimeError):
     """Raised when live execution attempts to exceed an enforced contract."""
+
+
+@dataclass(frozen=True)
+class SensitiveDigestBinding:
+    """Persisted, nonsecret identity for sensitive run-receipt digests."""
+
+    schema_version: int
+    scheme: str
+    key_id: str = ""
+    key_backend: str = ""
+
+    def __post_init__(self) -> None:
+        if self.schema_version != SENSITIVE_DIGEST_SCHEMA_VERSION:
+            raise RunContractError("sensitive digest schema is unsupported")
+        if self.scheme not in _SENSITIVE_DIGEST_SCHEMES:
+            raise RunContractError("sensitive digest scheme is unsupported")
+        key_id = _clean_text(
+            self.key_id,
+            field="sensitive digest key ID",
+            limit=80,
+            allow_empty=True,
+        )
+        backend = _clean_text(
+            self.key_backend,
+            field="sensitive digest key backend",
+            limit=80,
+            allow_empty=True,
+        )
+        if self.scheme == "sha256-v1":
+            if key_id or backend:
+                raise RunContractError("unkeyed sensitive digests cannot name key material")
+        else:
+            if not key_id.startswith("sha256:"):
+                raise RunContractError("protected sensitive digests require a key ID")
+            _clean_digest(
+                key_id.removeprefix("sha256:"),
+                field="sensitive digest key ID",
+                allow_empty=False,
+            )
+            if not backend or backend == "volatile_process":
+                raise RunContractError("protected sensitive digests require a persistent key backend")
+        object.__setattr__(self, "key_id", key_id)
+        object.__setattr__(self, "key_backend", backend)
+
+    @property
+    def protected(self) -> bool:
+        return self.scheme == "hmac-sha256-v1"
 
 
 def _clean_text(value: Any, *, field: str, limit: int, allow_empty: bool = False) -> str:
@@ -76,12 +136,191 @@ def _clean_digest(value: Any, *, field: str, allow_empty: bool = True) -> str:
     return text
 
 
+def _canonical_sensitive_json(value: Any) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise RunContractError("sensitive digest value is not finite JSON") from exc
+
+
+def _sensitive_domain(value: str) -> bytes:
+    domain = _clean_text(
+        value,
+        field="sensitive digest domain",
+        limit=128,
+    )
+    if any(character not in "abcdefghijklmnopqrstuvwxyz0123456789._:-" for character in domain):
+        raise RunContractError("sensitive digest domain is invalid")
+    return domain.encode("ascii")
+
+
+def _load_sensitive_digest_key(
+    *,
+    key_store: Any | None = None,
+    create: bool,
+) -> tuple[bytes, str, str]:
+    """Load and domain-derive the durable Irene receipt key."""
+
+    try:
+        loader = grace_key_store.get_key_material if create else grace_key_store.get_existing_key_material
+        material = loader(
+            PRIVACY_KEY_LABEL,
+            length=32,
+            require_persistent=True,
+            store=key_store,
+        )
+    except grace_key_store.KeyStoreError as exc:
+        raise RunContractError("persistent protected run-receipt key is unavailable") from exc
+    if not material.persistent or material.backend == "volatile_process":
+        raise RunContractError("protected run receipts cannot use volatile key material")
+    derived = hmac.new(
+        material.key,
+        SENSITIVE_DIGEST_DERIVATION_DOMAIN,
+        hashlib.sha256,
+    ).digest()
+    key_id = "sha256:" + hashlib.sha256(derived).hexdigest()
+    return derived, key_id, material.backend
+
+
+def compile_sensitive_digest_binding(
+    *,
+    protected: bool,
+    key_store: Any | None = None,
+) -> SensitiveDigestBinding:
+    """Bind sensitive run fields to unkeyed or persistent keyed receipts."""
+
+    if type(protected) is not bool:
+        raise RunContractError("protected digest selection must be boolean")
+    if not protected:
+        return SensitiveDigestBinding(
+            schema_version=SENSITIVE_DIGEST_SCHEMA_VERSION,
+            scheme="sha256-v1",
+        )
+    _key, key_id, backend = _load_sensitive_digest_key(
+        key_store=key_store,
+        create=True,
+    )
+    return SensitiveDigestBinding(
+        schema_version=SENSITIVE_DIGEST_SCHEMA_VERSION,
+        scheme="hmac-sha256-v1",
+        key_id=key_id,
+        key_backend=backend,
+    )
+
+
+def assert_sensitive_digest_key(
+    binding: SensitiveDigestBinding,
+    *,
+    key_store: Any | None = None,
+) -> None:
+    """Fail closed unless the current persistent key matches the contract."""
+
+    if not isinstance(binding, SensitiveDigestBinding):
+        raise RunContractError("sensitive digest binding is invalid")
+    if not binding.protected:
+        return
+    _key, key_id, backend = _load_sensitive_digest_key(
+        key_store=key_store,
+        create=False,
+    )
+    if not hmac.compare_digest(key_id, binding.key_id):
+        raise RunContractError("protected run-receipt key does not match the contract")
+    if backend != binding.key_backend:
+        raise RunContractError("protected run-receipt key backend does not match the contract")
+
+
+def sensitive_digest_bytes(
+    value: bytes,
+    *,
+    domain: str,
+    binding: SensitiveDigestBinding,
+    key_store: Any | None = None,
+) -> str:
+    """Return one domain-separated digest under a persisted binding."""
+
+    if type(value) is not bytes:
+        raise RunContractError("sensitive digest input must be bytes")
+    domain_bytes = _sensitive_domain(domain)
+    if not binding.protected:
+        return hashlib.sha256(value).hexdigest()
+    key, key_id, backend = _load_sensitive_digest_key(
+        key_store=key_store,
+        create=False,
+    )
+    if not hmac.compare_digest(key_id, binding.key_id) or backend != binding.key_backend:
+        raise RunContractError("protected run-receipt key does not match the contract")
+    payload = SENSITIVE_DIGEST_MESSAGE_DOMAIN + b"\0" + domain_bytes + b"\0" + value
+    return hmac.new(key, payload, hashlib.sha256).hexdigest()
+
+
+def sensitive_digest_text(
+    value: str,
+    *,
+    domain: str,
+    binding: SensitiveDigestBinding,
+    key_store: Any | None = None,
+) -> str:
+    if type(value) is not str:
+        raise RunContractError("sensitive digest text must be text")
+    return sensitive_digest_bytes(
+        value.encode("utf-8"),
+        domain=domain,
+        binding=binding,
+        key_store=key_store,
+    )
+
+
+def sensitive_digest_json(
+    value: Any,
+    *,
+    domain: str,
+    binding: SensitiveDigestBinding,
+    key_store: Any | None = None,
+) -> str:
+    return sensitive_digest_bytes(
+        _canonical_sensitive_json(value),
+        domain=domain,
+        binding=binding,
+        key_store=key_store,
+    )
+
+
+def sensitive_workspace_digest(
+    value: str,
+    *,
+    field: str,
+    binding: SensitiveDigestBinding,
+    key_store: Any | None = None,
+) -> str:
+    """Protect one persisted Git-state digest while preserving empty state."""
+
+    domain = _WORKSPACE_DIGEST_DOMAINS.get(field)
+    if domain is None:
+        raise RunContractError("workspace digest field is invalid")
+    digest = _clean_digest(
+        value,
+        field=f"workspace {field}",
+        allow_empty=True,
+    )
+    if not digest or not binding.protected:
+        return digest
+    return sensitive_digest_text(
+        digest,
+        domain=domain,
+        binding=binding,
+        key_store=key_store,
+    )
+
+
 def _clean_git_head(value: Any) -> str:
     text = _clean_text(value, field="initial_head", limit=64, allow_empty=True)
-    if text and (
-        len(text) not in {40, 64}
-        or any(character not in "0123456789abcdef" for character in text)
-    ):
+    if text and (len(text) not in {40, 64} or any(character not in "0123456789abcdef" for character in text)):
         raise RunContractError("initial_head must be a lowercase Git object ID")
     return text
 
@@ -89,14 +328,7 @@ def _clean_git_head(value: Any) -> str:
 def _clean_unique_names(values: Sequence[str], *, field: str, limit: int = 256) -> tuple[str, ...]:
     if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
         raise RunContractError(f"{field} must be a sequence")
-    cleaned = tuple(
-        sorted(
-            {
-                _clean_text(value, field=field, limit=limit)
-                for value in values
-            }
-        )
-    )
+    cleaned = tuple(sorted({_clean_text(value, field=field, limit=limit) for value in values}))
     return cleaned
 
 
@@ -159,9 +391,7 @@ class RunBudget:
             or not math.isfinite(float(self.max_wall_time_seconds))
             or not 1.0 <= float(self.max_wall_time_seconds) <= _MAX_WALL_TIME_SECONDS
         ):
-            raise RunContractError(
-                f"max_wall_time_seconds must be finite from 1 to {_MAX_WALL_TIME_SECONDS:g}"
-            )
+            raise RunContractError(f"max_wall_time_seconds must be finite from 1 to {_MAX_WALL_TIME_SECONDS:g}")
         object.__setattr__(self, "max_wall_time_seconds", float(self.max_wall_time_seconds))
         object.__setattr__(
             self,
@@ -301,10 +531,7 @@ class BlockRunContract:
         if type(self.requires_change) is not bool:
             raise RunContractError("requires_change must be boolean")
         verifiers = _clean_unique_names(self.required_verifiers, field="required verifiers")
-        reasons = tuple(
-            _clean_text(reason, field="policy reason", limit=512)
-            for reason in self.policy_reasons
-        )
+        reasons = tuple(_clean_text(reason, field="policy reason", limit=512) for reason in self.policy_reasons)
         object.__setattr__(self, "required_verifiers", verifiers)
         object.__setattr__(self, "policy_reasons", reasons)
         if self.requires_change and "post_mutation" not in verifiers:
@@ -325,17 +552,11 @@ class BlockRunContract:
         )
         if recovery_attempts:
             if not self.requires_change:
-                raise RunContractError(
-                    "only change-producing blocks may have recovery"
-                )
+                raise RunContractError("only change-producing blocks may have recovery")
             if not recovery_codes or not recovery_iterations:
-                raise RunContractError(
-                    "recovery attempts require codes and an iteration budget"
-                )
+                raise RunContractError("recovery attempts require codes and an iteration budget")
         elif recovery_codes or recovery_iterations:
-            raise RunContractError(
-                "disabled recovery cannot carry codes or an iteration budget"
-            )
+            raise RunContractError("disabled recovery cannot carry codes or an iteration budget")
         object.__setattr__(self, "recovery_codes", recovery_codes)
         object.__setattr__(
             self,
@@ -381,12 +602,23 @@ class RunContract:
     workspace: WorkspaceContract
     budget: RunBudget
     blocks: tuple[BlockRunContract, ...]
+    sensitive_digests: SensitiveDigestBinding = field(
+        default_factory=lambda: SensitiveDigestBinding(
+            schema_version=SENSITIVE_DIGEST_SCHEMA_VERSION,
+            scheme="sha256-v1",
+        )
+    )
 
     def __post_init__(self) -> None:
-        if self.schema_version != RUN_CONTRACT_SCHEMA_VERSION:
-            raise RunContractError(
-                f"run contract schema must be {RUN_CONTRACT_SCHEMA_VERSION}"
-            )
+        if self.schema_version not in {
+            LEGACY_RUN_CONTRACT_SCHEMA_VERSION,
+            RUN_CONTRACT_SCHEMA_VERSION,
+        }:
+            raise RunContractError("run contract schema is unsupported")
+        if not isinstance(self.sensitive_digests, SensitiveDigestBinding):
+            raise RunContractError("sensitive_digests must be a SensitiveDigestBinding")
+        if self.schema_version == LEGACY_RUN_CONTRACT_SCHEMA_VERSION and self.sensitive_digests.protected:
+            raise RunContractError("legacy run contracts cannot claim protected digests")
         nonce = _clean_text(self.run_nonce, field="run nonce", limit=64)
         if len(nonce) < 8:
             raise RunContractError("run nonce must contain at least 8 characters")
@@ -450,15 +682,8 @@ class RunContract:
             raise RunContractError("block ordinals must be contiguous and ordered")
         if any(block.max_iterations > self.budget.max_iterations_per_block for block in self.blocks):
             raise RunContractError("block exceeds the contract iteration budget")
-        if any(
-            not set(block.recovery_codes).issubset(
-                self.permitted_recovery_codes
-            )
-            for block in self.blocks
-        ):
-            raise RunContractError(
-                "block recovery codes exceed the run contract"
-            )
+        if any(not set(block.recovery_codes).issubset(self.permitted_recovery_codes) for block in self.blocks):
+            raise RunContractError("block recovery codes exceed the run contract")
         has_mutation = any(block.requires_change for block in self.blocks)
         if has_mutation != (self.mutation_scope == "workspace"):
             raise RunContractError("mutation scope must match change-producing blocks")
@@ -468,7 +693,10 @@ class RunContract:
     def payload(self) -> dict[str, Any]:
         """Return the canonical JSON-compatible contract payload."""
 
-        return asdict(self)
+        payload = asdict(self)
+        if self.schema_version == LEGACY_RUN_CONTRACT_SCHEMA_VERSION:
+            payload.pop("sensitive_digests", None)
+        return payload
 
     @classmethod
     def from_payload(cls, payload: Any) -> "RunContract":
@@ -485,29 +713,47 @@ class RunContract:
                 raise RunContractError(f"{label} fields do not match schema")
             return dict(value)
 
-        top = exact(payload, cls, "run contract")
+        schema_version = payload.get("schema_version")
+        expected_top = {item.name for item in fields(cls)}
+        if schema_version == LEGACY_RUN_CONTRACT_SCHEMA_VERSION:
+            expected_top.remove("sensitive_digests")
+        elif schema_version != RUN_CONTRACT_SCHEMA_VERSION:
+            raise RunContractError("persisted run contract schema is unsupported")
+        if set(payload) != expected_top:
+            raise RunContractError("run contract fields do not match schema")
+        top = dict(payload)
         workspace_payload = exact(
             top.pop("workspace"),
             WorkspaceContract,
             "workspace contract",
         )
         budget_payload = exact(top.pop("budget"), RunBudget, "run budget")
+        sensitive_payload: dict[str, Any] | None = None
+        if schema_version == RUN_CONTRACT_SCHEMA_VERSION:
+            sensitive_payload = exact(
+                top.pop("sensitive_digests"),
+                SensitiveDigestBinding,
+                "sensitive digest binding",
+            )
         raw_blocks = top.pop("blocks")
         if not isinstance(raw_blocks, (list, tuple)) or not raw_blocks:
-            raise RunContractError(
-                "persisted run contract blocks must be a sequence"
-            )
+            raise RunContractError("persisted run contract blocks must be a sequence")
         blocks = tuple(
-            BlockRunContract(
-                **exact(raw_block, BlockRunContract, "block run contract")
-            )
-            for raw_block in raw_blocks
+            BlockRunContract(**exact(raw_block, BlockRunContract, "block run contract")) for raw_block in raw_blocks
         )
         return cls(
             **top,
             workspace=WorkspaceContract(**workspace_payload),
             budget=RunBudget(**budget_payload),
             blocks=blocks,
+            sensitive_digests=(
+                SensitiveDigestBinding(**sensitive_payload)
+                if sensitive_payload is not None
+                else SensitiveDigestBinding(
+                    schema_version=SENSITIVE_DIGEST_SCHEMA_VERSION,
+                    scheme="sha256-v1",
+                )
+            ),
         )
 
     def canonical_bytes(self) -> bytes:
@@ -527,6 +773,62 @@ class RunContract:
     def contract_id(self) -> str:
         return f"run-contract-v{self.schema_version}:{self.digest}"
 
+    @property
+    def protected_digests(self) -> bool:
+        return self.sensitive_digests.protected
+
+    def assert_sensitive_digest_key(
+        self,
+        *,
+        key_store: Any | None = None,
+    ) -> None:
+        assert_sensitive_digest_key(
+            self.sensitive_digests,
+            key_store=key_store,
+        )
+
+    def digest_sensitive_text(
+        self,
+        value: str,
+        *,
+        domain: str,
+        key_store: Any | None = None,
+    ) -> str:
+        return sensitive_digest_text(
+            value,
+            domain=domain,
+            binding=self.sensitive_digests,
+            key_store=key_store,
+        )
+
+    def digest_sensitive_json(
+        self,
+        value: Any,
+        *,
+        domain: str,
+        key_store: Any | None = None,
+    ) -> str:
+        return sensitive_digest_json(
+            value,
+            domain=domain,
+            binding=self.sensitive_digests,
+            key_store=key_store,
+        )
+
+    def digest_workspace_state(
+        self,
+        value: str,
+        *,
+        field: str,
+        key_store: Any | None = None,
+    ) -> str:
+        return sensitive_workspace_digest(
+            value,
+            field=field,
+            binding=self.sensitive_digests,
+            key_store=key_store,
+        )
+
     def assert_live_authority(
         self,
         *,
@@ -539,20 +841,11 @@ class RunContract:
         if approval_mode not in _APPROVAL_MODES:
             raise RunContractViolation("live approval mode is invalid")
         if approval_mode != self.approval_mode:
-            raise RunContractViolation(
-                "live approval mode differs from the immutable run contract"
-            )
+            raise RunContractViolation("live approval mode differs from the immutable run contract")
         if type(safe_mode) is not bool or safe_mode != self.safe_mode:
-            raise RunContractViolation(
-                "live safe mode differs from the immutable run contract"
-            )
-        if (
-            type(session_preapproval) is not bool
-            or session_preapproval != self.session_preapproval
-        ):
-            raise RunContractViolation(
-                "live session preapproval differs from the immutable run contract"
-            )
+            raise RunContractViolation("live safe mode differs from the immutable run contract")
+        if type(session_preapproval) is not bool or session_preapproval != self.session_preapproval:
+            raise RunContractViolation("live session preapproval differs from the immutable run contract")
 
     def assert_live_approval_mode(self, approval_mode: str) -> None:
         """Compatibility helper for callers that only compare approval mode."""
@@ -560,9 +853,7 @@ class RunContract:
         if approval_mode not in _APPROVAL_MODES:
             raise RunContractViolation("live approval mode is invalid")
         if approval_mode != self.approval_mode:
-            raise RunContractViolation(
-                "live approval mode differs from the immutable run contract"
-            )
+            raise RunContractViolation("live approval mode differs from the immutable run contract")
 
     def block(self, ordinal: int) -> BlockRunContract:
         if isinstance(ordinal, bool) or not isinstance(ordinal, int):
@@ -618,8 +909,7 @@ class RunContractTracker:
         tracker.model_rounds = _nonnegative_int(
             model_rounds,
             field="model rounds",
-            maximum=contract.budget.max_tool_calls
-            + contract.budget.max_blocks,
+            maximum=contract.budget.max_tool_calls + contract.budget.max_blocks,
         )
         tracker.tool_calls = _nonnegative_int(
             tool_calls,
@@ -661,30 +951,14 @@ class RunContractTracker:
             self._next_block_ordinal += 1
 
     def start_model_round(self, prompt_tokens: int = 0) -> None:
-        if (
-            isinstance(prompt_tokens, bool)
-            or not isinstance(prompt_tokens, int)
-            or prompt_tokens < 0
-        ):
-            raise RunContractViolation(
-                "prompt token estimate must be a nonnegative integer"
-            )
+        if isinstance(prompt_tokens, bool) or not isinstance(prompt_tokens, int) or prompt_tokens < 0:
+            raise RunContractViolation("prompt token estimate must be a nonnegative integer")
         with self._lock:
             self.check_wall_time()
-            if (
-                prompt_tokens
-                > self.contract.budget.max_prompt_tokens_per_round
-            ):
-                raise RunContractViolation(
-                    "run contract per-round prompt budget is exhausted"
-                )
-            if (
-                self.prompt_tokens + prompt_tokens
-                > self.contract.budget.max_total_tokens
-            ):
-                raise RunContractViolation(
-                    "run contract total prompt budget is exhausted"
-                )
+            if prompt_tokens > self.contract.budget.max_prompt_tokens_per_round:
+                raise RunContractViolation("run contract per-round prompt budget is exhausted")
+            if self.prompt_tokens + prompt_tokens > self.contract.budget.max_total_tokens:
+                raise RunContractViolation("run contract total prompt budget is exhausted")
             self.prompt_tokens += prompt_tokens
             self.model_rounds += 1
             if self.model_rounds > self.contract.budget.max_tool_calls + self.contract.budget.max_blocks:
@@ -704,20 +978,54 @@ def _issued_at() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _task_digest(task: str) -> str:
+def _task_digest(
+    task: str,
+    *,
+    binding: SensitiveDigestBinding,
+    key_store: Any | None = None,
+) -> str:
     if type(task) is not str or not task.strip():
         raise RunContractError("task must be non-empty text")
-    return hashlib.sha256(task.encode("utf-8")).hexdigest()
+    return sensitive_digest_text(
+        task,
+        domain="task",
+        binding=binding,
+        key_store=key_store,
+    )
 
 
-def _workspace_contract(cwd: str, snapshot: git_evidence.GitSnapshot) -> WorkspaceContract:
+def _workspace_contract(
+    cwd: str,
+    snapshot: git_evidence.GitSnapshot,
+    *,
+    binding: SensitiveDigestBinding,
+    key_store: Any | None = None,
+) -> WorkspaceContract:
+    status_digest = snapshot.status_digest if snapshot.available else ""
+    tracked_diff_digest = snapshot.tracked_diff_digest if snapshot.available else ""
+    untracked_digest = snapshot.untracked_digest if snapshot.available else ""
     return WorkspaceContract(
         root=str(Path(cwd).expanduser().resolve(strict=False)),
         git_available=snapshot.available,
         initial_head=snapshot.head or "" if snapshot.available else "",
-        status_digest=snapshot.status_digest if snapshot.available else "",
-        tracked_diff_digest=snapshot.tracked_diff_digest if snapshot.available else "",
-        untracked_digest=snapshot.untracked_digest if snapshot.available else "",
+        status_digest=sensitive_workspace_digest(
+            status_digest,
+            field="status_digest",
+            binding=binding,
+            key_store=key_store,
+        ),
+        tracked_diff_digest=sensitive_workspace_digest(
+            tracked_diff_digest,
+            field="tracked_diff_digest",
+            binding=binding,
+            key_store=key_store,
+        ),
+        untracked_digest=sensitive_workspace_digest(
+            untracked_digest,
+            field="untracked_digest",
+            binding=binding,
+            key_store=key_store,
+        ),
     )
 
 
@@ -741,6 +1049,7 @@ def compile_agent_run_contract(
     snapshot: git_evidence.GitSnapshot | None = None,
     run_nonce: str | None = None,
     issued_at: str | None = None,
+    receipt_key_store: Any | None = None,
 ) -> RunContract:
     """Compile the current routed pipeline into a closed execution contract."""
 
@@ -751,11 +1060,13 @@ def compile_agent_run_contract(
     if len(blocks) > _MAX_BLOCKS:
         raise RunContractError(f"pipeline exceeds the {_MAX_BLOCKS}-block hard limit")
     if route.read_only and any(block.requires_change for block in blocks):
-        raise RunContractError(
-            "explicit read-only tasks cannot use a change-producing pipeline"
-        )
-    mode: ContractMode = (
-        "enforced" if bool(cfg.algorithmic_tool_policy_enabled) else "shadow"
+        raise RunContractError("explicit read-only tasks cannot use a change-producing pipeline")
+    mode: ContractMode = "enforced" if bool(cfg.algorithmic_tool_policy_enabled) else "shadow"
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    sensitive_digests = compile_sensitive_digest_binding(
+        protected=echo_veil_authority_selected(cfg),
+        key_store=receipt_key_store,
     )
     recommendation = spawn_budget.compute_budget(route, task)
     recommended_iterations = recommendation.max_iterations_per_block
@@ -780,9 +1091,7 @@ def compile_agent_run_contract(
             configured_ceiling,
             recommended_iterations or _MAX_ITERATIONS_PER_BLOCK,
         )
-        output_verifier = (
-            "final_output" if block.role == "final" else "block_output"
-        )
+        output_verifier = "final_output" if block.role == "final" else "block_output"
         verifiers = (
             (
                 output_verifier,
@@ -793,17 +1102,18 @@ def compile_agent_run_contract(
             else (output_verifier,)
         )
         block_model = block.model or cfg.model
-        recovery_enabled = (
-            block.requires_change and route.risk != "high"
-        )
+        recovery_enabled = block.requires_change and route.risk != "high"
         block_contracts.append(
             BlockRunContract(
                 ordinal=ordinal,
                 role=block.role,
                 model=block_model,
-                prompt_digest=hashlib.sha256(
-                    block.prompt.encode("utf-8")
-                ).hexdigest(),
+                prompt_digest=sensitive_digest_text(
+                    block.prompt,
+                    domain="block-prompt",
+                    binding=sensitive_digests,
+                    key_store=receipt_key_store,
+                ),
                 configured_tools=tuple(block.allowed_tools),
                 admitted_tools=tuple(decision.allowed_tools),
                 approval_required_tools=tuple(decision.approval_required),
@@ -812,9 +1122,7 @@ def compile_agent_run_contract(
                 requires_change=block.requires_change,
                 required_verifiers=verifiers,
                 policy_reasons=decision.reasons,
-                recovery_codes=(
-                    recoverable_codes if recovery_enabled else ()
-                ),
+                recovery_codes=(recoverable_codes if recovery_enabled else ()),
                 max_recovery_attempts=1 if recovery_enabled else 0,
                 recovery_max_iterations=(
                     min(
@@ -832,9 +1140,7 @@ def compile_agent_run_contract(
         max(
             1,
             sum(
-                block.max_iterations
-                + block.recovery_max_iterations
-                + block.max_recovery_attempts
+                block.max_iterations + block.recovery_max_iterations + block.max_recovery_attempts
                 for block in block_contracts
             ),
         ),
@@ -852,8 +1158,7 @@ def compile_agent_run_contract(
         _MAX_TOKEN_BUDGET,
         max(
             prompt_budget,
-            prompt_budget
-            * (max_tool_calls + len(block_contracts)),
+            prompt_budget * (max_tool_calls + len(block_contracts)),
         ),
     )
     wall_time = min(
@@ -861,15 +1166,7 @@ def compile_agent_run_contract(
         max(60.0, float(max_tool_calls * 120)),
     )
     has_mutation = any(block.requires_change for block in block_contracts)
-    required_verifiers = tuple(
-        sorted(
-            {
-                verifier
-                for block in block_contracts
-                for verifier in block.required_verifiers
-            }
-        )
-    )
+    required_verifiers = tuple(sorted({verifier for block in block_contracts for verifier in block.required_verifiers}))
     initial_snapshot = snapshot or git_evidence.capture_git_snapshot(cfg.cwd)
     return RunContract(
         schema_version=RUN_CONTRACT_SCHEMA_VERSION,
@@ -879,11 +1176,13 @@ def compile_agent_run_contract(
         approval_mode=approval_mode,
         safe_mode=bool(cfg.safe_mode),
         session_preapproval=(
-            False
-            if approval_mode == "never"
-            else approval_mode == "auto" or bool(cfg.auto_approve_active)
+            False if approval_mode == "never" else approval_mode == "auto" or bool(cfg.auto_approve_active)
         ),
-        task_digest=_task_digest(task),
+        task_digest=_task_digest(
+            task,
+            binding=sensitive_digests,
+            key_store=receipt_key_store,
+        ),
         task_type=route.task_type,
         complexity=route.complexity,
         risk=route.risk,
@@ -900,7 +1199,12 @@ def compile_agent_run_contract(
             "verification_missing",
             "write_blocked",
         ),
-        workspace=_workspace_contract(cfg.cwd, initial_snapshot),
+        workspace=_workspace_contract(
+            cfg.cwd,
+            initial_snapshot,
+            binding=sensitive_digests,
+            key_store=receipt_key_store,
+        ),
         budget=RunBudget(
             max_blocks=len(block_contracts),
             max_iterations_per_block=maximum_iterations,
@@ -914,4 +1218,5 @@ def compile_agent_run_contract(
             max_total_tokens=total_token_budget,
         ),
         blocks=tuple(block_contracts),
+        sensitive_digests=sensitive_digests,
     )

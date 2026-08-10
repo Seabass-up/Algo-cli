@@ -233,7 +233,6 @@ def _exclusive_signing_authority(workflows: Mapping[str, bytes]) -> bool:
     if set(workflows).difference({WORKFLOW_PATH}) == set():
         return True
     privileged_markers = (
-        "self-hosted",
         ENVIRONMENT_NAME,
         "algo-cli-signing",
         *sorted(REQUIRED_SECRETS),

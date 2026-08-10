@@ -28,9 +28,7 @@ BORON_MAX_BROKER_PIDS = 64
 BORON_MAX_SECURITY_LAG_MS = 72 * 60 * 60 * 1000
 BORON_MAX_RELEASE_EVIDENCE_AGE_MS = 5 * 60 * 1000
 
-_IMAGE_RE = re.compile(
-    r"^(?P<repository>[a-z0-9][a-z0-9._/-]{0,254})@sha256:(?P<digest>[0-9a-f]{64})$"
-)
+_IMAGE_RE = re.compile(r"^(?P<repository>[a-z0-9][a-z0-9._/-]{0,254})@sha256:(?P<digest>[0-9a-f]{64})$")
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 _VERSION_RE = re.compile(r"^[1-9][0-9]{0,3}(?:\.[0-9]{1,6}){3}$")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -115,13 +113,10 @@ class BoronBrowserReleaseEvidence:
         if type(self.browser_family) is not BoronBrowserFamily:
             _reject("browser_security_evidence_family")
         if self.source is BoronReleaseEvidenceSource.GOOGLE_VERSION_HISTORY and (
-            self.browser_family is not BoronBrowserFamily.CHROME_STABLE
-            or self.platform != "linux/amd64"
+            self.browser_family is not BoronBrowserFamily.CHROME_STABLE or self.platform != "linux/amd64"
         ):
             _reject("browser_security_evidence_scope")
-        if type(self.browser_version) is not str or not _VERSION_RE.fullmatch(
-            self.browser_version
-        ):
+        if type(self.browser_version) is not str or not _VERSION_RE.fullmatch(self.browser_version):
             _reject("browser_security_evidence_version")
         _integer(
             self.security_release_at_ms,
@@ -137,9 +132,7 @@ class BoronBrowserReleaseEvidence:
         )
         if self.observed_at_ms < self.security_release_at_ms:
             _reject("browser_security_evidence_clock_regression")
-        if type(self.source_digest) is not str or not _DIGEST_RE.fullmatch(
-            self.source_digest
-        ):
+        if type(self.source_digest) is not str or not _DIGEST_RE.fullmatch(self.source_digest):
             _reject("browser_security_evidence_digest")
 
     def assert_current(self, *, now_ms: int) -> None:
@@ -166,9 +159,7 @@ class BoronImagePin:
             _reject("image_purpose")
         if type(self.browser_family) is not BoronBrowserFamily:
             _reject("browser_family")
-        if type(self.browser_version) is not str or not _VERSION_RE.fullmatch(
-            self.browser_version
-        ):
+        if type(self.browser_version) is not str or not _VERSION_RE.fullmatch(self.browser_version):
             _reject("browser_version")
         if self.platform not in {"linux/arm64", "linux/amd64"}:
             _reject("image_platform")
@@ -209,10 +200,7 @@ class BoronImagePin:
         if type(release_evidence) is not BoronBrowserReleaseEvidence:
             _reject("browser_security_evidence_required")
         release_evidence.assert_current(now_ms=now)
-        if (
-            release_evidence.browser_family is not self.browser_family
-            or release_evidence.platform != self.platform
-        ):
+        if release_evidence.browser_family is not self.browser_family or release_evidence.platform != self.platform:
             _reject("browser_security_evidence_mismatch")
         pinned_version = _version_tuple(self.browser_version)
         latest_version = _version_tuple(release_evidence.browser_version)
@@ -251,9 +239,7 @@ class BoronBrokerImagePin:
             _reject("broker_image_digest_required")
         if self.platform not in {"linux/arm64", "linux/amd64"}:
             _reject("broker_image_platform")
-        if type(self.binary_digest) is not str or not _DIGEST_RE.fullmatch(
-            self.binary_digest
-        ):
+        if type(self.binary_digest) is not str or not _DIGEST_RE.fullmatch(self.binary_digest):
             _reject("broker_binary_digest")
         _integer(
             self.protocol_version,
@@ -626,9 +612,7 @@ def _assert_no_host_surface(row: Mapping[str, Any], network_name: str, *, broker
     if type(mounts) is not list:
         _reject("mount_evidence")
     if broker:
-        expected_tmpfs = {
-            "/tmp": "rw,noexec,nosuid,nodev,mode=0700,uid=1001,gid=1001,size=67108864"
-        }
+        expected_tmpfs = {"/tmp": "rw,noexec,nosuid,nodev,mode=0700,uid=1001,gid=1001,size=67108864"}
     else:
         common = "rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000"
         expected_tmpfs = {
@@ -642,18 +626,14 @@ def _assert_no_host_surface(row: Mapping[str, Any], network_name: str, *, broker
         _reject("tmpfs_evidence")
     for mount in mounts:
         detail = _mapping(mount, "mount_evidence")
-        if (
-            detail.get("Type") != "tmpfs"
-            or detail.get("Destination") not in expected_tmpfs
-        ):
+        if detail.get("Type") != "tmpfs" or detail.get("Destination") not in expected_tmpfs:
             _reject("host_mount")
     cap_drop = host.get("CapDrop")
     if type(cap_drop) is not list or "ALL" not in cap_drop:
         _reject("capabilities_not_dropped")
     security = host.get("SecurityOpt")
     if type(security) is not list or not any(
-        item in {"no-new-privileges", "no-new-privileges=true"}
-        for item in security
+        item in {"no-new-privileges", "no-new-privileges=true"} for item in security
     ):
         _reject("no_new_privileges_missing")
     if not any(type(item) is str and item.startswith("seccomp=") for item in security):
@@ -687,6 +667,8 @@ def verify_docker_topology(
     image: BoronImagePin,
     broker_image: BoronBrokerImagePin,
     *,
+    browser_runtime_image_id: str,
+    broker_runtime_image_id: str,
     internal_network_json: str,
     egress_network_json: str,
     browser_inspect_json: str,
@@ -698,6 +680,10 @@ def verify_docker_topology(
         type(plan) is not BoronNetworkPlan
         or type(image) is not BoronImagePin
         or type(broker_image) is not BoronBrokerImagePin
+        or type(browser_runtime_image_id) is not str
+        or not _DIGEST_RE.fullmatch(browser_runtime_image_id)
+        or type(broker_runtime_image_id) is not str
+        or not _DIGEST_RE.fullmatch(broker_runtime_image_id)
     ):
         _reject("topology_type")
     try:
@@ -709,6 +695,12 @@ def verify_docker_topology(
         _reject("topology_json")
     if network.get("Name") != plan.internal_network:
         _reject("network_identity")
+    network_labels = _mapping(network.get("Labels"), "network_labels")
+    if (
+        network_labels.get("com.algo-cli.role") != "browser-internal"
+        or network_labels.get("com.algo-cli.session") != plan.session_digest
+    ):
+        _reject("network_ownership")
     if network.get("Driver") != "bridge" or network.get("Internal") is not True:
         _reject("network_not_internal")
     if network.get("Attachable") is not False or network.get("Ingress") is not False:
@@ -735,6 +727,12 @@ def verify_docker_topology(
         or egress_network.get("EnableIPv6") is not False
     ):
         _reject("egress_network_evidence")
+    egress_labels = _mapping(egress_network.get("Labels"), "egress_network_labels")
+    if (
+        egress_labels.get("com.algo-cli.role") != "browser-egress"
+        or egress_labels.get("com.algo-cli.session") != plan.session_digest
+    ):
+        _reject("egress_network_ownership")
     egress_members = _network_members(egress_network)
     if egress_members != {plan.broker_container: members[plan.broker_container]}:
         _reject("egress_network_participants")
@@ -765,9 +763,14 @@ def verify_docker_topology(
     image_ref = config.get("Image")
     image_id = browser.get("Image")
     labels = _mapping(config.get("Labels"), "browser_labels")
-    if image_ref != image.reference or labels.get("com.algo-cli.image") != image.digest:
+    if (
+        image_ref != image.reference
+        or labels.get("com.algo-cli.role") != "managed-browser"
+        or labels.get("com.algo-cli.session") != plan.session_digest
+        or labels.get("com.algo-cli.image") != image.digest
+    ):
         _reject("image_identity_mismatch")
-    if type(image_id) is not str or not _DIGEST_RE.fullmatch(image_id):
+    if image_id != browser_runtime_image_id:
         _reject("image_identity_mismatch")
     if config.get("Path") is not None:
         # Some Docker API versions place Path at the container root only.
@@ -802,6 +805,8 @@ def verify_docker_topology(
     broker_labels = _mapping(broker_config.get("Labels"), "broker_labels")
     if (
         broker_config.get("Image") != broker_image.reference
+        or broker_labels.get("com.algo-cli.role") != "egress-broker"
+        or broker_labels.get("com.algo-cli.session") != plan.session_digest
         or broker_labels.get("com.algo-cli.image") != broker_image.digest
         or broker_labels.get("com.algo-cli.binary") != broker_image.binary_digest
         or broker.get("Path") != "/opt/algo/bin/xenon-egress-broker"
@@ -809,7 +814,7 @@ def verify_docker_topology(
     ):
         _reject("broker_image_identity_mismatch")
     broker_image_id = broker.get("Image")
-    if type(broker_image_id) is not str or not _DIGEST_RE.fullmatch(broker_image_id):
+    if broker_image_id != broker_runtime_image_id:
         _reject("broker_image_identity_mismatch")
     raw_broker_env = broker_config.get("Env")
     if type(raw_broker_env) is not list or any(type(item) is not str for item in raw_broker_env):
@@ -823,10 +828,7 @@ def verify_docker_topology(
     if (
         broker_env.get("XENON_LISTEN_ADDRESS") != plan.broker_internal_ip
         or broker_env.get("XENON_LISTEN_PORT") != str(plan.broker_port)
-        or any(
-            broker_env.get(name, "")
-            for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
-        )
+        or any(broker_env.get(name, "") for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"))
     ):
         _reject("broker_environment")
 
@@ -840,9 +842,10 @@ def verify_docker_topology(
         "broker_image_manifest": broker_image.digest,
         "broker_image_id": broker_image_id,
     }
-    digest = "sha256:" + hashlib.sha256(
-        json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode("ascii")
-    ).hexdigest()
+    digest = (
+        "sha256:"
+        + hashlib.sha256(json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode("ascii")).hexdigest()
+    )
     return BoronTopologyEvidence(
         network_name=plan.internal_network,
         egress_network_name=plan.egress_network,

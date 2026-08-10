@@ -73,7 +73,11 @@ def test_harness_read_short_alias_reads_record(monkeypatch):
             printed.append(str(value))
 
     monkeypatch.setattr(main_module, "console", _Console())
-    monkeypatch.setattr(tools, "harness_read", lambda record_id: f"read:{record_id}")
+    monkeypatch.setattr(
+        tools,
+        "harness_read",
+        lambda record_id, **_kwargs: f"read:{record_id}",
+    )
 
     handled, _client = main_module.handle_command("/hr algo-cli:skill:qol", cfg, None)
 
@@ -94,6 +98,60 @@ def test_unknown_harness_subcommand_suggests_fix_instead_of_showing_stats(monkey
     assert "Unknown /harness subcommand: refres" in errors[0]
     assert "Did you mean refresh?" in errors[0]
     assert "/hs" in errors[0]
+
+
+def test_lesson_slash_routes_to_echo_and_never_writes_plaintext(monkeypatch):
+    from algo_cli import ada_memory_echo_veil, identity
+
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    captured: dict[str, str] = {}
+    messages: list[str] = []
+    monkeypatch.setattr(
+        ada_memory_echo_veil,
+        "remember_with_echo_veil",
+        lambda _cfg, fact, *, source: captured.update({"fact": fact, "source": source}) or True,
+    )
+    monkeypatch.setattr(
+        identity,
+        "append_lesson",
+        lambda _text: (_ for _ in ()).throw(AssertionError("plaintext lesson must not be written")),
+    )
+    monkeypatch.setattr(main_module, "show_info", messages.append)
+
+    handled, _ = main_module.handle_command("/lesson protected canary", cfg, None)
+
+    assert handled is True
+    assert captured == {
+        "fact": "protected canary",
+        "source": "explicit_lesson_slash",
+    }
+    assert messages == ["Protected lesson saved."]
+
+
+def test_lessons_status_and_reindex_do_not_touch_plaintext_under_echo(monkeypatch):
+    from algo_cli import identity
+
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    info: list[str] = []
+    errors: list[str] = []
+    monkeypatch.setattr(
+        identity,
+        "lessons_index_status",
+        lambda: (_ for _ in ()).throw(AssertionError("must not read legacy index")),
+    )
+    monkeypatch.setattr(
+        identity,
+        "rebuild_lessons_index",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not rebuild legacy index")),
+    )
+    monkeypatch.setattr(main_module, "show_info", info.append)
+    monkeypatch.setattr(main_module, "show_error", errors.append)
+
+    main_module.handle_command("/lessons status", cfg, None)
+    main_module.handle_command("/lessons reindex", cfg, None)
+
+    assert info == ["Legacy plaintext lesson retrieval is inactive while Echo Veil owns memory."]
+    assert errors == ["Legacy lesson reindexing is disabled while Echo Veil owns memory."]
 
 
 def test_harness_subcommand_rejects_unexpected_arguments(monkeypatch):
@@ -206,35 +264,47 @@ def test_harness_status_alias_prints_harness_stats(monkeypatch):
 def test_harness_score_prints_harness_scorecard(monkeypatch):
     cfg = Config()
     printed: list[str] = []
+    seen: list[Config | None] = []
 
     class _Console:
         def print(self, value="") -> None:
             printed.append(str(value))
 
     monkeypatch.setattr(main_module, "console", _Console())
-    monkeypatch.setattr(tools, "harness_scorecard", lambda: '{"score": 10}')
+    monkeypatch.setattr(
+        tools,
+        "harness_scorecard",
+        lambda cfg=None: seen.append(cfg) or '{"score": 10}',
+    )
 
     handled, _client = main_module.handle_command("/harness score", cfg, None)
 
     assert handled is True
     assert printed == ['{"score": 10}']
+    assert seen == [cfg]
 
 
 def test_harness_compare_prints_competitive_rating(monkeypatch):
     cfg = Config()
     printed: list[str] = []
+    seen: list[Config | None] = []
 
     class _Console:
         def print(self, value="") -> None:
             printed.append(str(value))
 
     monkeypatch.setattr(main_module, "console", _Console())
-    monkeypatch.setattr(tools, "harness_competitive_rating", lambda: '{"claim": "blocked"}')
+    monkeypatch.setattr(
+        tools,
+        "harness_competitive_rating",
+        lambda cfg=None: seen.append(cfg) or '{"claim": "blocked"}',
+    )
 
     handled, _client = main_module.handle_command("/harness compare", cfg, None)
 
     assert handled is True
     assert printed == ['{"claim": "blocked"}']
+    assert seen == [cfg]
 
 
 def test_harness_status_and_embed_are_listed_slash_commands():
@@ -254,8 +324,7 @@ def test_every_registered_slash_root_has_dispatch_or_valid_alias():
 
     assert roots - dispatched - set(slash_dispatch.SLASH_COMMAND_ALIASES) == set()
     assert all(
-        source in roots and target in dispatched
-        for source, target in slash_dispatch.SLASH_COMMAND_ALIASES.items()
+        source in roots and target in dispatched for source, target in slash_dispatch.SLASH_COMMAND_ALIASES.items()
     )
 
 
@@ -288,7 +357,16 @@ def test_memory_auto_command_reports_and_persists_explicit_state(monkeypatch):
     infos: list[str] = []
     errors: list[str] = []
     saves: list[bool] = []
-    monkeypatch.setattr(cfg, "save", lambda: saves.append(cfg.memory_auto_capture_enabled))
+    monkeypatch.setattr(
+        cfg,
+        "save",
+        lambda: saves.append(
+            (
+                cfg.memory_auto_capture_enabled,
+                cfg.memory_auto_capture_consent_version,
+            )
+        ),
+    )
     monkeypatch.setattr(main_module, "show_info", infos.append)
     monkeypatch.setattr(main_module, "show_error", errors.append)
 
@@ -297,11 +375,11 @@ def test_memory_auto_command_reports_and_persists_explicit_state(monkeypatch):
     main_module.handle_command("/memory-auto on", cfg, None)
     main_module.handle_command("/memory-auto maybe", cfg, None)
 
-    assert "Automatic memory capture: ON" in infos[0]
+    assert "Automatic memory capture: OFF" in infos[0]
     assert "daily limit 5" in infos[0]
     assert "fingerprint cap 64" in infos[0]
     assert "memory budget 12000 chars" in infos[0]
-    assert saves == [False, True]
+    assert saves == [(False, 0), (True, 1)]
     assert cfg.memory_auto_capture_enabled is True
     assert errors == ["Usage: /memory-auto [on|off|status]"]
 

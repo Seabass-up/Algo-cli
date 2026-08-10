@@ -79,9 +79,7 @@ def _snapshot() -> dict[str, object]:
             "visibility": "selected",
         },
         "runner_group_repositories": {
-            "repositories": [
-                {"full_name": REPOSITORY, "id": SCRIPT.EXPECTED_REPOSITORY_ID}
-            ],
+            "repositories": [{"full_name": REPOSITORY, "id": SCRIPT.EXPECTED_REPOSITORY_ID}],
             "total_count": 1,
         },
         "workflows": {
@@ -147,6 +145,18 @@ def test_absent_remote_signing_workflow_is_not_misreported_as_caller_control() -
     }
 
 
+def test_self_hosted_denial_flag_is_not_misclassified_as_runner_authority() -> None:
+    workflows = {
+        SCRIPT.WORKFLOW_PATH: b"name: signing\n",
+        ".github/workflows/oliver-release.yml": (
+            b"name: release\njobs:\n  verify:\n    runs-on: ubuntu-latest\n"
+            b"    steps:\n      - run: verify --deny-self-hosted-runners\n"
+        ),
+    }
+
+    assert SCRIPT._exclusive_signing_authority(workflows) is True
+
+
 @pytest.mark.parametrize(
     ("case", "check_id"),
     [
@@ -169,6 +179,9 @@ def test_absent_remote_signing_workflow_is_not_misreported_as_caller_control() -
         ("workflow_substituted", "signing_workflow_source_identity"),
         ("workflow_inventory_substituted", "workflow_source_inventory_identity"),
         ("alternate_signer_target", "exclusive_signing_workflow_authority"),
+        ("alternate_self_hosted_scalar", "exclusive_signing_workflow_authority"),
+        ("alternate_self_hosted_list", "exclusive_signing_workflow_authority"),
+        ("alternate_self_hosted_matrix", "exclusive_signing_workflow_authority"),
         ("alternate_dynamic_runner", "exclusive_signing_workflow_authority"),
         ("alternate_dynamic_environment", "exclusive_signing_workflow_authority"),
         ("caller_controlled_anchor", "protected_signing_trust_contract"),
@@ -242,6 +255,25 @@ def test_remote_control_plane_weaknesses_remain_blocked(
         alternate_path = ".github/workflows/oliver-ci.yml"
         remote[alternate_path]["content"] = base64.b64encode(
             b"name: hostile\njobs:\n  steal:\n    runs-on: [self-hosted, algo-cli-signing-ephemeral]\n"
+        ).decode("ascii")
+    elif case == "alternate_self_hosted_scalar":
+        remote = snapshot["remote_workflow_files"]  # type: ignore[assignment]
+        alternate_path = ".github/workflows/oliver-ci.yml"
+        remote[alternate_path]["content"] = base64.b64encode(
+            b"name: hostile\njobs:\n  steal:\n    runs-on: self-hosted\n"
+        ).decode("ascii")
+    elif case == "alternate_self_hosted_list":
+        remote = snapshot["remote_workflow_files"]  # type: ignore[assignment]
+        alternate_path = ".github/workflows/oliver-ci.yml"
+        remote[alternate_path]["content"] = base64.b64encode(
+            b"name: hostile\njobs:\n  steal:\n    runs-on: [self-hosted, macOS]\n"
+        ).decode("ascii")
+    elif case == "alternate_self_hosted_matrix":
+        remote = snapshot["remote_workflow_files"]  # type: ignore[assignment]
+        alternate_path = ".github/workflows/oliver-ci.yml"
+        remote[alternate_path]["content"] = base64.b64encode(
+            b"name: hostile\njobs:\n  steal:\n    strategy:\n      matrix:\n"
+            b"        os: [ubuntu-latest, self-hosted]\n    runs-on: ${{ matrix.os }}\n"
         ).decode("ascii")
     elif case == "alternate_dynamic_runner":
         remote = snapshot["remote_workflow_files"]  # type: ignore[assignment]

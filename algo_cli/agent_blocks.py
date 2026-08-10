@@ -66,6 +66,7 @@ class AgentBlock:
     status_reason: str = ""
     output: str = ""
     tool_calls: int = 0
+    tool_call_receipts: list[dict[str, str | bool]] = field(default_factory=list)
     duration_ms: float = 0.0
     messages: list[dict] = field(default_factory=list)
     context_output: str = ""
@@ -416,7 +417,11 @@ def _validate_block(pipeline_name: str, index: int, data: Any) -> AgentBlock:
         raise BlocksConfigError(
             f"Error in blocks.toml: {label} has unknown tool group '{unknown[0]}'. Available: {available}."
         )
-    if isinstance(max_iterations, bool) or not isinstance(max_iterations, int) or not 1 <= max_iterations <= MAX_BLOCK_ITERATIONS:
+    if (
+        isinstance(max_iterations, bool)
+        or not isinstance(max_iterations, int)
+        or not 1 <= max_iterations <= MAX_BLOCK_ITERATIONS
+    ):
         raise BlocksConfigError(
             f"Error in blocks.toml: {label} max_iterations must be an integer from 1 to {MAX_BLOCK_ITERATIONS}."
         )
@@ -484,7 +489,9 @@ def pipeline_by_name(name: str, path: Path | None = None) -> list[AgentBlock]:
 def write_starter_config(path: Path | None = None) -> Path:
     config_path = path or BLOCKS_CONFIG_PATH
     if config_path.exists():
-        raise FileExistsError(f"{config_path} already exists. Edit it directly or remove it before running /agent init.")
+        raise FileExistsError(
+            f"{config_path} already exists. Edit it directly or remove it before running /agent init."
+        )
     config_path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_text(config_path, STARTER_CONFIG)
     return config_path
@@ -507,10 +514,7 @@ def pipeline_context(task: str, completed: list[AgentBlock]) -> str:
                 f"Reason: {block.status_reason}"
             )
         if block.verification_warning:
-            parts.append(
-                "## Verification\n"
-                f"{block.verification_warning}"
-            )
+            parts.append(f"## Verification\n{block.verification_warning}")
         if block.requires_change:
             writes = ", ".join(block.successful_writes) if block.successful_writes else "(none recorded)"
             parts.append(

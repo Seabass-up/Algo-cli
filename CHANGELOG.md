@@ -6,7 +6,7 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ### Changed
 
-- Bound the governed memory bridge to Echo Veil's scope-aware 0.6 API, added a
+- Bound the governed memory bridge to Echo Veil's scope-aware 0.7 API, added a
   full-commit-pinned optional extra, and canonicalized Algo's credential-free
   `localhost` Ollama default to an IP-literal loopback before Echo validation.
 - Replaced the duplicate in-memory Echo wrapper with one authoritative bridge
@@ -27,6 +27,17 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
   configuration without raw key material, and a fresh-process black-box test
   proving ordinary write → confidential disk state → restart → authorized
   recall while rejecting a mismatched scope.
+- Redacted the process working directory from one-shot session events and made
+  similarity scoring numerically stable for very large finite vectors so
+  runtime warnings cannot disclose local source paths.
+- Made automatic memory capture fail closed and opt-in through a versioned
+  consent marker; legacy saved booleans can no longer authorize durable writes.
+- Added a commit-pin, PEP 610, and installed-RECORD integrity gate for Echo
+  Veil, kept registry dependencies under a hashed lock audit, and upgraded
+  `cryptography` past `PYSEC-2026-3552`.
+- Applied the same hashed registry audit and separate Echo identity audit to
+  release builds, and refreshed the website lock to remove all reported npm
+  advisories without restoring the quarantined marketing changes.
 
 ## [0.18.0] - 2026-07-17
 

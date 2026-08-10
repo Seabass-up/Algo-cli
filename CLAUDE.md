@@ -202,7 +202,7 @@ Four files in `~/.algo_cli/identity/` are mtime-cached and prepended to the syst
 
 Lessons RAG: chunks lessons on `## ` headings, embeds with local model, injects top-5 cosine-nearest chunks based on the user message. Falls back to full inline when embeddings unavailable.
 
-### `memory_candidates.py` / `julia_memory_runtime.py` — Automatic Memory Admission
+### `julia_memory_candidates.py` / `julia_memory_runtime.py` — Automatic Memory Admission
 
 After a normal chat completion or a completed `/agent` pipeline, the runtime evaluates only the original user-authored text. Explicit durable markers pass through privacy, task/transience, code/quotation, length, exact/Jaccard duplicate, daily-write, fingerprint, and total-character gates. At most one entry is written per turn. Partial streams, exhausted tool loops, failed agents, and turns with a successful explicit `remember`/`append_lesson` tool call are skipped. The sidecar stores UTC days and SHA-256 fingerprints only; telemetry contains aggregate counts only. Use `/memory-auto status|on|off` to inspect or change the persisted setting.
 

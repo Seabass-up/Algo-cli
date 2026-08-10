@@ -1,6 +1,19 @@
-# main.py decomposition map
+---
+title: main.py Decomposition Map
+description: Current architecture status and limited roadmap for decomposing the Algo CLI orchestrator.
+tags: [architecture, roadmap, main, modules, algo-cli]
+status: architecture-status
+updated: 2026-07-24
+last_reviewed: 2026-07-24
+runtime_version: "Algo CLI v0.18.0"
+verification_revision: "215d7cb044fd530809af7c9d0a375e1d3bb792d5"
+---
+
+# main.py Decomposition Map
 
 `algo_cli/main.py` is the CLI orchestrator. Split it incrementally; keep `from algo_cli import main` working for tests and scripts.
+
+This page is a current architecture-status record with one optional roadmap item. It is not a promise that the next slice will be implemented. `tests/test_julia_curated_memory_contracts.py` verifies that every module named in the completed-module table still exists.
 
 ## Done
 

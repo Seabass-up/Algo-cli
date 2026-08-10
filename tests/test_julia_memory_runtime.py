@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from algo_cli import config, julia_memory_runtime as memory_runtime, memory_candidates
+from algo_cli import config, julia_memory_candidates as memory_candidates, julia_memory_runtime as memory_runtime
 from algo_cli import tools
-from algo_cli.config import Config
+from algo_cli.config import MEMORY_AUTO_CAPTURE_CONSENT_VERSION, Config
 from algo_cli.samuel_policy_engine import session_command_requires_approval
 
 
@@ -22,7 +22,10 @@ def test_completed_turn_stores_original_user_candidate_and_emits_aggregate_telem
         "record_perf_event",
         lambda event, **fields: events.append((event, fields)),
     )
-    cfg = Config()
+    cfg = Config(
+        memory_auto_capture_enabled=True,
+        memory_auto_capture_consent_version=MEMORY_AUTO_CAPTURE_CONSENT_VERSION,
+    )
 
     result = memory_runtime.capture_completed_user_turn(
         cfg,
@@ -37,6 +40,25 @@ def test_completed_turn_stores_original_user_candidate_and_emits_aggregate_telem
     serialized = json.dumps(events)
     assert "standard shell" not in serialized
     assert memory_candidates.memory_fingerprint("our standard shell is zsh.") not in serialized
+
+
+def test_legacy_auto_capture_boolean_without_current_consent_cannot_write(
+    config_dir,
+) -> None:
+    cfg = Config(
+        memory_auto_capture_enabled=True,
+        memory_auto_capture_consent_version=0,
+    )
+
+    result = memory_runtime.capture_completed_user_turn(
+        cfg,
+        "Remember that our standard shell is zsh.",
+        completed=True,
+    )
+
+    assert result["status"] == "disabled"
+    assert cfg.memories == []
+    assert not config.MEMORY_CANDIDATE_STATE_FILE.exists()
 
 
 def test_incomplete_turn_and_explicit_memory_tool_skip_candidate_processing(
@@ -57,17 +79,72 @@ def test_incomplete_turn_and_explicit_memory_tool_skip_candidate_processing(
         cfg,
         text,
         completed=True,
-        tool_calls=({"name": "remember", "status": "worked"},),
+        tool_calls=(
+            {
+                "name": "remember",
+                "status": "worked",
+                "explicit_memory_write": True,
+            },
+        ),
+    )
+    agent_explicit = memory_runtime.capture_completed_user_turn(
+        cfg,
+        text,
+        completed=True,
+        tool_calls=(
+            {
+                "name": "append_lesson",
+                "status": "succeeded",
+                "explicit_memory_write": True,
+            },
+        ),
+        source="agent",
     )
 
     assert incomplete["reason"] == "incomplete_turn"
     assert explicit["reason"] == "explicit_memory_write"
+    assert agent_explicit["reason"] == "explicit_memory_write"
     assert cfg.memories == []
     assert not config.MEMORY_CANDIDATE_STATE_FILE.exists()
     assert [event["reason"] for event in events] == [
         "incomplete_turn",
         "explicit_memory_write",
+        "explicit_memory_write",
     ]
+
+
+def test_memory_tool_name_without_semantic_receipt_does_not_suppress_capture(
+    monkeypatch,
+) -> None:
+    captured: list[str] = []
+    monkeypatch.setattr(
+        memory_runtime.memory_candidates,
+        "process_memory_candidates",
+        lambda text, *_args, **_kwargs: (
+            captured.append(text)
+            or {
+                "status": "rejected",
+                "reason": "processed",
+                "counts": {},
+                "reason_counts": {},
+                "state": {},
+            }
+        ),
+    )
+    cfg = Config(
+        memory_auto_capture_enabled=True,
+        memory_auto_capture_consent_version=(config.MEMORY_AUTO_CAPTURE_CONSENT_VERSION),
+    )
+
+    result = memory_runtime.capture_completed_user_turn(
+        cfg,
+        "Remember that our standard shell is zsh.",
+        completed=True,
+        tool_calls=({"name": "remember", "status": "succeeded"},),
+    )
+
+    assert result["reason"] == "processed"
+    assert captured == ["Remember that our standard shell is zsh."]
 
 
 def test_configured_limits_are_forwarded_to_candidate_processor(monkeypatch) -> None:
@@ -88,6 +165,8 @@ def test_configured_limits_are_forwarded_to_candidate_processor(monkeypatch) -> 
     monkeypatch.setattr(memory_runtime.memory_candidates, "process_memory_candidates", fake_process)
     monkeypatch.setattr(memory_runtime, "record_perf_event", lambda *_args, **_kwargs: None)
     cfg = Config(
+        memory_auto_capture_enabled=True,
+        memory_auto_capture_consent_version=MEMORY_AUTO_CAPTURE_CONSENT_VERSION,
         memory_auto_daily_limit=2,
         memory_auto_entry_limit=20,
         memory_auto_char_limit=4_000,
@@ -495,7 +574,10 @@ def test_failed_legacy_write_rolls_back_only_the_new_record(monkeypatch) -> None
     assert records[0]["status"] == "archived"
 
 
-def test_model_invoked_memory_reads_are_safe_but_mutations_require_approval() -> None:
+def test_model_invoked_memory_lifecycle_reads_and_mutations_require_approval() -> None:
+    assert session_command_requires_approval("/memory help") is False
+    assert session_command_requires_approval("/memory ?") is False
+
     for command in (
         "/memory",
         "/memory home",
@@ -504,7 +586,7 @@ def test_model_invoked_memory_reads_are_safe_but_mutations_require_approval() ->
         "/memory search shell preference",
         "/memory show mem_abc",
     ):
-        assert session_command_requires_approval(command) is False
+        assert session_command_requires_approval(command) is True
         assert tools._session_command_captures_output(command) is True
 
     for command in (
@@ -517,6 +599,8 @@ def test_model_invoked_memory_reads_are_safe_but_mutations_require_approval() ->
     ):
         assert session_command_requires_approval(command) is True
         assert tools._session_command_captures_output(command) is False
+
+    assert session_command_requires_approval("/memories") is True
 
 
 def test_memory_home_slash_route_reaches_the_governed_runtime(monkeypatch) -> None:

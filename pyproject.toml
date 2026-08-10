@@ -49,6 +49,7 @@ dev = [
 ]
 release = [
     "build==1.5.0",
+    "hatchling==1.31.0",
     "twine==6.2.0",
 ]
 supply-chain = [
@@ -58,7 +59,7 @@ pdf = [
     "PyMuPDF>=1.24",
 ]
 echo-veil = [
-    "echo-veil @ git+https://github.com/Seabass-up/echo-veil.git@8bd84141580508eec13bd0459634cf3153c32eae",
+    "echo-veil @ git+https://github.com/Seabass-up/echo-veil.git@e94be9e649048273ab74eb1150e65ac9481596d9",
 ]
 quantization = [
     "turbovec>=0.7",

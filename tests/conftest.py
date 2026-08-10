@@ -89,6 +89,7 @@ def clean_state():
         harness._STALE_CHECK_CACHE = None
         harness._ID_LOOKUP = None
         harness._extra_roots_cache = None
+        harness._PROTECTED_MEMORY_AUTHORITY = False
         harness._QUERY_VEC_CACHE.clear()
     except ImportError:
         pass
@@ -127,8 +128,22 @@ def config_dir() -> Path:
 
 
 _KEYWORDS = [
-    "alpha", "beta", "gamma", "delta", "harness", "skill", "lesson",
-    "footer", "embed", "rust", "python", "config", "tool", "index", "cosine", "model",
+    "alpha",
+    "beta",
+    "gamma",
+    "delta",
+    "harness",
+    "skill",
+    "lesson",
+    "footer",
+    "embed",
+    "rust",
+    "python",
+    "config",
+    "tool",
+    "index",
+    "cosine",
+    "model",
 ]
 
 

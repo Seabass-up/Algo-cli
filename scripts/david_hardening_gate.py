@@ -12,10 +12,10 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
-from typing import Any
+from typing import Any, NamedTuple
 
 try:
-    import tomllib
+    import tomllib  # type: ignore[import-not-found]
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10
     import tomli as tomllib  # type: ignore[no-redef]
 
@@ -24,13 +24,16 @@ ROOT = Path(__file__).resolve().parents[1]
 FREEZE_PATH = ROOT / "hardening" / "henry-freeze.toml"
 LEDGER_PATH = ROOT / "hardening" / "ada-evidence-ledger.json"
 
+_EXPECTED_FREEZE_ID = "algo-cli-hardening-2026-07-18"
+_EXPECTED_BASE_COMMIT = "20bb8790ba548866fc88b0a0d976d6600fa84a5e"
+_EXPECTED_BASE_TAG = "v0.18.0"
+_EXPECTED_FREEZE_STARTED_AT = "2026-07-18T00:00:00-05:00"
+
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MILESTONE_ID_RE = re.compile(r"^M(?:0|[1-9][0-9]{0,2})$")
 _REQUIREMENT_ID_RE = re.compile(r"^HARD-[0-9]{3}$")
-_UTC_TIMESTAMP_RE = re.compile(
-    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
-)
+_UTC_TIMESTAMP_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 _EVIDENCE_FIELDS = frozenset(
     {
         "kind",
@@ -67,9 +70,7 @@ _LEDGER_FIELDS = frozenset(
         "requirements",
     }
 )
-_POLICY_FIELDS = frozenset(
-    {"allowed_change", "forbidden_change", "completion_rule", "uncertain_evidence"}
-)
+_POLICY_FIELDS = frozenset({"allowed_change", "forbidden_change", "completion_rule", "uncertain_evidence"})
 _MILESTONE_FIELDS = frozenset({"id", "name", "status", "evidence"})
 _REQUIREMENT_FIELDS = frozenset({"id", "milestone", "summary", "status", "evidence"})
 _FREEZE_FIELDS = frozenset(
@@ -268,13 +269,18 @@ _INTERACTIVE_VERBS = frozenset(
         "use",
     }
 )
-_FORBIDDEN_ACTIVATION_PATHS = (
-    ROOT / "native" / "austin" / "Resources" / "AustinNativeControlActivation.json",
-)
+_FORBIDDEN_ACTIVATION_PATHS = (ROOT / "native" / "austin" / "Resources" / "AustinNativeControlActivation.json",)
 
 
 class GateError(RuntimeError):
     """A hardening invariant was violated."""
+
+
+class ChangedPathAudit(NamedTuple):
+    """Path identities changed across committed, staged, and working state."""
+
+    paths: frozenset[str]
+    deleted_paths: frozenset[str]
 
 
 def _parse_python(path: Path) -> ast.Module:
@@ -335,9 +341,7 @@ def _tool_names(path: Path) -> set[str]:
 
 def _slash_names(path: Path) -> set[str]:
     tree = _parse_python(path)
-    entries = _sequence(
-        _single_assignment(tree, "SLASH_COMMANDS", path), label="SLASH_COMMANDS"
-    )
+    entries = _sequence(_single_assignment(tree, "SLASH_COMMANDS", path), label="SLASH_COMMANDS")
     names: set[str] = set()
     for entry in entries:
         if (
@@ -355,22 +359,12 @@ def _slash_names(path: Path) -> set[str]:
 
 def _action_spec_names(path: Path) -> set[str]:
     tree = _parse_python(path)
-    entries = _sequence(
-        _single_assignment(tree, "ACTION_SPECS", path), label="ACTION_SPECS"
-    )
+    entries = _sequence(_single_assignment(tree, "ACTION_SPECS", path), label="ACTION_SPECS")
     names: set[str] = set()
     for node in entries:
-        if not (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "_spec"
-        ):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_spec"):
             raise GateError("ACTION_SPECS contains a non-static or unrecognized entry")
-        if (
-            not node.args
-            or not isinstance(node.args[0], ast.Constant)
-            or type(node.args[0].value) is not str
-        ):
+        if not node.args or not isinstance(node.args[0], ast.Constant) or type(node.args[0].value) is not str:
             raise GateError("ACTION_SPECS contains a non-static action name")
         names.add(node.args[0].value)
     if not names:
@@ -383,11 +377,7 @@ def _kernel_action_names(path: Path) -> set[str]:
     entries = _sequence(_single_assignment(tree, "_KERNELS", path), label="_KERNELS")
     names: set[str] = set()
     for node in entries:
-        if not (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "KernelSpec"
-        ):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "KernelSpec"):
             raise GateError("_KERNELS contains a non-static or unrecognized entry")
         actions = [keyword.value for keyword in node.keywords if keyword.arg == "actions"]
         if len(actions) != 1:
@@ -419,11 +409,7 @@ def _interactive_capability_name(name: str) -> bool:
     root = normalized.split(maxsplit=1)[0]
     if root.startswith("/") and root[1:] in _INTERACTIVE_NAMESPACES:
         return True
-    tokens = {
-        token
-        for token in re.split(r"[^a-z0-9]+", normalized)
-        if token
-    }
+    tokens = {token for token in re.split(r"[^a-z0-9]+", normalized) if token}
     return bool(tokens & _INTERACTIVE_NAMESPACES and tokens & _INTERACTIVE_VERBS)
 
 
@@ -447,10 +433,7 @@ def validate_unqualified_capability_exposure(
             else registries
         )
         imported = (
-            {
-                str(path.relative_to(ROOT)): _runtime_imports(path)
-                for path in _RUNTIME_ENTRY_PATHS
-            }
+            {str(path.relative_to(ROOT)): _runtime_imports(path) for path in _RUNTIME_ENTRY_PATHS}
             if runtime_imports is None
             else runtime_imports
         )
@@ -467,9 +450,7 @@ def validate_unqualified_capability_exposure(
         for module in sorted(modules):
             normalized = module.casefold().replace("-", "_")
             if any(marker in normalized for marker in _DISABLED_RUNTIME_MODULE_MARKERS):
-                errors.append(
-                    f"{source} imports disabled capability module {module!r} during freeze"
-                )
+                errors.append(f"{source} imports disabled capability module {module!r} during freeze")
     paths = _FORBIDDEN_ACTIVATION_PATHS if activation_paths is None else activation_paths
     for path in paths:
         if path.exists():
@@ -477,9 +458,7 @@ def validate_unqualified_capability_exposure(
                 relative = path.relative_to(ROOT)
             except ValueError:
                 relative = path
-            errors.append(
-                f"{relative}: production computer-control activation is forbidden during freeze"
-            )
+            errors.append(f"{relative}: production computer-control activation is forbidden during freeze")
     return errors
 
 
@@ -562,11 +541,7 @@ def _naming_label(category: str) -> str:
 
 
 def _bounded_plain_text(value: Any, *, maximum: int) -> bool:
-    if (
-        not isinstance(value, str)
-        or not value.isascii()
-        or _CONTROL_RE.search(value) is not None
-    ):
+    if not isinstance(value, str) or not value.isascii() or _CONTROL_RE.search(value) is not None:
         return False
     try:
         size = len(value.encode("utf-8", errors="strict"))
@@ -600,9 +575,7 @@ def _valid_utc_timestamp(value: Any) -> bool:
     if not isinstance(value, str) or _UTC_TIMESTAMP_RE.fullmatch(value) is None:
         return False
     try:
-        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=timezone.utc
-        )
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     except ValueError:
         return False
     return parsed.strftime("%Y-%m-%dT%H:%M:%SZ") == value
@@ -628,27 +601,76 @@ def _validate_evidence(requirement_id: str, evidence: Any, index: int) -> list[s
     return errors
 
 
-def _changed_paths(base_commit: str) -> set[str]:
-    committed = {
-        line.strip()
-        for line in _run_git("diff", "--name-only", "--diff-filter=ACMR", f"{base_commit}...HEAD").splitlines()
-        if line.strip()
-    }
-    porcelain = _run_git("status", "--porcelain=v1", "--untracked-files=all")
-    working: set[str] = set()
-    for line in porcelain.splitlines():
-        if len(line) < 4:
-            continue
-        status = line[:2]
-        if "D" in status:
-            # A deletion creates no newly named artifact. The replacement path,
-            # when any, is independently observed as renamed or untracked.
-            continue
-        path = line[3:]
-        if " -> " in path:
-            path = path.split(" -> ", 1)[1]
-        working.add(path.strip().strip('"'))
-    return committed | working
+def _parse_name_status(payload: str, *, label: str) -> list[tuple[str, str]]:
+    if not isinstance(payload, str) or not payload.endswith("\0") and payload:
+        raise GateError(f"{label} changed-path inventory is malformed")
+    tokens = payload.split("\0")[:-1] if payload else []
+    if len(tokens) % 2:
+        raise GateError(f"{label} changed-path inventory is malformed")
+    rows: list[tuple[str, str]] = []
+    for index in range(0, len(tokens), 2):
+        status, path = tokens[index : index + 2]
+        if re.fullmatch(r"[ADMT]", status) is None:
+            raise GateError(f"{label} changed-path status is unsupported")
+        if not _safe_repository_path(path, require_exists=False):
+            raise GateError(f"{label} changed-path inventory contains an unsafe path")
+        rows.append((status, path))
+    return rows
+
+
+def _parse_untracked_paths(payload: str) -> list[str]:
+    if not isinstance(payload, str) or not payload.endswith("\0") and payload:
+        raise GateError("untracked changed-path inventory is malformed")
+    paths = payload.split("\0")[:-1] if payload else []
+    if any(not _safe_repository_path(path, require_exists=False) for path in paths):
+        raise GateError("untracked changed-path inventory contains an unsafe path")
+    return paths
+
+
+def _validated_base_commit(base_commit: str) -> str:
+    try:
+        resolved = _run_git(
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            f"{base_commit}^{{commit}}",
+        ).strip()
+    except GateError as exc:
+        raise GateError("freeze base commit does not resolve to a commit") from exc
+    if re.fullmatch(r"[0-9a-f]{40}", resolved) is None:
+        raise GateError("freeze base commit does not resolve to a commit")
+    try:
+        _run_git("merge-base", "--is-ancestor", resolved, "HEAD")
+    except GateError as exc:
+        raise GateError("freeze base commit is not an ancestor of HEAD") from exc
+    return resolved
+
+
+def _changed_paths(base_commit: str) -> ChangedPathAudit:
+    resolved_base = _validated_base_commit(base_commit)
+    rows: list[tuple[str, str]] = []
+    for label, arguments in (
+        (
+            "committed",
+            ("diff", "--no-renames", "--name-status", "-z", f"{resolved_base}...HEAD"),
+        ),
+        (
+            "staged",
+            ("diff", "--no-renames", "--name-status", "-z", "--cached"),
+        ),
+        (
+            "unstaged",
+            ("diff", "--no-renames", "--name-status", "-z"),
+        ),
+    ):
+        rows.extend(_parse_name_status(_run_git(*arguments), label=label))
+    rows.extend(
+        ("A", path) for path in _parse_untracked_paths(_run_git("ls-files", "--others", "--exclude-standard", "-z"))
+    )
+    paths = frozenset(path for _status, path in rows)
+    non_deleted = {path for status, path in rows if status != "D"}
+    deleted_paths = frozenset(path for status, path in rows if status == "D" and path not in non_deleted)
+    return ChangedPathAudit(paths=paths, deleted_paths=deleted_paths)
 
 
 def validate_freeze(freeze: dict[str, Any], ledger: dict[str, Any]) -> list[str]:
@@ -658,12 +680,18 @@ def validate_freeze(freeze: dict[str, Any], ledger: dict[str, Any]) -> list[str]
         return ["freeze manifest is missing [freeze]"]
     if set(freeze_section) != _FREEZE_FIELDS:
         errors.append("freeze manifest must use the exact [freeze] schema")
-    if freeze_section.get("schema_version") != 1 or type(
-        freeze_section.get("schema_version")
-    ) is not int:
+    if freeze_section.get("schema_version") != 1 or type(freeze_section.get("schema_version")) is not int:
         errors.append("freeze.schema_version must be exactly 1")
     if freeze_section.get("status") != "active":
         errors.append("hardening freeze must remain active until the audited lift milestone")
+    if freeze_section.get("freeze_id") != _EXPECTED_FREEZE_ID:
+        errors.append("freeze.freeze_id must match the immutable audited freeze")
+    if freeze_section.get("base_commit") != _EXPECTED_BASE_COMMIT:
+        errors.append("freeze.base_commit must match the immutable audited baseline")
+    if freeze_section.get("base_tag") != _EXPECTED_BASE_TAG:
+        errors.append("freeze.base_tag must match the immutable audited baseline")
+    if freeze_section.get("started_at") != _EXPECTED_FREEZE_STARTED_AT:
+        errors.append("freeze.started_at must match the immutable audited freeze")
     if freeze_section.get("allowed_work") != "hardening-only":
         errors.append("freeze.allowed_work must remain hardening-only")
     for key in (
@@ -677,8 +705,12 @@ def validate_freeze(freeze: dict[str, Any], ledger: dict[str, Any]) -> list[str]
             errors.append(f"freeze.{key} must be true")
     if ledger.get("freeze_id") != freeze_section.get("freeze_id"):
         errors.append("freeze and evidence ledger IDs do not match")
+    if ledger.get("freeze_id") != _EXPECTED_FREEZE_ID:
+        errors.append("evidence ledger freeze_id must match the immutable audited freeze")
     if ledger.get("base_commit") != freeze_section.get("base_commit"):
         errors.append("freeze and evidence ledger base commits do not match")
+    if ledger.get("base_commit") != _EXPECTED_BASE_COMMIT:
+        errors.append("evidence ledger base_commit must match the immutable audited baseline")
     if ledger.get("status") != "active":
         errors.append("evidence ledger must remain active until the audited lift")
     lift = freeze.get("lift")
@@ -776,9 +808,7 @@ def validate_ledger(ledger: dict[str, Any]) -> list[str]:
         elif len(set(evidence)) != len(evidence):
             errors.append(f"{milestone_id}: milestone evidence contains duplicates")
     seen: set[str] = set()
-    requirements_by_milestone: dict[str, list[str]] = {
-        milestone_id: [] for milestone_id in milestone_ids
-    }
+    requirements_by_milestone: dict[str, list[str]] = {milestone_id: [] for milestone_id in milestone_ids}
     for row in requirements:
         if not isinstance(row, dict):
             errors.append("every requirement must be an object")
@@ -832,7 +862,11 @@ def validate_ledger(ledger: dict[str, Any]) -> list[str]:
 
 
 def validate_changed_paths(
-    freeze: dict[str, Any], ledger: dict[str, Any], *, changed_paths: set[str] | None = None
+    freeze: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    changed_paths: set[str] | None = None,
+    deleted_paths: set[str] | None = None,
 ) -> list[str]:
     freeze_section = freeze.get("freeze")
     if not isinstance(freeze_section, dict):
@@ -840,7 +874,15 @@ def validate_changed_paths(
     base_commit = freeze_section.get("base_commit")
     if not isinstance(base_commit, str) or not base_commit:
         return ["freeze.base_commit must be a non-empty string"]
-    paths = _changed_paths(base_commit) if changed_paths is None else changed_paths
+    if changed_paths is None:
+        observed = _changed_paths(base_commit)
+        paths = observed.paths
+        deleted = observed.deleted_paths
+    else:
+        paths = frozenset(changed_paths)
+        deleted = frozenset(deleted_paths or set())
+        if not deleted <= paths:
+            return ["deleted changed paths must be a subset of changed paths"]
     authorized_raw = ledger.get("authorized_paths")
     if not isinstance(authorized_raw, list) or not all(isinstance(path, str) for path in authorized_raw):
         return ["evidence ledger authorized_paths must be a list of strings"]
@@ -849,9 +891,10 @@ def validate_changed_paths(
     for path in sorted(paths):
         if path not in authorized:
             errors.append(f"{path}: changed during freeze without ledger authorization")
-        naming_error = validate_filename(path, freeze)
-        if naming_error:
-            errors.append(naming_error)
+        if path not in deleted:
+            naming_error = validate_filename(path, freeze)
+            if naming_error:
+                errors.append(naming_error)
     return errors
 
 

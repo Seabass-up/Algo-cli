@@ -396,9 +396,7 @@ def test_source_root_diagnostics_report_adapter_contract_without_paths(tmp_path,
         lambda: {"status": "absent", "accepted": 0, "rejected": 0, "available": 0},
     )
 
-    result = harness.source_roots_diagnostics(
-        [{"id": "codex:skill:one", "harness": "codex", "kind": "skill"}]
-    )
+    result = harness.source_roots_diagnostics([{"id": "codex:skill:one", "harness": "codex", "kind": "skill"}])
 
     assert result["built_in_adapter_roots"] == 2
     assert result["available_adapter_roots"] == 1
@@ -520,15 +518,17 @@ def test_format_retrieved_context_handles_missing_id():
 
 
 def test_retrieved_context_repairs_common_mojibake():
-    block = harness.format_retrieved_context([
-        {
-            "id": "algo-cli:wiki:test",
-            "harness": "algo-cli",
-            "kind": "wiki",
-            "title": "Donâ€™t repeat",
-            "snippet": "periodicâ€¦",
-        }
-    ])
+    block = harness.format_retrieved_context(
+        [
+            {
+                "id": "algo-cli:wiki:test",
+                "harness": "algo-cli",
+                "kind": "wiki",
+                "title": "Donâ€™t repeat",
+                "snippet": "periodicâ€¦",
+            }
+        ]
+    )
 
     assert "Don’t repeat" in block
     assert "periodic…" in block
@@ -545,9 +545,17 @@ def test_coerce_tags_string_to_list():
 
 def test_slim_record_canonical_shape():
     raw = {
-        "id": "h:k:p", "harness": "h", "kind": "k", "title": "T", "path": "/p",
-        "summary": "s" * 10, "embedding": [0.1] * 768, "search_text": "internal",
-        "file_size": 100, "file_mtime_ns": 1, "embedding_model": "m",
+        "id": "h:k:p",
+        "harness": "h",
+        "kind": "k",
+        "title": "T",
+        "path": "/p",
+        "summary": "s" * 10,
+        "embedding": [0.1] * 768,
+        "search_text": "internal",
+        "file_size": 100,
+        "file_mtime_ns": 1,
+        "embedding_model": "m",
     }
     slim = harness._slim_record(raw)
     assert "embedding" not in slim
@@ -590,8 +598,7 @@ def test_harness_meta_query_prefers_algo_cli_self_evaluation_over_generic_skills
                 "description": "A generic extension skill for reviewing external model cards.",
                 "summary": "Use this skill when you need to rate an external Hugging Face model or extension.",
                 "search_text": (
-                    "rate your harness extension review skill hugging face model cards "
-                    "external model rating"
+                    "rate your harness extension review skill hugging face model cards external model rating"
                 ),
             },
             {
@@ -874,9 +881,7 @@ def test_is_chatgpt_clipping_detects_description_and_tags():
 
 
 def test_is_excluded_from_retrieval_filters_archive_vendor_and_backlog():
-    assert harness.is_excluded_from_retrieval(
-        {"id": "openclaw:wiki:archive/2026-06-ollama-cli-stale/foo.md"}
-    )
+    assert harness.is_excluded_from_retrieval({"id": "openclaw:wiki:archive/2026-06-ollama-cli-stale/foo.md"})
     assert harness.is_excluded_from_retrieval({"kind": "vendor-doc", "id": "pi:tool:pods/docs/glm.md"})
     assert harness.is_excluded_from_retrieval({"status": "backlog", "id": "openclaw:wiki:concepts/roadmap.md"})
     assert not harness.is_excluded_from_retrieval({"id": "openclaw:wiki:concepts/live.md", "kind": "wiki"})
@@ -922,6 +927,67 @@ def test_search_index_skips_excluded_records():
     hits = harness.search_index("harness", limit=5)
     assert hits
     assert all("archive/" not in h["id"] for h in hits)
+
+
+def test_protected_candidate_exclusion_applies_before_keyword_and_vector_ranking():
+    model = "fake-protected-model"
+    index = {
+        "generated": "2026-07-24T09:00",
+        "record_count": 2,
+        "roots": [],
+        "records": [
+            {
+                "id": "codex:memory:legacy.md",
+                "harness": "codex",
+                "kind": "memory",
+                "title": "Legacy memory",
+                "path": "__pytest__/legacy.md",
+                "summary": "release shield guidance",
+                "search_text": "release shield guidance",
+                "embedding": [1.0, 0.0],
+                "embedding_model": model,
+            },
+            {
+                "id": "codex:skill:shield.md",
+                "harness": "codex",
+                "kind": "skill",
+                "title": "Shield skill",
+                "path": "__pytest__/shield.md",
+                "summary": "release shield guidance",
+                "search_text": "release shield guidance",
+                "embedding": [1.0, 0.0],
+                "embedding_model": model,
+            },
+        ],
+    }
+    harness.INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    harness.INDEX_PATH.write_text(json.dumps(index), encoding="utf-8")
+    harness._INDEX_CACHE = None
+    harness._ID_LOOKUP = None
+
+    keyword = harness.search_index(
+        "release shield",
+        limit=5,
+        excluded_kinds={"memory"},
+    )
+    vector = harness.retrieve_for_query(
+        "release shield",
+        lambda _texts: [[1.0, 0.0]],
+        model,
+        k=5,
+        excluded_kinds={"memory"},
+    )
+    hybrid = harness.hybrid_search(
+        "release shield",
+        lambda _texts: [[1.0, 0.0]],
+        model,
+        k=5,
+        excluded_kinds={"memory"},
+    )
+
+    assert [item["id"] for item in keyword] == ["codex:skill:shield.md"]
+    assert [item["id"] for item in vector] == ["codex:skill:shield.md"]
+    assert [item["id"] for item in hybrid] == ["codex:skill:shield.md"]
 
 
 def test_resolve_embed_model_prefers_config():
@@ -1075,10 +1141,9 @@ def test_iter_files_stops_at_max_files(tmp_path):
 
 def test_reviewed_algo_doc_is_builtin_harness_source():
     matching = [
-        root for root in harness.built_in_source_roots()
-        if root.harness == "algo-cli"
-        and root.root == harness.ALGO_CLI_REPO_DIR / "docs"
-        and "ALGO.md" in root.patterns
+        root
+        for root in harness.built_in_source_roots()
+        if root.harness == "algo-cli" and root.root == harness.ALGO_CLI_REPO_DIR / "docs" and "ALGO.md" in root.patterns
     ]
 
     assert len(matching) == 1
@@ -1088,10 +1153,9 @@ def test_reviewed_algo_doc_is_builtin_harness_source():
 
 def test_curated_project_docs_are_builtin_harness_wiki_sources():
     matching = [
-        root for root in harness.built_in_source_roots()
-        if root.harness == "algo-cli"
-        and root.kind == "wiki"
-        and root.root == harness.ALGO_CLI_REPO_DIR / "docs"
+        root
+        for root in harness.built_in_source_roots()
+        if root.harness == "algo-cli" and root.kind == "wiki" and root.root == harness.ALGO_CLI_REPO_DIR / "docs"
     ]
 
     assert len(matching) == 1
@@ -1107,9 +1171,7 @@ def test_local_operator_wiki_is_builtin_harness_wiki_source():
     matching = [
         root
         for root in harness.built_in_source_roots()
-        if root.harness == "algo-cli"
-        and root.kind == "wiki"
-        and root.root == harness.CONFIG_DIR / "wiki"
+        if root.harness == "algo-cli" and root.kind == "wiki" and root.root == harness.CONFIG_DIR / "wiki"
     ]
 
     assert len(matching) == 1
@@ -1117,14 +1179,11 @@ def test_local_operator_wiki_is_builtin_harness_wiki_source():
     assert matching[0].max_files == 100
 
 
-
 def test_curated_project_memory_docs_are_builtin_harness_memory_sources():
     matching = [
         root
         for root in harness.built_in_source_roots()
-        if root.harness == "algo-cli"
-        and root.kind == "memory"
-        and root.root == harness.ALGO_CLI_REPO_DIR / "docs"
+        if root.harness == "algo-cli" and root.kind == "memory" and root.root == harness.ALGO_CLI_REPO_DIR / "docs"
     ]
 
     assert len(matching) == 1
@@ -1195,9 +1254,7 @@ def test_codex_plugin_metadata_sources_are_builtin_harness_sources():
 
 def test_external_agent_sources_are_opt_in():
     default_harnesses = {root.harness for root in harness.built_in_source_roots()}
-    opted_in_harnesses = {
-        root.harness for root in harness.built_in_source_roots(include_external=True)
-    }
+    opted_in_harnesses = {root.harness for root in harness.built_in_source_roots(include_external=True)}
 
     assert not ({"codex", "claude", "openclaw", "mercury"} & default_harnesses)
     assert {"codex", "claude", "openclaw", "mercury"} <= opted_in_harnesses
@@ -1349,10 +1406,9 @@ def test_codex_connector_and_mcp_records_use_json_metadata(tmp_path):
 
 def test_reviewed_algo_doc_record_is_indexable():
     root = next(
-        root for root in harness.built_in_source_roots()
-        if root.harness == "algo-cli"
-        and root.root == harness.ALGO_CLI_REPO_DIR / "docs"
-        and "ALGO.md" in root.patterns
+        root
+        for root in harness.built_in_source_roots()
+        if root.harness == "algo-cli" and root.root == harness.ALGO_CLI_REPO_DIR / "docs" and "ALGO.md" in root.patterns
     )
 
     record = harness.make_record(root, root.root / "ALGO.md")
@@ -1369,10 +1425,9 @@ def test_reviewed_algo_doc_record_is_indexable():
 
 def test_reviewed_algo_doc_metadata_rebuilds_legacy_summary_only_record(monkeypatch):
     root = next(
-        root for root in harness.built_in_source_roots()
-        if root.harness == "algo-cli"
-        and root.root == harness.ALGO_CLI_REPO_DIR / "docs"
-        and "ALGO.md" in root.patterns
+        root
+        for root in harness.built_in_source_roots()
+        if root.harness == "algo-cli" and root.root == harness.ALGO_CLI_REPO_DIR / "docs" and "ALGO.md" in root.patterns
     )
     path = root.root / "ALGO.md"
     stat_result = path.stat()
@@ -1503,16 +1558,16 @@ def test_index_is_stale_detects_in_place_file_edits(monkeypatch, tmp_path):
     index_path = tmp_path / "harness_index.json"
     index_path.write_text(
         json.dumps(
-                {
-                    "source_policy": harness._source_policy(),
-                    "records": [
+            {
+                "source_policy": harness._source_policy(),
+                "records": [
                     {
                         "id": "test:wiki:note.md",
                         "path": str(source),
                         "file_mtime_ns": source_stat.st_mtime_ns,
                         "file_size": source_stat.st_size,
                     }
-                ]
+                ],
             }
         ),
         encoding="utf-8",
@@ -1576,3 +1631,47 @@ def test_embed_index_records_does_not_mask_source_changes(monkeypatch, tmp_path)
     assert result["ready"] is False
     assert result["reason"] == "source_changed_during_embedding"
     assert harness.index_is_stale() is True
+
+
+def test_echo_transition_invalidates_only_mutable_user_skill_records(
+    config_dir,
+) -> None:
+    user_skill = config_dir / "skills" / "legacy.md"
+    repo_skill = Path(__file__).resolve().parents[1] / "skills" / "shipped.md"
+    payload = {
+        "generated": "2026-08-10T00:00:00",
+        "source_policy": harness._source_policy(),
+        "record_count": 2,
+        "roots": [],
+        "indexer": "python",
+        "records": [
+            {
+                "id": "algo-cli:skill:legacy.md",
+                "harness": "algo-cli",
+                "kind": "skill",
+                "title": "protected canary",
+                "path": str(user_skill),
+                "relative_path": "legacy.md",
+                "search_text": "PROTECTED_SKILL_INDEX_CANARY",
+            },
+            {
+                "id": "algo-cli:skill:shipped.md",
+                "harness": "algo-cli",
+                "kind": "skill",
+                "title": "shipped",
+                "path": str(repo_skill),
+                "relative_path": "shipped.md",
+                "search_text": "safe shipped skill",
+            },
+        ],
+        "embeddings": {"active_model": harness.DEFAULT_EMBED_MODEL},
+    }
+    harness.INDEX_PATH.write_text(json.dumps(payload), encoding="utf-8")
+
+    removed = harness.invalidate_user_skill_records()
+    persisted = json.loads(harness.INDEX_PATH.read_text(encoding="utf-8"))
+
+    assert removed == 1
+    assert persisted["record_count"] == 1
+    assert persisted["records"][0]["id"] == "algo-cli:skill:shipped.md"
+    assert "PROTECTED_SKILL_INDEX_CANARY" not in harness.INDEX_PATH.read_text(encoding="utf-8")

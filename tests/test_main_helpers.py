@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -25,6 +28,32 @@ def test_imports_ok():
     import algo_cli.harness  # noqa: F401
     import algo_cli.identity  # noqa: F401
     import algo_cli.skills  # noqa: F401
+
+
+def test_startup_refuses_failed_protected_legacy_migration_without_downgrade(
+    monkeypatch,
+) -> None:
+    errors: list[str] = []
+    monkeypatch.setattr(main, "_force_utf8_console", lambda: None)
+    monkeypatch.setattr(main, "has_legacy_data", lambda: True)
+    monkeypatch.setattr(
+        main,
+        "perform_legacy_migration",
+        lambda: (_ for _ in ()).throw(main.LegacyMigrationError("LEGACY_MIGRATION_PRIVATE_CANARY")),
+    )
+    monkeypatch.setattr(
+        main,
+        "migrate_legacy_sidecar_files",
+        lambda: (_ for _ in ()).throw(AssertionError("startup continued after protected migration failure")),
+    )
+    monkeypatch.setattr(main, "show_error", errors.append)
+
+    with pytest.raises(SystemExit) as raised:
+        main.main()
+
+    assert raised.value.code == 1
+    assert errors == ["Legacy state could not be migrated without weakening protected memory; startup stopped."]
+    assert "LEGACY_MIGRATION_PRIVATE_CANARY" not in errors[0]
 
 
 def test_update_command_exits_before_runtime_state_initialization(monkeypatch):
@@ -72,6 +101,7 @@ def test_parallel_read_only_tools_exclude_writers_and_heavy_runtime_tools():
     assert "harness_refresh" not in main.READ_ONLY_TOOLS
     assert "embed_text" not in main.READ_ONLY_TOOLS
     assert "vision_describe" not in main.READ_ONLY_TOOLS
+    assert "render_pdf_pages" not in main.READ_ONLY_TOOLS
 
 
 def test_effective_runtime_host_cloud_and_local(monkeypatch):
@@ -105,6 +135,73 @@ def test_cloud_routing_loads_runtime_env_file(monkeypatch, tmp_path):
     assert main.uses_ollama_cloud(cfg) is True
     assert main.effective_runtime_host(cfg) == "https://ollama.com"
     assert main.os.environ.get("OLLAMA_API_KEY") == "runtime-token"
+
+
+def test_echo_authority_excludes_legacy_lessons_from_system_prompt(
+    monkeypatch,
+    tmp_path,
+):
+    from algo_cli import identity
+
+    canary = "PLAINTEXT_LESSON_RESTART_CANARY"
+    lessons = tmp_path / "lessons-learned.md"
+    lessons.write_text(canary, encoding="utf-8")
+    monkeypatch.setattr(identity, "LESSONS_PATH", lessons)
+    identity._CACHE.clear()
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+
+    prompt = context_budget.build_system_prompt(cfg, retrieved_lessons=None)
+
+    assert canary not in prompt
+    assert "Lessons Learned" not in prompt
+
+
+def test_echo_authority_excludes_local_identity_from_prompt_and_cache_key(
+    monkeypatch,
+):
+    canary = "LOCAL_USER_IDENTITY_PROMPT_CANARY"
+
+    def guarded_read(_path):
+        raise AssertionError(canary)
+
+    monkeypatch.setattr(main.identity, "read_cached", guarded_read)
+    monkeypatch.setattr(
+        main.identity,
+        "identity_mtime_key",
+        lambda: (_ for _ in ()).throw(AssertionError("protected cache key statted local identity")),
+    )
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+
+    prompt = context_budget.build_system_prompt(cfg)
+    context_budget._context_usage_cache_key(cfg)
+
+    assert canary not in prompt
+    assert "Repo-shipped Product Identity" in prompt
+    assert "Local SOUL.md, IDENTITY.md, USER.md" in prompt
+
+
+def test_echo_startup_identity_scaffold_is_a_zero_access_noop(monkeypatch):
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    monkeypatch.setattr(
+        main.identity,
+        "scaffold_if_needed",
+        lambda: (_ for _ in ()).throw(AssertionError("protected startup attempted plaintext identity scaffold")),
+    )
+
+    assert main._scaffold_plaintext_identity_if_allowed(cfg) == []
+
+
+def test_echo_authority_disables_automatic_lesson_index_build(monkeypatch):
+    from algo_cli import identity
+
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    monkeypatch.setattr(
+        identity,
+        "lessons_index_stale",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("legacy lesson index must not be opened")),
+    )
+
+    assert main.ensure_lessons_index(cfg) is False
 
 
 def test_doctor_and_context_load_runtime_env_file(monkeypatch, tmp_path):
@@ -175,7 +272,11 @@ def test_chatgpt_login_device_code_flag_uses_codex_device_flow(monkeypatch):
     errors: list[str] = []
     monkeypatch.setattr(main, "show_info", infos.append)
     monkeypatch.setattr(main, "show_error", errors.append)
-    monkeypatch.setattr(main.chatgpt_auth, "run_codex_device_login", lambda: {"access_token": "AT", "expires_at": int(time.time()) + 3600})
+    monkeypatch.setattr(
+        main.chatgpt_auth,
+        "run_codex_device_login",
+        lambda: {"access_token": "AT", "expires_at": int(time.time()) + 3600},
+    )
     monkeypatch.setattr(main, "_show_chatgpt_models_after_login", lambda: None)
     monkeypatch.setattr(main.chatgpt_client, "_MODEL_REQUEST_SCOPE_MISSING", True)
 
@@ -221,6 +322,20 @@ def test_chatgpt_login_defaults_to_codex_browser_oauth(monkeypatch):
     assert any("ChatGPT authentication successful" in message for message in infos)
 
 
+def test_chatgpt_logout_reports_residual_dedicated_store_cleanup_failure(monkeypatch):
+    infos: list[str] = []
+    errors: list[str] = []
+    monkeypatch.setattr(main.chatgpt_auth, "stored_auth_state_present", lambda: True)
+    monkeypatch.setattr(main.chatgpt_auth, "clear_tokens", lambda: False)
+    monkeypatch.setattr(main, "show_info", infos.append)
+    monkeypatch.setattr(main, "show_error", errors.append)
+
+    assert main.run_chatgpt_logout() is False
+
+    assert infos == []
+    assert errors == ["Could not clear stored ChatGPT tokens."]
+
+
 def test_run_tool_anchors_relative_search_to_configured_workspace(tmp_path):
     workspace = tmp_path / "workspace"
     stale = tmp_path / "stale"
@@ -245,7 +360,9 @@ def test_ensure_harness_index_returns_true_for_incremental_embedding(monkeypatch
 
     monkeypatch.setattr(main, "resolve_embed_backend", lambda _cfg: ("local", "ok"))
     monkeypatch.setattr(main.harness, "resolve_embed_model", lambda _cfg: "embed-model")
-    monkeypatch.setattr(main, "make_embed_fn", lambda _cfg, _model: (lambda texts: [[1.0] for _ in texts], "local", "embed-model"))
+    monkeypatch.setattr(
+        main, "make_embed_fn", lambda _cfg, _model: (lambda texts: [[1.0] for _ in texts], "local", "embed-model")
+    )
     monkeypatch.setattr(main.harness, "embedded_count", lambda _model=None: (0, 10))
     monkeypatch.setattr(main, "host_is_local", lambda _host: True)
     monkeypatch.setattr(main, "ollama_server_ready", lambda _host: True)
@@ -259,7 +376,6 @@ def test_ensure_harness_index_returns_true_for_incremental_embedding(monkeypatch
 
     assert main.ensure_harness_index(cfg, max_records=3) is True
     assert any("partially ready" in message for message in messages)
-
 
 
 def test_context_slash_command_registered():
@@ -340,6 +456,34 @@ def test_reload_mutates_active_config_in_place(monkeypatch):
     assert cfg.cloud is True
 
 
+def test_reload_preflights_before_and_after_harness_reload(monkeypatch):
+    from algo_cli import elsie_echo_preflight
+
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    events: list[str] = []
+    monkeypatch.setattr(main.Config, "load", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(
+        elsie_echo_preflight,
+        "prepare_echo_auxiliary_state",
+        lambda _cfg: events.append("preflight"),
+    )
+
+    def reload_module(module):
+        if module.__name__ == "algo_cli.harness":
+            events.append("reload-harness")
+        return module
+
+    monkeypatch.setattr(main.importlib, "reload", reload_module)
+    monkeypatch.setattr(
+        main.harness,
+        "configure_context_sources",
+        lambda **_kwargs: events.append("configure"),
+    )
+
+    assert main.reload_runtime() is cfg
+    assert events == ["preflight", "reload-harness", "preflight", "configure"]
+
+
 def test_reason_command_guidance_and_neuro_symbolic_alias(monkeypatch):
     cfg = Config()
     messages: list[str] = []
@@ -382,7 +526,9 @@ def test_status_command_reports_model_context_and_features(monkeypatch):
     assert handled is True
     assert any("Model:" in line and "test-model" in line for line in lines)
     assert any("Context:" in line and "512/8192" in line and "7680 remaining" in line for line in lines)
-    assert any("Features:" in line and "auto-approve" in line and "policy" in line and "intuition" in line for line in lines)
+    assert any(
+        "Features:" in line and "auto-approve" in line and "policy" in line and "intuition" in line for line in lines
+    )
     assert all("safe-mode" not in line for line in lines)
 
 
@@ -633,6 +779,35 @@ def test_local_crystallizer_never_falls_back_to_cloud(monkeypatch):
     assert saves == []
 
 
+def test_protected_crystallizer_failure_does_not_abort_completed_chat(monkeypatch):
+    from algo_cli.grace_memory_receipts import ElsieReceiptError
+
+    cfg = Config(
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+        skill_crystallize_enabled=True,
+        runs_since_crystallize=3,
+        skill_crystallize_every=3,
+    )
+    saves: list[bool] = []
+    warnings: list[str] = []
+    monkeypatch.setattr(cfg, "save", lambda: saves.append(True))
+    monkeypatch.setattr(main, "show_info", lambda _message: None)
+    monkeypatch.setattr(main, "show_error", warnings.append)
+    monkeypatch.setattr(
+        main.skills,
+        "crystallize",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ElsieReceiptError("PROTECTED_HISTORY_CANARY")),
+    )
+
+    main.maybe_crystallize_skills(cfg)
+
+    assert cfg.skill_crystallize_enabled is False
+    assert len(saves) == 2
+    assert warnings == ["Protected skill history could not be authenticated; automatic crystallization was disabled."]
+    assert "PROTECTED_HISTORY_CANARY" not in warnings[0]
+
+
 def test_agent_loop_retains_partial_output_when_stream_interrupts(monkeypatch):
     cfg = Config(model="test-model")
     cfg.skill_crystallize_enabled = False
@@ -661,8 +836,7 @@ def test_agent_loop_retains_partial_output_when_stream_interrupts(monkeypatch):
     monkeypatch.setattr(
         main.memory_runtime,
         "capture_completed_user_turn",
-        lambda _cfg, text, **kwargs: memory_calls.append({"text": text, **kwargs})
-        or {"status": "skipped"},
+        lambda _cfg, text, **kwargs: memory_calls.append({"text": text, **kwargs}) or {"status": "skipped"},
     )
 
     main.agent_loop(InterruptedClient(), cfg, "review the wiki")  # type: ignore[arg-type]
@@ -724,7 +898,7 @@ def test_safe_file_history_compaction_normalizes_windows_newlines(monkeypatch, t
 def _patch_agent_loop_for_tool_policy_test(monkeypatch):
     """Keep agent-loop policy tests local, deterministic, and network-free."""
 
-    from algo_cli import tool_runtime
+    from algo_cli import elsie_echo_preflight, tool_runtime
 
     def fake_make_embed_fn(*_args, **_kwargs):
         return (lambda texts: [[0.0] for _ in texts]), "test", "test-embed"
@@ -748,6 +922,41 @@ def _patch_agent_loop_for_tool_policy_test(monkeypatch):
     monkeypatch.setattr(tool_runtime, "record_perf_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(main.skills, "record_run", lambda **_kwargs: None)
     monkeypatch.setattr(main, "_intuition_engine", None)
+    monkeypatch.setattr(
+        elsie_echo_preflight,
+        "prepare_echo_auxiliary_state",
+        lambda *_args, **_kwargs: {"protected": False},
+    )
+
+
+def test_agent_loop_direct_boundary_refuses_failed_echo_preflight(monkeypatch):
+    from algo_cli import elsie_echo_preflight
+
+    class ForbiddenClient:
+        def chat(self, **_kwargs):
+            raise AssertionError("model must not run before protected preflight")
+
+    def refuse(*_args, **_kwargs):
+        raise elsie_echo_preflight.EchoAuxiliaryPreflightError("private detail")
+
+    errors: list[str] = []
+    monkeypatch.setattr(
+        elsie_echo_preflight,
+        "prepare_echo_auxiliary_state",
+        refuse,
+    )
+    monkeypatch.setattr(main, "show_error", errors.append)
+    monkeypatch.setattr(
+        main.identity,
+        "detect_changes",
+        lambda: (_ for _ in ()).throw(AssertionError("identity must not run before protected preflight")),
+    )
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+
+    main.agent_loop(ForbiddenClient(), cfg, "protected request")  # type: ignore[arg-type]
+
+    assert errors == ["This turn stopped before model execution because Echo-protected auxiliary state is unavailable."]
+    assert "private detail" not in errors[0]
 
 
 def test_agent_loop_auto_memory_runs_only_at_normal_completion(monkeypatch):
@@ -761,8 +970,7 @@ def test_agent_loop_auto_memory_runs_only_at_normal_completion(monkeypatch):
     monkeypatch.setattr(
         main.memory_runtime,
         "capture_completed_user_turn",
-        lambda _cfg, text, **kwargs: calls.append({"text": text, **kwargs})
-        or {"status": "stored"},
+        lambda _cfg, text, **kwargs: calls.append({"text": text, **kwargs}) or {"status": "stored"},
     )
     monkeypatch.setattr(main, "show_info", infos.append)
     cfg = Config(model="test-model", skill_crystallize_enabled=False)
@@ -782,6 +990,357 @@ def test_agent_loop_auto_memory_runs_only_at_normal_completion(monkeypatch):
         }
     ]
     assert infos == ["Saved 1 durable memory automatically; review it with /memories."]
+
+
+def test_required_echo_prompt_failure_stops_before_model_execution(monkeypatch):
+    class ForbiddenClient:
+        calls = 0
+
+        def chat(self, **_kwargs):
+            self.calls += 1
+            raise AssertionError("model execution must remain blocked")
+
+    _patch_agent_loop_for_tool_policy_test(monkeypatch)
+    errors: list[str] = []
+    captures: list[bool] = []
+    monkeypatch.setattr(
+        main,
+        "build_system_prompt",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("sensitive protected backend detail")),
+    )
+    monkeypatch.setattr(main, "show_error", errors.append)
+    monkeypatch.setattr(
+        main.memory_runtime,
+        "capture_completed_user_turn",
+        lambda _cfg, _text, *, completed, **_kwargs: captures.append(completed) or {"status": "skipped"},
+    )
+    cfg = Config(
+        model="test-model",
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+        skill_crystallize_enabled=False,
+    )
+    client = ForbiddenClient()
+
+    main.agent_loop(client, cfg, "Use the previous protected decision")  # type: ignore[arg-type]
+
+    assert client.calls == 0
+    assert errors == ["This turn stopped before model execution because required protected memory is unavailable."]
+    assert "sensitive protected backend detail" not in errors[0]
+    assert captures == [False]
+
+
+def test_echo_authority_skips_persisted_intuition_for_ordinary_chat(monkeypatch):
+    canary = "PERSISTED_INTUITION_CHAT_CANARY"
+
+    class ForbiddenIntuition:
+        def recall(self, *_args, **_kwargs):
+            raise AssertionError(canary)
+
+    class CapturingClient:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            return iter([{"message": {"content": "Done."}}])
+
+    _patch_agent_loop_for_tool_policy_test(monkeypatch)
+    monkeypatch.setattr(main, "_intuition_engine", ForbiddenIntuition())
+    monkeypatch.setattr(
+        main.identity,
+        "detect_changes",
+        lambda: (_ for _ in ()).throw(AssertionError("protected turn must not stat local identity")),
+    )
+    monkeypatch.setattr(main, "build_system_prompt", lambda *_args, **_kwargs: "system")
+    monkeypatch.setattr(
+        main.memory_runtime,
+        "capture_completed_user_turn",
+        lambda *_args, **_kwargs: {"status": "skipped"},
+    )
+    cfg = Config(
+        model="test-model",
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+        intuition_recall_enabled=True,
+        skill_crystallize_enabled=False,
+    )
+    client = CapturingClient()
+
+    main.agent_loop(client, cfg, "Use protected context")  # type: ignore[arg-type]
+
+    assert len(client.calls) == 1
+    assert canary not in str(client.calls)
+
+
+def test_echo_authority_blocks_forced_intuition_add_without_engine_access(
+    monkeypatch,
+) -> None:
+    canary = "FORCED_INTUITION_ADD_CANARY"
+
+    class ForbiddenIntuition:
+        def __getattr__(self, _name):
+            raise AssertionError("Intuition store must not be accessed")
+
+    errors: list[str] = []
+    monkeypatch.setattr(main, "_intuition_engine", ForbiddenIntuition())
+    monkeypatch.setattr(main, "show_error", errors.append)
+    cfg = Config(
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+        intuition_capture_enabled=True,
+    )
+
+    assert (
+        main.capture_intuition_block(
+            cfg,
+            "memory",
+            canary,
+            source="test",
+            force=True,
+        )
+        is None
+    )
+    main.handle_intuition_command(f"add memory {canary}", cfg)
+
+    assert errors == [
+        "Intuition is disabled while Echo Veil is the exclusive memory authority; "
+        "plaintext Intuition data was not accessed or changed."
+    ]
+
+
+def test_echo_transition_drops_preloaded_intuition_without_access(monkeypatch) -> None:
+    class ForbiddenIntuition:
+        def __getattr__(self, _name):
+            raise AssertionError("preloaded Intuition must be dropped without access")
+
+    monkeypatch.setattr(main, "_intuition_engine", ForbiddenIntuition())
+    cfg = Config(
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+    )
+
+    main._drop_plaintext_intuition_if_protected(cfg)
+
+    assert main._intuition_engine is main._INTUITION_UNINITIALIZED
+
+
+def test_echo_transition_clears_preloaded_intuition_mutable_state(monkeypatch) -> None:
+    blocks = {"block": {"content": "PLAINTEXT_INTUITION_BLOCK_CANARY"}}
+    verdict = {"reason": "PLAINTEXT_INTUITION_VERDICT_CANARY"}
+    engine_config = {"note": "PLAINTEXT_INTUITION_CONFIG_CANARY"}
+
+    class PreloadedIntuition:
+        def __init__(self) -> None:
+            self.blocks = blocks
+            self._last_verdict = verdict
+            self.config = engine_config
+            self._low_quality_count = 2
+
+    engine = PreloadedIntuition()
+    monkeypatch.setattr(main, "_intuition_engine", engine)
+    cfg = Config(
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+    )
+
+    main._drop_plaintext_intuition_if_protected(cfg)
+
+    assert blocks == {}
+    assert verdict == {}
+    assert engine_config == {}
+    assert vars(engine) == {}
+    assert main._intuition_engine is main._INTUITION_UNINITIALIZED
+
+
+@pytest.mark.skipif(os.name != "posix", reason="FIFO import probe requires POSIX")
+def test_import_does_not_construct_or_read_plaintext_intuition_index(
+    tmp_path: Path,
+) -> None:
+    config_dir = tmp_path / ".algo_cli"
+    config_dir.mkdir(mode=0o700)
+    os.mkfifo(config_dir / "intuition_index.json", mode=0o600)
+    env = dict(os.environ)
+    env["ALGO_CLI_CONFIG_DIR"] = str(config_dir)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            ("import algo_cli.main as main; assert main._intuition_engine is main._INTUITION_UNINITIALIZED"),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_echo_agent_loop_never_auto_injects_index_compute_lab(
+    monkeypatch,
+) -> None:
+    from algo_cli import index_compute_lab
+
+    class CapturingClient:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            return iter([{"message": {"content": "Done."}}])
+
+    _patch_agent_loop_for_tool_policy_test(monkeypatch)
+    monkeypatch.setattr(
+        index_compute_lab,
+        "context_for_query",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy graph must not be read")),
+    )
+    monkeypatch.setattr(main, "build_system_prompt", lambda *_args, **_kwargs: "system")
+    monkeypatch.setattr(
+        main.memory_runtime,
+        "capture_completed_user_turn",
+        lambda *_args, **_kwargs: {"status": "skipped"},
+    )
+    cfg = Config(
+        model="test-model",
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+        index_compute_lab_auto_inject=True,
+        skill_crystallize_enabled=False,
+    )
+    client = CapturingClient()
+
+    main.agent_loop(client, cfg, "Use current protected context")  # type: ignore[arg-type]
+
+    assert len(client.calls) == 1
+
+
+def test_echo_agent_loop_never_rebuilds_plaintext_code_rag(
+    monkeypatch,
+) -> None:
+    class CapturingClient:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            return iter([{"message": {"content": "Done."}}])
+
+    _patch_agent_loop_for_tool_policy_test(monkeypatch)
+    monkeypatch.setattr(
+        main.code_rag,
+        "looks_like_code_project",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("protected turn must not rebuild plaintext Code-RAG")
+        ),
+    )
+    monkeypatch.setattr(main, "build_system_prompt", lambda *_args, **_kwargs: "system")
+    monkeypatch.setattr(
+        main.memory_runtime,
+        "capture_completed_user_turn",
+        lambda *_args, **_kwargs: {"status": "skipped"},
+    )
+    cfg = Config(
+        model="test-model",
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+        code_rag_enabled=True,
+        code_rag_consent_version=CODE_RAG_CONSENT_VERSION,
+        skill_crystallize_enabled=False,
+    )
+    client = CapturingClient()
+
+    main.agent_loop(client, cfg, "Use protected context")  # type: ignore[arg-type]
+
+    assert len(client.calls) == 1
+
+
+def test_echo_tool_payload_is_projected_before_summary_and_offline_fallback() -> None:
+    args_canary = "SUMMARY_ARGUMENT_CANARY"
+    result_canary = "SUMMARY_RESULT_WITHOUT_ECHO_MARKER"
+
+    class FailingSummaryClient:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            raise RuntimeError("offline")
+
+    client = FailingSummaryClient()
+    cfg = Config(
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+        session_summary=result_canary,
+    )
+    batch = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "protected-call",
+                    "function": {
+                        "name": "echo_veil_recall",
+                        "arguments": json.dumps({"query": args_canary}),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "protected-call",
+            "content": json.dumps({"records": [{"payload": result_canary}]}),
+        },
+    ]
+
+    summary = context_budget.summarize_message_batch(
+        cfg,
+        batch,
+        maintenance_client_fn=lambda *_args: (client, "maintenance"),
+    )
+
+    assert args_canary not in json.dumps(client.calls)
+    assert result_canary not in json.dumps(client.calls)
+    assert args_canary not in summary
+    assert result_canary not in summary
+
+
+def test_echo_prompt_history_omits_protected_commands_and_purges_legacy_entries(
+    tmp_path,
+) -> None:
+    path = tmp_path / "prompt_history.txt"
+    canary = "PROMPT_HISTORY_PROTECTED_CANARY"
+    lesson_canary = "PROMPT_HISTORY_LESSON_CANARY"
+    agent_canary = "PROMPT_HISTORY_AGENT_CANARY"
+    legacy = main.SafeFileHistory(str(path), cfg=Config())
+    legacy.store_string(f"/remember {canary}")
+    legacy.store_string("ordinary safe prompt")
+    assert canary in path.read_text(encoding="utf-8")
+
+    cfg = Config(
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+    )
+    protected = main.SafeFileHistory(str(path), cfg=cfg)
+    protected.store_string(f"/memory search {canary}")
+    protected.append_string(f"/forget {canary}")
+    protected.store_string(f"/lesson {lesson_canary}")
+    protected.store_string(f"/agent run {agent_canary}")
+    protected.store_string("/memory help")
+    persisted = path.read_text(encoding="utf-8")
+
+    assert canary not in persisted
+    assert lesson_canary not in persisted
+    assert agent_canary not in persisted
+    assert canary not in json.dumps(list(protected.get_strings()))
+    assert "ordinary safe prompt" in persisted
+    assert "/memory help" in persisted
+    if os.name == "posix":
+        assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_agent_loop_reports_session_save_failure_without_masking_completion(monkeypatch):
@@ -932,9 +1491,7 @@ def test_agent_loop_withholds_unverified_final_and_requires_later_verifier(
         main,
         "run_tool",
         lambda name, _args, _cfg: (
-            "Wrote 6 characters to created.py"
-            if name == "write_file"
-            else "2 passed\n[exit code: 0]"
+            "Wrote 6 characters to created.py" if name == "write_file" else "2 passed\n[exit code: 0]"
         ),
     )
     monkeypatch.setattr(
@@ -959,10 +1516,7 @@ def test_agent_loop_withholds_unverified_final_and_requires_later_verifier(
     assert "Verified completion." in streamed
     assert any("Unverified final text was withheld" in message for message in infos)
     third_request = client.calls[2]["messages"]
-    assert any(
-        "[Internal completion gate]" in str(message.get("content") or "")
-        for message in third_request
-    )
+    assert any("[Internal completion gate]" in str(message.get("content") or "") for message in third_request)
 
 
 @pytest.mark.parametrize("iteration_cap", [1, 8])
@@ -1014,8 +1568,7 @@ def test_agent_loop_reserves_tool_free_finalization_after_iteration_cap(monkeypa
     assert len(client.calls) == iteration_cap + 1
     assert client.calls[-1]["tools"] == []
     assert any(
-        "[Internal finalization turn]" in str(message.get("content") or "")
-        for message in client.calls[-1]["messages"]
+        "[Internal finalization turn]" in str(message.get("content") or "") for message in client.calls[-1]["messages"]
     )
     assert "Verified result finalized." in streamed
     assert errors == []
@@ -1034,9 +1587,10 @@ def test_terminal_final_answer_control_call_becomes_content() -> None:
 
     assert main._terminal_answer_from_tool_calls(calls) == "Verified and complete."
     assert main._terminal_answer_from_tool_calls([]) is None
-    assert main._terminal_answer_from_tool_calls(
-        [{"function": {"name": "read_file", "arguments": {"path": "README.md"}}}]
-    ) is None
+    assert (
+        main._terminal_answer_from_tool_calls([{"function": {"name": "read_file", "arguments": {"path": "README.md"}}}])
+        is None
+    )
 
 
 def test_normal_chat_parallel_path_preflights_every_call(monkeypatch):
@@ -1124,19 +1678,13 @@ def test_normal_chat_quarantines_malformed_batch_before_any_sibling_executes(
     monkeypatch.setattr(
         main,
         "run_tool",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("quarantined sibling executed")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("quarantined sibling executed")),
     )
     cfg = Config(model="test-model", cwd=str(tmp_path), skill_crystallize_enabled=False)
 
     main.agent_loop(ScriptedClient(), cfg, "inspect safely")  # type: ignore[arg-type]
 
-    tool_results = [
-        str(message.get("content") or "")
-        for message in cfg.messages
-        if message.get("role") == "tool"
-    ]
+    tool_results = [str(message.get("content") or "") for message in cfg.messages if message.get("role") == "tool"]
     assert len(tool_results) == 2
     assert all("Blocked by runtime authority" in result for result in tool_results)
     assert [entry["status"] for entry in cfg.attempt_ledger[-2:]] == ["denied", "denied"]
@@ -1204,9 +1752,7 @@ def test_normal_chat_uses_shared_protocol_without_prompting_never_mode(
                                     {
                                         "function": {
                                             "name": "read_file",
-                                            "arguments": {
-                                                "path": "README.md"
-                                            },
+                                            "arguments": {"path": "README.md"},
                                         }
                                     }
                                 ]
@@ -1222,9 +1768,7 @@ def test_normal_chat_uses_shared_protocol_without_prompting_never_mode(
         encoding="utf-8",
     )
     states = []
-    protocol_type = (
-        main.nathan_provider_protocol.ProviderToolLoopState
-    )
+    protocol_type = main.nathan_provider_protocol.ProviderToolLoopState
 
     def make_protocol_state():
         state = protocol_type(loop_id="ordinary-chat")
@@ -1238,9 +1782,7 @@ def test_normal_chat_uses_shared_protocol_without_prompting_never_mode(
     )
     monkeypatch.setattr(
         "builtins.input",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("never mode read must not prompt")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("never mode read must not prompt")),
     )
     monkeypatch.setattr(
         main,
@@ -1267,19 +1809,9 @@ def test_normal_chat_uses_shared_protocol_without_prompting_never_mode(
 
     assert len(states) == 1
     assert states[0].phase == "ready"
-    assistant_call = next(
-        message["tool_calls"][0]
-        for message in cfg.messages
-        if message.get("tool_calls")
-    )
-    assert assistant_call["id"].startswith(
-        "algo-ordinary-chat-r0000-c0000"
-    )
-    tool_message = next(
-        message
-        for message in cfg.messages
-        if message.get("role") == "tool"
-    )
+    assistant_call = next(message["tool_calls"][0] for message in cfg.messages if message.get("tool_calls"))
+    assert assistant_call["id"].startswith("algo-ordinary-chat-r0000-c0000")
+    tool_message = next(message for message in cfg.messages if message.get("role") == "tool")
     assert tool_message["tool_call_id"] == assistant_call["id"]
 
 
@@ -1338,11 +1870,7 @@ def test_normal_chat_parallel_dispatch_preserves_scope_and_order(monkeypatch, tm
     assert len(worker_ids) == 2
     assert active_workspaces == [str(tmp_path.resolve()), str(tmp_path.resolve())]
     assert sorted(queue_positions) == [0, 1]
-    tool_messages = [
-        message
-        for message in cfg.messages
-        if message.get("role") == "tool"
-    ]
+    tool_messages = [message for message in cfg.messages if message.get("role") == "tool"]
     assert [message.get("tool_call_id") for message in tool_messages[-2:]] == [
         "canonical-parallel-0",
         "canonical-parallel-1",
@@ -1721,9 +2249,7 @@ def test_models_command_force_refreshes_runtime_after_switch(monkeypatch, tmp_pa
         (True, "gpt-5.5", False),
     ],
 )
-def test_direct_model_command_reconciles_provider_route(
-    monkeypatch, tmp_path, starting_cloud, model, expected_cloud
-):
+def test_direct_model_command_reconciles_provider_route(monkeypatch, tmp_path, starting_cloud, model, expected_cloud):
     cfg = Config(cwd=str(tmp_path), model="old-model", cloud=starting_cloud)
     replacement_client = object()
     monkeypatch.setattr(cfg, "save", lambda: None)
@@ -1733,9 +2259,7 @@ def test_direct_model_command_reconciles_provider_route(
     monkeypatch.setattr(main, "chatgpt_model_names", lambda: ([model], True))
     monkeypatch.setattr(main, "xai_model_names", lambda: ([model], True))
 
-    handled, returned_client = main.handle_command(
-        f"/model {model}", cfg, object()
-    )  # type: ignore[arg-type]
+    handled, returned_client = main.handle_command(f"/model {model}", cfg, object())  # type: ignore[arg-type]
 
     assert handled is True
     assert returned_client is replacement_client
@@ -1776,9 +2300,7 @@ def test_direct_model_command_canonicalizes_codex_alias(monkeypatch, alias, cano
         ("gpt-5.5", "chatgpt", "chatgpt"),
     ],
 )
-def test_dashboard_state_skips_ollama_probes_for_dedicated_providers(
-    tmp_path, model, expected_mode, expected_host
-):
+def test_dashboard_state_skips_ollama_probes_for_dedicated_providers(tmp_path, model, expected_mode, expected_host):
     class DedicatedProviderClient:
         def list(self):
             raise AssertionError("dashboard must not call Ollama list()")

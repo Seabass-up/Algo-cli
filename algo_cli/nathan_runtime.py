@@ -43,9 +43,7 @@ from .marcus_authority import (
 )
 from .irene_privacy_views import (
     PrivacyProjectionError,
-    PrivacyView,
     keyed_action_fingerprint,
-    project_action_args,
 )
 from .samuel_policy import RuntimeToolPolicyDecision, evaluate_runtime_tool_policy
 from .samuel_policy_engine import (
@@ -58,7 +56,7 @@ REFLECTION_RECENT_MESSAGES = 8
 TOOL_RESULT_CONTENT_LIMIT = 20_000
 FAILED_ATTEMPT_SKIP_SECONDS = 120.0
 _SHELL_EXIT_CODE_RE = re.compile(r"\[exit code:\s*(-?\d+)\]", re.IGNORECASE)
-_BASELINE_CAPABILITIES = CapabilityMask(Capability.READ.value | Capability.MODEL.value)
+_BASELINE_CAPABILITIES = CapabilityMask(Capability.READ.value | Capability.MODEL.value | Capability.MEMORY.value)
 _BASELINE_ACTIONS = frozenset(
     {
         "action_search",
@@ -140,6 +138,8 @@ def show_typed_tool_result(
         duration_ms=duration_ms,
         call_id=call_id,
     )
+
+
 _BASELINE_GRANT_SECONDS = 30.0
 _INTERACTIVE_GRANT_SECONDS = 8 * 60 * 60.0
 _SESSION_GRANT_ACTIONS = 256
@@ -147,9 +147,7 @@ _ATTEMPT_LEDGER_LOCK = threading.RLock()
 _AUTHORITY_SESSION_LOCK = threading.RLock()
 _POLICY_CEILING_REASONS = {
     "agent_tool_not_allowed": "Tool not allowed by the active agent block policy",
-    "agent_batch_quarantined": (
-        "Skipped because another tool call in this assistant message violated block policy"
-    ),
+    "agent_batch_quarantined": ("Skipped because another tool call in this assistant message violated block policy"),
     "batch_unclassified_action": "Batch contains an unclassified action",
     "batch_duplicate_call_id": "Batch contains a duplicate tool-call ID",
     "batch_missing_idempotency_id": "Batch external mutation has no stable idempotency ID",
@@ -162,9 +160,7 @@ _POLICY_CEILING_REASONS = {
     "run_contract_tool_budget": "Run contract tool-call budget is exhausted",
     "run_journal_unavailable": "Durable Agent run checkpoint is unavailable",
 }
-_OPAQUE_JSON_RESULT_TOOLS = frozenset(
-    {"harness_read", "read_file", "read_pdf", "render_pdf_pages", "web_fetch"}
-)
+_OPAQUE_JSON_RESULT_TOOLS = frozenset({"harness_read", "read_file", "read_pdf", "render_pdf_pages", "web_fetch"})
 _STRUCTURED_ERROR_STATUSES = frozenset(
     {"cancelled", "canceled", "denied", "error", "failed", "failure", "timed_out", "timeout"}
 )
@@ -393,8 +389,17 @@ def tool_runtime_args(name: str, args: dict[str, Any], cfg: Config) -> dict[str,
         "run_shell",
         "git_status",
         "git_diff",
+        "vision_describe",
     }:
-        call_args["cwd"] = cfg.cwd
+        typed_pdf_artifact = (
+            name == "vision_describe"
+            and not call_args.get("image_path")
+            and call_args.get("artifact_id") is not None
+            and call_args.get("artifact_page") is not None
+            and call_args.get("artifact_receipt") is not None
+        )
+        if not typed_pdf_artifact:
+            call_args["cwd"] = cfg.cwd
     if name == "run_shell":
         # Preserve the session-level /safe guard. A model may opt into stricter
         # safe_mode, but it may not opt out while cfg.safe_mode is enabled.
@@ -469,8 +474,7 @@ def preflight_runtime_tool(
                 requires_read = name in {"edit_file", "batch_edit"}
                 if name == "write_file" and bool(signature_args.get("overwrite")):
                     requires_read = bool(
-                        path_decision.resolved_path is not None
-                        and path_decision.resolved_path.exists()
+                        path_decision.resolved_path is not None and path_decision.resolved_path.exists()
                     )
                 if requires_read:
                     read_decision = execution_guardrails.read_before_edit_decision(effective_path)
@@ -573,9 +577,7 @@ def ask_approval(
         except (EOFError, OSError):
             console.print("[red]No interactive input available; operation denied.[/]")
             return False
-        session_scope = (
-            approval == "a" and action.confirmation_mode is ConfirmationMode.SESSION_PREAPPROVAL
-        )
+        session_scope = approval == "a" and action.confirmation_mode is ConfirmationMode.SESSION_PREAPPROVAL
         if approval != "y" and not session_scope:
             return False
         grant = session.issue(
@@ -617,13 +619,41 @@ def ask_approval(
 
 def run_tool(name: str, args: dict[str, Any], cfg: Config) -> str:
     call_args = tool_runtime_args(name, args, cfg)
+    from .irene_memory_path_policy import protected_tool_policy_error
+
+    protected_path_error = protected_tool_policy_error(name, call_args, cfg)
+    if protected_path_error is not None:
+        return protected_path_error
     if name in {"write_file", "edit_file"}:
         from . import reconciliation
 
         violation = reconciliation.structured_write_violation(name, call_args, cfg.messages)
         if violation:
             return f"Error: {violation}"
-    if name in ("remember", "append_lesson", "session_command", "action_program"):
+    if name in (
+        "remember",
+        "echo_veil_remember",
+        "echo_veil_refresh_live",
+        "echo_veil_promote",
+        "echo_veil_recall",
+        "echo_veil_context",
+        "echo_veil_list",
+        "echo_veil_forget",
+        "echo_veil_doctor",
+        "echo_veil_reindex",
+        "append_lesson",
+        "update_user_profile",
+        "query_knowledge_graph",
+        "reindex_knowledge_graph",
+        "write_knowledge_graph_note",
+        "x_search",
+        "session_command",
+        "action_program",
+        "harness_search",
+        "harness_read",
+        "harness_scorecard",
+        "harness_competitive_rating",
+    ):
         call_args["cfg"] = cfg
     if name == "session_slash":
         from . import session_commands
@@ -698,6 +728,35 @@ def summarize_tool_result(result: str, limit: int = 140) -> str:
     return text[:limit] + ("..." if len(text) > limit else "")
 
 
+def content_free_tool_result_summary(name: str, result: str, status: str) -> str:
+    """Return bounded receipt metadata without retaining a tool payload prefix."""
+
+    text = str(result)
+    encoded = text.encode("utf-8", errors="replace")
+    normalized_status = (
+        str(status).strip().casefold()
+        if str(status).strip().casefold()
+        in {
+            "worked",
+            "failed",
+            "denied",
+            "skipped",
+            "timed_out",
+            "cancelled",
+            "unknown_outcome",
+        }
+        else "failed"
+    )
+    try:
+        digest = keyed_action_fingerprint(
+            f"{str(name or 'unknown')}:result",
+            {"result": text},
+        )
+    except (PrivacyProjectionError, TypeError, ValueError):
+        digest = "unavailable"
+    return f"status={normalized_status}; chars={len(text)}; bytes={len(encoded)}; digest={digest}"
+
+
 def run_args_preview(args: dict[str, Any], limit: int = 60, *, name: str = "") -> str:
     safe_args = redact_tool_args(name, args)
     try:
@@ -726,11 +785,7 @@ def _structured_result_failed(result: str, *, name: str = "") -> bool:
     if error is not None and error is not False and error != "":
         return True
     status_code = value.get("status_code")
-    return (
-        isinstance(status_code, int)
-        and not isinstance(status_code, bool)
-        and status_code >= 400
-    )
+    return isinstance(status_code, int) and not isinstance(status_code, bool) and status_code >= 400
 
 
 def classify_tool_status(
@@ -812,36 +867,34 @@ def _record_tool_attempt_unlocked(
         normalized_result = str(result).strip().lower()
         execution_guardrails.record_verification(
             "git_diff",
-            success=worked
-            and normalized_result not in {"", "(no tracked diff)", "(clean working tree)"},
+            success=worked and normalized_result not in {"", "(no tracked diff)", "(clean working tree)"},
         )
     try:
         signature = tool_attempt_signature(name, args)
+        args_receipt = keyed_action_fingerprint(f"{name}:args", args)
     except (PrivacyProjectionError, TypeError, ValueError):
-        signature = f"{name}:privacy-projection-error"
+        safe_name = str(name or "unknown")
+        if re.fullmatch(r"[A-Za-z0-9._:-]{1,96}", safe_name) is None:
+            safe_name = "unknown"
+        signature = keyed_action_fingerprint(
+            "privacy_projection_error",
+            {"tool": safe_name},
+        )
+        args_receipt = keyed_action_fingerprint(
+            "privacy_projection_error:args",
+            {"tool": safe_name},
+        )
     if workspace_changed:
         # A workspace mutation invalidates cached failures: the exact same
         # test/check command is often the correct next action after a fix.
-        cfg.attempt_ledger = [
-            item for item in cfg.attempt_ledger if item.get("status") not in {"failed", "skipped"}
-        ]
-    try:
-        audit_args = project_action_args(name, args, PrivacyView.AUDIT)
-    except (PrivacyProjectionError, TypeError, ValueError):
-        audit_args = {"privacy_error": "arguments unavailable"}
-    args_preview = json.dumps(
-        audit_args,
-        sort_keys=True,
-        ensure_ascii=True,
-        default=str,
-    )[:100]
+        cfg.attempt_ledger = [item for item in cfg.attempt_ledger if item.get("status") not in {"failed", "skipped"}]
     entry: dict[str, Any] = {
         "timestamp": time.time(),
         "signature": signature,
         "tool": name,
-        "args_preview": args_preview,
+        "args_receipt": args_receipt,
         "status": status,
-        "summary": summarize_tool_result(result),
+        "summary": content_free_tool_result_summary(name, result, status),
     }
     if retry_allowed is not None:
         entry["retry_allowed"] = bool(retry_allowed)

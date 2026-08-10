@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
+import stat
+import time
+
+import pytest
 
 from algo_cli import main
 from algo_cli.context_budget import OptionalContextBlock
@@ -70,14 +75,90 @@ def test_write_ledger_creates_temp_markdown_for_small_context(tmp_path: Path) ->
 
 
 def test_write_ledger_is_disabled_for_large_context(tmp_path: Path) -> None:
-    assert write_ledger(
-        model="glm-5.2",
-        runtime_cap=1_000_000,
+    assert (
+        write_ledger(
+            model="glm-5.2",
+            runtime_cap=1_000_000,
+            cwd="/tmp/project",
+            base_message="Use context.",
+            optional_blocks=[_Block("rag", "Relevant Context", "Full RAG block")],
+            root=tmp_path,
+        )
+        is None
+    )
+
+
+def test_echo_authority_disables_small_context_file_creation(tmp_path: Path) -> None:
+    root = tmp_path / "ledgers"
+    canary = "SMALL_CONTEXT_ECHO_CANARY"
+
+    ledger = write_ledger(
+        model="tiny:latest",
+        runtime_cap=4096,
         cwd="/tmp/project",
-        base_message="Use context.",
-        optional_blocks=[_Block("rag", "Relevant Context", "Full RAG block")],
-        root=tmp_path,
-    ) is None
+        base_message=canary,
+        optional_blocks=[_Block("memory", "Protected", canary)],
+        session_summary=canary,
+        messages=[{"role": "tool", "content": canary}],
+        root=root,
+        echo_authority=True,
+    )
+
+    assert ledger is None
+    assert not root.exists()
+
+
+def test_small_context_ledger_uses_private_modes_and_bounded_cleanup(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "ledgers"
+    root.mkdir()
+    expired = root / "1234567890-old-0000000000000000.md"
+    expired.write_text("old", encoding="utf-8")
+    old = time.time() - (25 * 60 * 60)
+    os.utime(expired, (old, old))
+    unrelated = root / "keep.txt"
+    unrelated.write_text("keep", encoding="utf-8")
+
+    ledger = write_ledger(
+        model="tiny:latest",
+        runtime_cap=4096,
+        cwd="/tmp/project",
+        base_message="safe",
+        optional_blocks=[],
+        root=root,
+    )
+
+    assert ledger is not None
+    assert not expired.exists()
+    assert unrelated.read_text(encoding="utf-8") == "keep"
+    if os.name == "posix":
+        assert stat.S_IMODE(root.stat().st_mode) == 0o700
+        assert stat.S_IMODE(ledger.path.stat().st_mode) == 0o600
+
+
+def test_small_context_ledger_rejects_symlink_root_without_writing_victim(
+    tmp_path: Path,
+) -> None:
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    root = tmp_path / "ledgers"
+    try:
+        root.symlink_to(victim, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        pytest.skip("directory symlinks are unavailable")
+
+    with pytest.raises(OSError, match="private directory"):
+        write_ledger(
+            model="tiny:latest",
+            runtime_cap=4096,
+            cwd="/tmp/project",
+            base_message="must not write",
+            optional_blocks=[],
+            root=root,
+        )
+
+    assert list(victim.iterdir()) == []
 
 
 def test_small_context_preview_tool_reports_decision() -> None:
