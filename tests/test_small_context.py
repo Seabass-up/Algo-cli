@@ -5,11 +5,12 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import time
 
 import pytest
 
-from algo_cli import main
+from algo_cli import main, small_context
 from algo_cli.context_budget import OptionalContextBlock
 from algo_cli.small_context import (
     SMALL_CONTEXT_THRESHOLD,
@@ -159,6 +160,79 @@ def test_small_context_ledger_rejects_symlink_root_without_writing_victim(
         )
 
     assert list(victim.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction contract")
+def test_small_context_ledger_rejects_junctioned_ancestor_before_creation(tmp_path: Path) -> None:
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    alias = tmp_path / "alias"
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(victim)],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+
+    with pytest.raises(OSError, match="ancestry is unsafe"):
+        write_ledger(
+            model="tiny:latest",
+            runtime_cap=4096,
+            cwd="C:\\project",
+            base_message="must not write",
+            optional_blocks=[],
+            root=alias / "ledgers",
+        )
+    assert list(victim.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows atomic private staging contract")
+def test_windows_small_context_stage_is_private_before_first_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "ledgers"
+    small_context._ensure_windows_private_directory(root)
+    original_create = small_context._windows_create_private_file
+    created: list[Path] = []
+
+    def create_and_check(path: Path) -> int:
+        descriptor = original_create(path)
+        assert small_context._windows_private_dacl(path) is True
+        created.append(path)
+        return descriptor
+
+    monkeypatch.setattr(small_context, "_windows_create_private_file", create_and_check)
+    ledger = write_ledger(
+        model="tiny:latest",
+        runtime_cap=4096,
+        cwd="C:\\project",
+        base_message="private context",
+        optional_blocks=[],
+        root=root,
+    )
+
+    assert ledger is not None
+    assert len(created) == 1
+    assert small_context._windows_private_dacl(ledger.path) is True
+
+
+def test_full_path_cleanup_removes_stale_crash_temp_alias_without_deleting_ledger(tmp_path: Path) -> None:
+    now = time.time()
+    ledger = tmp_path / "1234567890-tiny-0123456789abcdef.md"
+    staging = tmp_path / ".1234567890-tiny-0123456789abcdef.md.abcdef0123456789.tmp"
+    ledger.write_text("private context", encoding="utf-8")
+    os.link(ledger, staging)
+    os.utime(ledger, (now - 600, now - 600))
+
+    small_context._cleanup_ledgers_by_path(tmp_path, now=now)
+
+    assert ledger.read_text(encoding="utf-8") == "private context"
+    assert ledger.stat().st_nlink == 1
+    assert not staging.exists()
 
 
 def test_small_context_preview_tool_reports_decision() -> None:

@@ -28,7 +28,10 @@ from typing import Any, Callable
 from .config import (
     CONFIG_DIR,
     _atomic_write_text,
+    _ensure_windows_private_directory,
     _exclusive_state_lock,
+    _move_file_write_through,
+    _path_is_reparse_point,
     _state_descriptor_payload,
 )
 from .grace_memory_receipts import (
@@ -96,10 +99,14 @@ def _safe_unlink_regular_or_link(path: Path) -> bool:
         return False
     except OSError:
         return False
-    if not (stat.S_ISREG(descriptor.st_mode) or stat.S_ISLNK(descriptor.st_mode)):
+    is_reparse = _path_is_reparse_point(path, descriptor)
+    if not (stat.S_ISREG(descriptor.st_mode) or is_reparse):
         return False
     try:
-        path.unlink()
+        if is_reparse and stat.S_ISDIR(descriptor.st_mode):
+            path.rmdir()
+        else:
+            path.unlink()
         return True
     except OSError:
         return False
@@ -122,8 +129,14 @@ def _purge_untrusted_skill_candidates() -> int:
         return 0
     except OSError:
         return 0
-    if stat.S_ISLNK(descriptor.st_mode) or not stat.S_ISDIR(descriptor.st_mode):
-        return 0
+    if _path_is_reparse_point(SKILL_QUARANTINE_DIR, descriptor):
+        if not _safe_unlink_regular_or_link(SKILL_QUARANTINE_DIR):
+            raise ElsieReceiptError("skill quarantine reparse point could not be disabled")
+        return 1
+    if not stat.S_ISDIR(descriptor.st_mode):
+        raise ElsieReceiptError("skill quarantine root is unsafe")
+    if os.name == "nt":
+        _ensure_windows_private_directory(SKILL_QUARANTINE_DIR)
     removed = 0
     try:
         paths = tuple(SKILL_QUARANTINE_DIR.iterdir())
@@ -144,16 +157,22 @@ def _quarantine_unproven_active_skills() -> int:
         return 0
     except OSError:
         return 0
-    if stat.S_ISLNK(descriptor.st_mode):
+    if _path_is_reparse_point(SKILLS_DIR, descriptor):
         if not _safe_unlink_regular_or_link(SKILLS_DIR):
             raise ElsieReceiptError("active skill root symlink could not be disabled")
         return 1
     if not stat.S_ISDIR(descriptor.st_mode):
         raise ElsieReceiptError("active skill root is unsafe")
     try:
-        LEGACY_SKILL_QUARANTINE_DIR.mkdir(parents=True, mode=0o700, exist_ok=True)
+        if os.name == "nt":
+            _ensure_windows_private_directory(SKILLS_DIR)
+            _ensure_windows_private_directory(LEGACY_SKILL_QUARANTINE_DIR)
+        else:
+            LEGACY_SKILL_QUARANTINE_DIR.mkdir(parents=True, mode=0o700, exist_ok=True)
         quarantine_info = LEGACY_SKILL_QUARANTINE_DIR.lstat()
-        if stat.S_ISLNK(quarantine_info.st_mode) or not stat.S_ISDIR(quarantine_info.st_mode):
+        if _path_is_reparse_point(LEGACY_SKILL_QUARANTINE_DIR, quarantine_info) or not stat.S_ISDIR(
+            quarantine_info.st_mode
+        ):
             raise ElsieReceiptError("legacy skill quarantine path is unsafe")
         if os.name == "posix":
             os.chmod(LEGACY_SKILL_QUARANTINE_DIR, 0o700)
@@ -170,8 +189,11 @@ def _quarantine_unproven_active_skills() -> int:
         destination: Path | None = None
         try:
             info = path.lstat()
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-                path.unlink()
+            if _path_is_reparse_point(path, info) or not stat.S_ISREG(info.st_mode):
+                if _path_is_reparse_point(path, info) and stat.S_ISDIR(info.st_mode):
+                    path.rmdir()
+                else:
+                    path.unlink()
                 moved += 1
                 continue
             # A hard-linked file cannot be isolated by moving only this name.
@@ -182,7 +204,7 @@ def _quarantine_unproven_active_skills() -> int:
                 moved += 1
                 continue
             destination = LEGACY_SKILL_QUARANTINE_DIR / f"legacy-{uuid.uuid4().hex}.md"
-            os.replace(path, destination)
+            _move_file_write_through(path, destination, replace=True)
             if os.name == "posix":
                 flags = (
                     os.O_RDONLY
@@ -850,14 +872,18 @@ Rules:
 
 
 def ensure_dirs() -> None:
-    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
-    if os.name == "posix":
+    if os.name == "nt":
+        _ensure_windows_private_directory(SKILLS_DIR)
+    else:
+        SKILLS_DIR.mkdir(parents=True, exist_ok=True)
         os.chmod(SKILLS_DIR, 0o700)
 
 
 def ensure_quarantine_dir() -> None:
-    SKILL_QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
-    if os.name == "posix":
+    if os.name == "nt":
+        _ensure_windows_private_directory(SKILL_QUARANTINE_DIR)
+    else:
+        SKILL_QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
         os.chmod(SKILL_QUARANTINE_DIR, 0o700)
 
 

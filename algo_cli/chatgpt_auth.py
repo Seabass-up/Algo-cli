@@ -34,7 +34,23 @@ import webbrowser
 from pathlib import Path
 from typing import Any
 
-from .config import CONFIG_DIR, _atomic_write_text, _exclusive_state_lock, _state_descriptor_payload
+from .config import (
+    CONFIG_DIR,
+    _atomic_write_text,
+    _config_relative_path,
+    _ensure_private_config_parent,
+    _ensure_windows_private_directory,
+    _exclusive_state_lock,
+    _path_is_reparse_point,
+    _portable_directory_identity,
+    _portable_state_identity,
+    _recheck_directory_chain,
+    _state_descriptor_payload,
+    _windows_canonicalize_private_path,
+    _windows_dacl_is_safe,
+    _windows_pinned_directory_chain,
+    _windows_private_dacl,
+)
 
 CHATGPT_CLIENT_ID = os.environ.get("OPENAI_OAUTH_CLIENT_ID", "").strip()
 CHATGPT_AUTHORIZE_URL = os.environ.get("OPENAI_OAUTH_AUTHORIZE_URL", "https://auth.openai.com/oauth/authorize")
@@ -368,12 +384,19 @@ def _read_private_auth_json(path: Path) -> dict[str, Any]:
         raise RuntimeError(f"Codex auth file was not created at {path}.") from exc
     except OSError as exc:
         raise RuntimeError(f"Could not inspect Codex auth file at {path}.") from exc
+    if os.name == "nt" and _config_relative_path(path) is not None:
+        try:
+            _ensure_private_config_parent(path)
+            before = path.lstat()
+        except OSError as exc:
+            raise RuntimeError(f"Codex auth file at {path} could not be made private.") from exc
     if (
         not stat.S_ISREG(before.st_mode)
         or before.st_nlink != 1
         or before.st_size > _MAX_AUTH_FILE_BYTES
         or (hasattr(os, "getuid") and before.st_uid != os.getuid())
         or (os.name == "posix" and before.st_mode & 0o077)
+        or (os.name == "nt" and not _windows_private_dacl(path))
     ):
         raise RuntimeError(f"Codex auth file at {path} is not a private owner-only regular file.")
     try:
@@ -398,27 +421,48 @@ def _prepare_codex_auth_home() -> None:
     """Create the dedicated transient Codex home as an owner-only real directory."""
 
     home = Path(CODEX_AUTH_HOME)
-    home.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if os.name == "nt" and _config_relative_path(home) is not None:
+        _ensure_windows_private_directory(CONFIG_DIR)
+    windows_home_chain = _ensure_windows_private_directory(home) if os.name == "nt" else ()
+    if os.name != "nt":
+        home.mkdir(parents=True, mode=0o700, exist_ok=True)
     info = home.lstat()
     if (
         stat.S_ISLNK(info.st_mode)
         or not stat.S_ISDIR(info.st_mode)
         or (hasattr(os, "getuid") and info.st_uid != os.getuid())
-        or info.st_mode & 0o022
+        or (os.name == "posix" and info.st_mode & 0o022)
+        or (os.name == "nt" and (_path_is_reparse_point(home, info) or not _windows_private_dacl(home)))
     ):
         raise RuntimeError("The dedicated Codex auth directory is unsafe.")
     if os.name == "posix":
         os.chmod(home, 0o700)
+    elif windows_home_chain:
+        _recheck_directory_chain(windows_home_chain)
 
 
 def _remove_primary_auth_unlocked() -> bool:
     """Remove the authoritative token file, refusing aliases and special files."""
 
+    if os.name == "nt":
+        with _windows_pinned_directory_chain(AUTH_FILE.parent) as parent_chain:
+            removed = _remove_primary_auth_unlocked_bound()
+            _recheck_directory_chain(parent_chain)
+            return removed
+    return _remove_primary_auth_unlocked_bound()
+
+
+def _remove_primary_auth_unlocked_bound() -> bool:
     try:
         info = AUTH_FILE.lstat()
     except FileNotFoundError:
         return False
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or (hasattr(os, "getuid") and info.st_uid != os.getuid()):
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+        or (os.name == "nt" and (_path_is_reparse_point(AUTH_FILE, info) or not _windows_private_dacl(AUTH_FILE)))
+    ):
         raise OSError("primary ChatGPT auth state identity is unsafe")
     AUTH_FILE.unlink()
     if AUTH_FILE.exists() or AUTH_FILE.is_symlink():
@@ -439,6 +483,7 @@ def _snapshot_primary_auth_unlocked() -> bytes | None:
         or info.st_size > _MAX_AUTH_FILE_BYTES
         or (hasattr(os, "getuid") and info.st_uid != os.getuid())
         or (os.name == "posix" and info.st_mode & 0o077)
+        or (os.name == "nt" and (_path_is_reparse_point(AUTH_FILE, info) or not _windows_private_dacl(AUTH_FILE)))
     ):
         raise OSError("primary ChatGPT auth state identity is unsafe")
     return _state_descriptor_payload(AUTH_FILE, max_bytes=_MAX_AUTH_FILE_BYTES)
@@ -456,6 +501,20 @@ def _restore_primary_auth_unlocked(snapshot: bytes | None) -> None:
 
 
 def _remove_dedicated_codex_auth_source() -> bool:
+    home = Path(CODEX_AUTH_HOME)
+    if os.name == "nt":
+        try:
+            with _windows_pinned_directory_chain(home.parent) as parent_chain:
+                return _remove_dedicated_codex_auth_source_unpinned(parent_chain=parent_chain)
+        except FileNotFoundError:
+            return False
+    return _remove_dedicated_codex_auth_source_unpinned(parent_chain=())
+
+
+def _remove_dedicated_codex_auth_source_unpinned(
+    *,
+    parent_chain: tuple[tuple[Path, tuple[int, ...]], ...],
+) -> bool:
     """Remove the exact transient Codex source and its empty private home.
 
     The directory is intentionally flat. Any alias, hardlink, special file, or
@@ -464,6 +523,65 @@ def _remove_dedicated_codex_auth_source() -> bool:
     """
 
     home = Path(CODEX_AUTH_HOME)
+    if os.name == "nt":
+        _recheck_directory_chain(parent_chain)
+        if not _windows_private_dacl(home.parent):
+            raise OSError("dedicated Codex auth parent ACL is unsafe")
+        try:
+            home_info = home.lstat()
+        except FileNotFoundError:
+            return False
+        if (
+            _path_is_reparse_point(home, home_info)
+            or not stat.S_ISDIR(home_info.st_mode)
+            or not _windows_dacl_is_safe(
+                home,
+                require_current_owner=False,
+                reject_untrusted_read=True,
+                require_protected_dacl=False,
+            )
+        ):
+            raise OSError("dedicated Codex auth directory identity is unsafe")
+        if not _windows_private_dacl(home):
+            home_info = _windows_canonicalize_private_path(home, directory=True)
+        home_identity = _portable_directory_identity(home_info)
+        names = sorted(item.name for item in home.iterdir())
+        if names not in ([], ["auth.json"]):
+            raise OSError("dedicated Codex auth directory contains unexpected state")
+        if names:
+            source = home / "auth.json"
+            auth_info = source.lstat()
+            if (
+                _path_is_reparse_point(source, auth_info)
+                or not stat.S_ISREG(auth_info.st_mode)
+                or auth_info.st_nlink != 1
+                or not _windows_dacl_is_safe(
+                    source,
+                    require_current_owner=False,
+                    reject_untrusted_read=True,
+                    require_protected_dacl=False,
+                )
+            ):
+                raise OSError("dedicated Codex auth source identity is unsafe")
+            if not _windows_private_dacl(source):
+                auth_info = _windows_canonicalize_private_path(source, directory=False)
+            source_identity = _portable_state_identity(auth_info)
+            _recheck_directory_chain(parent_chain)
+            current = source.lstat()
+            if _portable_state_identity(current) != source_identity:
+                raise OSError("dedicated Codex auth source changed during cleanup")
+            source.unlink()
+        if any(home.iterdir()):
+            raise OSError("dedicated Codex auth state remained after cleanup")
+        current_home = home.lstat()
+        if _path_is_reparse_point(home, current_home) or _portable_directory_identity(current_home) != home_identity:
+            raise OSError("dedicated Codex auth directory changed during cleanup")
+        _recheck_directory_chain(parent_chain)
+        home.rmdir()
+        _recheck_directory_chain(parent_chain)
+        if home.exists() or home.is_symlink():
+            raise OSError("dedicated Codex auth directory remained after cleanup")
+        return True
     directory_flags = (
         os.O_RDONLY
         | int(getattr(os, "O_CLOEXEC", 0))
@@ -651,7 +769,6 @@ def refresh_codex_access_token(refresh_token: str) -> dict[str, Any]:
 
 
 def _write_tokens_text_unlocked(text: str) -> None:
-    AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_text(AUTH_FILE, text)
     try:
         os.chmod(AUTH_FILE, 0o600)

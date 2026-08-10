@@ -165,14 +165,29 @@ def _digest(value: Any) -> str:
 
 
 def _source_identity(information: os.stat_result) -> tuple[int, ...]:
-    return (
-        information.st_mode,
-        information.st_dev,
-        information.st_ino,
-        information.st_nlink,
-        information.st_size,
-        information.st_mtime_ns,
-        information.st_ctime_ns,
+    common = (
+        int(information.st_dev),
+        int(information.st_ino),
+        int(stat.S_IFMT(information.st_mode)),
+        int(information.st_nlink),
+        int(information.st_size),
+        int(information.st_mtime_ns),
+    )
+    if os.name == "nt":
+        # Windows path stat and CRT fstat can project permission bits and ctime
+        # differently for the same handle. File attributes bind the relevant
+        # regular/reparse/read-only identity consistently across both views.
+        return (*common, int(getattr(information, "st_file_attributes", 0)))
+    return (*common, int(information.st_mode), int(information.st_ctime_ns))
+
+
+def _source_is_reparse(information: os.stat_result) -> bool:
+    return stat.S_ISLNK(information.st_mode) or (
+        os.name == "nt"
+        and bool(
+            int(getattr(information, "st_file_attributes", 0))
+            & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+        )
     )
 
 
@@ -188,7 +203,7 @@ def _read_source_payload_with_identity(relative: str) -> tuple[bytes, tuple[int,
     if (
         resolved != candidate.absolute()
         or not stat.S_ISREG(before.st_mode)
-        or stat.S_ISLNK(before.st_mode)
+        or _source_is_reparse(before)
         or before.st_nlink != 1
         or not 1 <= before.st_size <= MAX_SOURCE_BYTES
     ):
@@ -197,7 +212,11 @@ def _read_source_payload_with_identity(relative: str) -> tuple[bytes, tuple[int,
     try:
         descriptor = os.open(
             candidate,
-            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
         )
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode) or _source_identity(opened) != _source_identity(before):
@@ -212,9 +231,11 @@ def _read_source_payload_with_identity(relative: str) -> tuple[bytes, tuple[int,
             raise AgentRuntimeBenchmarkError(f"benchmark source grew while reading: {relative}")
         after_descriptor = os.fstat(descriptor)
         after_path = candidate.lstat()
-        if _source_identity(after_descriptor) != _source_identity(opened) or _source_identity(
-            after_path
-        ) != _source_identity(opened):
+        if (
+            _source_is_reparse(after_path)
+            or _source_identity(after_descriptor) != _source_identity(opened)
+            or _source_identity(after_path) != _source_identity(opened)
+        ):
             raise AgentRuntimeBenchmarkError(f"benchmark source changed while reading: {relative}")
     except OSError as exc:
         raise AgentRuntimeBenchmarkError(f"benchmark source is unavailable: {relative}") from exc
@@ -241,7 +262,7 @@ def _recheck_source_identity(relative: str, expected: tuple[int, ...]) -> None:
     if (
         resolved != candidate.absolute()
         or not stat.S_ISREG(observed.st_mode)
-        or stat.S_ISLNK(observed.st_mode)
+        or _source_is_reparse(observed)
         or observed.st_nlink != 1
         or _source_identity(observed) != expected
     ):

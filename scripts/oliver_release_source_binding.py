@@ -1991,6 +1991,14 @@ def _absolute(value: str) -> Path:
     return path
 
 
+def _require_release_platform(platform_name: str | None = None) -> None:
+    """Keep immutable source capture on its descriptor-capable POSIX boundary."""
+
+    selected = os.name if platform_name is None else platform_name
+    if selected != "posix":
+        raise SourceBindingRejected("platform_unsupported")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -2035,6 +2043,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     try:
+        _require_release_platform()
         if arguments.command == "capture":
             document = capture_revision(
                 repository=arguments.repository,

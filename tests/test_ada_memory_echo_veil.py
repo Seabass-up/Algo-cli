@@ -145,13 +145,16 @@ def test_echo_dependency_is_commit_pinned_and_exercised_in_ci() -> None:
     assert pin in lock
     assert (
         "uv sync --frozen --no-editable --extra dev --extra supply-chain "
-        "--extra echo-veil --reinstall-package algo-cli-runtime"
+        "--extra echo-veil --reinstall-package algo-cli-runtime --link-mode copy"
     ) in workflow
-    assert ("uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil pytest tests") in workflow
     assert (
-        "uv sync --frozen --no-editable --extra dev --extra echo-veil --reinstall-package algo-cli-runtime"
+        "uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil --link-mode copy pytest tests"
     ) in workflow
-    assert ("uv run --frozen --no-editable --extra dev --extra echo-veil pytest tests") in workflow
+    assert (
+        "uv sync --frozen --no-editable --extra dev --extra echo-veil "
+        "--reinstall-package algo-cli-runtime --link-mode copy"
+    ) in workflow
+    assert ("uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy pytest tests") in workflow
 
 
 def test_algo_tool_registry_exposes_the_full_governed_echo_contract() -> None:

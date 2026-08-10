@@ -1,6 +1,7 @@
 """Tests for working-directory code RAG."""
 
 import os
+import subprocess
 
 import pytest
 
@@ -124,6 +125,31 @@ def test_symlink_escape_outside_project_is_not_indexed(tmp_path):
     assert rels == {"app.py"}
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction contract")
+def test_junctioned_source_directory_outside_project_is_not_indexed(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write(workspace, "app.py", "widget = 1\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _write(outside, "leak.py", "JUNCTION_SECRET_CANARY = True\n")
+    junction = workspace / "vendor"
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(outside)],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+
+    index = code_rag.build_or_update_index(str(workspace), force=True)
+    rels = {chunk["relative_path"] for chunk in index["chunks"]}
+    assert rels == {"app.py"}
+    assert "JUNCTION_SECRET_CANARY" not in repr(index)
+
+
 def test_symlink_to_secret_path_inside_project_is_not_indexed(tmp_path):
     _write(tmp_path, "app.py", "widget = 1\n")
     _write(tmp_path, "secrets/real.py", "api_key = 'hunter2'\n")
@@ -242,6 +268,67 @@ def test_purge_persisted_indexes_removes_preexisting_plaintext_canary(tmp_path, 
     assert canary not in repr(code_rag._INDEX_MEM)
 
 
+def test_purge_persisted_indexes_full_path_fallback_preserves_identity_checks(tmp_path, monkeypatch):
+    index_dir = tmp_path / "code_index"
+    index_dir.mkdir()
+    (index_dir / "one.json").write_text("one", encoding="utf-8")
+    (index_dir / "two.json").write_text("two", encoding="utf-8")
+    monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", index_dir)
+    monkeypatch.setattr(code_rag, "_windows_path_purge_required", lambda: True)
+
+    assert code_rag.purge_persisted_indexes() == 2
+    assert not index_dir.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction contract")
+def test_windows_purge_removes_leaf_junction_without_following(tmp_path, monkeypatch):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    retained = outside / "keep.json"
+    retained.write_text("protected", encoding="utf-8")
+    index_dir = tmp_path / "code_index"
+    index_dir.mkdir()
+    junction = index_dir / "linked"
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(outside)],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+    monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", index_dir)
+
+    assert code_rag.purge_persisted_indexes() == 1
+    assert retained.read_text(encoding="utf-8") == "protected"
+    assert not index_dir.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction contract")
+def test_windows_purge_rejects_junctioned_ancestor_before_deletion(tmp_path, monkeypatch):
+    outside = tmp_path / "outside"
+    index_dir = outside / "code_index"
+    index_dir.mkdir(parents=True)
+    retained = index_dir / "keep.json"
+    retained.write_text("protected", encoding="utf-8")
+    alias = tmp_path / "alias"
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(outside)],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+    monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", alias / "code_index")
+
+    with pytest.raises(OSError, match="ancestry is unsafe"):
+        code_rag.purge_persisted_indexes()
+    assert retained.read_text(encoding="utf-8") == "protected"
+
+
 def test_purge_persisted_indexes_does_not_follow_directory_symlink(tmp_path, monkeypatch):
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -270,6 +357,21 @@ def test_purge_persisted_indexes_unlinks_leaf_symlink_without_following(tmp_path
     assert not index_dir.exists()
 
 
+def test_purge_persisted_indexes_rejects_external_hardlink(tmp_path, monkeypatch):
+    index_dir = tmp_path / "code_index"
+    index_dir.mkdir()
+    index_path = index_dir / "legacy.json"
+    index_path.write_text("protected", encoding="utf-8")
+    alias = tmp_path / "outside-alias.json"
+    os.link(index_path, alias)
+    monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", index_dir)
+
+    with pytest.raises(OSError, match="external hardlink"):
+        code_rag.purge_persisted_indexes()
+    assert index_path.read_text(encoding="utf-8") == "protected"
+    assert alias.read_text(encoding="utf-8") == "protected"
+
+
 def test_purge_persisted_indexes_fails_closed_on_nested_canary(tmp_path, monkeypatch):
     index_dir = tmp_path / "code_index"
     nested = index_dir / "legacy-layout" / "deeper"
@@ -286,6 +388,7 @@ def test_purge_persisted_indexes_fails_closed_on_nested_canary(tmp_path, monkeyp
     assert code_rag.persisted_index_count() == 1
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO support is unavailable")
 def test_purge_persisted_indexes_fails_closed_on_special_entry(tmp_path, monkeypatch):
     index_dir = tmp_path / "code_index"
     index_dir.mkdir()
@@ -311,7 +414,7 @@ def test_purge_persisted_indexes_surfaces_partial_unlink_failure(tmp_path, monke
     real_unlink = os.unlink
 
     def fail_second(path, *args, **kwargs):
-        if path == "two.json":
+        if os.path.basename(os.fspath(path)) == "two.json":
             raise OSError("injected unlink failure")
         return real_unlink(path, *args, **kwargs)
 

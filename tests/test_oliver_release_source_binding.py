@@ -19,6 +19,13 @@ import zipfile
 import pytest
 
 
+if os.name == "nt":
+    pytest.skip(
+        "Oliver immutable source capture is intentionally confined to the ubuntu-24.04 release workflow",
+        allow_module_level=True,
+    )
+
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "oliver_release_source_binding.py"
 SOURCE_DATE_EPOCH = 1_700_000_000
@@ -34,6 +41,12 @@ def _load_module() -> ModuleType:
 
 
 BINDING = _load_module()
+
+
+def test_release_source_binding_platform_boundary_is_fail_closed() -> None:
+    BINDING._require_release_platform("posix")
+    with pytest.raises(BINDING.SourceBindingRejected, match="platform_unsupported"):
+        BINDING._require_release_platform("nt")
 
 
 def _git(repository: Path, *arguments: str, environment: dict[str, str] | None = None) -> str:

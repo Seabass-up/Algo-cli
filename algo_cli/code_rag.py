@@ -36,7 +36,18 @@ except ImportError:
     _np = None  # type: ignore[assignment]
     _NUMPY = False
 
-from .config import CONFIG_DIR, _atomic_write_text
+from .config import (
+    CONFIG_DIR,
+    _atomic_write_text,
+    _config_relative_path,
+    _directory_chain,
+    _path_is_reparse_point,
+    _portable_directory_identity,
+    _portable_state_identity,
+    _recheck_directory_chain,
+    _windows_pinned_directory_chain,
+    _windows_private_dacl,
+)
 from .intelligence.project_graph import build_project_graph
 from .intelligence.repo_map import rank_repo_map, render_repo_map, snapshot_project_graph
 from .retrieval_algorithms import stable_top_k
@@ -154,17 +165,19 @@ def _index_path_for(cwd: str) -> Path:
 def _iter_source_files(root: Path) -> list[Path]:
     found: list[Path] = []
     for current, dirs, files in os.walk(root):
-        dirs[:] = sorted(
-            [
-                directory
-                for directory in dirs
-                if directory not in SKIP_DIRS
-                and not directory.startswith(".")
-                and not SECRET_RE.search(directory)
-                and not (Path(current) / directory).is_symlink()
-            ],
-            key=str.lower,
-        )
+        retained_dirs: list[str] = []
+        for directory in dirs:
+            if directory in SKIP_DIRS or directory.startswith(".") or SECRET_RE.search(directory):
+                continue
+            candidate = Path(current) / directory
+            try:
+                directory_info = candidate.lstat()
+            except OSError:
+                continue
+            if _path_is_reparse_point(candidate, directory_info) or not stat.S_ISDIR(directory_info.st_mode):
+                continue
+            retained_dirs.append(directory)
+        dirs[:] = sorted(retained_dirs, key=str.lower)
         for name in sorted(files, key=str.lower):
             if Path(name).suffix.lower() not in CODE_EXTENSIONS:
                 continue
@@ -184,7 +197,8 @@ def _iter_source_files(root: Path) -> list[Path]:
             # symlinks, devices/FIFOs, and hardlink aliases can otherwise smuggle
             # a legacy memory file into an apparently safe working directory.
             if (
-                not stat.S_ISREG(source_stat.st_mode)
+                _path_is_reparse_point(path, source_stat)
+                or not stat.S_ISREG(source_stat.st_mode)
                 or source_stat.st_nlink != 1
                 or source_stat.st_size > MAX_FILE_BYTES
             ):
@@ -199,10 +213,20 @@ def _validated_source_stat(path: Path) -> os.stat_result | None:
     """Return a safe source lstat or ``None`` without following an alias."""
 
     try:
+        ancestry = _directory_chain(Path(os.path.abspath(os.fspath(path.parent)))) if os.name == "nt" else ()
+        if ancestry:
+            _recheck_directory_chain(ancestry)
         source_stat = path.lstat()
+        if ancestry:
+            _recheck_directory_chain(ancestry)
     except OSError:
         return None
-    if not stat.S_ISREG(source_stat.st_mode) or source_stat.st_nlink != 1 or source_stat.st_size > MAX_FILE_BYTES:
+    if (
+        _path_is_reparse_point(path, source_stat)
+        or not stat.S_ISREG(source_stat.st_mode)
+        or source_stat.st_nlink != 1
+        or source_stat.st_size > MAX_FILE_BYTES
+    ):
         return None
     return source_stat
 
@@ -215,10 +239,24 @@ def _read_source_text(path: Path) -> tuple[str, os.stat_result] | None:
     before ``fstat`` can reject it.
     """
 
+    if os.name == "nt":
+        try:
+            with _windows_pinned_directory_chain(Path(os.path.abspath(os.fspath(path.parent)))) as ancestry:
+                return _read_source_text_bound(path, ancestry=ancestry)
+        except OSError:
+            return None
+    return _read_source_text_bound(path, ancestry=())
+
+
+def _read_source_text_bound(
+    path: Path,
+    *,
+    ancestry: tuple[tuple[Path, tuple[int, ...]], ...],
+) -> tuple[str, os.stat_result] | None:
     before = _validated_source_stat(path)
     if before is None:
         return None
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     flags |= getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(path, flags)
@@ -230,7 +268,7 @@ def _read_source_text(path: Path) -> tuple[str, os.stat_result] | None:
             not stat.S_ISREG(opened.st_mode)
             or opened.st_nlink != 1
             or opened.st_size > MAX_FILE_BYTES
-            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+            or _portable_state_identity(opened) != _portable_state_identity(before)
         ):
             return None
         remaining = MAX_FILE_BYTES + 1
@@ -243,14 +281,16 @@ def _read_source_text(path: Path) -> tuple[str, os.stat_result] | None:
             remaining -= len(block)
         payload = b"".join(chunks)
         after = os.fstat(descriptor)
-        if len(payload) > MAX_FILE_BYTES or (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
-            after.st_nlink,
-        ) != (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns, opened.st_nlink):
+        current = path.lstat()
+        if (
+            len(payload) > MAX_FILE_BYTES
+            or _path_is_reparse_point(path, current)
+            or _portable_state_identity(after) != _portable_state_identity(opened)
+            or _portable_state_identity(current) != _portable_state_identity(opened)
+        ):
             return None
+        if ancestry:
+            _recheck_directory_chain(ancestry)
         return payload.decode("utf-8", errors="replace"), after
     except OSError:
         return None
@@ -398,7 +438,6 @@ def _save_index(cwd: str, index: dict[str, Any]) -> bool:
     if not _index_sources_valid(cwd, index):
         invalidate_cache(cwd)
         return False
-    CODE_INDEX_DIR.mkdir(parents=True, exist_ok=True)
     _atomic_write_text(_index_path_for(cwd), json.dumps(index, separators=(",", ":")))
     _INDEX_MEM[str(Path(cwd).resolve())] = index
     return True
@@ -456,6 +495,76 @@ def persisted_index_count() -> int:
         return 1
 
 
+def _windows_path_purge_required() -> bool:
+    return os.name == "nt"
+
+
+def _purge_persisted_indexes_by_path(
+    parent_chain: tuple[tuple[Path, tuple[int, ...]], ...],
+) -> int:
+    try:
+        root_info = CODE_INDEX_DIR.lstat()
+    except FileNotFoundError:
+        return 0
+    _recheck_directory_chain(parent_chain)
+    if _config_relative_path(CODE_INDEX_DIR.parent) is not None and not _windows_private_dacl(CODE_INDEX_DIR.parent):
+        raise OSError("code index parent ACL is unsafe")
+    if _path_is_reparse_point(CODE_INDEX_DIR, root_info):
+        _recheck_directory_chain(parent_chain)
+        if stat.S_ISDIR(root_info.st_mode):
+            CODE_INDEX_DIR.rmdir()
+        else:
+            CODE_INDEX_DIR.unlink()
+        _recheck_directory_chain(parent_chain)
+        return 1
+    if stat.S_ISREG(root_info.st_mode):
+        if root_info.st_nlink != 1:
+            raise OSError("code index root has an external hardlink")
+        if _portable_state_identity(CODE_INDEX_DIR.lstat()) != _portable_state_identity(root_info):
+            raise OSError("code index root changed during purge")
+        CODE_INDEX_DIR.unlink()
+        _recheck_directory_chain(parent_chain)
+        return 1
+    if not stat.S_ISDIR(root_info.st_mode):
+        raise OSError("code index root is not a regular file, symlink, or directory")
+    if _config_relative_path(CODE_INDEX_DIR) is not None and not _windows_private_dacl(CODE_INDEX_DIR):
+        raise OSError("code index root ACL is unsafe")
+    root_identity = _portable_directory_identity(root_info)
+    path_entries = sorted(CODE_INDEX_DIR.iterdir(), key=lambda path: path.name)
+    if len(path_entries) > MAX_PERSISTED_INDEX_ENTRIES:
+        raise OSError("code index entry count exceeds the purge bound")
+    captured: list[tuple[Path, tuple[int, ...]]] = []
+    for entry in path_entries:
+        information = entry.lstat()
+        if not (stat.S_ISREG(information.st_mode) or _path_is_reparse_point(entry, information)):
+            raise OSError("code index contains an unexpected nested or special entry")
+        if stat.S_ISREG(information.st_mode) and information.st_nlink != 1:
+            raise OSError("code index entry has an external hardlink")
+        captured.append((entry, _portable_state_identity(information)))
+    removed = 0
+    for entry, expected in captured:
+        current = entry.lstat()
+        if _portable_state_identity(current) != expected:
+            raise OSError("code index entry changed during purge")
+        _recheck_directory_chain(parent_chain)
+        if _path_is_reparse_point(entry, current) and stat.S_ISDIR(current.st_mode):
+            entry.rmdir()
+        else:
+            entry.unlink()
+        removed += 1
+    if any(CODE_INDEX_DIR.iterdir()):
+        raise OSError("code index changed during purge")
+    current_root = CODE_INDEX_DIR.lstat()
+    if (
+        _path_is_reparse_point(CODE_INDEX_DIR, current_root)
+        or _portable_directory_identity(current_root) != root_identity
+    ):
+        raise OSError("code index root changed during purge")
+    CODE_INDEX_DIR.rmdir()
+    _recheck_directory_chain(parent_chain)
+    return removed
+
+
 def purge_persisted_indexes() -> int:
     """Delete the flat persisted code-index store without following aliases.
 
@@ -467,6 +576,14 @@ def purge_persisted_indexes() -> int:
     """
 
     invalidate_cache()
+    if _windows_path_purge_required():
+        try:
+            with _windows_pinned_directory_chain(
+                Path(os.path.abspath(os.fspath(CODE_INDEX_DIR.parent)))
+            ) as parent_chain:
+                return _purge_persisted_indexes_by_path(parent_chain)
+        except FileNotFoundError:
+            return 0
     directory_flags = (
         os.O_RDONLY
         | int(getattr(os, "O_CLOEXEC", 0))
@@ -482,7 +599,12 @@ def purge_persisted_indexes() -> int:
             root_info = os.stat(CODE_INDEX_DIR.name, dir_fd=parent_fd, follow_symlinks=False)
         except FileNotFoundError:
             return 0
-        if stat.S_ISLNK(root_info.st_mode) or stat.S_ISREG(root_info.st_mode):
+        if stat.S_ISLNK(root_info.st_mode):
+            os.unlink(CODE_INDEX_DIR.name, dir_fd=parent_fd)
+            return 1
+        if stat.S_ISREG(root_info.st_mode):
+            if root_info.st_nlink != 1:
+                raise OSError("code index root has an external hardlink")
             os.unlink(CODE_INDEX_DIR.name, dir_fd=parent_fd)
             return 1
         if not stat.S_ISDIR(root_info.st_mode):
@@ -495,14 +617,16 @@ def purge_persisted_indexes() -> int:
             names = sorted(os.listdir(root_fd))
             if len(names) > MAX_PERSISTED_INDEX_ENTRIES:
                 raise OSError("code index entry count exceeds the purge bound")
-            entries: list[tuple[str, tuple[int, int, int]]] = []
+            descriptor_entries: list[tuple[str, tuple[int, int, int]]] = []
             for name in names:
                 info = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
                 if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
                     raise OSError("code index contains an unexpected nested or special entry")
-                entries.append((name, (info.st_dev, info.st_ino, info.st_mode)))
+                if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+                    raise OSError("code index entry has an external hardlink")
+                descriptor_entries.append((name, (info.st_dev, info.st_ino, info.st_mode)))
             removed = 0
-            for name, expected in entries:
+            for name, expected in descriptor_entries:
                 current = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
                 if (current.st_dev, current.st_ino, current.st_mode) != expected:
                     raise OSError("code index entry changed during purge")

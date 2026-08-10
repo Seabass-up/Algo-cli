@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import subprocess
 import time
 import urllib.parse
@@ -221,6 +222,30 @@ def test_resolve_codex_bin_finds_windows_npm_shim_when_path_is_stale(tmp_path: P
     assert chatgpt_auth.resolve_codex_bin() == str(shim)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction contract")
+def test_prepare_codex_auth_home_rejects_junctioned_ancestor_before_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    alias = tmp_path / "alias"
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(victim)],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+    monkeypatch.setattr(chatgpt_auth, "CODEX_AUTH_HOME", alias / "codex-chatgpt")
+
+    with pytest.raises(OSError, match="ancestry is unsafe"):
+        chatgpt_auth._prepare_codex_auth_home()
+    assert list(victim.iterdir()) == []
+
+
 def test_run_codex_device_login_uses_algo_owned_codex_home(config_dir: Path, monkeypatch):
     calls: list[dict[str, Any]] = []
 
@@ -250,6 +275,34 @@ def test_run_codex_device_login_uses_algo_owned_codex_home(config_dir: Path, mon
     assert not chatgpt_auth.CODEX_AUTH_HOME.exists()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows inherited credential cleanup contract")
+def test_failed_codex_login_removes_inherited_private_auth_source(
+    config_dir: Path,
+) -> None:
+    from algo_cli import config as config_module
+
+    def failed_run(cmd: list[str], *, env: dict[str, str], check: bool) -> subprocess.CompletedProcess[str]:
+        assert check is False
+        auth_file = Path(env["CODEX_HOME"]) / "auth.json"
+        auth_file.write_text('{"refresh_token":"TRANSIENT_SECRET"}', encoding="utf-8")
+        assert (
+            config_module._windows_dacl_is_safe(
+                auth_file,
+                require_current_owner=False,
+                reject_untrusted_read=True,
+                require_protected_dacl=False,
+            )
+            is True
+        )
+        return subprocess.CompletedProcess(cmd, 1)
+
+    with pytest.raises(RuntimeError, match="exit code 1"):
+        chatgpt_auth.run_codex_device_login(codex_bin="codex", runner=failed_run)
+
+    assert not chatgpt_auth.CODEX_AUTH_HOME.exists()
+    assert not chatgpt_auth.AUTH_FILE.exists()
+
+
 def test_clear_tokens_removes_primary_and_historical_codex_source(config_dir: Path):
     canary = "REFRESH_TOKEN_CANARY_352ee8"
     chatgpt_auth.save_tokens({"access_token": "AT", "refresh_token": canary})
@@ -257,6 +310,19 @@ def test_clear_tokens_removes_primary_and_historical_codex_source(config_dir: Pa
     source = chatgpt_auth.CODEX_AUTH_HOME / "auth.json"
     source.write_text(json.dumps({"access_token": "AT", "refresh_token": canary}), encoding="utf-8")
     source.chmod(0o600)
+    if os.name == "nt":
+        from algo_cli import config as config_module
+
+        for inherited in (chatgpt_auth.CODEX_AUTH_HOME, source):
+            assert (
+                config_module._windows_dacl_is_safe(
+                    inherited,
+                    require_current_owner=False,
+                    reject_untrusted_read=True,
+                    require_protected_dacl=False,
+                )
+                is True
+            )
 
     assert chatgpt_auth.clear_tokens() is True
 

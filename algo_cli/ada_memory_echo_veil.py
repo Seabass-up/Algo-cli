@@ -37,6 +37,8 @@ from .ada_echo_veil_identity import (
     QUALIFIED_ECHO_SOURCE_TREE_SHA256,
     QualifiedEchoSnapshotFinder,
     QualifiedEchoSourceError,
+    _is_reparse,
+    _source_identity,
     capture_qualified_echo_source_tree,
 )
 from .config import CONFIG_DIR, _load_json_file
@@ -103,15 +105,26 @@ class _EchoModuleIdentityError(RuntimeError):
 
 def _record_sha256(path: Path) -> str:
     flags = os.O_RDONLY
-    for name in ("O_CLOEXEC", "O_NOFOLLOW", "O_NONBLOCK"):
+    for name in ("O_BINARY", "O_CLOEXEC", "O_NOFOLLOW", "O_NONBLOCK"):
         flags |= int(getattr(os, name, 0))
+    try:
+        path_before = path.lstat()
+    except OSError as exc:
+        raise _EchoModuleIdentityError("module_origin_open") from exc
+    if _is_reparse(path_before) or not stat.S_ISREG(path_before.st_mode) or path_before.st_nlink != 1:
+        raise _EchoModuleIdentityError("module_origin_identity")
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
         raise _EchoModuleIdentityError("module_origin_open") from exc
     try:
         before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or not 0 <= before.st_size <= _MAX_MODULE_BYTES:
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or not 0 <= before.st_size <= _MAX_MODULE_BYTES
+            or _source_identity(before) != _source_identity(path_before)
+        ):
             raise _EchoModuleIdentityError("module_origin_identity")
         digest = hashlib.sha256()
         total = 0
@@ -121,8 +134,13 @@ def _record_sha256(path: Path) -> str:
                 raise _EchoModuleIdentityError("module_origin_bounds")
             digest.update(chunk)
         after = os.fstat(descriptor)
-        stable_fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
-        if any(getattr(before, field) != getattr(after, field) for field in stable_fields) or total != before.st_size:
+        path_after = path.lstat()
+        if (
+            _is_reparse(path_after)
+            or _source_identity(before) != _source_identity(after)
+            or _source_identity(before) != _source_identity(path_after)
+            or total != before.st_size
+        ):
             raise _EchoModuleIdentityError("module_origin_changed")
         return base64.urlsafe_b64encode(digest.digest()).rstrip(b"=").decode("ascii")
     finally:
@@ -156,7 +174,7 @@ def _verify_distribution_module_origin(
             info = current.lstat()
         except OSError as exc:
             raise _EchoModuleIdentityError("module_origin_missing") from exc
-        if stat.S_ISLNK(info.st_mode):
+        if _is_reparse(info):
             raise _EchoModuleIdentityError("module_origin_symlink")
         if index < len(parts) - 1 and not stat.S_ISDIR(info.st_mode):
             raise _EchoModuleIdentityError("module_origin_scope")

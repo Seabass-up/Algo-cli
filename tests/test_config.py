@@ -460,6 +460,32 @@ def test_json_state_loader_rejects_symlink_and_oversize_inputs(tmp_path) -> None
     ) == {"safe": True}
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction contract")
+def test_windows_atomic_config_write_rejects_junctioned_ancestor_before_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    alias = tmp_path / "alias"
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(victim)],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+    redirected_root = alias / ".algo_cli"
+    redirected_file = redirected_root / "config.json"
+    monkeypatch.setattr(config, "CONFIG_DIR", redirected_root)
+
+    with pytest.raises(OSError, match="ancestry is unsafe"):
+        config._atomic_write_text(redirected_file, '{"secret":true}')
+    assert list(victim.iterdir()) == []
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX FIFO identity contract")
 def test_json_state_loader_rejects_fifo_without_blocking() -> None:
     os.mkfifo(config.CONFIG_FILE, 0o600)
@@ -467,28 +493,52 @@ def test_json_state_loader_rejects_fifo_without_blocking() -> None:
     assert config._load_json_file(config.CONFIG_FILE, {"safe": True}) == {"safe": True}
 
 
+@pytest.mark.parametrize("force_full_path_reader", [False, *([True] if os.name == "nt" else [])])
 def test_json_state_loader_rejects_path_replacement_during_descriptor_read(
     monkeypatch,
+    force_full_path_reader: bool,
 ) -> None:
     original_document = {"value": "a" * 70_000}
     config.CONFIG_FILE.write_text(json.dumps(original_document), encoding="utf-8")
     displaced = config.CONFIG_FILE.with_suffix(".original")
     original_read = config.os.read
     swapped = False
+    replacement_denied = False
 
     def swapping_read(descriptor: int, size: int) -> bytes:
-        nonlocal swapped
+        nonlocal replacement_denied, swapped
         chunk = original_read(descriptor, size)
         if chunk and not swapped:
-            swapped = True
-            config.CONFIG_FILE.rename(displaced)
-            config.CONFIG_FILE.write_text('{"value":"replacement"}', encoding="utf-8")
+            try:
+                config.CONFIG_FILE.rename(displaced)
+                config.CONFIG_FILE.write_text('{"value":"replacement"}', encoding="utf-8")
+            except PermissionError:
+                # Windows holds the path against deletion while this CRT
+                # descriptor is open, which is the strongest valid outcome.
+                replacement_denied = True
+            else:
+                swapped = True
         return chunk
 
     monkeypatch.setattr(config.os, "read", swapping_read)
+    if force_full_path_reader:
+        monkeypatch.setattr(config, "_directory_descriptor_io_supported", lambda: False)
 
-    assert config._load_json_file(config.CONFIG_FILE, {"safe": True}) == {"safe": True}
-    assert swapped is True
+    loaded = config._load_json_file(config.CONFIG_FILE, {"safe": True})
+    if replacement_denied:
+        assert loaded == original_document
+    else:
+        assert loaded == {"safe": True}
+    assert swapped is True or replacement_denied is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="unsupported POSIX descriptor contract")
+def test_state_reader_fails_closed_when_posix_dirfd_support_is_unavailable(monkeypatch) -> None:
+    config.CONFIG_FILE.write_text('{"safe":true}', encoding="utf-8")
+    monkeypatch.setattr(config, "_directory_descriptor_io_supported", lambda: False)
+
+    with pytest.raises(OSError, match="directory-descriptor state reads are unavailable"):
+        config._state_descriptor_payload(config.CONFIG_FILE, max_bytes=1024)
     assert not config.CONFIG_FILE.with_suffix(".json.corrupt").exists()
 
 
@@ -507,6 +557,290 @@ def test_config_writes_force_owner_only_directories_and_files(config_dir) -> Non
     assert stat.S_IMODE(config.CONFIG_FILE.stat().st_mode) == 0o600
     assert stat.S_IMODE(config.HISTORY_DIR.stat().st_mode) == 0o700
     assert stat.S_IMODE(conversation.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows DACL contract")
+@pytest.mark.parametrize("untrusted_sid", ["S-1-1-0", "S-1-5-20"])
+def test_windows_private_dacl_rejects_each_untrusted_write_ace(
+    tmp_path: Path,
+    untrusted_sid: str,
+) -> None:
+    private = tmp_path / "private"
+    private.mkdir()
+    config._windows_harden_private_dacl(private)
+    assert config._windows_private_dacl(private) is True
+
+    system_root = Path(os.environ["SystemRoot"])
+    icacls = system_root / "System32" / "icacls.exe"
+    completed = subprocess.run(
+        [str(icacls), str(private), "/grant", f"*{untrusted_sid}:(OI)(CI)M"],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+    assert config._windows_private_dacl(private) is False
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows DACL contract")
+def test_windows_private_dacl_rejects_untrusted_read_but_creation_check_does_not(
+    tmp_path: Path,
+) -> None:
+    private = tmp_path / "private"
+    private.mkdir()
+    config._windows_harden_private_dacl(private)
+    system_root = Path(os.environ["SystemRoot"])
+    icacls = system_root / "System32" / "icacls.exe"
+    completed = subprocess.run(
+        [str(icacls), str(private), "/grant", "*S-1-1-0:(OI)(CI)R"],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+    assert config._windows_safe_creation_dacl(private) is True
+    assert config._windows_private_dacl(private) is False
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ancestry authorization contract")
+def test_windows_higher_ancestor_delete_child_blocks_reads_writes_and_grace_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from algo_cli.grace_memory_receipts import ElsieReceiptError, elsie_staging_path, publish_elsie_staged_file
+
+    grandparent = tmp_path / "grandparent"
+    private = grandparent / "immediate" / "private"
+    private.mkdir(parents=True)
+    for directory in (grandparent, grandparent / "immediate", private):
+        config._windows_harden_private_dacl(directory)
+    target = private / "config.json"
+    system_root = Path(os.environ["SystemRoot"])
+    icacls = system_root / "System32" / "icacls.exe"
+    granted = subprocess.run(
+        [str(icacls), str(grandparent), "/grant", "*S-1-5-20:(DC)"],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert granted.returncode == 0, granted.stderr.decode(errors="replace")
+    monkeypatch.setattr(config, "CONFIG_DIR", private)
+    original_create = config._windows_create_private_file
+    create_calls = 0
+
+    def tracked_create(path: Path) -> int:
+        nonlocal create_calls
+        create_calls += 1
+        return original_create(path)
+
+    monkeypatch.setattr(config, "_windows_create_private_file", tracked_create)
+    with pytest.raises(OSError, match="ancestry"):
+        config._atomic_write_text(target, '{"secret":true}')
+    assert create_calls == 0
+    assert not target.exists()
+
+    target.write_text('{"safe":true}', encoding="utf-8")
+    config._windows_harden_private_dacl(target)
+    with pytest.raises(OSError, match="ancestry"):
+        config._state_descriptor_payload(target, max_bytes=1024)
+
+    stage = elsie_staging_path(private / "elsie.json")
+    stage.write_bytes(b"protected")
+    config._windows_harden_private_dacl(stage)
+    with pytest.raises(ElsieReceiptError, match="could not be published"):
+        publish_elsie_staged_file(stage, private / "elsie.json", expected_payload=b"protected")
+    assert stage.read_bytes() == b"protected"
+    assert not (private / "elsie.json").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows atomic private creation contract")
+def test_windows_state_stage_is_private_at_creation_without_post_create_hardening(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "readable-parent"
+    parent.mkdir()
+    config._windows_harden_private_dacl(parent)
+    system_root = Path(os.environ["SystemRoot"])
+    icacls = system_root / "System32" / "icacls.exe"
+    granted = subprocess.run(
+        [str(icacls), str(parent), "/grant", "*S-1-1-0:(OI)(CI)R"],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert granted.returncode == 0, granted.stderr.decode(errors="replace")
+    assert config._windows_safe_creation_dacl(parent) is True
+    assert config._windows_private_dacl(parent) is False
+    target = parent / "runtime.env"
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path / "unrelated-config")
+    original_create = config._windows_create_private_file
+    created: list[Path] = []
+
+    def create_and_check(path: Path) -> int:
+        descriptor = original_create(path)
+        assert config._windows_private_dacl(path) is True
+        created.append(path)
+        return descriptor
+
+    monkeypatch.setattr(config, "_windows_create_private_file", create_and_check)
+    monkeypatch.setattr(
+        config,
+        "_windows_harden_private_dacl",
+        lambda _path: (_ for _ in ()).throw(AssertionError("post-create hardening must not run")),
+    )
+
+    config._atomic_write_text(target, "SECRET=value\n")
+
+    assert len(created) == 1
+    assert target.read_bytes() == b"SECRET=value\n"
+    assert config._windows_private_dacl(target) is True
+    assert config._windows_private_dacl(parent) is False
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows external private-path contract")
+def test_windows_external_elsie_parent_fails_closed_without_acl_repair_or_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "external-store"
+    parent.mkdir()
+    config._windows_harden_private_dacl(parent)
+    system_root = Path(os.environ["SystemRoot"])
+    icacls = system_root / "System32" / "icacls.exe"
+    granted = subprocess.run(
+        [str(icacls), str(parent), "/grant", "*S-1-1-0:(OI)(CI)R"],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert granted.returncode == 0, granted.stderr.decode(errors="replace")
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path / "unrelated-config")
+    stage = parent / ".state.json.elsie-pending"
+
+    with pytest.raises(OSError, match="external private Windows persistence parent ACL is unsafe"):
+        config._atomic_write_text(stage, "protected")
+
+    assert config._windows_private_dacl(parent) is False
+    assert list(parent.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows atomic private directory contract")
+def test_windows_private_directory_is_private_at_creation_without_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "readable-parent"
+    parent.mkdir()
+    config._windows_harden_private_dacl(parent)
+    system_root = Path(os.environ["SystemRoot"])
+    icacls = system_root / "System32" / "icacls.exe"
+    granted = subprocess.run(
+        [str(icacls), str(parent), "/grant", "*S-1-1-0:(OI)(CI)R"],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert granted.returncode == 0, granted.stderr.decode(errors="replace")
+    child = parent / "private-child"
+    monkeypatch.setattr(
+        config,
+        "_windows_harden_private_dacl",
+        lambda _path: (_ for _ in ()).throw(AssertionError("directory repair must not run")),
+    )
+
+    config._ensure_windows_private_directory(child, require_new=True)
+
+    assert child.is_dir()
+    assert config._windows_private_dacl(child) is True
+    assert config._windows_private_dacl(parent) is False
+    inherited = child / "external-child.json"
+    descriptor = os.open(
+        inherited,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+        0o666,
+    )
+    os.close(descriptor)
+    assert (
+        config._windows_dacl_is_safe(
+            inherited,
+            require_current_owner=False,
+            reject_untrusted_read=True,
+            require_protected_dacl=False,
+        )
+        is True
+    )
+    config._windows_canonicalize_private_path(inherited, directory=False)
+    assert config._windows_private_dacl(inherited) is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows no-delete-share ancestry contract")
+def test_windows_pinned_directory_chain_blocks_ancestor_rename(tmp_path: Path) -> None:
+    top = tmp_path / "top"
+    leaf = top / "middle" / "leaf"
+    leaf.mkdir(parents=True)
+    for directory in (top, top / "middle", leaf):
+        config._windows_harden_private_dacl(directory)
+    displaced = top / "displaced"
+
+    with config._windows_pinned_directory_chain(leaf):
+        with pytest.raises(OSError):
+            (top / "middle").rename(displaced)
+
+    (top / "middle").rename(displaced)
+    assert (displaced / "leaf").is_dir()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows descriptor identity contract")
+def test_windows_state_reader_matches_path_handle_and_long_name_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    config.CONFIG_FILE.write_text('{"safe":true}', encoding="utf-8")
+    before = config.CONFIG_FILE.lstat()
+    descriptor = os.open(config.CONFIG_FILE, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    try:
+        opened = os.fstat(descriptor)
+        assert config._portable_state_identity(opened) == config._portable_state_identity(before)
+        final_path = config._windows_descriptor_final_path(descriptor)
+        assert final_path is not None
+        assert os.path.samefile(final_path, config.CONFIG_FILE)
+    finally:
+        os.close(descriptor)
+
+    assert config._state_descriptor_payload(config.CONFIG_FILE, max_bytes=1024) == b'{"safe":true}'
+
+    get_long_path = ctypes.WinDLL("kernel32", use_last_error=True).GetLongPathNameW
+    get_long_path.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+    get_long_path.restype = wintypes.DWORD
+    required = int(get_long_path(str(config.CONFIG_FILE), None, 0))
+    assert required > 0
+    buffer = ctypes.create_unicode_buffer(required + 1)
+    written = int(get_long_path(str(config.CONFIG_FILE), buffer, len(buffer)))
+    assert 0 < written < len(buffer)
+    long_file = Path(buffer.value)
+    monkeypatch.setattr(config, "CONFIG_DIR", long_file.parent)
+    assert config._config_relative_path(config.CONFIG_FILE) == Path("config.json")
+    assert config._state_descriptor_payload(config.CONFIG_FILE, max_bytes=1024) == b'{"safe":true}'
+
+    alias = config.CONFIG_DIR / "config-hardlink.json"
+    os.link(config.CONFIG_FILE, alias)
+    with pytest.raises(OSError, match="identity is unsafe"):
+        config._state_descriptor_payload(config.CONFIG_FILE, max_bytes=1024)
 
 
 def test_json_loader_handles_invalid_utf8_and_unreadable_paths(tmp_path):
@@ -528,6 +862,36 @@ def test_state_lock_file_does_not_grow_per_acquisition(tmp_path):
             pass
 
     assert target.with_suffix(".json.lock").read_bytes() == b"x"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows atomic private lock contract")
+def test_windows_state_lock_is_private_before_first_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    config._ensure_windows_private_directory(config.CONFIG_DIR)
+    target = config.CONFIG_DIR / "state.json"
+    lock_path = target.with_suffix(".json.lock")
+    original_create = config._windows_create_private_file
+    created_private = False
+
+    def create_and_check(path: Path) -> int:
+        nonlocal created_private
+        descriptor = original_create(path)
+        assert path == lock_path
+        assert config._windows_private_dacl(path) is True
+        created_private = True
+        return descriptor
+
+    monkeypatch.setattr(config, "_windows_create_private_file", create_and_check)
+    monkeypatch.setattr(
+        config,
+        "_windows_harden_private_dacl",
+        lambda _path: (_ for _ in ()).throw(AssertionError("lock repair must not run")),
+    )
+
+    with config._exclusive_state_lock(target):
+        assert lock_path.read_bytes() == b"x"
+
+    assert created_private is True
+    assert config._windows_private_dacl(lock_path) is True
 
 
 def test_default_system_points_algo_pattern_updates_to_reviewed_doc():
@@ -797,6 +1161,7 @@ def test_malformed_legacy_config_fails_closed_without_partial_migration(tmp_path
         config.LEGACY_MIGRATION_COMPLETE_FILE,
     ],
 )
+@pytest.mark.skipif(os.name == "nt", reason="POSIX hardlink publication fault injection")
 def test_echo_legacy_migration_partial_publication_never_downgrades_startup(
     tmp_path,
     monkeypatch,
@@ -828,6 +1193,7 @@ def test_echo_legacy_migration_partial_publication_never_downgrades_startup(
 
     with pytest.raises(config.LegacyMigrationError):
         config.perform_legacy_migration()
+
     if current.exists():
         assert not (current / config.LEGACY_MIGRATION_COMPLETE_FILE).exists()
 
@@ -835,6 +1201,7 @@ def test_echo_legacy_migration_partial_publication_never_downgrades_startup(
         config.perform_legacy_migration()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory-fsync fault injection")
 def test_echo_legacy_migration_post_completion_fsync_failure_remains_blocked(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -879,6 +1246,126 @@ def test_echo_legacy_migration_post_completion_fsync_failure_remains_blocked(
     assert (current / config.LEGACY_MIGRATION_INCOMPLETE_FILE).is_file()
     with pytest.raises(config.LegacyMigrationError):
         config.perform_legacy_migration()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows write-through migration contract")
+@pytest.mark.parametrize("after_publication", [False, True])
+def test_windows_echo_migration_write_through_failure_is_recoverably_blocked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    after_publication: bool,
+) -> None:
+    legacy = tmp_path / ".ollama_cli"
+    current = tmp_path / ".algo_cli"
+    legacy.mkdir()
+    (legacy / "config.json").write_text(
+        '{"echo_veil_enabled":true,"echo_veil_protection":"required"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "LEGACY_CONFIG_DIR", legacy)
+    monkeypatch.setattr(config, "CONFIG_DIR", current)
+    monkeypatch.setattr(config, "get_legacy_backup_dir", lambda: tmp_path / ".ollama_cli.backup")
+    original_move = config._move_file_write_through
+
+    def fail_at_boundary(source, destination, *, replace):
+        source_path = Path(source)
+        destination_path = Path(destination)
+        if not after_publication and destination_path == current:
+            raise OSError("simulated pre-publication write-through failure")
+        if after_publication and source_path.name == config.LEGACY_MIGRATION_INCOMPLETE_FILE:
+            raise OSError("simulated post-publication write-through failure")
+        return original_move(source, destination, replace=replace)
+
+    monkeypatch.setattr(config, "_move_file_write_through", fail_at_boundary)
+    with pytest.raises(config.LegacyMigrationError):
+        config.perform_legacy_migration()
+
+    if after_publication:
+        assert (current / config.LEGACY_MIGRATION_COMPLETE_FILE).is_file()
+        assert (current / config.LEGACY_MIGRATION_INCOMPLETE_FILE).is_file()
+    else:
+        assert not current.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows lexical creation contract")
+def test_windows_migration_rejects_broad_creation_parent_before_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private = tmp_path / "private"
+    private.mkdir()
+    legacy = private / ".ollama_cli"
+    current = private / ".algo_cli"
+    legacy.mkdir()
+    (legacy / "config.json").write_text(
+        '{"echo_veil_enabled":true,"echo_veil_protection":"required"}',
+        encoding="utf-8",
+    )
+    system_root = Path(os.environ["SystemRoot"])
+    icacls = system_root / "System32" / "icacls.exe"
+    granted = subprocess.run(
+        [str(icacls), str(private), "/grant", "*S-1-5-20:(OI)(CI)M"],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert granted.returncode == 0, granted.stderr.decode(errors="replace")
+    monkeypatch.setattr(config, "LEGACY_CONFIG_DIR", legacy)
+    monkeypatch.setattr(config, "CONFIG_DIR", current)
+    monkeypatch.setattr(config, "get_legacy_backup_dir", lambda: private / ".ollama_cli.backup")
+
+    try:
+        with pytest.raises(config.LegacyMigrationError):
+            config.perform_legacy_migration()
+        assert not current.exists()
+    finally:
+        subprocess.run(
+            [str(icacls), str(private), "/remove:g", "*S-1-5-20"],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows no-clobber migration staging contract")
+def test_windows_sidecar_partial_write_never_creates_final_credential(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private = tmp_path / "private"
+    private.mkdir()
+    config._windows_harden_private_dacl(private)
+    original_create = config._windows_create_private_file
+    original_write = config.os.write
+    writes = 0
+    created_private = False
+
+    def create_private(path: Path) -> int:
+        nonlocal created_private
+        descriptor = original_create(path)
+        assert config._windows_private_dacl(path) is True
+        created_private = True
+        return descriptor
+
+    def fail_after_partial_write(descriptor: int, payload: bytes | memoryview) -> int:
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            return original_write(descriptor, bytes(payload[:1]))
+        raise OSError("simulated interrupted credential write")
+
+    monkeypatch.setattr(config, "_windows_create_private_file", create_private)
+    monkeypatch.setattr(config.os, "write", fail_after_partial_write)
+    with pytest.raises(OSError, match="interrupted credential write"):
+        config._write_private_migration_file(private, "chatgpt_auth.json", b"sensitive-token")
+
+    assert created_private is True
+    assert not (private / "chatgpt_auth.json").exists()
+    assert list(private.iterdir()) == []
 
 
 @pytest.mark.parametrize("with_incomplete", [False, True])

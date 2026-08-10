@@ -9,6 +9,7 @@ import sys
 
 import pytest
 
+from algo_cli import config as config_module
 from algo_cli import grace_memory_receipts as receipts
 from algo_cli.grace_memory_receipts import (
     ElsieReceiptAuthority,
@@ -293,6 +294,21 @@ def test_unprotected_inventory_requires_pinned_approved_reads(tmp_path: Path) ->
         read_pinned_legacy_artifact(root, unknown_artifact)
 
 
+def test_approved_legacy_read_rejects_external_hardlink(tmp_path: Path) -> None:
+    root = tmp_path / "legacy"
+    root.mkdir()
+    source = root / "config.json"
+    source.write_text('{"echo_veil_enabled":false}', encoding="utf-8")
+    alias = tmp_path / "outside-config-alias.json"
+    os.link(source, alias)
+    inventory = inventory_legacy_tree(root, echo_selected=False)
+    artifact = next(item for item in inventory.artifacts if item.relative_path == "config.json")
+
+    with pytest.raises(ElsieReceiptError, match="bounded regular file|identity could not be pinned"):
+        read_pinned_legacy_artifact(root, artifact)
+    assert alias.read_text(encoding="utf-8") == '{"echo_veil_enabled":false}'
+
+
 def test_symlink_legacy_root_is_rejected(tmp_path: Path) -> None:
     real = tmp_path / "real"
     real.mkdir()
@@ -305,6 +321,31 @@ def test_symlink_legacy_root_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ElsieReceiptError, match="real directory"):
         inventory_legacy_tree(linked)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction contract")
+def test_windows_legacy_inventory_classifies_junction_without_descending(tmp_path: Path) -> None:
+    root = tmp_path / "legacy"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.json").write_text("protected", encoding="utf-8")
+    junction = root / "linked"
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(outside)],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+
+    inventory = inventory_legacy_tree(root, echo_selected=False)
+    classified = {artifact.relative_path: artifact.classification for artifact in inventory.artifacts}
+    assert classified["linked"] == LegacyArtifactClass.SYMLINK
+    assert "linked/secret.json" not in classified
+    assert (outside / "secret.json").read_text(encoding="utf-8") == "protected"
 
 
 def test_fifo_legacy_config_is_rejected_without_blocking(tmp_path: Path) -> None:
@@ -349,7 +390,20 @@ def test_staged_publication_binds_exact_payload_and_inode(
             original_replace(replacement, stage)
         original_replace(source, destination)
 
-    monkeypatch.setattr(receipts.os, "replace", swap_before_publish)
+    if os.name == "nt":
+        original_move = config_module._move_file_write_through
+
+        def swap_before_write_through(source, destination, *, replace):
+            if Path(source) == stage and Path(destination) == target:
+                replacement = tmp_path / "replacement.json"
+                replacement.write_bytes(replay)
+                original_replace(replacement, stage)
+                config_module._windows_harden_private_dacl(stage)
+            return original_move(source, destination, replace=replace)
+
+        monkeypatch.setattr(config_module, "_move_file_write_through", swap_before_write_through)
+    else:
+        monkeypatch.setattr(receipts.os, "replace", swap_before_publish)
 
     with pytest.raises(ElsieReceiptError, match="changed identity"):
         publish_elsie_staged_file(
@@ -377,3 +431,33 @@ def test_staged_publication_rejects_wrong_expected_bytes_before_replace(
 
     assert stage.read_bytes() == b"actual"
     assert not target.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows write-through publication contract")
+def test_windows_staged_publication_survives_post_replace_flush_failure_and_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "private"
+    parent.mkdir()
+    config_module._windows_harden_private_dacl(parent)
+    target = parent / "state.json"
+    stage = elsie_staging_path(target)
+    expected = b'{"sequence":2,"receipt":"expected"}'
+    stage.write_bytes(expected)
+    config_module._windows_harden_private_dacl(stage)
+
+    original_fsync = receipts.os.fsync
+    monkeypatch.setattr(receipts.os, "fsync", lambda _descriptor: (_ for _ in ()).throw(OSError("flush failed")))
+    with pytest.raises(ElsieReceiptError, match="could not be published"):
+        publish_elsie_staged_file(stage, target, expected_payload=expected)
+
+    assert target.read_bytes() == expected
+    assert not stage.exists()
+
+    monkeypatch.setattr(receipts.os, "fsync", original_fsync)
+    stage.write_bytes(expected)
+    config_module._windows_harden_private_dacl(stage)
+    publish_elsie_staged_file(stage, target, expected_payload=expected)
+    assert target.read_bytes() == expected
+    assert not stage.exists()

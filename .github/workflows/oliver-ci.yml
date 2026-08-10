@@ -27,7 +27,7 @@ jobs:
           version: "0.11.26"
           enable-cache: true
       - name: Install locked project and quality tools
-        run: uv sync --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil --reinstall-package algo-cli-runtime
+        run: uv sync --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil --reinstall-package algo-cli-runtime --link-mode copy
       - name: Installed-source parity (blocking)
         run: uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil python -I scripts/oliver_installed_source_parity.py
       - name: Ruff (blocking)
@@ -51,7 +51,7 @@ jobs:
       - name: Echo Veil pinned-source and installed RECORD audit (blocking)
         run: >-
           uv run --frozen --no-editable --extra dev --extra supply-chain
-          --extra echo-veil python -I scripts/henry_echo_veil_dependency_audit.py
+          --extra echo-veil --link-mode copy python -I scripts/henry_echo_veil_dependency_audit.py
       - name: Runtime mypy contract (blocking)
         run: >-
           uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil mypy
@@ -127,7 +127,7 @@ jobs:
         run: uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil python -m compileall -q algo_cli ollama_cli
       - name: Full suite with branch coverage floor
         run: >-
-          uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil pytest tests
+          uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil --link-mode copy pytest tests
           --cov
           --cov-branch
           --cov-report=term-missing:skip-covered
@@ -167,11 +167,11 @@ jobs:
           version: "0.11.26"
           enable-cache: true
       - name: Install locked project
-        run: uv sync --frozen --no-editable --extra dev --extra echo-veil --reinstall-package algo-cli-runtime
+        run: uv sync --frozen --no-editable --extra dev --extra echo-veil --reinstall-package algo-cli-runtime --link-mode copy
       - name: Installed-source parity
         run: uv run --frozen --no-editable --extra dev --extra echo-veil python -I scripts/oliver_installed_source_parity.py
       - name: Run full suite
-        run: uv run --frozen --no-editable --extra dev --extra echo-veil pytest tests
+        run: uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy pytest tests
 
   native:
     name: Native helper checks

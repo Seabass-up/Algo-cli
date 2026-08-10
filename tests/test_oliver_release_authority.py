@@ -16,6 +16,13 @@ from typing import Any
 import pytest
 
 
+if os.name == "nt":
+    pytest.skip(
+        "Oliver release authority is intentionally confined to the ubuntu-24.04 release workflow",
+        allow_module_level=True,
+    )
+
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "scripts" / "oliver_release_authority.py"
 SPEC = importlib.util.spec_from_file_location("oliver_release_authority_test", SCRIPT_PATH)
@@ -28,6 +35,19 @@ REVISION = "a" * 40
 TAG = "v0.19.0"
 REPORT_DIGEST = "sha256:" + "b" * 64
 RULESET_ID = 701
+
+
+def test_release_authority_platform_boundary_is_fail_closed() -> None:
+    SCRIPT._require_release_platform("posix")
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_platform_unsupported"):
+        SCRIPT._require_release_platform("nt")
+
+
+def test_every_release_job_uses_the_pinned_posix_runner() -> None:
+    workflow = (ROOT / ".github/workflows/oliver-release.yml").read_text(encoding="utf-8")
+    jobs = _workflow_job_bodies(workflow)
+    assert jobs
+    assert all("    runs-on: ubuntu-24.04\n" in body for body in jobs.values())
 
 
 def _yaml_duplicate_mapping_keys(document: str) -> tuple[tuple[int, str], ...]:

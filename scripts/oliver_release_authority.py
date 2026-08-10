@@ -1887,6 +1887,14 @@ def _receipt_outputs(receipt: Mapping[str, Any], *, release_state: str) -> dict[
     }
 
 
+def _require_release_platform(platform_name: str | None = None) -> None:
+    """Keep the release authority on its descriptor-capable POSIX boundary."""
+
+    selected = os.name if platform_name is None else platform_name
+    if selected != "posix":
+        _reject("release_platform_unsupported")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_subparsers(dest="mode", required=True)
@@ -1952,6 +1960,7 @@ def main(argv: list[str] | None = None) -> int:
 
     arguments = parser.parse_args(argv)
     try:
+        _require_release_platform()
         if arguments.mode == "dispatch":
             context = DispatchContext.from_environment(dict(os.environ))
             checkout = _git_head()

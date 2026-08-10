@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import stat
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -153,6 +154,55 @@ def test_source_reader_rejects_fifo_swap_without_blocking(
     assert observed_flags[0] & getattr(os, "O_NONBLOCK", 0)
 
 
+def test_windows_source_identity_normalizes_path_and_crt_metadata(monkeypatch) -> None:
+    common = {
+        "st_dev": 7,
+        "st_ino": 11,
+        "st_nlink": 1,
+        "st_size": 17,
+        "st_mtime_ns": 23,
+        "st_file_attributes": 0x20,
+    }
+    path_view = SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_ctime_ns=29, **common)
+    handle_view = SimpleNamespace(st_mode=stat.S_IFREG | 0o666, st_ctime_ns=31, **common)
+    changed = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o666,
+        st_ctime_ns=31,
+        **(common | {"st_file_attributes": 1}),
+    )
+    reparse = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o666,
+        st_ctime_ns=31,
+        **(common | {"st_file_attributes": 0x400}),
+    )
+    monkeypatch.setattr(benchmark.os, "name", "nt")
+
+    assert benchmark._source_identity(path_view) == benchmark._source_identity(handle_view)
+    assert benchmark._source_identity(path_view) != benchmark._source_identity(changed)
+    assert benchmark._source_is_reparse(path_view) is False
+    assert benchmark._source_is_reparse(reparse) is True
+
+
+def test_source_reader_requests_binary_descriptor_mode(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "source.py"
+    source.write_bytes(b"source-bound payload\n")
+    original_open = benchmark.os.open
+    binary_flag = 1 << 28
+    observed: list[int] = []
+
+    def capture_open(path, flags, *args):
+        observed.append(flags)
+        return original_open(path, flags & ~binary_flag, *args)
+
+    monkeypatch.setattr(benchmark, "ROOT", tmp_path)
+    monkeypatch.setattr(benchmark.os, "O_BINARY", binary_flag, raising=False)
+    monkeypatch.setattr(benchmark.os, "open", capture_open)
+
+    assert benchmark._read_source_payload("source.py") == b"source-bound payload\n"
+    assert len(observed) == 1
+    assert observed[0] & binary_flag
+
+
 @pytest.mark.parametrize("mutation", ["mode", "timestamp"])
 def test_source_reader_rejects_metadata_change_during_descriptor_read(
     tmp_path,
@@ -163,6 +213,7 @@ def test_source_reader_rejects_metadata_change_during_descriptor_read(
     source.write_bytes(b"source-bound payload\n")
     original_read = benchmark.os.read
     mutated = False
+    original_mode = source.stat().st_mode
 
     def mutate_after_read(descriptor, size):
         nonlocal mutated
@@ -171,7 +222,10 @@ def test_source_reader_rejects_metadata_change_during_descriptor_read(
             mutated = True
             information = source.stat()
             if mutation == "mode":
-                source.chmod((information.st_mode & 0o777) ^ 0o100)
+                if os.name == "nt":
+                    source.chmod(stat.S_IREAD)
+                else:
+                    source.chmod((information.st_mode & 0o777) ^ 0o100)
             else:
                 benchmark.os.utime(
                     source,
@@ -182,8 +236,12 @@ def test_source_reader_rejects_metadata_change_during_descriptor_read(
     monkeypatch.setattr(benchmark, "ROOT", tmp_path)
     monkeypatch.setattr(benchmark.os, "read", mutate_after_read)
 
-    with pytest.raises(benchmark.AgentRuntimeBenchmarkError, match="changed while reading"):
-        benchmark._read_source_payload("source.py")
+    try:
+        with pytest.raises(benchmark.AgentRuntimeBenchmarkError, match="changed while reading"):
+            benchmark._read_source_payload("source.py")
+    finally:
+        if os.name == "nt":
+            source.chmod(original_mode)
 
 
 def test_source_tree_digest_rechecks_earlier_paths_after_full_read(
@@ -200,7 +258,10 @@ def test_source_tree_digest_rechecks_earlier_paths_after_full_read(
         payload, identity = original_read(relative)
         if relative == "second.py":
             information = first.stat()
-            first.chmod((information.st_mode & 0o777) ^ 0o100)
+            os.utime(
+                first,
+                ns=(information.st_atime_ns, information.st_mtime_ns + 1_000_000_000),
+            )
         return payload, identity
 
     monkeypatch.setattr(benchmark, "ROOT", tmp_path)
@@ -225,7 +286,10 @@ def test_source_snapshot_rejects_mutation_across_qualification(
     monkeypatch.setattr(benchmark, "SOURCE_PATHS", ("source.py",))
     _digest, snapshot = benchmark._capture_source_tree()
     information = source.stat()
-    source.chmod((information.st_mode & 0o777) ^ 0o100)
+    os.utime(
+        source,
+        ns=(information.st_atime_ns, information.st_mtime_ns + 1_000_000_000),
+    )
 
     with pytest.raises(
         benchmark.AgentRuntimeBenchmarkError,
@@ -245,7 +309,10 @@ def test_benchmark_rejects_source_mutation_during_execution(
     def run_then_mutate(root):
         rows = original_run_probes(root)
         information = source.stat()
-        source.chmod((information.st_mode & 0o777) ^ 0o100)
+        os.utime(
+            source,
+            ns=(information.st_atime_ns, information.st_mtime_ns + 1_000_000_000),
+        )
         return rows
 
     monkeypatch.setattr(benchmark, "ROOT", tmp_path)

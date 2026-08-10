@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .config import _atomic_write_text, _exclusive_state_lock
+from .config import _atomic_write_text, _exclusive_state_lock, _state_descriptor_payload
 from .grace_memory_receipts import (
     ElsieReceiptAuthority,
     ElsieReceiptError,
@@ -490,33 +490,16 @@ def _effective_limit(value: int | None, default: int) -> int:
 
 
 def _read_state_json(path: Path) -> Any:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
-        descriptor = os.open(path, flags)
+        encoded = _state_descriptor_payload(path, max_bytes=MAX_STATE_BYTES)
     except FileNotFoundError:
         return _STATE_MISSING
     except OSError as exc:
         raise ValueError("memory candidate state path is unsafe") from exc
     try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or not 0 <= info.st_size <= MAX_STATE_BYTES:
-            raise ValueError("memory candidate state is not a bounded regular file")
-        chunks: list[bytes] = []
-        remaining = MAX_STATE_BYTES + 1
-        while remaining > 0:
-            chunk = os.read(descriptor, min(65_536, remaining))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        encoded = b"".join(chunks)
-        if len(encoded) > MAX_STATE_BYTES:
-            raise ValueError("memory candidate state exceeds its size limit")
         return json.loads(encoded.decode("utf-8", errors="strict"))
     except UnicodeError as exc:
         raise ValueError("memory candidate state encoding is invalid") from exc
-    finally:
-        os.close(descriptor)
 
 
 def _pending_candidate_exists(path: Path) -> bool:

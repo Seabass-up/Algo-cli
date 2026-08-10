@@ -6,10 +6,11 @@ import json
 import math
 import os
 import re
+import secrets
 import stat
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Iterator, Mapping
@@ -392,74 +393,1374 @@ def _config_relative_path(path: Path) -> Path | None:
     try:
         base = Path(os.path.abspath(os.fspath(CONFIG_DIR)))
         candidate = Path(os.path.abspath(os.fspath(path)))
+        if os.name == "nt":
+            # Collapse case, 8.3, junction, and long-name spellings before
+            # classifying whether a path belongs to the private state root.
+            base = Path(os.path.realpath(os.fspath(base)))
+            candidate = Path(os.path.realpath(os.fspath(candidate)))
         return candidate.relative_to(base)
     except (OSError, TypeError, ValueError):
         return None
 
 
-def _ensure_private_config_parent(path: Path) -> bool:
+def _ensure_private_config_parent(path: Path, *, require_windows_private: bool = False) -> bool:
     """Create/check owner-only config directories for config-contained paths."""
 
     relative = _config_relative_path(path)
     if relative is None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return False
+        if os.name == "nt":
+            if require_windows_private:
+                # An explicitly configured external store is not Algo-owned
+                # namespace. Validate it, but never rewrite the caller's
+                # directory or existing target ACL as a side effect.
+                _ensure_windows_real_directory(path.parent)
+                if not _windows_private_dacl(path.parent):
+                    raise OSError("external private Windows persistence parent ACL is unsafe")
+                if path.exists() or path.is_symlink():
+                    information = path.lstat()
+                    if (
+                        _path_is_reparse_point(path, information)
+                        or not stat.S_ISREG(information.st_mode)
+                        or information.st_nlink != 1
+                    ):
+                        raise OSError("private Windows persistence target is unsafe")
+                    if not _windows_private_dacl(path):
+                        raise OSError("external private Windows persistence target ACL is unsafe")
+            else:
+                _ensure_windows_real_directory(path.parent)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        return bool(os.name == "nt" and require_windows_private)
     base = Path(os.path.abspath(os.fspath(CONFIG_DIR)))
-    base.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if os.name == "nt":
+        _ensure_windows_private_directory(base)
+    else:
+        base.mkdir(parents=True, mode=0o700, exist_ok=True)
     current = base
     directories = [base]
     for part in relative.parts[:-1]:
         current /= part
-        current.mkdir(mode=0o700, exist_ok=True)
+        if os.name == "nt":
+            _ensure_windows_private_directory(current)
+        else:
+            current.mkdir(mode=0o700, exist_ok=True)
         directories.append(current)
     for directory in directories:
         info = directory.lstat()
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        if _path_is_reparse_point(directory, info) or not stat.S_ISDIR(info.st_mode):
             raise OSError("config persistence directory identity is unsafe")
         if hasattr(os, "getuid") and info.st_uid != os.getuid():
             raise OSError("config persistence directory ownership is unsafe")
         if os.name == "posix":
             os.chmod(directory, 0o700)
+        elif os.name == "nt" and not _windows_private_dacl(directory):
+            raise OSError("config persistence directory ACL is unsafe")
     if path.exists() or path.is_symlink():
         info = path.lstat()
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        if _path_is_reparse_point(path, info) or not stat.S_ISREG(info.st_mode):
             raise OSError("config persistence target identity is unsafe")
+        if os.name == "nt":
+            if info.st_nlink != 1:
+                raise OSError("config persistence target ACL or link identity is unsafe")
+            if not _windows_private_dacl(path):
+                _windows_canonicalize_private_path(path, directory=False)
+    if os.name == "nt":
+        _directory_chain(Path(os.path.abspath(os.fspath(path.parent))))
     return True
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
     """Write text using fsync + atomic replace to avoid truncated state files."""
-    private_config_path = _ensure_private_config_parent(path)
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    private_windows_stage = bool(os.name == "nt" and path.name.startswith(".") and path.name.endswith(".elsie-pending"))
+    private_config_path = _ensure_private_config_parent(
+        path,
+        require_windows_private=private_windows_stage,
+    )
+    # Every Windows caller persists internal state.  Use a protected DACL for
+    # the stage at CreateFileW time even for an explicitly configured path
+    # outside CONFIG_DIR; never expose bytes under an inherited ACL first.
+    private_windows_path = os.name == "nt"
+    encoded = text.encode("utf-8")
+    parent_guard = (
+        _windows_pinned_directory_chain(Path(os.path.abspath(os.fspath(path.parent))))
+        if os.name == "nt"
+        else nullcontext(())
+    )
+    with parent_guard as windows_parent_chain:
+        fd = -1
+        tmp_name = ""
+        if os.name == "nt":
+            for _attempt in range(128):
+                temporary = path.parent / f".{path.name}.{secrets.token_hex(16)}.tmp"
+                try:
+                    fd = _windows_create_private_file(temporary)
+                except FileExistsError:
+                    continue
+                tmp_name = os.fspath(temporary)
+                break
+            else:
+                raise OSError("config persistence staging name is unavailable")
+        else:
+            fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+        try:
+            temporary = Path(tmp_name)
+            temp_path_info = temporary.lstat()
+            temp_descriptor_info = os.fstat(fd)
+            if (
+                _path_is_reparse_point(temporary, temp_path_info)
+                or not stat.S_ISREG(temp_path_info.st_mode)
+                or temp_path_info.st_nlink != 1
+                or _portable_state_identity(temp_path_info) != _portable_state_identity(temp_descriptor_info)
+                or (private_windows_path and not _windows_private_dacl(temporary))
+            ):
+                raise OSError("config persistence staging file is unsafe")
+            # Keep persisted text byte-stable across platforms.  The default
+            # text mode rewrites ``\n`` to ``\r\n`` on Windows.
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as tmp:
+                fd = -1
+                tmp.write(text)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            staged = Path(tmp_name).lstat()
+            staged_identity = _portable_state_identity(staged)
+            if (
+                _path_is_reparse_point(Path(tmp_name), staged)
+                or not stat.S_ISREG(staged.st_mode)
+                or staged.st_nlink != 1
+                or staged.st_size != len(encoded)
+                or (private_windows_path and not _windows_private_dacl(Path(tmp_name)))
+            ):
+                raise OSError("config persistence staging file changed before publication")
+            if windows_parent_chain:
+                _recheck_directory_chain(windows_parent_chain)
+            _move_file_write_through(tmp_name, path, replace=True)
+            if private_config_path and os.name == "posix":
+                os.chmod(path, 0o600)
+            elif private_windows_path:
+                _verify_windows_file_publication(
+                    path,
+                    expected_payload=encoded,
+                    expected_identity=staged_identity,
+                    require_private_dacl=True,
+                )
+            if windows_parent_chain:
+                _recheck_directory_chain(windows_parent_chain)
+            if os.name != "nt":
+                dir_fd = os.open(
+                    path.parent,
+                    os.O_RDONLY | int(getattr(os, "O_DIRECTORY", 0)) | int(getattr(os, "O_NOFOLLOW", 0)),
+                )
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+        except Exception:
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if tmp_name:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+            raise
+
+
+def _path_is_reparse_point(path: Path, information: os.stat_result | None = None) -> bool:
+    """Return whether *path* is redirected by a link/reparse-point boundary."""
+
+    value = information if information is not None else path.lstat()
+    if stat.S_ISLNK(value.st_mode):
+        return True
+    reparse_attribute = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    return os.name == "nt" and bool(int(getattr(value, "st_file_attributes", 0)) & reparse_attribute)
+
+
+def _portable_state_identity(information: os.stat_result) -> tuple[int, ...]:
+    """Normalize identities that differ between Windows path and CRT handles."""
+
+    common = (
+        int(information.st_dev),
+        int(information.st_ino),
+        int(stat.S_IFMT(information.st_mode)),
+        int(information.st_nlink),
+        int(information.st_size),
+        int(information.st_mtime_ns),
+    )
+    if os.name == "nt":
+        # Windows path stat and CRT fstat can project different permission bits
+        # and ctime meanings for the same file. File attributes carry the
+        # security-relevant read-only/reparse state consistently on both views.
+        return (*common, int(getattr(information, "st_file_attributes", 0)))
+    return (*common, int(information.st_mode), int(information.st_uid), int(information.st_ctime_ns))
+
+
+def _portable_directory_identity(information: os.stat_result) -> tuple[int, ...]:
+    common = (
+        int(information.st_dev),
+        int(information.st_ino),
+        int(stat.S_IFMT(information.st_mode)),
+    )
+    if os.name == "nt":
+        return (*common, int(getattr(information, "st_file_attributes", 0)))
+    return (*common, int(information.st_uid), int(information.st_mode))
+
+
+def _portable_lock_identity(information: os.stat_result) -> tuple[int, ...]:
+    """Bind a lock inode without treating another waiter's byte write as a swap."""
+
+    common = (
+        int(information.st_dev),
+        int(information.st_ino),
+        int(stat.S_IFMT(information.st_mode)),
+        int(information.st_nlink),
+    )
+    if os.name == "nt":
+        return (*common, int(getattr(information, "st_file_attributes", 0)))
+    return (*common, int(information.st_uid), int(information.st_mode))
+
+
+def _portable_publication_identity(information: os.stat_result) -> tuple[int, ...]:
+    """Bind a renamed file while excluding rename-driven POSIX ctime changes."""
+
+    common = (
+        int(information.st_dev),
+        int(information.st_ino),
+        int(stat.S_IFMT(information.st_mode)),
+        int(information.st_nlink),
+        int(information.st_size),
+        int(information.st_mtime_ns),
+    )
+    if os.name == "nt":
+        return (*common, int(getattr(information, "st_file_attributes", 0)))
+    return (*common, int(information.st_mode), int(information.st_uid))
+
+
+def _windows_current_user_sid_string() -> str:
+    """Return the current process user's SID without leaking native handles."""
+
+    if os.name != "nt":
+        raise OSError("Windows identity APIs are unavailable")
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = getattr(ctypes, "WinDLL")("advapi32", use_last_error=True)
+    kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+    win_error = getattr(ctypes, "WinError")
+    get_last_error = getattr(ctypes, "get_last_error")
+    kernel32.GetCurrentProcess.argtypes = ()
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = (ctypes.c_void_p,)
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    advapi32.OpenProcessToken.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    )
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    advapi32.ConvertSidToStringSidW.argtypes = (
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    )
+    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+
+    class _SidAndAttributes(ctypes.Structure):
+        _fields_ = [("sid", ctypes.c_void_p), ("attributes", wintypes.DWORD)]
+
+    class _TokenUser(ctypes.Structure):
+        _fields_ = [("user", _SidAndAttributes)]
+
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+        raise win_error(get_last_error())
     try:
-        # Keep persisted text byte-stable across platforms.  The default text
-        # mode rewrites ``\n`` to ``\r\n`` on Windows, which can corrupt
-        # line-oriented formats when they are parsed and atomically rewritten.
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as tmp:
-            tmp.write(text)
-            tmp.flush()
-            os.fsync(tmp.fileno())
-        os.replace(tmp_name, path)
-        if private_config_path and os.name == "posix":
-            os.chmod(path, 0o600)
+        required = wintypes.DWORD()
+        advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(required))
+        if required.value <= 0:
+            raise win_error(get_last_error())
+        token_buffer = ctypes.create_string_buffer(required.value)
+        if not advapi32.GetTokenInformation(
+            token,
+            1,  # TokenUser
+            token_buffer,
+            required,
+            ctypes.byref(required),
+        ):
+            raise win_error(get_last_error())
+        current_sid = ctypes.cast(token_buffer, ctypes.POINTER(_TokenUser)).contents.user.sid
+        sid_text = ctypes.c_void_p()
+        if not current_sid or not advapi32.ConvertSidToStringSidW(current_sid, ctypes.byref(sid_text)):
+            raise win_error(get_last_error())
         try:
-            dir_fd = os.open(
-                path.parent,
-                os.O_RDONLY | int(getattr(os, "O_DIRECTORY", 0)) | int(getattr(os, "O_NOFOLLOW", 0)),
+            return ctypes.wstring_at(sid_text)
+        finally:
+            kernel32.LocalFree(sid_text)
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def _windows_harden_private_dacl(path: Path) -> None:
+    """Install a protected current-user/System DACL on a new private path."""
+
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = getattr(ctypes, "WinDLL")("advapi32", use_last_error=True)
+    kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+    win_error = getattr(ctypes, "WinError")
+    get_last_error = getattr(ctypes, "get_last_error")
+    kernel32.LocalFree.argtypes = (ctypes.c_void_p,)
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+    advapi32.GetSecurityDescriptorDacl.argtypes = (
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.BOOL),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.BOOL),
+    )
+    advapi32.GetSecurityDescriptorDacl.restype = wintypes.BOOL
+    advapi32.GetSecurityDescriptorOwner.argtypes = (
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.BOOL),
+    )
+    advapi32.GetSecurityDescriptorOwner.restype = wintypes.BOOL
+    advapi32.SetNamedSecurityInfoW.argtypes = (
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    )
+    advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
+
+    information = path.lstat()
+    inheritance = "OICI" if stat.S_ISDIR(information.st_mode) else ""
+    current_sid = _windows_current_user_sid_string()
+    sddl = f"O:{current_sid}D:P(A;{inheritance};FA;;;SY)(A;{inheritance};FA;;;{current_sid})"
+    security_descriptor = ctypes.c_void_p()
+    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl,
+        1,
+        ctypes.byref(security_descriptor),
+        None,
+    ):
+        raise win_error(get_last_error())
+    try:
+        present = wintypes.BOOL()
+        defaulted = wintypes.BOOL()
+        dacl = ctypes.c_void_p()
+        owner = ctypes.c_void_p()
+        owner_defaulted = wintypes.BOOL()
+        if (
+            not advapi32.GetSecurityDescriptorDacl(
+                security_descriptor,
+                ctypes.byref(present),
+                ctypes.byref(dacl),
+                ctypes.byref(defaulted),
             )
-        except OSError:
-            dir_fd = None
-        if dir_fd is not None:
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-    except Exception:
+            or not present.value
+            or not dacl.value
+        ):
+            raise OSError("private Windows DACL could not be constructed")
+        if (
+            not advapi32.GetSecurityDescriptorOwner(
+                security_descriptor,
+                ctypes.byref(owner),
+                ctypes.byref(owner_defaulted),
+            )
+            or not owner.value
+        ):
+            raise OSError("private Windows owner could not be constructed")
+        result = advapi32.SetNamedSecurityInfoW(
+            os.fspath(path),
+            1,  # SE_FILE_OBJECT
+            0x00000001 | 0x00000004 | 0x80000000,  # OWNER + DACL + PROTECTED_DACL
+            owner,
+            None,
+            dacl,
+            None,
+        )
+        if result != 0:
+            raise win_error(result)
+    finally:
+        kernel32.LocalFree(security_descriptor)
+    if not _windows_private_dacl(path):
+        raise OSError("private Windows DACL verification failed")
+
+
+def _windows_dacl_is_safe(
+    path: Path,
+    *,
+    require_current_owner: bool,
+    reject_untrusted_read: bool,
+    require_protected_dacl: bool,
+    namespace_control_only: bool = False,
+    allow_any_owner: bool = False,
+    trust_windows_installer: bool = False,
+) -> bool:
+    """Validate owner and allow ACEs without trusting inherited mode bits."""
+
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        advapi32 = getattr(ctypes, "WinDLL")("advapi32", use_last_error=True)
+        kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+        get_named_security = advapi32.GetNamedSecurityInfoW
+        get_named_security.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.c_void_p),
+        )
+        get_named_security.restype = wintypes.DWORD
+        advapi32.EqualSid.argtypes = (ctypes.c_void_p, ctypes.c_void_p)
+        advapi32.EqualSid.restype = wintypes.BOOL
+        advapi32.IsValidSid.argtypes = (ctypes.c_void_p,)
+        advapi32.IsValidSid.restype = wintypes.BOOL
+        advapi32.GetLengthSid.argtypes = (ctypes.c_void_p,)
+        advapi32.GetLengthSid.restype = wintypes.DWORD
+        advapi32.ConvertStringSidToSidW.argtypes = (
+            wintypes.LPCWSTR,
+            ctypes.POINTER(ctypes.c_void_p),
+        )
+        advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
+        advapi32.GetAclInformation.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.c_int,
+        )
+        advapi32.GetAclInformation.restype = wintypes.BOOL
+        advapi32.GetAce.argtypes = (
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+        )
+        advapi32.GetAce.restype = wintypes.BOOL
+        advapi32.GetSecurityDescriptorControl.argtypes = (
+            ctypes.c_void_p,
+            ctypes.POINTER(wintypes.WORD),
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        advapi32.GetSecurityDescriptorControl.restype = wintypes.BOOL
+        kernel32.LocalFree.argtypes = (ctypes.c_void_p,)
+        kernel32.LocalFree.restype = ctypes.c_void_p
+
+        class _AclSizeInformation(ctypes.Structure):
+            _fields_ = [
+                ("ace_count", wintypes.DWORD),
+                ("acl_bytes_in_use", wintypes.DWORD),
+                ("acl_bytes_free", wintypes.DWORD),
+            ]
+
+        class _AceHeader(ctypes.Structure):
+            _fields_ = [
+                ("ace_type", ctypes.c_ubyte),
+                ("ace_flags", ctypes.c_ubyte),
+                ("ace_size", wintypes.WORD),
+            ]
+
+        owner = ctypes.c_void_p()
+        dacl = ctypes.c_void_p()
+        security_descriptor = ctypes.c_void_p()
+        result = get_named_security(
+            os.fspath(path),
+            1,  # SE_FILE_OBJECT
+            0x00000001 | 0x00000004,  # OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
+            ctypes.byref(owner),
+            None,
+            ctypes.byref(dacl),
+            None,
+            ctypes.byref(security_descriptor),
+        )
+        if result != 0 or not owner.value or not dacl.value or not security_descriptor.value:
+            if security_descriptor.value:
+                kernel32.LocalFree(security_descriptor)
+            return False
+        if require_protected_dacl:
+            control = wintypes.WORD()
+            revision = wintypes.DWORD()
+            if (
+                not advapi32.GetSecurityDescriptorControl(
+                    security_descriptor,
+                    ctypes.byref(control),
+                    ctypes.byref(revision),
+                )
+                or not int(control.value) & 0x1000  # SE_DACL_PROTECTED
+            ):
+                kernel32.LocalFree(security_descriptor)
+                return False
+        converted_sids: list[ctypes.c_void_p] = []
         try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+            trusted_sid_texts = [
+                _windows_current_user_sid_string(),
+                "S-1-5-18",  # LocalSystem
+                "S-1-5-32-544",  # Builtin Administrators
+                "S-1-3-0",  # Creator Owner (normally inheritance-only)
+                "S-1-3-4",  # Owner Rights
+            ]
+            if trust_windows_installer:
+                trusted_sid_texts.append("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464")
+            trusted_sids: list[ctypes.c_void_p] = []
+            for sid_text in trusted_sid_texts:
+                sid = ctypes.c_void_p()
+                if not advapi32.ConvertStringSidToSidW(sid_text, ctypes.byref(sid)):
+                    return False
+                converted_sids.append(sid)
+                trusted_sids.append(sid)
+            if not allow_any_owner:
+                trusted_owner_indexes = [0] if require_current_owner else [0, 1, 2]
+                if trust_windows_installer:
+                    trusted_owner_indexes.append(len(trusted_sids) - 1)
+                if not any(advapi32.EqualSid(owner, trusted_sids[index]) for index in trusted_owner_indexes):
+                    return False
+
+            acl_information = _AclSizeInformation()
+            if not advapi32.GetAclInformation(
+                dacl,
+                ctypes.byref(acl_information),
+                ctypes.sizeof(acl_information),
+                2,  # AclSizeInformation
+            ):
+                return False
+            if namespace_control_only:
+                unsafe_rights = (
+                    0x00000010  # FILE_WRITE_EA
+                    | 0x00000040  # FILE_DELETE_CHILD
+                    | 0x00000100  # FILE_WRITE_ATTRIBUTES
+                    | 0x00010000  # DELETE
+                    | 0x00040000  # WRITE_DAC
+                    | 0x00080000  # WRITE_OWNER
+                    | 0x10000000  # GENERIC_ALL
+                    | 0x40000000  # GENERIC_WRITE
+                )
+            else:
+                unsafe_rights = (
+                    0x00000002  # FILE_WRITE_DATA / FILE_ADD_FILE
+                    | 0x00000004  # FILE_APPEND_DATA / FILE_ADD_SUBDIRECTORY
+                    | 0x00000010  # FILE_WRITE_EA
+                    | 0x00000040  # FILE_DELETE_CHILD
+                    | 0x00000100  # FILE_WRITE_ATTRIBUTES
+                    | 0x00010000  # DELETE
+                    | 0x00040000  # WRITE_DAC
+                    | 0x00080000  # WRITE_OWNER
+                    | 0x10000000  # GENERIC_ALL
+                    | 0x40000000  # GENERIC_WRITE
+                )
+            if reject_untrusted_read:
+                unsafe_rights |= (
+                    0x00000001  # FILE_READ_DATA / FILE_LIST_DIRECTORY
+                    | 0x00000008  # FILE_READ_EA
+                    | 0x00000020  # FILE_EXECUTE / FILE_TRAVERSE
+                    | 0x00000080  # FILE_READ_ATTRIBUTES
+                    | 0x00020000  # READ_CONTROL
+                    | 0x20000000  # GENERIC_EXECUTE
+                    | 0x80000000  # GENERIC_READ
+                )
+            allow_ace_types = {0, 4, 5, 9, 11}
+            simple_allow_ace_types = {0, 9}
+            for index in range(int(acl_information.ace_count)):
+                ace_pointer = ctypes.c_void_p()
+                if not advapi32.GetAce(dacl, index, ctypes.byref(ace_pointer)) or not ace_pointer.value:
+                    return False
+                header = ctypes.cast(ace_pointer, ctypes.POINTER(_AceHeader)).contents
+                ace_size = int(header.ace_size)
+                if ace_size < 8:
+                    return False
+                if int(header.ace_flags) & 0x08:  # INHERIT_ONLY_ACE
+                    continue
+                if int(header.ace_type) not in allow_ace_types:
+                    continue
+                mask = int(ctypes.c_uint32.from_address(ace_pointer.value + 4).value)
+                if not mask & unsafe_rights:
+                    continue
+                # Object and compound allow ACE layouts place the SID after
+                # variable fields. Reject them conservatively when writable.
+                if int(header.ace_type) not in simple_allow_ace_types or ace_size < 12:
+                    return False
+                sid_address = ace_pointer.value + 8
+                sid = ctypes.c_void_p(sid_address)
+                if not advapi32.IsValidSid(sid):
+                    return False
+                sid_length = int(advapi32.GetLengthSid(sid))
+                if sid_length <= 0 or 8 + sid_length > ace_size:
+                    return False
+                if not any(advapi32.EqualSid(sid, trusted) for trusted in trusted_sids):
+                    return False
+            return True
+        finally:
+            for sid in converted_sids:
+                kernel32.LocalFree(sid)
+            kernel32.LocalFree(security_descriptor)
+    except Exception:
+        return False
+
+
+def _windows_private_dacl(path: Path) -> bool:
+    """Require current-user ownership and no untrusted read/write allow ACE."""
+
+    return _windows_dacl_is_safe(
+        path,
+        require_current_owner=True,
+        reject_untrusted_read=True,
+        require_protected_dacl=True,
+    )
+
+
+def _windows_safe_creation_dacl(path: Path) -> bool:
+    """Allow trusted-owned ancestors that exclude untrusted namespace writes."""
+
+    return _windows_dacl_is_safe(
+        path,
+        require_current_owner=False,
+        reject_untrusted_read=False,
+        require_protected_dacl=False,
+    )
+
+
+def _windows_namespace_control_dacl(path: Path, *, boundary: bool = False) -> bool:
+    """Reject principals able to replace an existing ancestry edge."""
+
+    return _windows_dacl_is_safe(
+        path,
+        require_current_owner=False,
+        reject_untrusted_read=False,
+        require_protected_dacl=False,
+        namespace_control_only=True,
+        allow_any_owner=False,
+        trust_windows_installer=True,
+    )
+
+
+def _windows_create_private_file(path: Path) -> int:
+    """Create one new file with its owner/protected DACL present atomically."""
+
+    if os.name != "nt" or not path.is_absolute():
+        raise OSError("atomic Windows private-file creation is unavailable")
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    advapi32 = getattr(ctypes, "WinDLL")("advapi32", use_last_error=True)
+    kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+    win_error = getattr(ctypes, "WinError")
+    get_last_error = getattr(ctypes, "get_last_error")
+    kernel32.LocalFree.argtypes = (ctypes.c_void_p,)
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+
+    class _SecurityAttributes(ctypes.Structure):
+        _fields_ = [
+            ("length", wintypes.DWORD),
+            ("security_descriptor", ctypes.c_void_p),
+            ("inherit_handle", wintypes.BOOL),
+        ]
+
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(_SecurityAttributes),
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+
+    current_sid = _windows_current_user_sid_string()
+    sddl = f"O:{current_sid}D:P(A;;FA;;;SY)(A;;FA;;;{current_sid})"
+    security_descriptor = ctypes.c_void_p()
+    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl,
+        1,
+        ctypes.byref(security_descriptor),
+        None,
+    ):
+        raise win_error(get_last_error())
+    handle: int | None = None
+    try:
+        attributes = _SecurityAttributes(
+            ctypes.sizeof(_SecurityAttributes),
+            security_descriptor,
+            False,
+        )
+        created = create_file(
+            os.fspath(path),
+            0x80000000 | 0x40000000,  # GENERIC_READ | GENERIC_WRITE
+            0x00000001 | 0x00000002,  # SHARE_READ | SHARE_WRITE; deliberately no SHARE_DELETE
+            ctypes.byref(attributes),
+            1,  # CREATE_NEW
+            0x00000080 | 0x00200000,  # FILE_ATTRIBUTE_NORMAL | OPEN_REPARSE_POINT
+            None,
+        )
+        invalid_handle = ctypes.c_void_p(-1).value
+        if created in {None, invalid_handle}:
+            error = int(get_last_error())
+            if error in {80, 183}:  # ERROR_FILE_EXISTS / ERROR_ALREADY_EXISTS
+                raise FileExistsError(error, "private staging path already exists", os.fspath(path))
+            raise win_error(error)
+        handle = int(created)
+        try:
+            descriptor = int(
+                getattr(msvcrt, "open_osfhandle")(
+                    handle,
+                    os.O_RDWR | int(getattr(os, "O_BINARY", 0)) | int(getattr(os, "O_NOINHERIT", 0)),
+                )
+            )
+        except Exception:
+            kernel32.CloseHandle(wintypes.HANDLE(handle))
+            handle = None
+            raise
+        handle = None  # open_osfhandle transferred ownership to the CRT fd
+        try:
+            path_info = path.lstat()
+            descriptor_info = os.fstat(descriptor)
+            final_path = _windows_descriptor_final_path(descriptor)
+            if (
+                _path_is_reparse_point(path, path_info)
+                or not stat.S_ISREG(descriptor_info.st_mode)
+                or descriptor_info.st_nlink != 1
+                or _portable_state_identity(path_info) != _portable_state_identity(descriptor_info)
+                or final_path is None
+                or not os.path.samefile(final_path, path)
+                or not _windows_private_dacl(path)
+            ):
+                raise OSError("atomic Windows private staging identity is unsafe")
+        except Exception:
+            try:
+                os.close(descriptor)
+            finally:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+            raise
+        return descriptor
+    finally:
+        if handle is not None:
+            kernel32.CloseHandle(wintypes.HANDLE(handle))
+        kernel32.LocalFree(security_descriptor)
+
+
+def _windows_create_private_directory(path: Path) -> None:
+    """Create one directory with its owner/protected DACL present atomically."""
+
+    if os.name != "nt" or not path.is_absolute():
+        raise OSError("atomic Windows private-directory creation is unavailable")
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = getattr(ctypes, "WinDLL")("advapi32", use_last_error=True)
+    kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+    win_error = getattr(ctypes, "WinError")
+    get_last_error = getattr(ctypes, "get_last_error")
+    kernel32.LocalFree.argtypes = (ctypes.c_void_p,)
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+
+    class _SecurityAttributes(ctypes.Structure):
+        _fields_ = [
+            ("length", wintypes.DWORD),
+            ("security_descriptor", ctypes.c_void_p),
+            ("inherit_handle", wintypes.BOOL),
+        ]
+
+    create_directory = kernel32.CreateDirectoryW
+    create_directory.argtypes = (wintypes.LPCWSTR, ctypes.POINTER(_SecurityAttributes))
+    create_directory.restype = wintypes.BOOL
+    current_sid = _windows_current_user_sid_string()
+    sddl = f"O:{current_sid}D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;{current_sid})"
+    security_descriptor = ctypes.c_void_p()
+    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl,
+        1,
+        ctypes.byref(security_descriptor),
+        None,
+    ):
+        raise win_error(get_last_error())
+    try:
+        attributes = _SecurityAttributes(
+            ctypes.sizeof(_SecurityAttributes),
+            security_descriptor,
+            False,
+        )
+        if not create_directory(os.fspath(path), ctypes.byref(attributes)):
+            error = int(get_last_error())
+            if error in {80, 183}:  # ERROR_FILE_EXISTS / ERROR_ALREADY_EXISTS
+                raise FileExistsError(error, "private directory already exists", os.fspath(path))
+            raise win_error(error)
+        try:
+            information = path.lstat()
+            if (
+                _path_is_reparse_point(path, information)
+                or not stat.S_ISDIR(information.st_mode)
+                or not _windows_private_dacl(path)
+            ):
+                raise OSError("atomic Windows private directory is unsafe")
+        except Exception:
+            try:
+                path.rmdir()
+            except OSError:
+                pass
+            raise
+    finally:
+        kernel32.LocalFree(security_descriptor)
+
+
+def _windows_native_handle_final_path(handle: int) -> Path:
+    """Return the DOS path bound to one native Windows file handle."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+    get_final_path = kernel32.GetFinalPathNameByHandleW
+    get_final_path.argtypes = (wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD)
+    get_final_path.restype = wintypes.DWORD
+    size = int(get_final_path(wintypes.HANDLE(handle), None, 0, 0))
+    if size <= 0 or size > 32_768:
+        raise OSError("Windows handle path is unavailable")
+    buffer = ctypes.create_unicode_buffer(size + 1)
+    written = int(get_final_path(wintypes.HANDLE(handle), buffer, len(buffer), 0))
+    if written <= 0 or written >= len(buffer):
+        raise OSError("Windows handle path is unavailable")
+    value = buffer.value
+    if value.startswith("\\\\?\\UNC\\"):
+        value = "\\\\" + value[8:]
+    elif value.startswith("\\\\?\\"):
+        value = value[4:]
+    return Path(value)
+
+
+@contextmanager
+def _windows_pinned_directory_chain(
+    path: Path,
+) -> Iterator[tuple[tuple[Path, tuple[int, ...]], ...]]:
+    """Pin every Windows ancestry edge against delete/rename until exit."""
+
+    if os.name != "nt":
+        yield _directory_chain(path)
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    if not absolute.anchor or absolute.anchor.startswith("\\\\"):
+        raise OSError("state directory ancestry boundary is unsupported")
+    kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+    win_error = getattr(ctypes, "WinError")
+    get_last_error = getattr(ctypes, "get_last_error")
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+
+    class _FileAttributeTagInformation(ctypes.Structure):
+        _fields_ = [
+            ("file_attributes", wintypes.DWORD),
+            ("reparse_tag", wintypes.DWORD),
+        ]
+
+    get_information = kernel32.GetFileInformationByHandleEx
+    get_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    )
+    get_information.restype = wintypes.BOOL
+    handles: list[int] = []
+    captured: list[tuple[Path, tuple[int, ...]]] = []
+    current = Path(absolute.anchor)
+    try:
+        for part in (None, *absolute.parts[1:]):
+            if part is not None:
+                current /= part
+            opened = create_file(
+                os.fspath(current),
+                0x00020000 | 0x00000080,  # READ_CONTROL | FILE_READ_ATTRIBUTES
+                0x00000001 | 0x00000002,  # SHARE_READ | SHARE_WRITE; deliberately no SHARE_DELETE
+                None,
+                3,  # OPEN_EXISTING
+                0x02000000 | 0x00200000,  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+                None,
+            )
+            invalid_handle = ctypes.c_void_p(-1).value
+            if opened in {None, invalid_handle}:
+                raise win_error(get_last_error())
+            handle = int(opened)
+            handles.append(handle)
+            attributes = _FileAttributeTagInformation()
+            if not get_information(
+                wintypes.HANDLE(handle),
+                9,  # FileAttributeTagInfo
+                ctypes.byref(attributes),
+                ctypes.sizeof(attributes),
+            ):
+                raise win_error(get_last_error())
+            information = current.lstat()
+            final_path = _windows_native_handle_final_path(handle)
+            final_information = final_path.lstat()
+            if (
+                int(attributes.file_attributes) & 0x00000400  # FILE_ATTRIBUTE_REPARSE_POINT
+                or _path_is_reparse_point(current, information)
+                or _path_is_reparse_point(final_path, final_information)
+                or not stat.S_ISDIR(information.st_mode)
+                or not stat.S_ISDIR(final_information.st_mode)
+                or _portable_directory_identity(information) != _portable_directory_identity(final_information)
+                or not os.path.samefile(current, final_path)
+                or not _windows_namespace_control_dacl(current, boundary=current == Path(absolute.anchor))
+            ):
+                raise OSError("state directory ancestry is unsafe")
+            captured.append((current, _portable_directory_identity(information)))
+        result = tuple(captured)
+        yield result
+        _recheck_directory_chain(result)
+    finally:
+        for handle in reversed(handles):
+            close_handle(wintypes.HANDLE(handle))
+
+
+def _windows_canonicalize_private_path(path: Path, *, directory: bool) -> os.stat_result:
+    """Repair a trusted-owned path without accepting a replaceable object."""
+
+    pin_path = path if directory else path.parent
+    with _windows_pinned_directory_chain(pin_path) as ancestry:
+        before = path.lstat()
+        expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+        if (
+            _path_is_reparse_point(path, before)
+            or not expected_type(before.st_mode)
+            or (not directory and before.st_nlink != 1)
+            or not _windows_safe_creation_dacl(path)
+            or not _windows_safe_creation_dacl(path.parent)
+        ):
+            raise OSError("private Windows path cannot be canonicalized safely")
+        identity = _portable_directory_identity(before) if directory else _portable_state_identity(before)
+        descriptor: int | None = None
+        try:
+            if not directory:
+                descriptor = os.open(
+                    path,
+                    os.O_RDONLY
+                    | int(getattr(os, "O_BINARY", 0))
+                    | int(getattr(os, "O_CLOEXEC", 0))
+                    | int(getattr(os, "O_NOFOLLOW", 0)),
+                )
+                opened = os.fstat(descriptor)
+                final_path = _windows_descriptor_final_path(descriptor)
+                if (
+                    _portable_state_identity(opened) != identity
+                    or final_path is None
+                    or not os.path.samefile(final_path, path)
+                ):
+                    raise OSError("private Windows path changed while opening")
+            _windows_harden_private_dacl(path)
+            after = path.lstat()
+            current_identity = _portable_directory_identity(after) if directory else _portable_state_identity(after)
+            if (
+                _path_is_reparse_point(path, after)
+                or not expected_type(after.st_mode)
+                or current_identity != identity
+                or (not directory and after.st_nlink != 1)
+                or not _windows_private_dacl(path)
+            ):
+                raise OSError("private Windows path changed during canonicalization")
+            _recheck_directory_chain(ancestry)
+            return after
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+
+def _directory_chain(path: Path) -> tuple[tuple[Path, tuple[int, ...]], ...]:
+    """Capture every existing absolute directory component without following links."""
+
+    if os.name == "nt":
+        with _windows_pinned_directory_chain(path) as pinned:
+            return pinned
+
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    current = Path(absolute.anchor)
+    captured_entries: list[tuple[Path, tuple[int, ...]]] = []
+    if not current.anchor:
+        raise OSError("state directory path is not absolute")
+    root_info = current.lstat()
+    if _path_is_reparse_point(current, root_info) or not stat.S_ISDIR(root_info.st_mode):
+        raise OSError("state directory ancestry is unsafe")
+    if os.name == "nt" and not _windows_namespace_control_dacl(current, boundary=True):
+        raise OSError("state directory ancestry authorization is unsafe")
+    captured_entries.append((current, _portable_directory_identity(root_info)))
+    for part in absolute.parts[1:]:
+        current /= part
+        information = current.lstat()
+        if _path_is_reparse_point(current, information) or not stat.S_ISDIR(information.st_mode):
+            raise OSError("state directory ancestry is unsafe")
+        if os.name == "nt" and not _windows_namespace_control_dacl(current):
+            raise OSError("state directory ancestry authorization is unsafe")
+        captured_entries.append((current, _portable_directory_identity(information)))
+    return tuple(captured_entries)
+
+
+def _recheck_directory_chain(captured: tuple[tuple[Path, tuple[int, ...]], ...]) -> None:
+    for path, expected in captured:
+        current = path.lstat()
+        if (
+            _path_is_reparse_point(path, current)
+            or not stat.S_ISDIR(current.st_mode)
+            or _portable_directory_identity(current) != expected
+            or (os.name == "nt" and not _windows_namespace_control_dacl(path, boundary=path == Path(path.anchor)))
+        ):
+            raise OSError("state directory ancestry changed while being read")
+
+
+def _ensure_windows_private_directory(
+    path: Path,
+    *,
+    require_new: bool = False,
+) -> tuple[tuple[Path, tuple[int, ...]], ...]:
+    """Create a private directory without writing through a lexical reparse boundary."""
+
+    if os.name != "nt":
+        path.mkdir(parents=True, mode=0o700, exist_ok=True)
+        return _directory_chain(path)
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    current = Path(absolute.anchor)
+    if not current.anchor:
+        raise OSError("private directory path is not absolute")
+    with _windows_pinned_directory_chain(current) as root_chain:
+        captured = list(root_chain)
+    for part in absolute.parts[1:]:
+        candidate = current / part
+        created = False
+        try:
+            information = candidate.lstat()
+            if require_new and candidate == absolute:
+                raise FileExistsError(os.fspath(candidate))
+        except FileNotFoundError:
+            with _windows_pinned_directory_chain(current) as parent_chain:
+                if not _windows_safe_creation_dacl(current):
+                    raise OSError("private directory creation parent ACL is unsafe")
+                try:
+                    _windows_create_private_directory(candidate)
+                    created = True
+                except FileExistsError:
+                    # A racing creator is acceptable only if the resulting
+                    # entry independently satisfies every invariant.
+                    if require_new and candidate == absolute:
+                        raise
+                _recheck_directory_chain(parent_chain)
+            information = candidate.lstat()
+        if _path_is_reparse_point(candidate, information) or not stat.S_ISDIR(information.st_mode):
+            raise OSError("private directory ancestry is unsafe")
+        if created and not _windows_private_dacl(candidate):
+            raise OSError("new private directory ACL is unsafe")
+        with _windows_pinned_directory_chain(candidate) as candidate_chain:
+            captured = list(candidate_chain)
+        current = candidate
+    if not _windows_private_dacl(absolute):
+        information = _windows_canonicalize_private_path(absolute, directory=True)
+        captured[-1] = (absolute, _portable_directory_identity(information))
+    if len(captured) > 1 and not _windows_safe_creation_dacl(captured[-2][0]):
+        raise OSError("private directory parent ACL is unsafe")
+    result = tuple(captured)
+    _recheck_directory_chain(result)
+    return result
+
+
+def _ensure_windows_real_directory(path: Path) -> tuple[tuple[Path, tuple[int, ...]], ...]:
+    """Create a generic Windows parent without traversing a lexical reparse point."""
+
+    if os.name != "nt":
+        path.mkdir(parents=True, exist_ok=True)
+        return _directory_chain(path)
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    current = Path(absolute.anchor)
+    if not current.anchor:
+        raise OSError("directory path is not absolute")
+    with _windows_pinned_directory_chain(current) as root_chain:
+        captured = list(root_chain)
+    for part in absolute.parts[1:]:
+        candidate = current / part
+        try:
+            information = candidate.lstat()
+        except FileNotFoundError:
+            with _windows_pinned_directory_chain(current) as parent_chain:
+                try:
+                    candidate.mkdir()
+                except FileExistsError:
+                    pass
+                _recheck_directory_chain(parent_chain)
+            information = candidate.lstat()
+        if _path_is_reparse_point(candidate, information) or not stat.S_ISDIR(information.st_mode):
+            raise OSError("directory ancestry is unsafe")
+        with _windows_pinned_directory_chain(candidate) as candidate_chain:
+            captured = list(candidate_chain)
+        current = candidate
+    result = tuple(captured)
+    _recheck_directory_chain(result)
+    return result
+
+
+def _move_file_write_through(source: Path | str, destination: Path | str, *, replace: bool) -> None:
+    """Move one same-volume file with durable Windows rename metadata."""
+
+    if os.name != "nt":
+        if replace:
+            os.replace(source, destination)
+        else:
+            os.rename(source, destination)
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+    win_error = getattr(ctypes, "WinError")
+    get_last_error = getattr(ctypes, "get_last_error")
+    move_file = kernel32.MoveFileExW
+    move_file.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD)
+    move_file.restype = wintypes.BOOL
+    flags = 0x00000008 | (0x00000001 if replace else 0)  # WRITE_THROUGH | REPLACE_EXISTING
+    if not move_file(os.fspath(source), os.fspath(destination), flags):
+        raise win_error(get_last_error())
+
+
+def _verify_windows_file_publication(
+    path: Path,
+    *,
+    expected_payload: bytes,
+    expected_identity: tuple[int, ...],
+    require_private_dacl: bool,
+) -> None:
+    """Bind a write-through publication back to its exact staged file and bytes."""
+
+    descriptor = os.open(
+        path,
+        os.O_RDONLY
+        | int(getattr(os, "O_BINARY", 0))
+        | int(getattr(os, "O_CLOEXEC", 0))
+        | int(getattr(os, "O_NOFOLLOW", 0)),
+    )
+    try:
+        opened = os.fstat(descriptor)
+        before = path.lstat()
+        if (
+            _path_is_reparse_point(path, before)
+            or not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or _portable_state_identity(opened) != expected_identity
+            or _portable_state_identity(before) != expected_identity
+            or (require_private_dacl and not _windows_private_dacl(path))
+        ):
+            raise OSError("state publication identity is unsafe")
+        chunks: list[bytes] = []
+        remaining = len(expected_payload) + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(65_536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(descriptor)
+        current = path.lstat()
+        if (
+            b"".join(chunks) != expected_payload
+            or _path_is_reparse_point(path, current)
+            or after.st_nlink != 1
+            or _portable_state_identity(after) != expected_identity
+            or _portable_state_identity(current) != expected_identity
+            or (require_private_dacl and not _windows_private_dacl(path))
+        ):
+            raise OSError("state publication changed during verification")
+    finally:
+        os.close(descriptor)
+
+
+def _windows_descriptor_final_path(descriptor: int) -> Path | None:
+    if os.name != "nt":
+        return None
+    try:
+        import msvcrt
+
+        handle = int(getattr(msvcrt, "get_osfhandle")(descriptor))
+        return _windows_native_handle_final_path(handle)
+    except (AttributeError, OSError, TypeError, ValueError) as exc:
+        raise OSError("state descriptor path is unavailable") from exc
+
+
+def _state_payload_by_path(
+    selected: Path,
+    *,
+    relative: Path | None,
+    max_bytes: int,
+    file_flags: int,
+    require_single_link: bool = False,
+) -> bytes:
+    """Windows-safe full-path reader with ancestry and handle-path binding."""
+
+    lexical = Path(os.path.abspath(os.fspath(selected)))
+    # Native Windows paths must retain every lexical component so junctions
+    # remain visible to the reparse check. POSIX fallback tests may begin below
+    # an immutable system alias such as macOS /var -> /private/var.
+    absolute = lexical if os.name == "nt" else Path(os.path.realpath(os.fspath(lexical.parent))) / lexical.name
+    ancestry_guard = (
+        _windows_pinned_directory_chain(absolute.parent)
+        if os.name == "nt"
+        else nullcontext(_directory_chain(absolute.parent))
+    )
+    with ancestry_guard as ancestry:
+        return _state_payload_from_bound_path(
+            absolute,
+            relative=relative,
+            max_bytes=max_bytes,
+            file_flags=file_flags,
+            ancestry=ancestry,
+            require_single_link=require_single_link,
+        )
+
+
+def _state_payload_from_bound_path(
+    absolute: Path,
+    *,
+    relative: Path | None,
+    max_bytes: int,
+    file_flags: int,
+    ancestry: tuple[tuple[Path, tuple[int, ...]], ...],
+    require_single_link: bool,
+) -> bytes:
+    """Read one file while its already-authorized ancestry remains pinned."""
+
+    private_root = Path(os.path.realpath(os.fspath(CONFIG_DIR))) if relative is not None else None
+    if private_root is not None:
+        private_paths = [
+            path
+            for path, _identity in ancestry
+            if (
+                (resolved := Path(os.path.realpath(os.fspath(path)))) == private_root
+                or private_root in resolved.parents
+            )
+        ]
+        if not private_paths or Path(os.path.realpath(os.fspath(private_paths[0]))) != private_root:
+            raise OSError("config state root is unsafe")
+        for directory in private_paths:
+            information = directory.lstat()
+            if os.name == "posix":
+                if information.st_uid != os.getuid() or information.st_mode & 0o022:
+                    raise OSError("config state directory permissions are unsafe")
+            elif os.name == "nt" and not _windows_private_dacl(directory):
+                _windows_canonicalize_private_path(directory, directory=True)
+
+    before = absolute.lstat()
+    if (
+        _path_is_reparse_point(absolute, before)
+        or not stat.S_ISREG(before.st_mode)
+        or not 0 <= before.st_size <= max_bytes
+    ):
+        raise OSError("state file is not a bounded regular file")
+    if relative is not None or require_single_link:
+        if before.st_nlink != 1:
+            raise OSError("config state file identity is unsafe")
+    if relative is not None:
+        if os.name == "posix" and (before.st_uid != os.getuid() or before.st_mode & 0o022):
+            raise OSError("config state file permissions are unsafe")
+        if os.name == "nt" and not _windows_private_dacl(absolute):
+            before = _windows_canonicalize_private_path(absolute, directory=False)
+
+    descriptor = os.open(absolute, file_flags | int(getattr(os, "O_BINARY", 0)))
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or _portable_state_identity(opened) != _portable_state_identity(before):
+            raise OSError("state file changed while opening")
+        final_path = _windows_descriptor_final_path(descriptor)
+        if final_path is not None:
+            final_info = final_path.lstat()
+            if (
+                _path_is_reparse_point(final_path, final_info)
+                or _portable_state_identity(final_info) != _portable_state_identity(opened)
+                or not os.path.samefile(final_path, absolute)
+            ):
+                raise OSError("state descriptor path changed while opening")
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(65_536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+        after = os.fstat(descriptor)
+        current = absolute.lstat()
+        if (
+            len(payload) > max_bytes
+            or _portable_state_identity(after) != _portable_state_identity(opened)
+            or _portable_state_identity(current) != _portable_state_identity(opened)
+            or _path_is_reparse_point(absolute, current)
+        ):
+            raise OSError("state file changed while being read")
+        _recheck_directory_chain(ancestry)
+        return payload
+    finally:
+        os.close(descriptor)
+
+
+def _directory_descriptor_io_supported() -> bool:
+    return os.name != "nt" and os.open in os.supports_dir_fd and os.stat in os.supports_dir_fd
 
 
 def _state_descriptor_payload(path: Path, *, max_bytes: int) -> bytes:
@@ -481,6 +1782,15 @@ def _state_descriptor_payload(path: Path, *, max_bytes: int) -> bytes:
         | int(getattr(os, "O_NOFOLLOW", 0))
         | int(getattr(os, "O_NONBLOCK", 0))
     )
+    if os.name == "nt":
+        return _state_payload_by_path(
+            selected,
+            relative=relative,
+            max_bytes=max_bytes,
+            file_flags=file_flags,
+        )
+    if not _directory_descriptor_io_supported():
+        raise OSError("secure directory-descriptor state reads are unavailable")
     descriptors: list[int] = []
     try:
         if relative is None:
@@ -599,25 +1909,93 @@ def _exclusive_state_lock(path: Path, *, timeout_seconds: float = 30.0) -> Itera
     """
     lock_path = path.with_suffix(path.suffix + ".lock")
     private_config_path = _ensure_private_config_parent(path)
+    ancestry_guard = _windows_pinned_directory_chain(lock_path.parent) if os.name == "nt" else nullcontext(())
+    with ancestry_guard as windows_lock_chain:
+        with _exclusive_state_lock_bound(
+            lock_path,
+            timeout_seconds=timeout_seconds,
+            private_config_path=private_config_path,
+            windows_lock_chain=windows_lock_chain,
+        ):
+            yield
+
+
+@contextmanager
+def _exclusive_state_lock_bound(
+    lock_path: Path,
+    *,
+    timeout_seconds: float,
+    private_config_path: bool,
+    windows_lock_chain: tuple[tuple[Path, tuple[int, ...]], ...],
+) -> Iterator[None]:
     if lock_path.exists() or lock_path.is_symlink():
         lock_info = lock_path.lstat()
-        if stat.S_ISLNK(lock_info.st_mode) or not stat.S_ISREG(lock_info.st_mode):
+        if (
+            _path_is_reparse_point(lock_path, lock_info)
+            or not stat.S_ISREG(lock_info.st_mode)
+            or (os.name == "nt" and lock_info.st_nlink != 1)
+        ):
             raise OSError("state lock identity is unsafe")
+        if os.name == "nt" and not _windows_private_dacl(lock_path):
+            if not private_config_path:
+                raise OSError("external state lock ACL is unsafe")
+            _windows_canonicalize_private_path(lock_path, directory=False)
     deadline = time.monotonic() + timeout_seconds
     # Retry opening the lock file if permission is denied briefly
     lock_file = None
     while lock_file is None:
         try:
-            descriptor = os.open(
-                lock_path,
-                os.O_RDWR
-                | os.O_CREAT
-                | os.O_APPEND
-                | int(getattr(os, "O_CLOEXEC", 0))
-                | int(getattr(os, "O_NOFOLLOW", 0)),
-                0o600,
-            )
-            lock_file = os.fdopen(descriptor, "a+b")
+            if windows_lock_chain:
+                _recheck_directory_chain(windows_lock_chain)
+            if os.name == "nt":
+                try:
+                    descriptor = os.open(
+                        lock_path,
+                        os.O_RDWR
+                        | os.O_APPEND
+                        | int(getattr(os, "O_BINARY", 0))
+                        | int(getattr(os, "O_CLOEXEC", 0))
+                        | int(getattr(os, "O_NOFOLLOW", 0)),
+                    )
+                except FileNotFoundError:
+                    try:
+                        descriptor = _windows_create_private_file(lock_path)
+                    except FileExistsError:
+                        continue
+            else:
+                descriptor = os.open(
+                    lock_path,
+                    os.O_RDWR
+                    | os.O_CREAT
+                    | os.O_APPEND
+                    | int(getattr(os, "O_BINARY", 0))
+                    | int(getattr(os, "O_CLOEXEC", 0))
+                    | int(getattr(os, "O_NOFOLLOW", 0)),
+                    0o600,
+                )
+            try:
+                opened = os.fstat(descriptor)
+                current = lock_path.lstat()
+                if (
+                    _path_is_reparse_point(lock_path, current)
+                    or not stat.S_ISREG(opened.st_mode)
+                    or _portable_lock_identity(current) != _portable_lock_identity(opened)
+                    or (os.name == "nt" and opened.st_nlink != 1)
+                ):
+                    raise OSError("state lock identity is unsafe")
+                if os.name == "nt":
+                    if not _windows_private_dacl(lock_path):
+                        raise OSError("state lock ACL or identity is unsafe")
+                final_path = _windows_descriptor_final_path(descriptor)
+                if final_path is not None and not os.path.samefile(final_path, lock_path):
+                    raise OSError("state lock descriptor path is unsafe")
+                if windows_lock_chain:
+                    _recheck_directory_chain(windows_lock_chain)
+                lock_file = os.fdopen(descriptor, "a+b")
+                descriptor = -1
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
             lock_file.seek(0, os.SEEK_END)
             if lock_file.tell() == 0:
                 lock_file.write(b"x")
@@ -627,7 +2005,7 @@ def _exclusive_state_lock(path: Path, *, timeout_seconds: float = 30.0) -> Itera
             except (OSError, NotImplementedError):
                 pass
             info = os.fstat(lock_file.fileno())
-            if not stat.S_ISREG(info.st_mode) or (private_config_path and info.st_nlink != 1):
+            if not stat.S_ISREG(info.st_mode) or (os.name == "nt" and info.st_nlink != 1):
                 lock_file.close()
                 lock_file = None
                 raise OSError("state lock identity is unsafe")
@@ -678,6 +2056,8 @@ def _exclusive_state_lock(path: Path, *, timeout_seconds: float = 30.0) -> Itera
     finally:
         if lock_file is not None:
             lock_file.close()
+        if windows_lock_chain:
+            _recheck_directory_chain(windows_lock_chain)
         # Do not unlink the lock file. Removing an advisory lock path while
         # another thread/process is waiting can create two different inodes and
         # split the lock, allowing concurrent read-modify-write transactions.
@@ -1091,7 +2471,6 @@ class Config:
         return removed
 
     def save_conversation(self, name: str) -> Path:
-        HISTORY_DIR.mkdir(parents=True, exist_ok=True)
         safe_name = safe_conversation_name(name)
         path = HISTORY_DIR / f"{safe_name}.json"
         persisted_messages = project_messages_for_persistence(
@@ -1257,6 +2636,87 @@ def get_legacy_backup_dir() -> Path:
     return Path.home() / ".ollama_cli.backup"
 
 
+def _write_private_migration_file_windows(
+    root: Path,
+    relative: PurePosixPath,
+    payload: bytes,
+) -> None:
+    """Publish one private migration artifact without exposing partial bytes."""
+
+    target = root.joinpath(*relative.parts)
+    _ensure_windows_private_directory(target.parent)
+    with _windows_pinned_directory_chain(target.parent) as parent_chain:
+        _write_private_migration_file_windows_bound(
+            target,
+            payload,
+            parent_chain=parent_chain,
+        )
+
+
+def _write_private_migration_file_windows_bound(
+    target: Path,
+    payload: bytes,
+    *,
+    parent_chain: tuple[tuple[Path, tuple[int, ...]], ...],
+) -> None:
+    stage = target.with_name(f".{target.name}.migration-{secrets.token_hex(16)}.tmp")
+    descriptor: int | None = None
+    try:
+        _recheck_directory_chain(parent_chain)
+        descriptor = _windows_create_private_file(stage)
+        path_info = stage.lstat()
+        descriptor_info = os.fstat(descriptor)
+        if (
+            _path_is_reparse_point(stage, path_info)
+            or not stat.S_ISREG(descriptor_info.st_mode)
+            or descriptor_info.st_nlink != 1
+            or _portable_state_identity(path_info) != _portable_state_identity(descriptor_info)
+            or not _windows_private_dacl(stage)
+        ):
+            raise OSError("legacy migration staging file is unsafe")
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("legacy migration write made no progress")
+            view = view[written:]
+        os.fsync(descriptor)
+        staged_info = os.fstat(descriptor)
+        if staged_info.st_nlink != 1 or staged_info.st_size != len(payload):
+            raise OSError("legacy migration staging file changed while writing")
+        os.close(descriptor)
+        descriptor = None
+        current = stage.lstat()
+        staged_identity = _portable_state_identity(staged_info)
+        if (
+            _path_is_reparse_point(stage, current)
+            or _portable_state_identity(current) != staged_identity
+            or not _windows_private_dacl(stage)
+        ):
+            raise OSError("legacy migration staging file changed before publication")
+        _recheck_directory_chain(parent_chain)
+        _move_file_write_through(stage, target, replace=False)
+        _verify_windows_file_publication(
+            target,
+            expected_payload=payload,
+            expected_identity=staged_identity,
+            require_private_dacl=True,
+        )
+        _recheck_directory_chain(parent_chain)
+    except Exception:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            descriptor = None
+        try:
+            stage.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def _write_private_migration_file(
     root: Path,
     relative_path: str,
@@ -1265,13 +2725,21 @@ def _write_private_migration_file(
     relative = PurePosixPath(relative_path)
     if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
         raise OSError("legacy migration destination is invalid")
+    if os.name == "nt":
+        _write_private_migration_file_windows(root, relative, payload)
+        return
     target = root.joinpath(*relative.parts)
-    target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     if os.name == "posix":
+        target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         os.chmod(target.parent, 0o700)
     descriptor = os.open(
         target,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | int(getattr(os, "O_CLOEXEC", 0)) | int(getattr(os, "O_NOFOLLOW", 0)),
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | int(getattr(os, "O_BINARY", 0))
+        | int(getattr(os, "O_CLOEXEC", 0))
+        | int(getattr(os, "O_NOFOLLOW", 0)),
         0o600,
     )
     try:
@@ -1310,12 +2778,20 @@ def perform_legacy_migration() -> bool:
     except FileNotFoundError:
         destination_info = None
     if destination_info is not None:
-        if stat.S_ISLNK(destination_info.st_mode) or not stat.S_ISDIR(destination_info.st_mode):
+        if _path_is_reparse_point(new, destination_info) or not stat.S_ISDIR(destination_info.st_mode):
             raise LegacyMigrationError("legacy migration destination is unsafe")
         if hasattr(os, "getuid") and destination_info.st_uid != os.getuid():
             raise LegacyMigrationError("legacy migration destination is unsafe")
-        if destination_info.st_mode & 0o022:
+        if os.name == "posix" and destination_info.st_mode & 0o022:
             raise LegacyMigrationError("legacy migration destination is unsafe")
+        if os.name == "nt":
+            try:
+                destination_chain = _directory_chain(new)
+            except OSError as exc:
+                raise LegacyMigrationError("legacy migration destination is unsafe") from exc
+            if not _windows_private_dacl(new) or not _windows_safe_creation_dacl(new.parent):
+                raise LegacyMigrationError("legacy migration destination is unsafe")
+            _recheck_directory_chain(destination_chain)
 
         def migration_marker_present(name: str, expected: bytes) -> bool:
             try:
@@ -1387,7 +2863,10 @@ def perform_legacy_migration() -> bool:
             raise LegacyMigrationError("legacy migration inventory is incomplete")
 
         tmp_new = new.with_name(f"{new.name}.migration-{uuid.uuid4().hex}")
-        tmp_new.mkdir(mode=0o700)
+        if os.name == "nt":
+            _ensure_windows_private_directory(tmp_new, require_new=True)
+        else:
+            tmp_new.mkdir(mode=0o700)
         if echo_selected:
             projected = sanitized_legacy_config(old)
             _write_private_migration_file(
@@ -1408,7 +2887,10 @@ def perform_legacy_migration() -> bool:
                 _write_private_migration_file(tmp_new, relative_path, payload)
             if not backup.exists():
                 tmp_backup = backup.with_name(f"{backup.name}.migration-{uuid.uuid4().hex}")
-                tmp_backup.mkdir(mode=0o700)
+                if os.name == "nt":
+                    _ensure_windows_private_directory(tmp_backup, require_new=True)
+                else:
+                    tmp_backup.mkdir(mode=0o700)
                 try:
                     for relative_path, payload in payloads:
                         _write_private_migration_file(
@@ -1416,7 +2898,21 @@ def perform_legacy_migration() -> bool:
                             relative_path,
                             payload,
                         )
-                    tmp_backup.rename(backup)
+                    if os.name == "nt":
+                        with _windows_pinned_directory_chain(backup.parent) as backup_parent_chain:
+                            if not _windows_safe_creation_dacl(backup.parent):
+                                raise OSError("legacy backup publication parent ACL is unsafe")
+                            _move_file_write_through(tmp_backup, backup, replace=False)
+                            published_backup = backup.lstat()
+                            if (
+                                _path_is_reparse_point(backup, published_backup)
+                                or not stat.S_ISDIR(published_backup.st_mode)
+                                or not _windows_private_dacl(backup)
+                            ):
+                                raise OSError("legacy backup publication is unsafe")
+                            _recheck_directory_chain(backup_parent_chain)
+                    else:
+                        _move_file_write_through(tmp_backup, backup, replace=False)
                 except Exception:
                     shutil.rmtree(tmp_backup, ignore_errors=True)
                     raise
@@ -1453,6 +2949,47 @@ def perform_legacy_migration() -> bool:
             LEGACY_MIGRATION_INCOMPLETE_FILE,
             b"Algo CLI legacy migration publication is incomplete.\n",
         )
+        if os.name == "nt":
+            # A same-volume write-through directory rename publishes the fully
+            # fsynced tree without the unsupported CRT directory-fsync path.
+            # The incomplete marker remains present across the publication;
+            # a second write-through rename clears it only after the complete
+            # tree is durably addressable at the final name.
+            with _windows_pinned_directory_chain(new.parent) as parent_chain:
+                if not _windows_safe_creation_dacl(new.parent):
+                    raise OSError("legacy migration publication parent ACL is unsafe")
+                _move_file_write_through(tmp_new, new, replace=False)
+                final_directory_created = True
+                published_info = new.lstat()
+                if (
+                    _path_is_reparse_point(new, published_info)
+                    or not stat.S_ISDIR(published_info.st_mode)
+                    or not _windows_private_dacl(new)
+                ):
+                    raise OSError("legacy migration publication is unsafe")
+                if (
+                    _state_descriptor_payload(
+                        new / LEGACY_MIGRATION_COMPLETE_FILE,
+                        max_bytes=512,
+                    )
+                    != b"Legacy configuration migrated by Algo CLI.\n"
+                ):
+                    raise OSError("legacy migration completion marker is invalid")
+                incomplete_destination = new / LEGACY_MIGRATION_INCOMPLETE_FILE
+                cleared_marker = new / f".legacy_migration_cleared-{uuid.uuid4().hex}"
+                _recheck_directory_chain(parent_chain)
+                _move_file_write_through(incomplete_destination, cleared_marker, replace=False)
+                if incomplete_destination.exists() or incomplete_destination.is_symlink():
+                    raise OSError("legacy migration incomplete marker remained published")
+                _recheck_directory_chain(parent_chain)
+                try:
+                    cleared_marker.unlink()
+                except OSError:
+                    # The content-free cleared marker is outside the recovery
+                    # protocol once its write-through rename has committed.
+                    pass
+            return True
+
         # Destination publication is no-clobber: mkdir reserves the exact name,
         # then every regular staged file is linked exclusively into it.  The
         # incomplete marker is durable first and the completion marker last.
@@ -1610,8 +3147,10 @@ def migrate_legacy_sidecar_files() -> list[str]:
         if artifact.relative_path in allowed_names and artifact.automatic_copy_allowed
     }
     if artifacts:
-        CONFIG_DIR.mkdir(parents=True, mode=0o700, exist_ok=True)
-        if os.name == "posix":
+        if os.name == "nt":
+            _ensure_windows_private_directory(CONFIG_DIR)
+        else:
+            CONFIG_DIR.mkdir(parents=True, mode=0o700, exist_ok=True)
             os.chmod(CONFIG_DIR, 0o700)
     for name in sorted(artifacts):
         if (CONFIG_DIR / name).exists() or (CONFIG_DIR / name).is_symlink():

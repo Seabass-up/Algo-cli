@@ -58,6 +58,36 @@ def test_repository_and_installed_echo_dependency_pass() -> None:
     assert "python -I scripts/henry_echo_veil_dependency_audit.py" in workflow
 
 
+def test_hosted_echo_install_and_audit_paths_require_copy_link_mode() -> None:
+    ci = (ROOT / ".github/workflows/oliver-ci.yml").read_text(encoding="utf-8")
+    release = (ROOT / ".github/workflows/oliver-release.yml").read_text(encoding="utf-8")
+
+    required_ci_commands = (
+        "uv sync --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil "
+        "--reinstall-package algo-cli-runtime --link-mode copy",
+        "uv run --frozen --no-editable --extra dev --extra supply-chain "
+        "--extra echo-veil --link-mode copy python -I scripts/henry_echo_veil_dependency_audit.py",
+        "uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil "
+        "--link-mode copy pytest tests",
+        "uv sync --frozen --no-editable --extra dev --extra echo-veil "
+        "--reinstall-package algo-cli-runtime --link-mode copy",
+        "uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy pytest tests",
+    )
+    required_release_commands = (
+        "uv sync --frozen --no-editable --extra dev --extra release --extra supply-chain "
+        "--extra echo-veil --reinstall-package algo-cli-runtime --link-mode copy",
+        "uv run --frozen --no-editable --extra dev --extra release --extra supply-chain "
+        "--extra echo-veil --link-mode copy python -I scripts/henry_echo_veil_dependency_audit.py",
+        "uv run --frozen --no-editable --extra dev --extra release --extra supply-chain "
+        "--extra echo-veil --link-mode copy pytest tests",
+    )
+
+    normalized_ci = " ".join(ci.split())
+    normalized_release = " ".join(release.split())
+    assert all(command in normalized_ci for command in required_ci_commands)
+    assert all(command in normalized_release for command in required_release_commands)
+
+
 @pytest.mark.parametrize(
     ("document", "reason"),
     [

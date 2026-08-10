@@ -608,18 +608,67 @@ def publish_elsie_staged_file(
         raise ElsieReceiptError("elsie store stage identity is invalid")
     if type(expected_payload) is not bytes or not expected_payload or len(expected_payload) > _MAX_CANONICAL_BYTES:
         raise ElsieReceiptError("elsie store expected payload is invalid")
+    if os.name == "nt":
+        from . import config as config_module
+
+        try:
+            with config_module._windows_pinned_directory_chain(staged.parent) as parent_chain:
+                _publish_elsie_staged_file_bound(
+                    staged,
+                    selected,
+                    expected_payload=expected_payload,
+                    parent_chain=parent_chain,
+                )
+        except ElsieReceiptError:
+            raise
+        except OSError as exc:
+            raise ElsieReceiptError("elsie store stage could not be published") from exc
+        return
+    _publish_elsie_staged_file_bound(
+        staged,
+        selected,
+        expected_payload=expected_payload,
+        parent_chain=(),
+    )
+
+
+def _publish_elsie_staged_file_bound(
+    staged: Path,
+    selected: Path,
+    *,
+    expected_payload: bytes,
+    parent_chain: tuple[tuple[Path, tuple[int, ...]], ...],
+) -> None:
     stage_descriptor: int | None = None
     try:
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        from . import config as config_module
+
+        if parent_chain:
+            config_module._recheck_directory_chain(parent_chain)
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        stage_path_info = staged.lstat()
         stage_descriptor = os.open(staged, flags)
         stage_info = os.fstat(stage_descriptor)
         if (
-            not stat.S_ISREG(stage_info.st_mode)
+            config_module._path_is_reparse_point(staged, stage_path_info)
+            or not stat.S_ISREG(stage_info.st_mode)
             or stage_info.st_nlink != 1
+            or config_module._portable_state_identity(stage_path_info)
+            != config_module._portable_state_identity(stage_info)
             or (hasattr(os, "getuid") and stage_info.st_uid != os.getuid())
             or stage_info.st_size != len(expected_payload)
+            or (os.name == "nt" and not config_module._windows_private_dacl(staged))
         ):
             raise ElsieReceiptError("elsie store stage is unsafe")
+        final_stage_path = config_module._windows_descriptor_final_path(stage_descriptor)
+        if final_stage_path is not None and not os.path.samefile(final_stage_path, staged):
+            raise ElsieReceiptError("elsie store stage descriptor path is unsafe")
         chunks: list[bytes] = []
         remaining = len(expected_payload) + 1
         while remaining > 0:
@@ -630,27 +679,80 @@ def publish_elsie_staged_file(
             remaining -= len(chunk)
         if not hmac.compare_digest(b"".join(chunks), expected_payload):
             raise ElsieReceiptError("elsie store stage payload changed")
+        stage_after = os.fstat(stage_descriptor)
+        stage_current = staged.lstat()
+        if (
+            config_module._path_is_reparse_point(staged, stage_current)
+            or config_module._portable_state_identity(stage_after) != config_module._portable_state_identity(stage_info)
+            or config_module._portable_state_identity(stage_current)
+            != config_module._portable_state_identity(stage_info)
+        ):
+            raise ElsieReceiptError("elsie store stage changed while being read")
         try:
             target_info = selected.lstat()
         except FileNotFoundError:
             target_info = None
-        if target_info is not None and (
-            stat.S_ISLNK(target_info.st_mode)
-            or not stat.S_ISREG(target_info.st_mode)
-            or target_info.st_nlink != 1
-            or (hasattr(os, "getuid") and target_info.st_uid != os.getuid())
-        ):
-            raise ElsieReceiptError("elsie store target is unsafe")
-        os.replace(staged, selected)
-        descriptor = os.open(selected, flags)
+        if target_info is not None:
+            if (
+                config_module._path_is_reparse_point(selected, target_info)
+                or not stat.S_ISREG(target_info.st_mode)
+                or target_info.st_nlink != 1
+                or (hasattr(os, "getuid") and target_info.st_uid != os.getuid())
+            ):
+                raise ElsieReceiptError("elsie store target is unsafe")
+            if os.name == "nt" and not config_module._windows_private_dacl(selected):
+                try:
+                    target_info = config_module._windows_canonicalize_private_path(selected, directory=False)
+                except OSError as exc:
+                    raise ElsieReceiptError("elsie store target ACL is unsafe") from exc
+        if os.name == "nt":
+            # CRT file descriptors deny delete sharing on Windows. The parent
+            # DACL excludes other principals from mutation, so close only after
+            # binding exact bytes, then revalidate the same stage immediately
+            # before the atomic rename.
+            if not config_module._windows_private_dacl(selected.parent):
+                raise ElsieReceiptError("elsie store parent ACL is unsafe")
+            config_module._recheck_directory_chain(parent_chain)
+            os.close(stage_descriptor)
+            stage_descriptor = None
+            current_stage = staged.lstat()
+            if config_module._path_is_reparse_point(staged, current_stage) or config_module._portable_state_identity(
+                current_stage
+            ) != config_module._portable_state_identity(stage_info):
+                raise ElsieReceiptError("elsie store stage changed before publication")
+            config_module._recheck_directory_chain(parent_chain)
+            config_module._move_file_write_through(staged, selected, replace=True)
+        else:
+            os.replace(staged, selected)
+        verification_flags = (
+            flags
+            if os.name != "nt"
+            else (
+                os.O_RDWR
+                | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0)
+            )
+        )
+        descriptor = os.open(selected, verification_flags)
         try:
             published = os.fstat(descriptor)
+            published_path = selected.lstat()
             if (
-                not stat.S_ISREG(published.st_mode)
-                or published.st_dev != stage_info.st_dev
-                or published.st_ino != stage_info.st_ino
+                config_module._path_is_reparse_point(selected, published_path)
+                or not stat.S_ISREG(published.st_mode)
+                or published.st_nlink != 1
+                or config_module._portable_publication_identity(published)
+                != config_module._portable_publication_identity(stage_info)
+                or config_module._portable_publication_identity(published_path)
+                != config_module._portable_publication_identity(stage_info)
+                or (os.name == "nt" and not config_module._windows_private_dacl(selected))
             ):
                 raise ElsieReceiptError("elsie store publication changed identity")
+            final_selected_path = config_module._windows_descriptor_final_path(descriptor)
+            if final_selected_path is not None and not os.path.samefile(final_selected_path, selected):
+                raise ElsieReceiptError("elsie store publication descriptor path is unsafe")
             chunks = []
             remaining = len(expected_payload) + 1
             while remaining > 0:
@@ -661,19 +763,37 @@ def publish_elsie_staged_file(
                 remaining -= len(chunk)
             if not hmac.compare_digest(b"".join(chunks), expected_payload):
                 raise ElsieReceiptError("elsie store published payload changed")
+            final_expected_identity = config_module._portable_publication_identity(stage_info)
             if os.name == "posix":
                 os.fchmod(descriptor, 0o600)
+                final_expected_identity = config_module._portable_publication_identity(os.fstat(descriptor))
             os.fsync(descriptor)
+            final_descriptor_info = os.fstat(descriptor)
+            final_path_info = selected.lstat()
+            if (
+                config_module._path_is_reparse_point(selected, final_path_info)
+                or final_descriptor_info.st_nlink != 1
+                or config_module._portable_publication_identity(final_descriptor_info) != final_expected_identity
+                or config_module._portable_publication_identity(final_path_info) != final_expected_identity
+                or (os.name == "nt" and not config_module._windows_private_dacl(selected))
+            ):
+                raise ElsieReceiptError("elsie store publication changed during flush")
         finally:
             os.close(descriptor)
-        directory_fd = os.open(
-            selected.parent,
-            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-        )
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        if os.name == "posix":
+            directory_fd = os.open(
+                selected.parent,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        elif parent_chain:
+            config_module._recheck_directory_chain(parent_chain)
     except ElsieReceiptError:
         raise
     except OSError as exc:
@@ -781,10 +901,31 @@ def _open_pinned_file(root: Path, relative_path: str, *, max_bytes: int) -> byte
     relative = PurePosixPath(relative_path)
     if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
         raise ElsieReceiptError("legacy artifact path is invalid")
+    if os.name == "nt":
+        from . import config as config_module
+
+        selected = root.joinpath(*relative.parts)
+        file_flags = (
+            os.O_RDONLY
+            | int(getattr(os, "O_BINARY", 0))
+            | int(getattr(os, "O_CLOEXEC", 0))
+            | int(getattr(os, "O_NOFOLLOW", 0))
+            | int(getattr(os, "O_NONBLOCK", 0))
+        )
+        try:
+            return config_module._state_payload_by_path(
+                selected,
+                relative=None,
+                max_bytes=max_bytes,
+                file_flags=file_flags,
+                require_single_link=True,
+            )
+        except OSError as exc:
+            raise ElsieReceiptError("legacy artifact identity could not be pinned") from exc
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     cloexec = getattr(os, "O_CLOEXEC", 0)
     directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | nofollow | cloexec
-    file_flags = os.O_RDONLY | nofollow | cloexec | getattr(os, "O_NONBLOCK", 0)
+    file_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | nofollow | cloexec | getattr(os, "O_NONBLOCK", 0)
     descriptors: list[int] = []
     try:
         root_fd = os.open(root, directory_flags)
@@ -803,7 +944,7 @@ def _open_pinned_file(root: Path, relative_path: str, *, max_bytes: int) -> byte
         file_fd = os.open(relative.parts[-1], file_flags, dir_fd=parent_fd)
         descriptors.append(file_fd)
         info = os.fstat(file_fd)
-        if not stat.S_ISREG(info.st_mode) or not 0 <= info.st_size <= max_bytes:
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or not 0 <= info.st_size <= max_bytes:
             raise ElsieReceiptError("legacy artifact is not a bounded regular file")
         chunks: list[bytes] = []
         remaining = max_bytes + 1
@@ -908,11 +1049,13 @@ def inventory_legacy_tree(
     """
 
     base = Path(root)
+    from . import config as config_module
+
     try:
         root_info = base.lstat()
     except OSError as exc:
         raise ElsieReceiptError("legacy root is unavailable") from exc
-    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+    if config_module._path_is_reparse_point(base, root_info) or not stat.S_ISDIR(root_info.st_mode):
         raise ElsieReceiptError("legacy root must be a real directory")
     selected = legacy_config_selects_echo(base) if echo_selected is None else bool(echo_selected)
     bounded_limit = min(_MAX_INVENTORY_ENTRIES, max(0, int(max_entries)))
@@ -934,7 +1077,7 @@ def inventory_legacy_tree(
             except OSError:
                 artifacts.append(LegacyArtifact(relative, LegacyArtifactClass.SPECIAL, False))
                 continue
-            if stat.S_ISLNK(descriptor.st_mode):
+            if config_module._path_is_reparse_point(path, descriptor):
                 classification = LegacyArtifactClass.SYMLINK
                 if name in dirnames:
                     dirnames.remove(name)

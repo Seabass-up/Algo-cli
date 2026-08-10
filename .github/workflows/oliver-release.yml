@@ -678,7 +678,7 @@ jobs:
             --bound-dist "${RUNNER_TEMP}/package/bound-dist" \
             --manifest "${RUNNER_TEMP}/package/oliver-release-source-binding.json"
       - name: Install locked verification dependencies
-        run: uv sync --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil --reinstall-package algo-cli-runtime
+        run: uv sync --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil --reinstall-package algo-cli-runtime --link-mode copy
       - name: Verify source, runtime, package, dependencies, and tests
         env:
           RELEASE_TAG: ${{ inputs.tag }}
@@ -693,8 +693,8 @@ jobs:
           uv export --quiet --frozen --format requirements-txt --extra dev --extra release --extra supply-chain --extra echo-veil --no-emit-project --no-emit-package echo-veil --output-file "${RUNNER_TEMP}/algo-cli-verification-auditable-requirements.txt"
           uv run --frozen --no-editable --extra dev --extra release --extra supply-chain pip-audit --requirement "${RUNNER_TEMP}/algo-cli-verification-auditable-requirements.txt" --require-hashes --disable-pip --strict --progress-spinner off
           uv run --frozen --no-editable --extra dev --extra release --extra supply-chain pip-audit --requirement "${RUNNER_TEMP}/package/algo-cli-release-auditable-requirements.txt" --require-hashes --disable-pip --strict --progress-spinner off
-          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil python -I scripts/henry_echo_veil_dependency_audit.py
-          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil pytest tests
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil --link-mode copy python -I scripts/henry_echo_veil_dependency_audit.py
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil --link-mode copy pytest tests
           uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python -m twine check "${RUNNER_TEMP}"/package/bound-dist/*.whl "${RUNNER_TEMP}"/package/bound-dist/*.tar.gz
           uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python scripts/check_public_release.py --artifacts-only --artifact "${RUNNER_TEMP}"/package/bound-dist/*.whl --artifact "${RUNNER_TEMP}"/package/bound-dist/*.tar.gz
           uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python scripts/oliver_smoke_wheel_install.py "${RUNNER_TEMP}/package/bound-dist"

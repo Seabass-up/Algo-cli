@@ -19,11 +19,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from .config import (
+    _ensure_windows_private_directory,
+    _move_file_write_through,
+    _path_is_reparse_point,
+    _portable_directory_identity,
+    _portable_state_identity,
+    _recheck_directory_chain,
+    _windows_create_private_file,
+    _windows_pinned_directory_chain,
+    _windows_private_dacl,
+)
+
 SMALL_CONTEXT_THRESHOLD = 75_000
 DEFAULT_ROOT = Path(tempfile.gettempdir()) / "algo_cli_small_context"
 LEDGER_TTL_SECONDS = 24 * 60 * 60
+LEDGER_STAGING_TTL_SECONDS = 5 * 60
 LEDGER_MAX_FILES = 64
 _LEDGER_NAME_RE = re.compile(r"[0-9]{10,24}-[A-Za-z0-9._-]{1,80}-[0-9a-f]{16}\.md\Z")
+_LEDGER_TEMP_RE = re.compile(r"\.[0-9]{10,24}-[A-Za-z0-9._-]{1,80}-[0-9a-f]{16}\.md\.[0-9a-f]{16}\.tmp\Z")
 
 
 @dataclass(frozen=True)
@@ -165,25 +179,49 @@ def write_ledger(
         messages=messages,
     )
     root = root or DEFAULT_ROOT
-    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    windows_root_chain = _ensure_windows_private_directory(root) if os.name == "nt" else ()
+    if os.name != "nt":
+        root.mkdir(parents=True, mode=0o700, exist_ok=True)
     root_info = root.lstat()
-    if root.is_symlink() or not stat.S_ISDIR(root_info.st_mode):
+    if _path_is_reparse_point(root, root_info) or not stat.S_ISDIR(root_info.st_mode):
         raise OSError("small-context ledger root must be a private directory")
     if hasattr(os, "getuid") and root_info.st_uid != os.getuid():
         raise OSError("small-context ledger root must be owned by the current user")
     if os.name == "posix":
         os.chmod(root, 0o700)
+        root_info = root.lstat()
+    elif os.name == "nt" and not _windows_private_dacl(root):
+        raise OSError("small-context ledger root must have a private DACL")
+    if windows_root_chain:
+        _recheck_directory_chain(windows_root_chain)
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    name = f"{time.time_ns()}-{_safe_name(model)}-{digest}.md"
+    path = root / name
+    temp_name = f".{name}.{secrets.token_hex(8)}.tmp"
+    encoded = text.encode("utf-8")
+    if _full_path_ledger_io_required():
+        _write_ledger_by_path(
+            root,
+            root_info=root_info,
+            name=name,
+            temp_name=temp_name,
+            encoded=encoded,
+            root_chain=windows_root_chain,
+        )
+        return SmallContextLedger(
+            path=path,
+            model=model,
+            runtime_cap=int(runtime_cap),
+            block_names=block_names,
+            bytes_written=len(encoded),
+            token_estimate=estimate_text_tokens(text),
+        )
     directory_flags = os.O_RDONLY | int(getattr(os, "O_DIRECTORY", 0)) | int(getattr(os, "O_NOFOLLOW", 0))
     directory_fd = os.open(root, directory_flags)
     opened_info = os.fstat(directory_fd)
     if (opened_info.st_dev, opened_info.st_ino) != (root_info.st_dev, root_info.st_ino):
         os.close(directory_fd)
         raise OSError("small-context ledger root changed during open")
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-    name = f"{time.time_ns()}-{_safe_name(model)}-{digest}.md"
-    path = root / name
-    temp_name = f".{name}.{secrets.token_hex(8)}.tmp"
-    encoded = text.encode("utf-8")
     temp_fd: int | None = None
     published = False
     try:
@@ -244,6 +282,188 @@ def write_ledger(
         bytes_written=len(text.encode("utf-8")),
         token_estimate=estimate_text_tokens(text),
     )
+
+
+def _full_path_ledger_io_required() -> bool:
+    return os.name == "nt"
+
+
+def _ledger_file_identity(information: os.stat_result) -> tuple[int, ...]:
+    return (
+        int(information.st_dev),
+        int(information.st_ino),
+        int(stat.S_IFMT(information.st_mode)),
+        int(information.st_size),
+    )
+
+
+def _write_ledger_by_path(
+    root: Path,
+    *,
+    root_info: os.stat_result,
+    name: str,
+    temp_name: str,
+    encoded: bytes,
+    root_chain: tuple[tuple[Path, tuple[int, ...]], ...] = (),
+) -> None:
+    """Publish through full paths where directory descriptors are unavailable."""
+
+    if os.name == "nt":
+        with _windows_pinned_directory_chain(root) as pinned_chain:
+            _write_ledger_by_bound_path(
+                root,
+                root_info=root_info,
+                name=name,
+                temp_name=temp_name,
+                encoded=encoded,
+                root_chain=pinned_chain,
+            )
+        return
+    _write_ledger_by_bound_path(
+        root,
+        root_info=root_info,
+        name=name,
+        temp_name=temp_name,
+        encoded=encoded,
+        root_chain=root_chain,
+    )
+
+
+def _write_ledger_by_bound_path(
+    root: Path,
+    *,
+    root_info: os.stat_result,
+    name: str,
+    temp_name: str,
+    encoded: bytes,
+    root_chain: tuple[tuple[Path, tuple[int, ...]], ...],
+) -> None:
+    root_identity = _portable_directory_identity(root_info)
+    if root_chain:
+        _recheck_directory_chain(root_chain)
+    _cleanup_ledgers_by_path(root, now=time.time())
+    path = root / name
+    temp_path = root / temp_name
+    file_flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | int(getattr(os, "O_BINARY", 0))
+        | int(getattr(os, "O_CLOEXEC", 0))
+        | int(getattr(os, "O_NOFOLLOW", 0))
+    )
+    descriptor: int | None = None
+    published = False
+    try:
+        if root_chain:
+            _recheck_directory_chain(root_chain)
+        descriptor = (
+            _windows_create_private_file(temp_path) if os.name == "nt" else os.open(temp_path, file_flags, 0o600)
+        )
+        if os.name == "nt":
+            hardened = temp_path.lstat()
+            opened = os.fstat(descriptor)
+            if (
+                _path_is_reparse_point(temp_path, hardened)
+                or _portable_state_identity(hardened) != _portable_state_identity(opened)
+                or not _windows_private_dacl(temp_path)
+            ):
+                raise OSError("small-context ledger staging ACL is unsafe")
+        offset = 0
+        while offset < len(encoded):
+            written = os.write(descriptor, encoded[offset:])
+            if written <= 0:
+                raise OSError("small-context ledger write made no progress")
+            offset += written
+        os.fsync(descriptor)
+        staged = os.fstat(descriptor)
+        if not stat.S_ISREG(staged.st_mode) or staged.st_nlink != 1 or staged.st_size != len(encoded):
+            raise OSError("small-context ledger staging identity failed")
+        os.close(descriptor)
+        descriptor = None
+        current_stage = temp_path.lstat()
+        if (
+            _path_is_reparse_point(temp_path, current_stage)
+            or _portable_state_identity(current_stage) != _portable_state_identity(staged)
+            or (os.name == "nt" and not _windows_private_dacl(temp_path))
+        ):
+            raise OSError("small-context ledger staging identity changed")
+        if root_chain:
+            _recheck_directory_chain(root_chain)
+        _move_file_write_through(temp_path, path, replace=False)
+        published = True
+        final_info = path.lstat()
+        if (
+            _path_is_reparse_point(path, final_info)
+            or not stat.S_ISREG(final_info.st_mode)
+            or final_info.st_nlink != 1
+            or final_info.st_size != len(encoded)
+            or _ledger_file_identity(final_info) != _ledger_file_identity(staged)
+            or (os.name == "nt" and not _windows_private_dacl(path))
+        ):
+            raise OSError("small-context ledger publication identity failed")
+        current_root = root.lstat()
+        if _path_is_reparse_point(root, current_root) or _portable_directory_identity(current_root) != root_identity:
+            raise OSError("small-context ledger root changed before handoff")
+        if root_chain:
+            _recheck_directory_chain(root_chain)
+    except Exception:
+        if descriptor is not None:
+            os.close(descriptor)
+        for candidate in (temp_path, path if published else None):
+            if candidate is None:
+                continue
+            try:
+                candidate.unlink()
+            except OSError:
+                pass
+        raise
+
+
+def _cleanup_ledgers_by_path(root: Path, *, now: float) -> None:
+    retained: list[tuple[float, Path, tuple[int, ...]]] = []
+    for path in root.iterdir():
+        is_ledger = _LEDGER_NAME_RE.fullmatch(path.name) is not None
+        is_staging = _LEDGER_TEMP_RE.fullmatch(path.name) is not None
+        if not is_ledger and not is_staging:
+            continue
+        try:
+            information = path.lstat()
+        except OSError:
+            continue
+        if is_staging:
+            if now - float(information.st_mtime) <= LEDGER_STAGING_TTL_SECONDS:
+                continue
+            if _path_is_reparse_point(path, information):
+                if stat.S_ISDIR(information.st_mode):
+                    path.rmdir()
+                else:
+                    path.unlink()
+                continue
+            if not stat.S_ISREG(information.st_mode):
+                raise OSError("small-context staging entry is unsafe")
+            identity = _portable_state_identity(information)
+            if _portable_state_identity(path.lstat()) != identity:
+                raise OSError("small-context staging entry changed during cleanup")
+            path.unlink()
+            continue
+        if _path_is_reparse_point(path, information) or not stat.S_ISREG(information.st_mode):
+            continue
+        identity = _portable_state_identity(information)
+        if now - float(information.st_mtime) > LEDGER_TTL_SECONDS:
+            try:
+                if _portable_state_identity(path.lstat()) == identity:
+                    path.unlink()
+            except OSError:
+                pass
+            continue
+        retained.append((float(information.st_mtime), path, identity))
+    for _mtime, path, identity in sorted(retained, key=lambda value: value[0], reverse=True)[LEDGER_MAX_FILES - 1 :]:
+        try:
+            if _portable_state_identity(path.lstat()) == identity:
+                path.unlink()
+        except OSError:
+            pass
 
 
 def _cleanup_ledgers(directory_fd: int, *, now: float) -> None:
