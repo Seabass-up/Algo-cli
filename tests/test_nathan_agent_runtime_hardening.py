@@ -28,13 +28,56 @@ SPEC.loader.exec_module(SCRIPT)
 @pytest.fixture(scope="module")
 def report() -> dict[str, object]:
     return benchmark.run_benchmark(
-        contract_repetitions=3,
-        context_repetitions=3,
-        checkpoint_repetitions=3,
-        workload_repetitions=3,
-        warmups=0,
+        contract_repetitions=benchmark.MIN_LATENCY_SAMPLES,
+        context_repetitions=benchmark.MIN_LATENCY_SAMPLES,
+        checkpoint_repetitions=benchmark.MIN_LATENCY_SAMPLES,
+        workload_repetitions=benchmark.MIN_LATENCY_SAMPLES,
+        warmups=5,
         generated_at="2026-07-23T12:00:00Z",
     )
+
+
+def test_minimum_latency_corpus_excludes_one_outlier_from_p95() -> None:
+    values = ([1.0] * (benchmark.MIN_LATENCY_SAMPLES - 2)) + [5.0, 10.0]
+
+    assert benchmark._latency_summary(values) == {
+        "samples": benchmark.MIN_LATENCY_SAMPLES,
+        "p50_ms": 1.0,
+        "p95_ms": 5.0,
+        "max_ms": 10.0,
+    }
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "contract_repetitions",
+        "context_repetitions",
+        "checkpoint_repetitions",
+        "workload_repetitions",
+    ],
+)
+@pytest.mark.parametrize(
+    "replacement",
+    [benchmark.MIN_LATENCY_SAMPLES - 1, 10_001],
+)
+def test_runtime_benchmark_rejects_invalid_latency_corpus(
+    field: str,
+    replacement: int,
+) -> None:
+    repetitions = {
+        "contract_repetitions": benchmark.MIN_LATENCY_SAMPLES,
+        "context_repetitions": benchmark.MIN_LATENCY_SAMPLES,
+        "checkpoint_repetitions": benchmark.MIN_LATENCY_SAMPLES,
+        "workload_repetitions": benchmark.MIN_LATENCY_SAMPLES,
+    }
+    repetitions[field] = replacement
+
+    with pytest.raises(
+        benchmark.AgentRuntimeBenchmarkError,
+        match=rf"{field} must be an integer from {benchmark.MIN_LATENCY_SAMPLES} to 10000",
+    ):
+        benchmark.run_benchmark(**repetitions)
 
 
 def test_benchmark_discovers_checkout_from_installed_module(
@@ -324,10 +367,10 @@ def test_benchmark_rejects_source_mutation_during_execution(
         match="changed after reading",
     ):
         benchmark.run_benchmark(
-            contract_repetitions=3,
-            context_repetitions=3,
-            checkpoint_repetitions=3,
-            workload_repetitions=3,
+            contract_repetitions=benchmark.MIN_LATENCY_SAMPLES,
+            context_repetitions=benchmark.MIN_LATENCY_SAMPLES,
+            checkpoint_repetitions=benchmark.MIN_LATENCY_SAMPLES,
+            workload_repetitions=benchmark.MIN_LATENCY_SAMPLES,
             warmups=0,
         )
 
@@ -376,6 +419,7 @@ def test_runtime_benchmark_passes_every_source_bound_probe(
             for name, gate in report["gates"].items()
             if gate["passed"] is not True
         },
+        "performance": report["performance"],
     }
     assert report["status"] == "pass", failures
     assert report["schema_version"] == 3
@@ -409,6 +453,35 @@ def test_runtime_benchmark_recomputes_claimed_gates(report) -> None:
     with pytest.raises(
         benchmark.AgentRuntimeBenchmarkError,
         match="gate is invalid",
+    ):
+        benchmark.validate_report(
+            tampered,
+            require_current_source=False,
+        )
+
+
+def test_runtime_benchmark_rejects_latency_sample_count_mismatch(report) -> None:
+    tampered = deepcopy(report)
+    tampered["performance"]["contract_compile"]["samples"] = benchmark.MIN_LATENCY_SAMPLES - 1
+
+    with pytest.raises(
+        benchmark.AgentRuntimeBenchmarkError,
+        match="runtime benchmark latency is invalid: contract_compile",
+    ):
+        benchmark.validate_report(
+            tampered,
+            require_current_source=False,
+        )
+
+
+def test_runtime_benchmark_rejects_underpowered_stored_protocol(report) -> None:
+    tampered = deepcopy(report)
+    tampered["protocol"]["contract_repetitions"] = benchmark.MIN_LATENCY_SAMPLES - 1
+    tampered["performance"]["contract_compile"]["samples"] = benchmark.MIN_LATENCY_SAMPLES - 1
+
+    with pytest.raises(
+        benchmark.AgentRuntimeBenchmarkError,
+        match="runtime benchmark protocol is invalid",
     ):
         benchmark.validate_report(
             tampered,

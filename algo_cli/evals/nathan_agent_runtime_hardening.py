@@ -107,6 +107,7 @@ LATENCY_THRESHOLDS_MS = {
     "agent_workload_ttfa": 1_000.0,
     "agent_workload_total": 2_500.0,
 }
+MIN_LATENCY_SAMPLES = 20
 
 
 class AgentRuntimeBenchmarkError(RuntimeError):
@@ -1604,8 +1605,8 @@ def run_benchmark(
         ("checkpoint_repetitions", checkpoint_repetitions),
         ("workload_repetitions", workload_repetitions),
     ):
-        if isinstance(value, bool) or not isinstance(value, int) or not 3 <= value <= 10_000:
-            raise AgentRuntimeBenchmarkError(f"{label} must be an integer from 3 to 10000")
+        if isinstance(value, bool) or not isinstance(value, int) or not MIN_LATENCY_SAMPLES <= value <= 10_000:
+            raise AgentRuntimeBenchmarkError(f"{label} must be an integer from {MIN_LATENCY_SAMPLES} to 10000")
     if isinstance(warmups, bool) or not isinstance(warmups, int) or not 0 <= warmups <= 100:
         raise AgentRuntimeBenchmarkError("warmups must be an integer from 0 to 100")
 
@@ -1614,6 +1615,7 @@ def run_benchmark(
     with tempfile.TemporaryDirectory(prefix="algo-agent-runtime-benchmark-") as raw_root:
         root = Path(raw_root)
         probes = _run_probes(root)
+        _verify_source_tree_snapshot(source_snapshot)
         contract_latency = _measure(
             lambda index: _compile(
                 root,
@@ -1850,7 +1852,9 @@ def validate_report(
         or protocol.get("network_calls") != 0
         or protocol.get("synthetic_runtime_microbenchmark") is not True
         or any(
-            isinstance(protocol.get(field), bool) or not isinstance(protocol.get(field), int) or protocol[field] < 3
+            isinstance(protocol.get(field), bool)
+            or not isinstance(protocol.get(field), int)
+            or not MIN_LATENCY_SAMPLES <= protocol[field] <= 10_000
             for field in (
                 "contract_repetitions",
                 "context_repetitions",
@@ -1888,13 +1892,20 @@ def validate_report(
     performance = report["performance"]
     if not isinstance(performance, dict) or set(performance) != set(LATENCY_THRESHOLDS_MS):
         raise AgentRuntimeBenchmarkError("runtime benchmark performance fields are invalid")
+    expected_sample_counts = {
+        "contract_compile": protocol["contract_repetitions"],
+        "context_broker": protocol["context_repetitions"],
+        "checkpoint_resume": protocol["checkpoint_repetitions"],
+        "agent_workload_ttfa": protocol["workload_repetitions"],
+        "agent_workload_total": protocol["workload_repetitions"],
+    }
     for metric, row in performance.items():
         if (
             not isinstance(row, dict)
             or set(row) != {"samples", "p50_ms", "p95_ms", "max_ms"}
             or isinstance(row["samples"], bool)
             or not isinstance(row["samples"], int)
-            or row["samples"] < 3
+            or row["samples"] != expected_sample_counts[metric]
             or any(
                 isinstance(row[field], bool)
                 or not isinstance(row[field], (int, float))
