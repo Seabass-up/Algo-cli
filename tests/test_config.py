@@ -707,7 +707,7 @@ def test_windows_state_stage_is_private_at_creation_without_post_create_hardenin
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows external private-path contract")
-def test_windows_external_elsie_parent_fails_closed_without_acl_repair_or_bytes(
+def test_windows_external_elsie_stage_is_private_under_readable_nonmutable_parent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -727,12 +727,23 @@ def test_windows_external_elsie_parent_fails_closed_without_acl_repair_or_bytes(
     assert granted.returncode == 0, granted.stderr.decode(errors="replace")
     monkeypatch.setattr(config, "CONFIG_DIR", tmp_path / "unrelated-config")
     stage = parent / ".state.json.elsie-pending"
+    original_create = config._windows_create_private_file
+    created_private = False
 
-    with pytest.raises(OSError, match="external private Windows persistence parent ACL is unsafe"):
-        config._atomic_write_text(stage, "protected")
+    def create_and_check(path: Path) -> int:
+        nonlocal created_private
+        descriptor = original_create(path)
+        assert config._windows_private_dacl(path) is True
+        created_private = True
+        return descriptor
 
+    monkeypatch.setattr(config, "_windows_create_private_file", create_and_check)
+    config._atomic_write_text(stage, "protected")
+
+    assert created_private is True
+    assert stage.read_bytes() == b"protected"
+    assert config._windows_private_dacl(stage) is True
     assert config._windows_private_dacl(parent) is False
-    assert list(parent.iterdir()) == []
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows atomic private directory contract")
@@ -755,13 +766,13 @@ def test_windows_private_directory_is_private_at_creation_without_repair(
     )
     assert granted.returncode == 0, granted.stderr.decode(errors="replace")
     child = parent / "private-child"
-    monkeypatch.setattr(
-        config,
-        "_windows_harden_private_dacl",
-        lambda _path: (_ for _ in ()).throw(AssertionError("directory repair must not run")),
-    )
-
-    config._ensure_windows_private_directory(child, require_new=True)
+    with monkeypatch.context() as creation_context:
+        creation_context.setattr(
+            config,
+            "_windows_harden_private_dacl",
+            lambda _path: (_ for _ in ()).throw(AssertionError("directory repair must not run")),
+        )
+        config._ensure_windows_private_directory(child, require_new=True)
 
     assert child.is_dir()
     assert config._windows_private_dacl(child) is True
@@ -888,9 +899,11 @@ def test_windows_state_lock_is_private_before_first_write(monkeypatch: pytest.Mo
     )
 
     with config._exclusive_state_lock(target):
-        assert lock_path.read_bytes() == b"x"
+        # Windows byte-range locks are mandatory, so a second handle cannot
+        # read the locked sentinel until the transaction releases it.
+        assert created_private is True
 
-    assert created_private is True
+    assert lock_path.read_bytes() == b"x"
     assert config._windows_private_dacl(lock_path) is True
 
 

@@ -15,7 +15,7 @@ from . import config
 from . import git_evidence
 from . import grace_key_store
 from . import run_contract
-from .private_event_store import PrivateEventStore, RetentionPolicy
+from .ada_private_event_store import PrivateEventStore, RetentionPolicy
 
 
 AGENT_RUN_JOURNAL_SCHEMA_VERSION = 4

@@ -94,7 +94,7 @@ jobs:
           algo_cli/henry_hardening_qualification.py
           algo_cli/theodore_runtime_services.py
           algo_cli/execution_guardrails.py
-          algo_cli/private_event_store.py
+          algo_cli/ada_private_event_store.py
           algo_cli/dorothy_perf_telemetry.py
           algo_cli/skills.py
           algo_cli/evals/competitive_harness_rating.py

@@ -78,7 +78,7 @@ SOURCE_PATHS = (
     "algo_cli/model_info.py",
     "algo_cli/nathan_provider_protocol.py",
     "algo_cli/nathan_runtime.py",
-    "algo_cli/private_event_store.py",
+    "algo_cli/ada_private_event_store.py",
     "algo_cli/run_contract.py",
     "algo_cli/samuel_policy.py",
     "algo_cli/spawn_budget.py",

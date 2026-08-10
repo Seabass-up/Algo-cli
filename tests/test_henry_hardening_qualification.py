@@ -495,6 +495,7 @@ def test_echo_alice_pdf_privacy_controls_are_fully_qualified() -> None:
         "tests/conftest.py",
     }
     required_tests = {
+        "tests/test_ada_echo_veil_identity.py",
         "tests/test_ada_memory_echo_veil.py",
         "tests/test_ada_task_ledger_echo.py",
         "tests/test_agent_pipeline.py",
@@ -543,13 +544,13 @@ def test_nathan_runtime_qualification_is_fully_source_bound() -> None:
     assert {
         "algo_cli/chat_protocol.py",
         "algo_cli/git_evidence.py",
-        "algo_cli/private_event_store.py",
+        "algo_cli/ada_private_event_store.py",
         "algo_cli/samuel_policy.py",
         "algo_cli/spawn_budget.py",
     } <= source_paths
     assert {
         "tests/test_git_evidence.py",
-        "tests/test_private_event_store.py",
+        "tests/test_ada_private_event_store.py",
         "tests/test_samuel_policy.py",
         "tests/test_spawn_budget.py",
     } <= focused_tests

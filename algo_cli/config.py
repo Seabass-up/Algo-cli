@@ -414,7 +414,13 @@ def _ensure_private_config_parent(path: Path, *, require_windows_private: bool =
                 # namespace. Validate it, but never rewrite the caller's
                 # directory or existing target ACL as a side effect.
                 _ensure_windows_real_directory(path.parent)
-                if not _windows_private_dacl(path.parent):
+                # The caller's parent may intentionally be traversable or
+                # readable (for example, a per-user runtime directory).  It
+                # need not inherit the secret file's confidentiality policy;
+                # it must instead exclude untrusted child creation/mutation.
+                # `_atomic_write_text` creates the named stage with a
+                # protected DACL in the CreateFileW call itself.
+                if not _windows_safe_creation_dacl(path.parent):
                     raise OSError("external private Windows persistence parent ACL is unsafe")
                 if path.exists() or path.is_symlink():
                     information = path.lstat()

@@ -66,6 +66,18 @@ def _reject(reason: str) -> NoReturn:
     raise QualifiedEchoSourceError(reason)
 
 
+def _canonical_python_source(payload: bytes) -> bytes:
+    """Normalize the CRLF form produced by Windows VCS checkouts."""
+
+    # VCS checkouts on Windows may materialize the qualified LF source with
+    # CRLF line endings.  Python normalizes CRLF before tokenization, so
+    # authenticate and retain that same canonical stream.  Deliberately do not
+    # normalize arbitrary lone CR bytes.  Every other byte remains covered by
+    # the pinned tree digest, and the snapshot loader executes only these
+    # canonical bytes.
+    return payload.replace(b"\r\n", b"\n")
+
+
 @dataclass(frozen=True)
 class QualifiedEchoSourceSnapshot:
     """Immutable source bytes captured from the qualified package tree."""
@@ -434,7 +446,7 @@ def _windows_pinned_directory_chain(
                 current /= part
             opened = create_file(
                 os.fspath(current),
-                0x00020000 | 0x00000080,
+                0x00000080,  # FILE_READ_ATTRIBUTES; source trust comes from the digest
                 0x00000001 | 0x00000002,
                 None,
                 3,
@@ -451,13 +463,17 @@ def _windows_pinned_directory_chain(
                 final_information = final_path.lstat()
             except OSError:
                 _reject("qualified_source_root_identity")
+            # Every lexical component remains open without SHARE_DELETE until
+            # capture completes, so a broad hosted-workspace ACL cannot rebind
+            # the source path.  Unlike mutable storage, content trust here is
+            # supplied by the exact qualified tree digest; an in-place writer
+            # can at most cause a mismatch/denial, never an accepted mutation.
             if (
                 _is_reparse(information)
                 or _is_reparse(final_information)
                 or not stat.S_ISDIR(information.st_mode)
                 or _directory_identity(information) != _directory_identity(final_information)
                 or not os.path.samefile(current, final_path)
-                or not _windows_namespace_authorized(current)
             ):
                 _reject("qualified_source_root_identity")
             captured.append((current, _directory_identity(information)))
@@ -503,7 +519,6 @@ def _recheck_windows_directory_chain(
             _is_reparse(information)
             or not stat.S_ISDIR(information.st_mode)
             or _directory_identity(information) != expected
-            or (os.name == "nt" and not _windows_namespace_authorized(path))
         ):
             _reject("qualified_source_root_changed")
 
@@ -632,10 +647,11 @@ def _capture_qualified_echo_source_tree_by_bound_path(
                 _reject("qualified_source_set")
             for relative in (path for path in QUALIFIED_ECHO_SOURCE_PATHS if path.startswith(f"{package_name}/")):
                 _recheck_windows_directory_chain(package_ancestry)
-                payload = _read_qualified_source_by_path(root / relative)
-                total += len(payload)
+                raw_payload = _read_qualified_source_by_path(root / relative)
+                total += len(raw_payload)
                 if total > MAX_QUALIFIED_SOURCE_BYTES:
                     _reject("qualified_source_bounds")
+                payload = _canonical_python_source(raw_payload)
                 path_bytes = relative.encode("utf-8")
                 digest.update(path_bytes)
                 digest.update(b"\0")
@@ -761,12 +777,13 @@ def capture_qualified_echo_source_tree(distribution_root: Path) -> QualifiedEcho
                     total += len(payload)
                     if total > MAX_QUALIFIED_SOURCE_BYTES:
                         _reject("qualified_source_bounds")
+                    canonical_payload = _canonical_python_source(bytes(payload))
                     path_bytes = relative.encode("utf-8")
                     digest.update(path_bytes)
                     digest.update(b"\0")
-                    digest.update(len(payload).to_bytes(8, "big"))
-                    digest.update(payload)
-                    captured.append((relative, bytes(payload)))
+                    digest.update(len(canonical_payload).to_bytes(8, "big"))
+                    digest.update(canonical_payload)
+                    captured.append((relative, canonical_payload))
                 current_package = os.fstat(package_fd)
                 if (current_package.st_dev, current_package.st_ino) != (
                     package_info.st_dev,

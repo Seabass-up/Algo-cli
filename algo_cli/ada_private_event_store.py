@@ -1,4 +1,4 @@
-"""Bounded, private JSONL persistence for local runtime events.
+"""Ada's bounded, private JSONL persistence for local runtime events.
 
 The store deliberately has a small contract:
 
@@ -22,7 +22,9 @@ import math
 import os
 import stat
 import tempfile
+import threading
 import time
+import weakref
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -113,11 +115,55 @@ class _ScanResult:
 
     @property
     def compaction_needed(self) -> bool:
-        return (
-            self.malformed_records > 0
-            or self.dropped_records > 0
-            or self.file_bytes != self.retained_bytes
-        )
+        return self.malformed_records > 0 or self.dropped_records > 0 or self.file_bytes != self.retained_bytes
+
+
+class _ThreadAdmissionGate:
+    """Admit same-process contenders in FIFO order before the OS file lock."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._waiters: deque[object] = deque()
+        self._held = False
+
+    def acquire(self, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        token = object()
+        with self._condition:
+            self._waiters.append(token)
+            while self._held or self._waiters[0] is not token:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._waiters.remove(token)
+                    self._condition.notify_all()
+                    return False
+                self._condition.wait(remaining)
+            self._waiters.popleft()
+            self._held = True
+            return True
+
+    def release(self) -> None:
+        with self._condition:
+            if not self._held:
+                raise RuntimeError("private event-store thread admission is not held")
+            self._held = False
+            self._condition.notify_all()
+
+
+_THREAD_GATE_GUARD = threading.Lock()
+_THREAD_GATES: weakref.WeakValueDictionary[str, _ThreadAdmissionGate] = weakref.WeakValueDictionary()
+
+
+def _thread_gate_for(path: Path) -> _ThreadAdmissionGate:
+    # Include the process ID so a post-fork child never inherits a held gate.
+    absolute = os.path.abspath(os.path.expanduser(os.fspath(path)))
+    key = f"{os.getpid()}:{os.path.normcase(absolute)}"
+    with _THREAD_GATE_GUARD:
+        gate = _THREAD_GATES.get(key)
+        if gate is None:
+            gate = _ThreadAdmissionGate()
+            _THREAD_GATES[key] = gate
+        return gate
 
 
 def _mode_is(path: Path, expected: int) -> bool | None:
@@ -211,65 +257,71 @@ class PrivateEventStore:
     @contextmanager
     def _locked(self, *, repair_permissions: bool = True) -> Iterator[None]:
         """Take an advisory lock without growing the sidecar on each use."""
-        self._ensure_private_directory(repair_permissions=repair_permissions)
-        _ensure_regular_file(self.lock_path)
-        descriptor = os.open(
-            self.lock_path,
-            _secure_open_flags(os.O_RDWR | os.O_CREAT),
-            _FILE_MODE,
-        )
+        thread_gate = _thread_gate_for(self.lock_path)
+        if not thread_gate.acquire(self.lock_timeout_seconds):
+            raise TimeoutError("timed out waiting for in-process private event-store lock")
         try:
-            if repair_permissions and os.name == "posix":
-                os.fchmod(descriptor, _FILE_MODE)
-            # msvcrt locks a byte range and needs at least one byte to exist.
-            if os.fstat(descriptor).st_size == 0:
-                os.write(descriptor, b"\0")
-                os.fsync(descriptor)
+            self._ensure_private_directory(repair_permissions=repair_permissions)
+            _ensure_regular_file(self.lock_path)
+            descriptor = os.open(
+                self.lock_path,
+                _secure_open_flags(os.O_RDWR | os.O_CREAT),
+                _FILE_MODE,
+            )
+            try:
+                if repair_permissions and os.name == "posix":
+                    os.fchmod(descriptor, _FILE_MODE)
+                # msvcrt locks a byte range and needs at least one byte to exist.
+                if os.fstat(descriptor).st_size == 0:
+                    os.write(descriptor, b"\0")
+                    os.fsync(descriptor)
 
-            deadline = time.monotonic() + self.lock_timeout_seconds
-            if os.name == "nt":
-                import msvcrt
+                deadline = time.monotonic() + self.lock_timeout_seconds
+                if os.name == "nt":
+                    import msvcrt
 
-                lock_region = getattr(msvcrt, "locking")
-                lock_nonblocking = getattr(msvcrt, "LK_NBLCK")
-                unlock = getattr(msvcrt, "LK_UNLCK")
-                while True:
+                    lock_region = getattr(msvcrt, "locking")
+                    lock_nonblocking = getattr(msvcrt, "LK_NBLCK")
+                    unlock = getattr(msvcrt, "LK_UNLCK")
+                    while True:
+                        try:
+                            os.lseek(descriptor, 0, os.SEEK_SET)
+                            lock_region(descriptor, lock_nonblocking, 1)
+                            break
+                        except OSError:
+                            if time.monotonic() >= deadline:
+                                raise TimeoutError("timed out waiting for private event-store lock")
+                            time.sleep(_LOCK_RETRY_SECONDS)
                     try:
+                        if os.fstat(descriptor).st_size != 1:
+                            os.ftruncate(descriptor, 1)
+                            os.fsync(descriptor)
+                        yield
+                    finally:
                         os.lseek(descriptor, 0, os.SEEK_SET)
-                        lock_region(descriptor, lock_nonblocking, 1)
-                        break
-                    except OSError:
-                        if time.monotonic() >= deadline:
-                            raise TimeoutError("timed out waiting for private event-store lock")
-                        time.sleep(_LOCK_RETRY_SECONDS)
-                try:
-                    if os.fstat(descriptor).st_size != 1:
-                        os.ftruncate(descriptor, 1)
-                        os.fsync(descriptor)
-                    yield
-                finally:
-                    os.lseek(descriptor, 0, os.SEEK_SET)
-                    lock_region(descriptor, unlock, 1)
-            else:
-                import fcntl
+                        lock_region(descriptor, unlock, 1)
+                else:
+                    import fcntl
 
-                while True:
+                    while True:
+                        try:
+                            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            break
+                        except BlockingIOError:
+                            if time.monotonic() >= deadline:
+                                raise TimeoutError("timed out waiting for private event-store lock")
+                            time.sleep(_LOCK_RETRY_SECONDS)
                     try:
-                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        break
-                    except BlockingIOError:
-                        if time.monotonic() >= deadline:
-                            raise TimeoutError("timed out waiting for private event-store lock")
-                        time.sleep(_LOCK_RETRY_SECONDS)
-                try:
-                    if os.fstat(descriptor).st_size != 1:
-                        os.ftruncate(descriptor, 1)
-                        os.fsync(descriptor)
-                    yield
-                finally:
-                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                        if os.fstat(descriptor).st_size != 1:
+                            os.ftruncate(descriptor, 1)
+                            os.fsync(descriptor)
+                        yield
+                    finally:
+                        fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
         finally:
-            os.close(descriptor)
+            thread_gate.release()
 
     def initialize(self) -> None:
         """Create an empty private store and repair its directory/file modes."""
@@ -374,10 +426,7 @@ class PrivateEventStore:
 
                 result.retained.append((stored, encoded))
                 retained_bytes += len(encoded)
-                while (
-                    len(result.retained) > self.policy.max_records
-                    or retained_bytes > self.policy.max_bytes
-                ):
+                while len(result.retained) > self.policy.max_records or retained_bytes > self.policy.max_bytes:
                     _discarded, discarded_bytes = result.retained.popleft()
                     retained_bytes -= len(discarded_bytes)
                     result.dropped_for_bounds += 1
@@ -539,9 +588,7 @@ class PrivateEventStore:
 
     def read_records(self, *, limit: int | None = None) -> list[StoredEvent]:
         """Read the valid retained suffix without returning malformed content."""
-        if limit is not None and (
-            not isinstance(limit, int) or isinstance(limit, bool) or limit < 0
-        ):
+        if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or limit < 0):
             raise ValueError("limit must be a non-negative integer or None")
         if limit == 0:
             return []
@@ -609,9 +656,7 @@ class PrivateEventStore:
             file_private = _mode_is(self.path, _FILE_MODE) if initialized else None
             lock_private = _mode_is(self.lock_path, _FILE_MODE)
             permission_problem = os.name == "posix" and (
-                directory_private is not True
-                or lock_private is not True
-                or (initialized and file_private is not True)
+                directory_private is not True or lock_private is not True or (initialized and file_private is not True)
             )
             degraded = scan.compaction_needed or permission_problem
             status = "degraded" if degraded else ("ready" if initialized else "empty")

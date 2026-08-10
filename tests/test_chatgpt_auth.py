@@ -192,6 +192,33 @@ def test_import_codex_auth_file_saves_chatgpt_tokens(config_dir: Path, tmp_path:
     assert chatgpt_auth.load_tokens()["access_token"] == "AT"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows external credential DACL contract")
+def test_import_codex_auth_file_rejects_untrusted_reader(config_dir: Path, tmp_path: Path) -> None:
+    from algo_cli import config as config_module
+
+    codex_home = tmp_path / "codex-untrusted"
+    codex_home.mkdir()
+    auth_file = codex_home / "auth.json"
+    auth_file.write_text(json.dumps({"access_token": "AT", "refresh_token": "RT"}), encoding="utf-8")
+    config_module._windows_harden_private_dacl(auth_file)
+    system_root = Path(os.environ["SystemRoot"])
+    icacls = system_root / "System32" / "icacls.exe"
+    granted = subprocess.run(
+        [str(icacls), str(auth_file), "/grant", "*S-1-1-0:R"],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert granted.returncode == 0, granted.stderr.decode(errors="replace")
+
+    with pytest.raises(RuntimeError, match="not a private owner-only regular file"):
+        chatgpt_auth.import_codex_auth_file(auth_file)
+
+    assert not chatgpt_auth.AUTH_FILE.exists()
+
+
 def test_extracts_chatgpt_account_id_from_access_token(config_dir: Path):
     header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).rstrip(b"=").decode()
     payload = (

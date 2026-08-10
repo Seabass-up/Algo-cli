@@ -384,19 +384,33 @@ def _read_private_auth_json(path: Path) -> dict[str, Any]:
         raise RuntimeError(f"Codex auth file was not created at {path}.") from exc
     except OSError as exc:
         raise RuntimeError(f"Could not inspect Codex auth file at {path}.") from exc
-    if os.name == "nt" and _config_relative_path(path) is not None:
-        try:
-            _ensure_private_config_parent(path)
-            before = path.lstat()
-        except OSError as exc:
-            raise RuntimeError(f"Codex auth file at {path} could not be made private.") from exc
+    external_windows_acl_safe = False
+    if os.name == "nt":
+        if _config_relative_path(path) is not None:
+            try:
+                _ensure_private_config_parent(path)
+                before = path.lstat()
+            except OSError as exc:
+                raise RuntimeError(f"Codex auth file at {path} could not be made private.") from exc
+        else:
+            # An explicit Codex auth source is caller-owned rather than Algo's
+            # storage.  Windows-created files commonly inherit a safe
+            # current-user/System DACL without SE_DACL_PROTECTED.  Accept that
+            # confidentiality contract without rewriting the caller's file;
+            # all untrusted read/write ACEs and untrusted owners still fail.
+            external_windows_acl_safe = _windows_dacl_is_safe(
+                path,
+                require_current_owner=False,
+                reject_untrusted_read=True,
+                require_protected_dacl=False,
+            )
     if (
         not stat.S_ISREG(before.st_mode)
         or before.st_nlink != 1
         or before.st_size > _MAX_AUTH_FILE_BYTES
         or (hasattr(os, "getuid") and before.st_uid != os.getuid())
         or (os.name == "posix" and before.st_mode & 0o077)
-        or (os.name == "nt" and not _windows_private_dacl(path))
+        or (os.name == "nt" and not (_windows_private_dacl(path) or external_windows_acl_safe))
     ):
         raise RuntimeError(f"Codex auth file at {path} is not a private owner-only regular file.")
     try:

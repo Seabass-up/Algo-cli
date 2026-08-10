@@ -31,6 +31,7 @@
     "algo_cli/ada_credential_registry.py",
     "algo_cli/ada_echo_veil_identity.py",
     "algo_cli/ada_memory_echo_veil.py",
+    "algo_cli/ada_private_event_store.py",
     "algo_cli/ada_uninstall_recovery.py",
     "algo_cli/ada_task_ledger.py",
     "algo_cli/alice_artifact_store.py",
@@ -99,6 +100,7 @@
     "algo_cli/oneshot.py",
     "algo_cli/perf_telemetry.py",
     "algo_cli/plugins.py",
+    "algo_cli/private_event_store.py",
     "algo_cli/program_runtime.py",
     "algo_cli/quantization/lloyd_max.py",
     "algo_cli/reflex.py",
@@ -261,6 +263,8 @@
     "tests/conftest.py",
     "tests/test_ada_task_ledger_echo.py",
     "tests/test_ada_memory_echo_veil.py",
+    "tests/test_ada_echo_veil_identity.py",
+    "tests/test_ada_private_event_store.py",
     "tests/test_ada_control_journal.py",
     "tests/test_ada_credential_registry.py",
     "tests/test_ada_supply_chain_manifest.py",
@@ -348,6 +352,7 @@
     "tests/test_oliver_slash_dispatch_owners.py",
     "tests/test_oliver_slash_unknown.py",
     "tests/test_provider_usability.py",
+    "tests/test_private_event_store.py",
     "tests/test_pdf_render_artifacts.py",
     "tests/test_perf_telemetry.py",
     "tests/test_plugins.py",
@@ -641,6 +646,15 @@
           "timestamp": "2026-08-10T11:51:38Z",
           "scope": "post-hoc final-state reconciliation after Echo copy-mode CI parity and fail-closed Windows path, ACL, publication, migration, credential, and source-identity hardening; no-renames committed, staged, unstaged, and untracked inventory remains closed",
           "limitations": "this late reconciliation proves final-state closure only; it does not prove pre-change authorization timing, historical gate execution, remote workflow enforcement, or the 24 Windows-native tests that require a hosted runner"
+        },
+        {
+          "kind": "test",
+          "path_or_command": "PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/david_hardening_gate.py; source-bound M8 qualification after hosted Windows CI diagnosis and repair",
+          "digest": "sha256:5a0acafeb90b2c406839b07232d8b47eab4e072a7924142f51f83298572915b9",
+          "result": "pass: the immutable full-SHA freeze baseline yields exactly 377 changed path identities, including 36 deletion identities, and every identity is authorized with no missing, duplicate, or surplus path",
+          "timestamp": "2026-08-10T12:56:40Z",
+          "scope": "post-hoc final-state reconciliation after hosted Windows failures drove canonical Echo newline identity, pinned-but-readable external-parent storage, confidential inherited auth ACL, Windows user-home test parity, FIFO event-store admission, Ada naming migration, and CI source-path repair; no-renames committed, staged, unstaged, and untracked inventory remains closed",
+          "limitations": "this late reconciliation proves final-state closure only; it does not prove pre-change authorization timing, historical gate execution, the next hosted Windows run, or any external browser, signing, TCC, or lifecycle authority"
         }
       ]
     },
@@ -2845,6 +2859,15 @@
           "timestamp": "2026-08-10T11:51:39Z",
           "scope": "source digest sha256:28bee490f59b8b0be6a63b4726928df4bbbef975354d3f0c70a62deab6c8213c and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind 174 descriptor-verified source paths, 91 focused suites, 10000 stale-target races, 1000 unknown outcomes, 1000 malformed programs, 1000 privacy canaries, 100000 malformed frames, 1000 fresh postconditions, and pre/post source identity checks across the full qualification window; stale-target p50/p95 are 4.238/4.545 ms and fresh-postcondition p50/p95 are 5.638/5.947 ms",
           "limitations": "local deterministic evidence does not prove hosted Windows execution of the native ACL/path regressions, native-amd64 GHCR publication and attestation, selected Chrome, live profile/network containment, browser freshness, signed XPC/TCC, production power-loss, or installed lifecycle behavior; HARD-080 remains in progress and the active freeze remains in force"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "UV_CACHE_DIR=/tmp/algo-cli-uv-cache UV_LINK_MODE=copy PYTHONDONTWRITEBYTECODE=1 PYTEST_ADDOPTS='-p no:cacheprovider' uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy python -B scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:5a0acafeb90b2c406839b07232d8b47eab4e072a7924142f51f83298572915b9",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, the exact 92-suite focused corpus passes, and public_claim_eligible is false",
+          "timestamp": "2026-08-10T12:56:41Z",
+          "scope": "source digest sha256:3ffccd716bbbbf2b423347b2bd35e3dbf65d76b5e79c761386b44b3ed3355bb7 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind 174 descriptor-verified source paths, 92 focused suites, 10000 stale-target races, 1000 unknown outcomes, 1000 malformed programs, 1000 privacy canaries, 100000 malformed frames, 1000 fresh postconditions, and pre/post source identity checks across the full qualification window; stale-target p50/p95 are 4.255/4.599 ms and fresh-postcondition p50/p95 are 5.670/5.967 ms",
+          "limitations": "local deterministic evidence does not prove the repaired controls on a hosted Windows runner, native-amd64 GHCR publication and attestation, selected Chrome, live profile/network containment, browser freshness, signed XPC/TCC, production power-loss, or installed lifecycle behavior; HARD-080 remains in progress and the active freeze remains in force"
         }
       ]
     },
@@ -3231,6 +3254,24 @@
           "timestamp": "2026-08-10T11:51:41Z",
           "scope": "five model-free efficiency repetitions measure 82.454 percent median tool-schema reduction and 96.644 percent typed-program reduction; stale-target p50/p95 are 4.238/4.545 ms and fresh-postcondition p50/p95 are 5.638/5.947 ms; the 174-source and 91-suite corpus remains stable across the full qualification window",
           "limitations": "synthetic local measurements do not prove live task completion, model quality, semantic-route share, screenshot reduction, confirmation count, provider latency, hosted Windows execution of the native ACL/path regressions, production-signed XPC/TCC readiness, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, HARD-081 stays in progress, the active freeze forbids public benchmark claims, and public_claim_eligible is false"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json verified by scripts/nathan_agent_runtime_qualification.py after hosted Windows CI diagnosis and repair",
+          "digest": "sha256:fc407c37df4564dea81be7f5cbea6f40de5cc099c7739ee00256d5bbe4742e94",
+          "result": "status pass: 17 of 17 adversarial Agent runtime probes and 31 of 31 frozen workloads pass with 100 percent task, verifier, crash-resume, protocol, and context-usefulness rates, zero policy escapes, unverified completions, or duplicate mutations, and public_claim_eligible is false",
+          "timestamp": "2026-08-10T12:56:42Z",
+          "scope": "source digest sha256:a518fb4f73e061a6c9d07a029b7f00485a35b15e875ff6bd71e6288ce9695deb and report digest sha256:8ffd58cd9a1f2919534516b108f4e04e49bbb7f5fa4cf352bed5381b3e38d9e2 bind protected keyed-journal and thread recovery, rollback rejection, Echo preflight containment, workload p50/p95 of 25.031/25.705 ms total and 4.041/4.202 ms to first Agent event, contract p50/p95 of 0.272/0.284 ms, broker p50/p95 of 0.042/0.045 ms, and checkpoint-resume p50/p95 of 9.380/10.264 ms",
+          "limitations": "deterministic local model-free fixtures, temporary files, and injected static key and anchor stores do not prove model intelligence, live provider latency, production Keychain behavior, process or power-loss recovery, the repaired controls on a hosted Windows runner, or superiority over another harness; HARD-081 remains in progress, the active freeze forbids public benchmark claims, and public_claim_eligible is false"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json after hosted Windows CI diagnosis, secure-storage portability repair, and Ada event-store naming closure",
+          "digest": "sha256:5a0acafeb90b2c406839b07232d8b47eab4e072a7924142f51f83298572915b9",
+          "result": "status blocked: current source-bound local measurements retain exact source and fixture digests, denominators, Wilson 95 percent intervals, p50/p95, 9 local passes, 5 production-browser blocks, zero failed or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-08-10T12:56:43Z",
+          "scope": "five model-free efficiency repetitions measure 82.454 percent median tool-schema reduction and 96.644 percent typed-program reduction; stale-target p50/p95 are 4.255/4.599 ms and fresh-postcondition p50/p95 are 5.670/5.967 ms; the 174-source and 92-suite corpus remains stable across the full qualification window",
+          "limitations": "synthetic local measurements do not prove live task completion, model quality, semantic-route share, screenshot reduction, confirmation count, provider latency, the repaired controls on a hosted Windows runner, production-signed XPC/TCC readiness, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, HARD-081 stays in progress, the active freeze forbids public benchmark claims, and public_claim_eligible is false"
         }
       ]
     },

@@ -45,7 +45,7 @@ from .grace_memory_receipts import (
     publish_elsie_staged_file,
     require_elsie_store_anchor,
 )
-from .private_event_store import (
+from .ada_private_event_store import (
     PrivateEventStore,
     PrivateEventStoreError,
     RetentionPolicy,

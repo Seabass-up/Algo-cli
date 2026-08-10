@@ -707,10 +707,12 @@ def _publish_elsie_staged_file_bound(
                     raise ElsieReceiptError("elsie store target ACL is unsafe") from exc
         if os.name == "nt":
             # CRT file descriptors deny delete sharing on Windows. The parent
-            # DACL excludes other principals from mutation, so close only after
-            # binding exact bytes, then revalidate the same stage immediately
-            # before the atomic rename.
-            if not config_module._windows_private_dacl(selected.parent):
+            # DACL excludes other principals from child creation/mutation, so
+            # close only after binding exact bytes, then revalidate the same
+            # stage immediately before the atomic rename.  An explicitly
+            # configured store parent may remain readable; confidentiality is
+            # enforced on the atomically-created stage and published target.
+            if not config_module._windows_safe_creation_dacl(selected.parent):
                 raise ElsieReceiptError("elsie store parent ACL is unsafe")
             config_module._recheck_directory_chain(parent_chain)
             os.close(stage_descriptor)

@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from algo_cli.private_event_store import (
+from algo_cli.ada_private_event_store import (
     EventTooLargeError,
     PrivateEventStore,
     RetentionPolicy,
@@ -32,6 +32,7 @@ def make_store(
     max_records: int = 20,
     max_bytes: int = 16_000,
     max_age_seconds: float = 3_600,
+    lock_timeout_seconds: float = 10.0,
 ) -> PrivateEventStore:
     return PrivateEventStore(
         tmp_path / "private" / "events.jsonl",
@@ -40,6 +41,7 @@ def make_store(
             max_bytes=max_bytes,
             max_age_seconds=max_age_seconds,
         ),
+        lock_timeout_seconds=lock_timeout_seconds,
         clock=clock or Clock(),
     )
 
@@ -80,11 +82,18 @@ def test_initialize_and_append_repair_private_permissions(tmp_path: Path) -> Non
 
 
 def test_concurrent_appends_are_complete_and_not_lost(tmp_path: Path) -> None:
-    store = make_store(tmp_path, max_records=100, max_bytes=100_000)
+    # Windows contenders must share path-scoped admission, even across instances.
+    stores = [make_store(tmp_path, max_records=100, max_bytes=100_000) for _ in range(8)]
 
     with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(lambda value: store.append({"sequence": value}), range(80)))
+        results = list(
+            pool.map(
+                lambda value: stores[value % len(stores)].append({"sequence": value}),
+                range(80),
+            )
+        )
 
+    store = stores[0]
     events = store.read_events()
     assert all(result.stored for result in results)
     assert len(events) == 80
@@ -92,6 +101,19 @@ def test_concurrent_appends_are_complete_and_not_lost(tmp_path: Path) -> None:
     assert all(json.loads(line) for line in store.path.read_text(encoding="utf-8").splitlines())
     # The lock sidecar contains one byte rather than growing per acquisition.
     assert store.lock_path.stat().st_size == 1
+
+
+def test_same_path_instances_use_thread_admission_before_os_lock(tmp_path: Path) -> None:
+    holder = make_store(tmp_path)
+    waiter = make_store(tmp_path, lock_timeout_seconds=0.05)
+
+    with holder._locked(), ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(waiter.append, {"sequence": 1})
+        with pytest.raises(
+            TimeoutError,
+            match="timed out waiting for in-process private event-store lock",
+        ):
+            pending.result(timeout=1.0)
 
 
 def test_record_retention_keeps_newest_suffix(tmp_path: Path) -> None:
@@ -174,7 +196,7 @@ def test_atomic_compaction_failure_preserves_original_bytes(
     def fail_replace(_source: Any, _target: Any) -> None:
         raise OSError("simulated publication failure")
 
-    monkeypatch.setattr("algo_cli.private_event_store.os.replace", fail_replace)
+    monkeypatch.setattr("algo_cli.ada_private_event_store.os.replace", fail_replace)
     with pytest.raises(OSError):
         store.compact()
 
@@ -192,7 +214,7 @@ def test_append_remains_durable_when_followup_compaction_fails(
     def fail_replace(_source: Any, _target: Any) -> None:
         raise OSError("simulated publication failure")
 
-    monkeypatch.setattr("algo_cli.private_event_store.os.replace", fail_replace)
+    monkeypatch.setattr("algo_cli.ada_private_event_store.os.replace", fail_replace)
     result = store.append({"sequence": 2})
 
     assert result.stored is True

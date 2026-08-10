@@ -81,7 +81,7 @@ def test_runtime_benchmark_source_manifest_covers_protected_execution_boundary()
         "algo_cli/grace_key_store.py",
         "algo_cli/grace_memory_receipts.py",
         "algo_cli/irene_privacy_views.py",
-        "algo_cli/private_event_store.py",
+        "algo_cli/ada_private_event_store.py",
         "algo_cli/run_contract.py",
         "tests/test_ada_memory_echo_veil.py",
         "tests/test_agent_run_journal.py",

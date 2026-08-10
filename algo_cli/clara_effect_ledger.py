@@ -10,7 +10,7 @@ from typing import Any
 import uuid
 
 from .henry_effect_control import TargetLeaseManager, target_digest
-from .private_event_store import PrivateEventStore, RetentionPolicy
+from .ada_private_event_store import PrivateEventStore, RetentionPolicy
 
 
 EFFECT_LEDGER_SCHEMA_VERSION = 2
@@ -49,9 +49,7 @@ class EffectState(str, Enum):
 
 _ALLOWED_TRANSITIONS: dict[EffectState, frozenset[EffectState]] = {
     EffectState.PREPARED: frozenset({EffectState.STARTED, EffectState.FAILED}),
-    EffectState.STARTED: frozenset(
-        {EffectState.APPLIED, EffectState.FAILED, EffectState.UNKNOWN}
-    ),
+    EffectState.STARTED: frozenset({EffectState.APPLIED, EffectState.FAILED, EffectState.UNKNOWN}),
     EffectState.APPLIED: frozenset({EffectState.VERIFIED, EffectState.UNKNOWN}),
     EffectState.UNKNOWN: frozenset({EffectState.VERIFIED, EffectState.FAILED}),
     EffectState.VERIFIED: frozenset(),
@@ -101,9 +99,7 @@ class EffectLedger:
     ) -> None:
         self.store = store
         self._lock = threading.RLock()
-        self._invocation_leases = invocation_leases or TargetLeaseManager(
-            store.path.parent / "clara-invocation-leases"
-        )
+        self._invocation_leases = invocation_leases or TargetLeaseManager(store.path.parent / "clara-invocation-leases")
 
     @classmethod
     def at_path(cls, path: str) -> "EffectLedger":
@@ -247,22 +243,13 @@ class EffectLedger:
             with self._lock:
                 records = self.records()
                 existing = next(
-                    (
-                        record
-                        for record in records.values()
-                        if record.idempotency_key == idempotency_key
-                    ),
+                    (record for record in records.values() if record.idempotency_key == idempotency_key),
                     None,
                 )
                 if existing is not None:
                     return PreparedEffect(existing, created=False)
-                if any(
-                    record.invocation_id_hash == invocation_id_hash
-                    for record in records.values()
-                ):
-                    raise InvocationReplayConflict(
-                        "invocation ID was already bound to a different action"
-                    )
+                if any(record.invocation_id_hash == invocation_id_hash for record in records.values()):
+                    raise InvocationReplayConflict("invocation ID was already bound to a different action")
                 record = EffectRecord(
                     effect_id=f"effect-{uuid.uuid4().hex}",
                     idempotency_key=idempotency_key,
@@ -371,9 +358,7 @@ class EffectLedger:
 def default_effect_ledger() -> EffectLedger:
     from . import config as config_module
 
-    return EffectLedger.at_path(
-        str(config_module.CONFIG_DIR / "private" / "clara_effect_ledger.jsonl")
-    )
+    return EffectLedger.at_path(str(config_module.CONFIG_DIR / "private" / "clara_effect_ledger.jsonl"))
 
 
 __all__ = [

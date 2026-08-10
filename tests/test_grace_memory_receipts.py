@@ -33,6 +33,19 @@ def _authority(byte: bytes = b"a") -> ElsieReceiptAuthority:
     return ElsieReceiptAuthority.from_key_store(store=StaticKeyStore({PRIVACY_KEY_LABEL: byte * 32}))
 
 
+def _write_elsie_stage(path: Path, payload: bytes) -> None:
+    """Create a stage with the same pre-exposure privacy contract as production."""
+
+    if os.name != "nt":
+        path.write_bytes(payload)
+        return
+    descriptor = config_module._windows_create_private_file(path)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
 def test_receipts_resist_yes_no_dictionary_and_are_canonical() -> None:
     authority = _authority()
     yes_receipt = authority.receipt(ReceiptNamespace.MEMORY_CANDIDATE, "yes")
@@ -380,7 +393,7 @@ def test_staged_publication_binds_exact_payload_and_inode(
     stage = elsie_staging_path(target)
     expected = b'{"sequence":2,"receipt":"expected"}'
     replay = b'{"sequence":1,"receipt":"replayed"}'
-    stage.write_bytes(expected)
+    _write_elsie_stage(stage, expected)
     original_replace = os.replace
 
     def swap_before_publish(source, destination):
@@ -396,9 +409,8 @@ def test_staged_publication_binds_exact_payload_and_inode(
         def swap_before_write_through(source, destination, *, replace):
             if Path(source) == stage and Path(destination) == target:
                 replacement = tmp_path / "replacement.json"
-                replacement.write_bytes(replay)
+                _write_elsie_stage(replacement, replay)
                 original_replace(replacement, stage)
-                config_module._windows_harden_private_dacl(stage)
             return original_move(source, destination, replace=replace)
 
         monkeypatch.setattr(config_module, "_move_file_write_through", swap_before_write_through)
@@ -420,7 +432,7 @@ def test_staged_publication_rejects_wrong_expected_bytes_before_replace(
 ) -> None:
     target = tmp_path / "state.json"
     stage = elsie_staging_path(target)
-    stage.write_bytes(b"actual")
+    _write_elsie_stage(stage, b"actual")
 
     with pytest.raises(ElsieReceiptError, match="payload changed"):
         publish_elsie_staged_file(
@@ -444,8 +456,7 @@ def test_windows_staged_publication_survives_post_replace_flush_failure_and_reco
     target = parent / "state.json"
     stage = elsie_staging_path(target)
     expected = b'{"sequence":2,"receipt":"expected"}'
-    stage.write_bytes(expected)
-    config_module._windows_harden_private_dacl(stage)
+    _write_elsie_stage(stage, expected)
 
     original_fsync = receipts.os.fsync
     monkeypatch.setattr(receipts.os, "fsync", lambda _descriptor: (_ for _ in ()).throw(OSError("flush failed")))
@@ -456,8 +467,7 @@ def test_windows_staged_publication_survives_post_replace_flush_failure_and_reco
     assert not stage.exists()
 
     monkeypatch.setattr(receipts.os, "fsync", original_fsync)
-    stage.write_bytes(expected)
-    config_module._windows_harden_private_dacl(stage)
+    _write_elsie_stage(stage, expected)
     publish_elsie_staged_file(stage, target, expected_payload=expected)
     assert target.read_bytes() == expected
     assert not stage.exists()

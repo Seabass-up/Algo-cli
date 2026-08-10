@@ -168,6 +168,10 @@ def test_protected_path_policy_normalizes_relative_case_and_tilde_aliases(
     protected = tmp_path / ".algo_cli"
     protected.mkdir(mode=0o700)
     monkeypatch.setenv("HOME", str(tmp_path))
+    # pathlib delegates to USERPROFILE on Windows even when HOME is set.
+    # Bind both platform spellings so the tilde alias exercises this test's
+    # isolated protected root instead of the hosted runner profile.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setattr(config, "CONFIG_DIR", protected)
     cfg = _protected_config(workspace)
 

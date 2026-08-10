@@ -15,7 +15,7 @@ from rich.text import Text
 from .chat_protocol import get_attr
 from .config import Config, PERF_HISTORY_FILE
 from .display import console, show_info
-from .private_event_store import PrivateEventStore, RetentionPolicy
+from .ada_private_event_store import PrivateEventStore, RetentionPolicy
 
 PERF_BUFFER: list[dict[str, Any]] = []
 _PERF_BUFFER_LOCK = threading.Lock()
@@ -225,9 +225,7 @@ _EVENT_FIELDS: dict[str, frozenset[str]] = {
         }
     ),
     "prune": frozenset({"timestamp", "removed", "kept", "threshold"}),
-    "compaction": frozenset(
-        {"timestamp", "duration_ms", "messages_compacted", "keep_messages", "threshold", "manual"}
-    ),
+    "compaction": frozenset({"timestamp", "duration_ms", "messages_compacted", "keep_messages", "threshold", "manual"}),
 }
 _OUTCOME_FIELDS = frozenset(
     {
@@ -497,11 +495,7 @@ def runtime_quality_snapshot(
     from .evals.cot_quality import score_tool_sequence
 
     recent = cfg.attempt_ledger[-max(1, tool_limit) :]
-    tool_names = [
-        str(item.get("tool") or "")
-        for item in recent
-        if str(item.get("tool") or "").strip()
-    ]
+    tool_names = [str(item.get("tool") or "") for item in recent if str(item.get("tool") or "").strip()]
     return {
         "tool_sequence": score_tool_sequence(tool_names).to_dict(),
         "performance": runtime_performance_snapshot(performance_history),
@@ -574,11 +568,7 @@ def flush_perf_records() -> bool:
                 return True
             pending = PERF_BUFFER
             PERF_BUFFER = []
-        safe_pending = [
-            sanitized
-            for record in pending
-            if (sanitized := sanitize_perf_record(record)) is not None
-        ]
+        safe_pending = [sanitized for record in pending if (sanitized := sanitize_perf_record(record)) is not None]
         if len(safe_pending) != len(pending):
             _record_rejection()
         if not safe_pending:
@@ -717,8 +707,7 @@ def load_perf_history(limit: int = 8) -> list[dict[str, Any]]:
             private_rows.extend(
                 sanitized
                 for item in records
-                if isinstance(item, dict)
-                and (sanitized := sanitize_perf_record(item)) is not None
+                if isinstance(item, dict) and (sanitized := sanitize_perf_record(item)) is not None
             )
     private_rows = private_rows[-line_limit:]
     if len(private_rows) >= line_limit:
