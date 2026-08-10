@@ -319,16 +319,33 @@ def test_full_path_purge_does_not_hide_missing_entry_after_partial_deletion(tmp_
     second = index_dir / "two.json"
     first.write_text("one", encoding="utf-8")
     second.write_text("two", encoding="utf-8")
-    real_unlink = Path.unlink
-
-    def fail_second(path: Path, *args, **kwargs):
-        if path == second:
-            raise FileNotFoundError(path)
-        return real_unlink(path, *args, **kwargs)
-
     monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", index_dir)
     monkeypatch.setattr(code_rag, "_windows_path_purge_required", lambda: True)
-    monkeypatch.setattr(Path, "unlink", fail_second)
+    if os.name == "nt":
+        from algo_cli import tools
+
+        real_delete = tools._windows_delete_path_by_identity
+
+        def fail_second(
+            path: Path,
+            expected: os.stat_result,
+            *,
+            allow_directory: bool,
+        ) -> None:
+            if path == second:
+                raise FileNotFoundError(path)
+            real_delete(path, expected, allow_directory=allow_directory)
+
+        monkeypatch.setattr(tools, "_windows_delete_path_by_identity", fail_second)
+    else:
+        real_unlink = Path.unlink
+
+        def fail_second_portable(path: Path, *args, **kwargs):
+            if path == second:
+                raise FileNotFoundError(path)
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_second_portable)
 
     with pytest.raises(FileNotFoundError):
         code_rag.purge_persisted_indexes()
@@ -436,7 +453,8 @@ def test_purge_persisted_indexes_rejects_external_hardlink(tmp_path, monkeypatch
     os.link(index_path, alias)
     monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", index_dir)
 
-    with pytest.raises(OSError, match="external hardlink"):
+    expected_message = "unexpected nested or special" if os.name == "nt" else "external hardlink"
+    with pytest.raises(OSError, match=expected_message):
         code_rag.purge_persisted_indexes()
     assert index_path.read_text(encoding="utf-8") == "protected"
     assert alias.read_text(encoding="utf-8") == "protected"
@@ -475,22 +493,39 @@ def test_purge_persisted_indexes_fails_closed_on_special_entry(tmp_path, monkeyp
     assert fifo.exists()
 
 
-def test_purge_persisted_indexes_surfaces_partial_unlink_failure(tmp_path, monkeypatch):
+def test_purge_persisted_indexes_surfaces_partial_delete_failure(tmp_path, monkeypatch):
     index_dir = tmp_path / "code_index"
     index_dir.mkdir()
     (index_dir / "one.json").write_text("one", encoding="utf-8")
     (index_dir / "two.json").write_text("two", encoding="utf-8")
     monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", index_dir)
-    real_unlink = os.unlink
+    if os.name == "nt":
+        from algo_cli import tools
 
-    def fail_second(path, *args, **kwargs):
-        if os.path.basename(os.fspath(path)) == "two.json":
-            raise OSError("injected unlink failure")
-        return real_unlink(path, *args, **kwargs)
+        real_delete = tools._windows_delete_path_by_identity
 
-    monkeypatch.setattr(code_rag.os, "unlink", fail_second)
+        def fail_second(
+            path: Path,
+            expected: os.stat_result,
+            *,
+            allow_directory: bool,
+        ) -> None:
+            if path.name == "two.json":
+                raise OSError("injected identity-delete failure")
+            real_delete(path, expected, allow_directory=allow_directory)
 
-    with pytest.raises(OSError, match="injected unlink failure"):
+        monkeypatch.setattr(tools, "_windows_delete_path_by_identity", fail_second)
+    else:
+        real_unlink = os.unlink
+
+        def fail_second_portable(path, *args, **kwargs):
+            if os.path.basename(os.fspath(path)) == "two.json":
+                raise OSError("injected identity-delete failure")
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(code_rag.os, "unlink", fail_second_portable)
+
+    with pytest.raises(OSError, match="injected identity-delete failure"):
         code_rag.purge_persisted_indexes()
 
     assert (index_dir / "two.json").read_text(encoding="utf-8") == "two"

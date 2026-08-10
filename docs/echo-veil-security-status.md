@@ -30,12 +30,12 @@ installed distribution metadata match in `>=0.6.0,<0.8.0`; editable and
 unpinned direct-URL or local-directory installs are rejected. Required mode is
 stricter: PEP 610 metadata must bind version `0.7.0`, the canonical upstream
 repository, requested revision, and resolved commit to
-`e450260505f0fa5ad9f17bc9e28eac6db3f46e22`. A same-version registry wheel,
+`aaf8497ddbe33dac2f79e7f02cbce2cb26f706eb`. A same-version registry wheel,
 archive, different repository, or different commit does not satisfy required
 protection.
 
 The development/runtime candidate is pinned to Echo Veil 0.7.0 commit
-`e450260505f0fa5ad9f17bc9e28eac6db3f46e22` through the
+`aaf8497ddbe33dac2f79e7f02cbce2cb26f706eb` through the
 `algo-cli-runtime[echo-veil]` extra. This source pin is qualification evidence,
 not a public Echo Veil release or a production-readiness claim.
 
@@ -197,7 +197,7 @@ checkout instead of a stale installed package. The source pin is
 mechanically visible in both dependency files with:
 
 ```bash
-rg -n "e450260505f0fa5ad9f17bc9e28eac6db3f46e22" pyproject.toml uv.lock
+rg -n "aaf8497ddbe33dac2f79e7f02cbce2cb26f706eb" pyproject.toml uv.lock
 .venv/bin/python scripts/henry_echo_veil_dependency_audit.py
 ```
 

@@ -366,7 +366,18 @@ def test_runtime_benchmark_passes_every_source_bound_probe(
         require_current_source=True,
     )
 
-    assert report["status"] == "pass"
+    failures = {
+        "probes": [row["id"] for row in report["correctness"]["probes"] if row["passed"] is not True],
+        "gates": {
+            name: {
+                "observed": gate["observed"],
+                "threshold": gate["threshold"],
+            }
+            for name, gate in report["gates"].items()
+            if gate["passed"] is not True
+        },
+    }
+    assert report["status"] == "pass", failures
     assert report["schema_version"] == 3
     assert report["benchmark"] == "nathan-agent-runtime-hardening-v3"
     assert report["public_claim_eligible"] is False

@@ -59,7 +59,7 @@ pdf = [
     "PyMuPDF>=1.24",
 ]
 echo-veil = [
-    "echo-veil @ git+https://github.com/Seabass-up/echo-veil.git@e450260505f0fa5ad9f17bc9e28eac6db3f46e22",
+    "echo-veil @ git+https://github.com/Seabass-up/echo-veil.git@aaf8497ddbe33dac2f79e7f02cbce2cb26f706eb",
 ]
 quantization = [
     "turbovec>=0.7",
