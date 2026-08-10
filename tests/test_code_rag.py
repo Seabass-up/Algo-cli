@@ -1,6 +1,7 @@
 """Tests for working-directory code RAG."""
 
 import os
+from pathlib import Path
 import subprocess
 
 import pytest
@@ -277,6 +278,75 @@ def test_purge_persisted_indexes_full_path_fallback_preserves_identity_checks(tm
     monkeypatch.setattr(code_rag, "_windows_path_purge_required", lambda: True)
 
     assert code_rag.purge_persisted_indexes() == 2
+    assert not index_dir.exists()
+
+
+def test_full_path_purge_accepts_safe_nonprivate_legacy_index_root(tmp_path, monkeypatch):
+    index_dir = tmp_path / "code_index"
+    index_dir.mkdir()
+    (index_dir / "legacy.json").write_text("legacy", encoding="utf-8")
+    checked: list[Path] = []
+    monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", index_dir)
+    monkeypatch.setattr(code_rag, "_windows_path_purge_required", lambda: True)
+    monkeypatch.setattr(
+        code_rag,
+        "_windows_safe_creation_dacl",
+        lambda path: checked.append(path) or True,
+    )
+
+    assert code_rag.purge_persisted_indexes() == 1
+    assert checked == [index_dir.parent, index_dir]
+    assert not index_dir.exists()
+
+
+def test_full_path_purge_requires_safe_parent_before_accepting_absence(tmp_path, monkeypatch):
+    index_dir = tmp_path / "missing-code-index"
+    monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", index_dir)
+    monkeypatch.setattr(code_rag, "_windows_path_purge_required", lambda: True)
+    monkeypatch.setattr(code_rag, "_windows_safe_creation_dacl", lambda _path: False)
+
+    with pytest.raises(OSError, match="parent ACL is unsafe"):
+        code_rag.purge_persisted_indexes()
+
+    monkeypatch.setattr(code_rag, "_windows_safe_creation_dacl", lambda _path: True)
+    assert code_rag.purge_persisted_indexes() == 0
+
+
+def test_full_path_purge_does_not_hide_missing_entry_after_partial_deletion(tmp_path, monkeypatch):
+    index_dir = tmp_path / "code_index"
+    index_dir.mkdir()
+    first = index_dir / "one.json"
+    second = index_dir / "two.json"
+    first.write_text("one", encoding="utf-8")
+    second.write_text("two", encoding="utf-8")
+    real_unlink = Path.unlink
+
+    def fail_second(path: Path, *args, **kwargs):
+        if path == second:
+            raise FileNotFoundError(path)
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", index_dir)
+    monkeypatch.setattr(code_rag, "_windows_path_purge_required", lambda: True)
+    monkeypatch.setattr(Path, "unlink", fail_second)
+
+    with pytest.raises(FileNotFoundError):
+        code_rag.purge_persisted_indexes()
+
+    assert not first.exists()
+    assert second.read_text(encoding="utf-8") == "two"
+    assert index_dir.exists()
+
+
+def test_full_path_purge_absolutizes_relative_store_before_deletion(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    index_dir = Path("code_index")
+    index_dir.mkdir()
+    (index_dir / "legacy.json").write_text("legacy", encoding="utf-8")
+    monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", index_dir)
+    monkeypatch.setattr(code_rag, "_windows_path_purge_required", lambda: True)
+
+    assert code_rag.purge_persisted_indexes() == 1
     assert not index_dir.exists()
 
 

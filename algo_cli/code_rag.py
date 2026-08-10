@@ -39,14 +39,13 @@ except ImportError:
 from .config import (
     CONFIG_DIR,
     _atomic_write_text,
-    _config_relative_path,
     _directory_chain,
     _path_is_reparse_point,
     _portable_directory_identity,
     _portable_state_identity,
     _recheck_directory_chain,
     _windows_pinned_directory_chain,
-    _windows_private_dacl,
+    _windows_safe_creation_dacl,
 )
 from .intelligence.project_graph import build_project_graph
 from .intelligence.repo_map import rank_repo_map, render_repo_map, snapshot_project_graph
@@ -500,67 +499,114 @@ def _windows_path_purge_required() -> bool:
 
 
 def _purge_persisted_indexes_by_path(
+    index_dir: Path,
     parent_chain: tuple[tuple[Path, tuple[int, ...]], ...],
 ) -> int:
+    from .tools import (
+        _windows_delete_path_by_identity,
+        _windows_reparse_entry_is_directory,
+        _windows_supported_name_reparse_tag,
+    )
+
+    def delete_bound(path: Path, expected: os.stat_result, *, allow_directory: bool) -> None:
+        if os.name == "nt":
+            _windows_delete_path_by_identity(path, expected, allow_directory=allow_directory)
+            return
+        current = path.lstat()
+        expected_directory = stat.S_ISDIR(expected.st_mode)
+        current_directory = stat.S_ISDIR(current.st_mode)
+        expected_identity = (
+            _portable_directory_identity(expected) if expected_directory else _portable_state_identity(expected)
+        )
+        current_identity = (
+            _portable_directory_identity(current) if current_directory else _portable_state_identity(current)
+        )
+        if expected_directory != current_directory or expected_identity != current_identity:
+            raise OSError("code index deletion target identity changed")
+        if current_directory:
+            if not allow_directory:
+                raise OSError("code index contains an unexpected directory")
+            path.rmdir()
+        else:
+            path.unlink()
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return
+        raise OSError("code index deletion target was rebound")
+
+    _recheck_directory_chain(parent_chain)
+    if not _windows_safe_creation_dacl(index_dir.parent):
+        raise OSError("code index parent ACL is unsafe")
     try:
-        root_info = CODE_INDEX_DIR.lstat()
+        root_info = index_dir.lstat()
     except FileNotFoundError:
         return 0
-    _recheck_directory_chain(parent_chain)
-    if _config_relative_path(CODE_INDEX_DIR.parent) is not None and not _windows_private_dacl(CODE_INDEX_DIR.parent):
-        raise OSError("code index parent ACL is unsafe")
-    if _path_is_reparse_point(CODE_INDEX_DIR, root_info):
+    if _path_is_reparse_point(index_dir, root_info):
+        if os.name == "nt":
+            _windows_supported_name_reparse_tag(root_info)
         _recheck_directory_chain(parent_chain)
-        if stat.S_ISDIR(root_info.st_mode):
-            CODE_INDEX_DIR.rmdir()
-        else:
-            CODE_INDEX_DIR.unlink()
+        delete_bound(index_dir, root_info, allow_directory=False)
         _recheck_directory_chain(parent_chain)
         return 1
     if stat.S_ISREG(root_info.st_mode):
         if root_info.st_nlink != 1:
             raise OSError("code index root has an external hardlink")
-        if _portable_state_identity(CODE_INDEX_DIR.lstat()) != _portable_state_identity(root_info):
+        if _portable_state_identity(index_dir.lstat()) != _portable_state_identity(root_info):
             raise OSError("code index root changed during purge")
-        CODE_INDEX_DIR.unlink()
+        delete_bound(index_dir, root_info, allow_directory=False)
         _recheck_directory_chain(parent_chain)
         return 1
     if not stat.S_ISDIR(root_info.st_mode):
         raise OSError("code index root is not a regular file, symlink, or directory")
-    if _config_relative_path(CODE_INDEX_DIR) is not None and not _windows_private_dacl(CODE_INDEX_DIR):
+    if not _windows_safe_creation_dacl(index_dir):
         raise OSError("code index root ACL is unsafe")
     root_identity = _portable_directory_identity(root_info)
-    path_entries = sorted(CODE_INDEX_DIR.iterdir(), key=lambda path: path.name)
-    if len(path_entries) > MAX_PERSISTED_INDEX_ENTRIES:
-        raise OSError("code index entry count exceeds the purge bound")
-    captured: list[tuple[Path, tuple[int, ...]]] = []
-    for entry in path_entries:
-        information = entry.lstat()
-        if not (stat.S_ISREG(information.st_mode) or _path_is_reparse_point(entry, information)):
-            raise OSError("code index contains an unexpected nested or special entry")
-        if stat.S_ISREG(information.st_mode) and information.st_nlink != 1:
-            raise OSError("code index entry has an external hardlink")
-        captured.append((entry, _portable_state_identity(information)))
     removed = 0
-    for entry, expected in captured:
-        current = entry.lstat()
-        if _portable_state_identity(current) != expected:
-            raise OSError("code index entry changed during purge")
-        _recheck_directory_chain(parent_chain)
-        if _path_is_reparse_point(entry, current) and stat.S_ISDIR(current.st_mode):
-            entry.rmdir()
-        else:
-            entry.unlink()
-        removed += 1
-    if any(CODE_INDEX_DIR.iterdir()):
-        raise OSError("code index changed during purge")
-    current_root = CODE_INDEX_DIR.lstat()
-    if (
-        _path_is_reparse_point(CODE_INDEX_DIR, current_root)
-        or _portable_directory_identity(current_root) != root_identity
-    ):
+    with _windows_pinned_directory_chain(index_dir) as root_chain:
+        path_entries: list[Path] = []
+        with os.scandir(index_dir) as scanned:
+            for directory_entry in scanned:
+                if len(path_entries) >= MAX_PERSISTED_INDEX_ENTRIES:
+                    raise OSError("code index entry count exceeds the purge bound")
+                path_entries.append(index_dir / directory_entry.name)
+        path_entries.sort(key=lambda path: path.name)
+        captured: list[tuple[Path, os.stat_result]] = []
+        for entry_path in path_entries:
+            information = entry_path.lstat()
+            reparse = _path_is_reparse_point(entry_path, information)
+            if os.name == "nt" and reparse:
+                _windows_supported_name_reparse_tag(information)
+            directory = (
+                _windows_reparse_entry_is_directory(information)
+                if os.name == "nt"
+                else stat.S_ISDIR(information.st_mode)
+            )
+            if directory and not reparse:
+                raise OSError("code index contains an unexpected nested or special entry")
+            if not directory and not reparse and (not stat.S_ISREG(information.st_mode) or information.st_nlink != 1):
+                raise OSError("code index contains an unexpected nested or special entry")
+            captured.append((entry_path, information))
+        _recheck_directory_chain(root_chain)
+        for entry_path, expected in captured:
+            delete_bound(entry_path, expected, allow_directory=False)
+            removed += 1
+            _recheck_directory_chain(root_chain)
+        if any(index_dir.iterdir()):
+            raise OSError("code index changed during purge")
+        current_root = index_dir.lstat()
+        if (
+            _path_is_reparse_point(index_dir, current_root)
+            or _portable_directory_identity(current_root) != root_identity
+        ):
+            raise OSError("code index root changed during purge")
+        _recheck_directory_chain(root_chain)
+
+    current_root = index_dir.lstat()
+    if _path_is_reparse_point(index_dir, current_root) or _portable_directory_identity(current_root) != root_identity:
         raise OSError("code index root changed during purge")
-    CODE_INDEX_DIR.rmdir()
+    _recheck_directory_chain(parent_chain)
+    delete_bound(index_dir, current_root, allow_directory=True)
     _recheck_directory_chain(parent_chain)
     return removed
 
@@ -577,13 +623,9 @@ def purge_persisted_indexes() -> int:
 
     invalidate_cache()
     if _windows_path_purge_required():
-        try:
-            with _windows_pinned_directory_chain(
-                Path(os.path.abspath(os.fspath(CODE_INDEX_DIR.parent)))
-            ) as parent_chain:
-                return _purge_persisted_indexes_by_path(parent_chain)
-        except FileNotFoundError:
-            return 0
+        index_dir = Path(os.path.abspath(os.fspath(CODE_INDEX_DIR)))
+        with _windows_pinned_directory_chain(index_dir.parent) as parent_chain:
+            return _purge_persisted_indexes_by_path(index_dir, parent_chain)
     directory_flags = (
         os.O_RDONLY
         | int(getattr(os, "O_CLOEXEC", 0))

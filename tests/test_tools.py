@@ -6,7 +6,9 @@ from io import StringIO
 import inspect
 import json
 import os
+from pathlib import Path
 import subprocess
+import stat
 import threading
 import time
 from types import SimpleNamespace
@@ -2171,6 +2173,275 @@ def test_x_search_cache_failure_does_not_discard_result(monkeypatch, config_dir)
 
     assert "result survives" in output
     assert "cached to" not in output
+
+
+def test_purge_x_search_cache_removes_bounded_flat_store(config_dir: Path) -> None:
+    cache_dir = config_dir / "x_search_cache"
+    cache_dir.mkdir()
+    (cache_dir / "one.md").write_text("one", encoding="utf-8")
+    (cache_dir / "two.md").write_text("two", encoding="utf-8")
+
+    assert tools.purge_x_search_cache(max_entries=2) == 2
+    assert not cache_dir.exists()
+
+
+def test_purge_x_search_cache_checks_entry_bound_before_deletion(config_dir: Path) -> None:
+    cache_dir = config_dir / "x_search_cache"
+    cache_dir.mkdir()
+    first = cache_dir / "one.md"
+    second = cache_dir / "two.md"
+    first.write_text("one", encoding="utf-8")
+    second.write_text("two", encoding="utf-8")
+
+    with pytest.raises(OSError, match="entry bound exceeded"):
+        tools.purge_x_search_cache(max_entries=1)
+
+    assert first.read_text(encoding="utf-8") == "one"
+    assert second.read_text(encoding="utf-8") == "two"
+
+
+def test_windows_full_path_purge_core_preserves_bounded_identity_checks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from algo_cli import config as config_module
+
+    cache_dir = tmp_path / "x_search_cache"
+    cache_dir.mkdir()
+    (cache_dir / "one.md").write_text("one", encoding="utf-8")
+    (cache_dir / "two.md").write_text("two", encoding="utf-8")
+    # Windows directory identities intentionally omit projected ctime. Mirror
+    # that contract while exercising the full-path branch on POSIX CI.
+    monkeypatch.setattr(
+        config_module,
+        "_portable_directory_identity",
+        lambda information: (
+            int(information.st_dev),
+            int(information.st_ino),
+            int(stat.S_IFMT(information.st_mode)),
+        ),
+    )
+    deleted_paths: list[Path] = []
+
+    def delete_for_portable_test(
+        path: Path,
+        _expected: os.stat_result,
+        *,
+        allow_directory: bool,
+    ) -> None:
+        assert path.is_absolute()
+        deleted_paths.append(path)
+        if allow_directory:
+            path.rmdir()
+        else:
+            path.unlink()
+
+    monkeypatch.setattr(tools, "_windows_delete_path_by_identity", delete_for_portable_test)
+
+    assert tools._purge_x_search_cache_windows(cache_dir, max_entries=2) == 2
+    assert not cache_dir.exists()
+    assert deleted_paths == [cache_dir / "one.md", cache_dir / "two.md", cache_dir]
+
+
+def test_windows_full_path_purge_pins_authorized_parent_before_missing_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from algo_cli import config as config_module
+
+    monkeypatch.setattr(config_module, "_windows_safe_creation_dacl", lambda _path: False)
+
+    with pytest.raises(OSError, match="parent authorization is unsafe"):
+        tools._purge_x_search_cache_windows(tmp_path / "missing", max_entries=1)
+
+
+def test_windows_full_path_purge_absolutizes_every_destructive_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from algo_cli import config as config_module
+
+    cache_dir = tmp_path / "x_search_cache"
+    cache_dir.mkdir()
+    (cache_dir / "cached.md").write_text("legacy", encoding="utf-8")
+    alternate = tmp_path / "alternate"
+    alternate.mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        config_module,
+        "_portable_directory_identity",
+        lambda information: (
+            int(information.st_dev),
+            int(information.st_ino),
+            int(stat.S_IFMT(information.st_mode)),
+        ),
+    )
+    deleted_paths: list[Path] = []
+
+    def delete_and_move_cwd(
+        path: Path,
+        _expected: os.stat_result,
+        *,
+        allow_directory: bool,
+    ) -> None:
+        assert path.is_absolute()
+        deleted_paths.append(path)
+        monkeypatch.chdir(alternate)
+        if allow_directory:
+            path.rmdir()
+        else:
+            path.unlink()
+
+    monkeypatch.setattr(tools, "_windows_delete_path_by_identity", delete_and_move_cwd)
+
+    assert tools._purge_x_search_cache_windows(Path("x_search_cache"), max_entries=1) == 1
+    assert deleted_paths == [cache_dir / "cached.md", cache_dir]
+    assert not cache_dir.exists()
+
+
+def test_windows_reparse_classifier_rejects_unknown_name_semantics() -> None:
+    unknown = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o600,
+        st_file_attributes=0x00000400,
+        st_reparse_tag=0x8000001A,
+    )
+
+    with pytest.raises(OSError, match="reparse tag is not safe"):
+        tools._windows_supported_name_reparse_tag(unknown)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("tag", [0xA0000003, 0xA000000C])
+def test_windows_reparse_classifier_accepts_name_only_tags(tag: int) -> None:
+    supported = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o600,
+        st_file_attributes=0x00000400,
+        st_reparse_tag=tag,
+    )
+
+    assert tools._windows_supported_name_reparse_tag(supported) == tag  # type: ignore[arg-type]
+
+
+def test_windows_handle_identity_accepts_complete_legacy_or_extended_projection() -> None:
+    legacy = SimpleNamespace(st_dev=7, st_ino=11)
+    extended = SimpleNamespace(st_dev=70, st_ino=(1 << 96) | 12)
+
+    assert tools._windows_handle_identity_matches(
+        legacy,  # type: ignore[arg-type]
+        legacy_volume=7,
+        legacy_file_id=11,
+        extended_volume=70,
+        extended_file_id=(1 << 96) | 12,
+    )
+    assert tools._windows_handle_identity_matches(
+        extended,  # type: ignore[arg-type]
+        legacy_volume=7,
+        legacy_file_id=11,
+        extended_volume=70,
+        extended_file_id=(1 << 96) | 12,
+    )
+    assert not tools._windows_handle_identity_matches(
+        SimpleNamespace(st_dev=7, st_ino=(1 << 96) | 12),  # type: ignore[arg-type]
+        legacy_volume=7,
+        legacy_file_id=11,
+        extended_volume=70,
+        extended_file_id=(1 << 96) | 12,
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows full-path cache purge contract")
+def test_windows_purge_x_search_cache_does_not_use_crt_directory_open(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_dir = config_dir / "x_search_cache"
+    cache_dir.mkdir()
+    (cache_dir / "cached.md").write_text("legacy", encoding="utf-8")
+    monkeypatch.setattr(
+        tools.os,
+        "open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Windows CRT open must not run")),
+    )
+
+    assert tools.purge_x_search_cache() == 1
+    assert not cache_dir.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cache DACL contract")
+def test_windows_purge_x_search_cache_rejects_untrusted_namespace_mutation(
+    config_dir: Path,
+) -> None:
+    cache_dir = config_dir / "x_search_cache"
+    cache_dir.mkdir()
+    retained = cache_dir / "cached.md"
+    retained.write_text("legacy", encoding="utf-8")
+    system_root = Path(os.environ["SystemRoot"])
+    icacls = system_root / "System32" / "icacls.exe"
+    granted = subprocess.run(
+        [str(icacls), str(cache_dir), "/grant", "*S-1-1-0:(OI)(CI)M"],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert granted.returncode == 0, granted.stderr.decode(errors="replace")
+
+    with pytest.raises(OSError, match="cache identity is unsafe"):
+        tools.purge_x_search_cache()
+
+    assert retained.read_text(encoding="utf-8") == "legacy"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction purge contract")
+def test_windows_purge_x_search_cache_removes_leaf_junction_without_following(
+    config_dir: Path,
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    retained = outside / "retain.md"
+    retained.write_text("retain", encoding="utf-8")
+    cache_dir = config_dir / "x_search_cache"
+    cache_dir.mkdir()
+    junction = cache_dir / "linked"
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(outside)],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+
+    assert tools.purge_x_search_cache() == 1
+    assert retained.read_text(encoding="utf-8") == "retain"
+    assert not cache_dir.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction purge contract")
+def test_windows_purge_x_search_cache_removes_root_junction_without_following(
+    config_dir: Path,
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside-root"
+    outside.mkdir()
+    retained = outside / "retain.md"
+    retained.write_text("retain", encoding="utf-8")
+    cache_dir = config_dir / "x_search_cache"
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(cache_dir), str(outside)],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+
+    assert tools.purge_x_search_cache() == 1
+    assert retained.read_text(encoding="utf-8") == "retain"
+    assert not cache_dir.exists()
 
 
 def test_x_search_clamps_max_results(monkeypatch, config_dir):

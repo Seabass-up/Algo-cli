@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
+from pathlib import Path
 import re
+import subprocess
 
 import pytest
 
@@ -738,7 +741,7 @@ def test_protected_thread_store_rejects_swapped_committed_stage(
     pending = agent_threads._pending_store_path(path)
     swapped = json.loads(path.read_text(encoding="utf-8"))
     swapped["threads"][0]["status"] = "complete"
-    pending.write_text(json.dumps(swapped), encoding="utf-8")
+    agent_threads.config._atomic_write_text(pending, json.dumps(swapped))
 
     with pytest.raises(ElsieReceiptError, match="authentication failed"):
         agent_threads.prepare_protected_thread_store(
@@ -746,6 +749,44 @@ def test_protected_thread_store_rejects_swapped_committed_stage(
             receipt_authority=authority,
         )
     assert pending.exists()
+
+
+def test_windows_pending_store_uses_identity_and_dacl_not_projected_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "threads.json"
+    pending = agent_threads._pending_store_path(path)
+    pending.write_text("{}", encoding="utf-8")
+    pending.chmod(0o666)
+    monkeypatch.setattr(agent_threads.os, "name", "nt")
+    monkeypatch.setattr(agent_threads.config, "_path_is_reparse_point", lambda *_args: False)
+    monkeypatch.setattr(agent_threads.config, "_windows_private_dacl", lambda _path: True)
+
+    assert agent_threads._pending_store_exists(path) is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows protected pending-store DACL contract")
+def test_windows_pending_store_requires_private_dacl(tmp_path: Path) -> None:
+    path = tmp_path / "threads.json"
+    pending = agent_threads._pending_store_path(path)
+    agent_threads.config._atomic_write_text(pending, "{}")
+
+    assert agent_threads._pending_store_exists(path) is True
+    system_root = Path(os.environ["SystemRoot"])
+    icacls = system_root / "System32" / "icacls.exe"
+    granted = subprocess.run(
+        [str(icacls), str(pending), "/grant", "*S-1-1-0:R"],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert granted.returncode == 0, granted.stderr.decode(errors="replace")
+
+    with pytest.raises(ElsieReceiptError, match="recovery state is unsafe"):
+        agent_threads._pending_store_exists(path)
 
 
 @pytest.mark.parametrize("existing", [False, True])

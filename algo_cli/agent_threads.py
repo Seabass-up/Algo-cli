@@ -111,7 +111,12 @@ def _pending_store_exists(path: Path) -> bool:
         not stat.S_ISREG(descriptor.st_mode)
         or descriptor.st_nlink != 1
         or (hasattr(os, "getuid") and descriptor.st_uid != os.getuid())
-        or descriptor.st_mode & 0o022
+        or (os.name == "posix" and bool(descriptor.st_mode & 0o022))
+        or (
+            os.name == "nt"
+            and (config._path_is_reparse_point(pending, descriptor) or not config._windows_private_dacl(pending))
+        )
+        or os.name not in {"nt", "posix"}
     ):
         raise ElsieReceiptError("protected agent thread recovery state is unsafe")
     return True

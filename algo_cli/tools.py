@@ -1801,12 +1801,309 @@ def x_search(
     return _cap("\n".join(out_parts))
 
 
+def _windows_reparse_entry_is_directory(information: os.stat_result) -> bool:
+    return stat.S_ISDIR(information.st_mode) or bool(
+        int(getattr(information, "st_file_attributes", 0)) & int(getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0x10))
+    )
+
+
+def _windows_supported_name_reparse_tag(information: os.stat_result) -> int | None:
+    """Classify only reparse tags whose name can be removed without following."""
+
+    attributes = int(getattr(information, "st_file_attributes", 0))
+    reparse = stat.S_ISLNK(information.st_mode) or bool(
+        attributes & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    )
+    if not reparse:
+        return None
+    tag = int(getattr(information, "st_reparse_tag", 0))
+    if tag not in {0xA0000003, 0xA000000C}:  # MOUNT_POINT / SYMLINK
+        raise OSError("Windows reparse tag is not safe for name-only removal")
+    return tag
+
+
+def _windows_handle_identity_matches(
+    expected: os.stat_result,
+    *,
+    legacy_volume: int,
+    legacy_file_id: int,
+    extended_volume: int | None,
+    extended_file_id: int | None,
+) -> bool:
+    """Match the Windows identity projection used by the running CPython."""
+
+    expected_pair = (int(expected.st_dev), int(expected.st_ino))
+    candidates = {(int(legacy_volume), int(legacy_file_id))}
+    if extended_volume is not None and extended_file_id is not None:
+        candidates.add((int(extended_volume), int(extended_file_id)))
+    return expected_pair in candidates
+
+
+def _windows_delete_path_by_identity(
+    path: Path,
+    expected: os.stat_result,
+    *,
+    allow_directory: bool,
+) -> None:
+    """Delete one bound Windows name through its no-delete-share handle."""
+
+    if os.name != "nt" or not path.is_absolute():
+        raise OSError("pinned Windows deletion is unavailable")
+    import ctypes
+    from ctypes import wintypes
+
+    from . import config as config_module
+
+    expected_tag = _windows_supported_name_reparse_tag(expected)
+    expected_directory = _windows_reparse_entry_is_directory(expected)
+    if expected_directory and expected_tag is None and not allow_directory:
+        raise OSError("refusing to remove an unexpected Windows directory")
+    if not expected_directory and expected_tag is None:
+        if not stat.S_ISREG(expected.st_mode) or expected.st_nlink != 1:
+            raise OSError("refusing to remove an unsafe Windows file")
+    expected_identity = (
+        config_module._portable_directory_identity(expected)
+        if expected_directory
+        else config_module._portable_state_identity(expected)
+    )
+
+    kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+    win_error = getattr(ctypes, "WinError")
+    get_last_error = getattr(ctypes, "get_last_error")
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    get_information = kernel32.GetFileInformationByHandleEx
+    get_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    )
+    get_information.restype = wintypes.BOOL
+    get_legacy_information = kernel32.GetFileInformationByHandle
+    set_information = kernel32.SetFileInformationByHandle
+    set_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    )
+    set_information.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+
+    class _FileAttributeTagInformation(ctypes.Structure):
+        _fields_ = [
+            ("file_attributes", wintypes.DWORD),
+            ("reparse_tag", wintypes.DWORD),
+        ]
+
+    class _FileIdInformation(ctypes.Structure):
+        _fields_ = [
+            ("volume_serial_number", ctypes.c_ulonglong),
+            ("file_id", ctypes.c_ubyte * 16),
+        ]
+
+    class _ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("file_attributes", wintypes.DWORD),
+            ("creation_time", wintypes.FILETIME),
+            ("last_access_time", wintypes.FILETIME),
+            ("last_write_time", wintypes.FILETIME),
+            ("volume_serial_number", wintypes.DWORD),
+            ("file_size_high", wintypes.DWORD),
+            ("file_size_low", wintypes.DWORD),
+            ("number_of_links", wintypes.DWORD),
+            ("file_index_high", wintypes.DWORD),
+            ("file_index_low", wintypes.DWORD),
+        ]
+
+    class _FileDispositionInformation(ctypes.Structure):
+        _fields_ = [("delete_file", ctypes.c_ubyte)]
+
+    get_legacy_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(_ByHandleFileInformation),
+    )
+    get_legacy_information.restype = wintypes.BOOL
+
+    opened = create_file(
+        os.fspath(path),
+        0x00010000 | 0x00000080,  # DELETE | FILE_READ_ATTRIBUTES
+        0x00000001 | 0x00000002,  # SHARE_READ | SHARE_WRITE; deliberately no SHARE_DELETE
+        None,
+        3,  # OPEN_EXISTING
+        0x02000000 | 0x00200000,  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+        None,
+    )
+    invalid_handle = ctypes.c_void_p(-1).value
+    if opened in {None, invalid_handle}:
+        raise win_error(get_last_error())
+    handle = int(opened)
+    delete_pending = False
+    try:
+        attributes = _FileAttributeTagInformation()
+        file_id = _FileIdInformation()
+        legacy = _ByHandleFileInformation()
+        if not get_information(
+            wintypes.HANDLE(handle),
+            9,  # FileAttributeTagInfo
+            ctypes.byref(attributes),
+            ctypes.sizeof(attributes),
+        ) or not get_legacy_information(
+            wintypes.HANDLE(handle),
+            ctypes.byref(legacy),
+        ):
+            raise win_error(get_last_error())
+        extended_available = bool(
+            get_information(
+                wintypes.HANDLE(handle),
+                18,  # FileIdInfo
+                ctypes.byref(file_id),
+                ctypes.sizeof(file_id),
+            )
+        )
+        actual_tag = int(attributes.reparse_tag) if int(attributes.file_attributes) & 0x00000400 else None
+        actual_directory = bool(int(attributes.file_attributes) & 0x00000010)
+        legacy_file_id = (int(legacy.file_index_high) << 32) | int(legacy.file_index_low)
+        extended_volume = int(file_id.volume_serial_number) if extended_available else None
+        extended_file_id = int.from_bytes(bytes(file_id.file_id), "little") if extended_available else None
+        rebound = path.lstat()
+        rebound_directory = _windows_reparse_entry_is_directory(rebound)
+        rebound_tag = _windows_supported_name_reparse_tag(rebound)
+        rebound_identity = (
+            config_module._portable_directory_identity(rebound)
+            if rebound_directory
+            else config_module._portable_state_identity(rebound)
+        )
+        if (
+            actual_tag != expected_tag
+            or actual_directory != expected_directory
+            or not _windows_handle_identity_matches(
+                expected,
+                legacy_volume=int(legacy.volume_serial_number),
+                legacy_file_id=legacy_file_id,
+                extended_volume=extended_volume,
+                extended_file_id=extended_file_id,
+            )
+            or rebound_tag != expected_tag
+            or rebound_directory != expected_directory
+            or rebound_identity != expected_identity
+        ):
+            raise OSError("Windows deletion target identity changed")
+        disposition = _FileDispositionInformation(1)
+        if not set_information(
+            wintypes.HANDLE(handle),
+            4,  # FileDispositionInfo
+            ctypes.byref(disposition),
+            ctypes.sizeof(disposition),
+        ):
+            raise win_error(get_last_error())
+        delete_pending = True
+    finally:
+        close_handle(wintypes.HANDLE(handle))
+    if not delete_pending:
+        raise OSError("Windows deletion target was not removed")
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return
+    raise OSError("Windows deletion target was rebound")
+
+
+def _purge_x_search_cache_windows(cache_dir: Path, *, max_entries: int) -> int:
+    """Purge a Windows cache through pinned full paths without CRT dir fds."""
+
+    from . import config as config_module
+
+    cache_dir = Path(os.path.abspath(os.fspath(cache_dir)))
+    removed = 0
+    entry_limit = max(0, int(max_entries))
+    with config_module._windows_pinned_directory_chain(cache_dir.parent) as parent_chain:
+        if not config_module._windows_safe_creation_dacl(cache_dir.parent):
+            raise OSError("x_search cache parent authorization is unsafe")
+        try:
+            root_info = cache_dir.lstat()
+        except FileNotFoundError:
+            return 0
+        if config_module._path_is_reparse_point(cache_dir, root_info):
+            _windows_supported_name_reparse_tag(root_info)
+            config_module._recheck_directory_chain(parent_chain)
+            _windows_delete_path_by_identity(cache_dir, root_info, allow_directory=False)
+            config_module._recheck_directory_chain(parent_chain)
+            return 1
+        if not stat.S_ISDIR(root_info.st_mode) or not config_module._windows_safe_creation_dacl(cache_dir):
+            raise OSError("x_search cache identity is unsafe")
+        root_identity = config_module._portable_directory_identity(root_info)
+        with config_module._windows_pinned_directory_chain(cache_dir) as cache_chain:
+            entries: list[tuple[Path, os.stat_result]] = []
+            with os.scandir(cache_dir) as scanned:
+                for entry in scanned:
+                    if len(entries) >= entry_limit:
+                        raise OSError("x_search cache entry bound exceeded")
+                    entry_path = cache_dir / entry.name
+                    information = entry_path.lstat()
+                    reparse = config_module._path_is_reparse_point(entry_path, information)
+                    directory = _windows_reparse_entry_is_directory(information)
+                    if reparse:
+                        _windows_supported_name_reparse_tag(information)
+                    if directory and not reparse:
+                        raise OSError("x_search cache contains an unexpected directory")
+                    if (
+                        not directory
+                        and not reparse
+                        and (not stat.S_ISREG(information.st_mode) or information.st_nlink != 1)
+                    ):
+                        raise OSError("x_search cache contains an unsafe entry")
+                    entries.append((entry_path, information))
+            config_module._recheck_directory_chain(cache_chain)
+            for entry_path, expected in entries:
+                _windows_delete_path_by_identity(entry_path, expected, allow_directory=False)
+                removed += 1
+                config_module._recheck_directory_chain(cache_chain)
+            rebound = cache_dir.lstat()
+            if (
+                config_module._path_is_reparse_point(cache_dir, rebound)
+                or config_module._portable_directory_identity(rebound) != root_identity
+            ):
+                raise OSError("x_search cache identity changed")
+            with os.scandir(cache_dir) as remaining:
+                if next(remaining, None) is not None:
+                    raise OSError("x_search cache changed during purge")
+            config_module._recheck_directory_chain(cache_chain)
+        # The cache handle must close before RemoveDirectoryW can remove its
+        # name. The parent ancestry remains pinned and its DACL excludes
+        # untrusted replacement throughout this final transition.
+        rebound = cache_dir.lstat()
+        if (
+            config_module._path_is_reparse_point(cache_dir, rebound)
+            or config_module._portable_directory_identity(rebound) != root_identity
+        ):
+            raise OSError("x_search cache path changed during purge")
+        config_module._recheck_directory_chain(parent_chain)
+        _windows_delete_path_by_identity(cache_dir, rebound, allow_directory=True)
+        config_module._recheck_directory_chain(parent_chain)
+    return removed
+
+
 def purge_x_search_cache(*, max_entries: int = 512) -> int:
     """Remove legacy plaintext X-search cache entries without reading bodies."""
 
     from .config import _resolve_config_dir
 
     cache_dir = _resolve_config_dir() / "x_search_cache"
+    if os.name == "nt":
+        return _purge_x_search_cache_windows(cache_dir, max_entries=max_entries)
     try:
         root_info = cache_dir.lstat()
     except FileNotFoundError:
