@@ -2240,7 +2240,9 @@ def test_windows_full_path_purge_core_preserves_bounded_identity_checks(
 
     assert tools._purge_x_search_cache_windows(cache_dir, max_entries=2) == 2
     assert not cache_dir.exists()
-    assert deleted_paths == [cache_dir / "one.md", cache_dir / "two.md", cache_dir]
+    assert len(deleted_paths) == 3
+    assert set(deleted_paths[:-1]) == {cache_dir / "one.md", cache_dir / "two.md"}
+    assert deleted_paths[-1] == cache_dir
 
 
 def test_windows_full_path_purge_pins_authorized_parent_before_missing_result(

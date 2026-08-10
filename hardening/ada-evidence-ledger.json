@@ -664,6 +664,15 @@
           "timestamp": "2026-08-10T14:29:10Z",
           "scope": "post-hoc final-state reconciliation after pinning audited Echo commit e450260505f0fa5ad9f17bc9e28eac6db3f46e22, authenticating its 33-file canonical source tree, repairing Windows protected-thread pending validation, and adding bounded identity-safe Windows cache/index cleanup; no-renames committed, staged, unstaged, and untracked inventory remains closed",
           "limitations": "this late reconciliation proves final-state closure only; it does not prove pre-change authorization timing, historical gate execution, the repaired controls on a hosted Windows runner, or any external browser, signing, TCC, or lifecycle authority"
+        },
+        {
+          "kind": "test",
+          "path_or_command": "PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/david_hardening_gate.py; source-bound M8 qualification after hosted cache-order portability correction",
+          "digest": "sha256:861d9b6d093414c3ae0a45f5ba926cef4c879b235cd5d153b2e3ec89af1830ee",
+          "result": "pass: the immutable full-SHA freeze baseline yields exactly 377 changed path identities, including 36 deletion identities, and every identity is authorized with no missing, duplicate, or surplus path",
+          "timestamp": "2026-08-10T14:43:55Z",
+          "scope": "post-hoc final-state reconciliation after the hosted Linux filesystem exposed a nondeterministic scandir ordering assumption and the regression was narrowed to assert the true identity-safe deletion contract; no-renames committed, staged, unstaged, and untracked inventory remains closed",
+          "limitations": "this late reconciliation proves final-state closure only; it does not prove pre-change authorization timing, historical gate execution, the repaired controls on a hosted Windows runner, or any external browser, signing, TCC, or lifecycle authority"
         }
       ]
     },
@@ -2886,6 +2895,15 @@
           "timestamp": "2026-08-10T14:29:11Z",
           "scope": "source digest sha256:7421545891c69ff86dc0d80c24fd6113975ff8d0ef69c88c5cbb6acc22981d37 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind 174 descriptor-verified source paths, 92 focused suites, exact Echo commit and source-tree identity, 10000 stale-target races, 1000 unknown outcomes, 1000 malformed programs, 1000 privacy canaries, 100000 malformed frames, 1000 fresh postconditions, and pre/post source identity checks across the full qualification window; stale-target p50/p95 are 4.224/4.532 ms and fresh-postcondition p50/p95 are 5.601/5.905 ms",
           "limitations": "local deterministic evidence does not prove the repaired controls on a hosted Windows runner, native-amd64 GHCR publication and attestation, selected Chrome, live profile/network containment, browser freshness, signed XPC/TCC, production power-loss, or installed lifecycle behavior; HARD-080 remains in progress and the active freeze remains in force"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "UV_CACHE_DIR=/tmp/algo-cli-uv-cache UV_LINK_MODE=copy PYTHONDONTWRITEBYTECODE=1 PYTEST_ADDOPTS='-p no:cacheprovider' uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy python -B scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:861d9b6d093414c3ae0a45f5ba926cef4c879b235cd5d153b2e3ec89af1830ee",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, the exact 92-suite focused corpus passes, and public_claim_eligible is false",
+          "timestamp": "2026-08-10T14:43:56Z",
+          "scope": "source digest sha256:ed8e282367060edd6a052e5fc21e398dd39e10d98702b18af7a4d01630af35a5 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind 174 descriptor-verified source paths, 92 focused suites, exact Echo commit and source-tree identity, the hosted cache-order regression, 10000 stale-target races, 1000 unknown outcomes, 1000 malformed programs, 1000 privacy canaries, 100000 malformed frames, 1000 fresh postconditions, and pre/post source identity checks across the full qualification window; stale-target p50/p95 are 4.259/4.605 ms and fresh-postcondition p50/p95 are 5.696/6.064 ms",
+          "limitations": "local deterministic evidence does not prove the repaired controls on a hosted Windows runner, native-amd64 GHCR publication and attestation, selected Chrome, live profile/network containment, browser freshness, signed XPC/TCC, production power-loss, or installed lifecycle behavior; HARD-080 remains in progress and the active freeze remains in force"
         }
       ]
     },
@@ -3307,6 +3325,15 @@
           "result": "status blocked: current source-bound local measurements retain exact source and fixture digests, denominators, Wilson 95 percent intervals, p50/p95, 9 local passes, 5 production-browser blocks, zero failed or not-verified metrics, and public_claim_eligible is false",
           "timestamp": "2026-08-10T14:29:13Z",
           "scope": "five model-free efficiency repetitions measure 82.454 percent median tool-schema reduction and 96.644 percent typed-program reduction; stale-target p50/p95 are 4.224/4.532 ms and fresh-postcondition p50/p95 are 5.601/5.905 ms; the exact Echo pin and the 174-source and 92-suite corpus remain stable across the full qualification window",
+          "limitations": "synthetic local measurements do not prove live task completion, model quality, semantic-route share, screenshot reduction, confirmation count, provider latency, the repaired controls on a hosted Windows runner, production-signed XPC/TCC readiness, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, HARD-081 stays in progress, the active freeze forbids public benchmark claims, and public_claim_eligible is false"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json after hosted cache-order portability correction",
+          "digest": "sha256:861d9b6d093414c3ae0a45f5ba926cef4c879b235cd5d153b2e3ec89af1830ee",
+          "result": "status blocked: current source-bound local measurements retain exact source and fixture digests, denominators, Wilson 95 percent intervals, p50/p95, 9 local passes, 5 production-browser blocks, zero failed or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-08-10T14:43:57Z",
+          "scope": "five model-free efficiency repetitions measure 82.454 percent median tool-schema reduction and 96.644 percent typed-program reduction; stale-target p50/p95 are 4.259/4.605 ms and fresh-postcondition p50/p95 are 5.696/6.064 ms; the exact Echo pin, cache-order regression, and 174-source and 92-suite corpus remain stable across the full qualification window",
           "limitations": "synthetic local measurements do not prove live task completion, model quality, semantic-route share, screenshot reduction, confirmation count, provider latency, the repaired controls on a hosted Windows runner, production-signed XPC/TCC readiness, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, HARD-081 stays in progress, the active freeze forbids public benchmark claims, and public_claim_eligible is false"
         }
       ]
