@@ -286,7 +286,7 @@ Runtime prerequisite: `xurl` must be installed and authenticated outside Algo CL
 | `temperature` | `0.4` | Sampling temperature |
 | `max_tool_iterations` | `24` | Max tool calls per turn |
 | `tool_think_every` | `10` | Reflection checkpoint interval |
-| `memory_auto_capture_enabled` | `True` | Capture explicit, privacy-safe durable markers after successful turns |
+| `memory_auto_capture_enabled` | `False` | Explicit opt-in for bounded capture after current versioned consent via `/memory-auto on` |
 | `memory_auto_daily_limit` | `5` | Requested automatic writes per UTC day; may lower but not exceed hard max 5 |
 | `memory_auto_entry_limit` | `64` | Requested fingerprint entries; may lower but not exceed hard max 64 |
 | `memory_auto_char_limit` | `12000` | Requested memory-growth budget; may lower but not exceed hard max 12000 chars |

@@ -60,6 +60,8 @@ test("renders the core support routes", async () => {
 });
 
 test("ships truthful machine-readable release and benchmark contracts", async () => {
+  const claude = await readFile(new URL("../../CLAUDE.md", import.meta.url), "utf8");
+  const readme = await readFile(new URL("../../README.md", import.meta.url), "utf8");
   const release = JSON.parse(await readFile(new URL("../public/api/v1/releases/stable.json", import.meta.url), "utf8"));
   const benchmark = JSON.parse(await readFile(new URL("../public/benchmarks/summary.json", import.meta.url), "utf8"));
   const tokenEfficiency = JSON.parse(await readFile(new URL("../public/benchmarks/token-efficiency.json", import.meta.url), "utf8"));
@@ -72,7 +74,7 @@ test("ships truthful machine-readable release and benchmark contracts", async ()
   assert.equal(release.package.index, "https://pypi.org/project/algo-cli-runtime/");
   assert.equal(release.version, "0.17.0");
   assert.equal(release.tag, "v0.17.0");
-  assert.equal(release.source_revision, "5c65cbe35c058fb70d9ce4fc9bd4f2b5c0abad1d");
+  assert.equal(release.source_revision, "ee9abeb185081538bbe3b3a38545444f252cdeda");
   assert.equal(release.source.release_url, "https://github.com/Seabass-up/Algo-cli/releases/tag/v0.17.0");
   assert.equal(release.source.available, true);
   assert.equal(release.security_advisory.active, true);
@@ -103,6 +105,12 @@ test("ships truthful machine-readable release and benchmark contracts", async ()
   assert.equal(discovery.canonical_origin, "https://algo-cli.com");
   assert.equal(discovery.release_channel, "stable");
   assert.equal(discovery.privacy.core_runtime_requires_site, false);
+  assert.match(readme, /actions\/workflows\/oliver-ci\.yml\/badge\.svg/);
+  assert.doesNotMatch(readme, /actions\/workflows\/ci\.yml/);
+  assert.match(readme, /Automatic memory capture is off by default\./);
+  assert.match(readme, /\/memory-auto on.*explicit consent/i);
+  assert.match(claude, /\| `memory_auto_capture_enabled` \| `False` \|/);
+  assert.doesNotMatch(claude, /\| `memory_auto_capture_enabled` \| `True` \|/);
   await access(new URL("../public/llms.txt", import.meta.url));
   await access(new URL("../public/robots.txt", import.meta.url));
   await access(new URL("../public/sitemap.xml", import.meta.url));

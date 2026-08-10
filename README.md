@@ -1,6 +1,6 @@
 # Algo CLI
 
-[![CI](https://github.com/Seabass-up/algo-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/Seabass-up/algo-cli/actions/workflows/ci.yml)
+[![CI](https://github.com/Seabass-up/Algo-cli/actions/workflows/oliver-ci.yml/badge.svg)](https://github.com/Seabass-up/Algo-cli/actions/workflows/oliver-ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/algo-cli-runtime.svg)](https://pypi.org/project/algo-cli-runtime/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -94,7 +94,7 @@ xAI's public API uses `XAI_API_KEY`; API calls can consume paid usage, so setup 
 
 ### Privacy-safe context defaults
 
-Every normal chat request sends the active conversation and the assembled Algo CLI system context to the selected inference provider. That context includes `SOUL.md`, `IDENTITY.md`, `USER.md`, saved memories, and relevant retrieved lessons when available. With a cloud model, this content may leave the machine. Automatic memory capture is on by default; `/memory-auto off` stops new automatic captures (it does not delete existing memories).
+Every normal chat request sends the active conversation and the assembled Algo CLI system context to the selected inference provider. That context includes `SOUL.md`, `IDENTITY.md`, `USER.md`, saved memories, and relevant retrieved lessons when available. With a cloud model, this content may leave the machine. Automatic memory capture is off by default. `/memory-auto on` records explicit consent for the current capture policy and enables bounded capture after successful turns. `/memory-auto off` stops future automatic captures and clears that consent (it does not delete existing memories).
 
 The installed harness corpus contains only public Algo CLI docs, skills, and runtime metadata. Other local agent stores, working-directory code retrieval, index-compute-lab, and skill run-history capture are off by default because retrieved or summarized content can become part of a model request.
 

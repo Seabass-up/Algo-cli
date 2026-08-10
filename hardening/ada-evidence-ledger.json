@@ -226,6 +226,8 @@
     "harness-gateway/main_test.go",
     "website/package-lock.json",
     "website/package.json",
+    "website/public/api/v1/releases/stable.json",
+    "website/tests/rendered-html.test.mjs",
     "scripts/david_hardening_gate.py",
     "scripts/arthur_m9_completion_audit.py",
     "scripts/david_control_kernel_fuzzer.py",
@@ -718,6 +720,15 @@
           "timestamp": "2026-08-10T17:07:13Z",
           "scope": "post-hoc final-state reconciliation after duplicate Windows runs on commit 49295e1 preserved all 17 correctness probes while one powered 20-sample runner observed workload-total p95 of 2760.6905 ms; the implicit Windows profile now changes only checkpoint_resume to 2500 ms and agent_workload_total to 3500 ms, while all five baseline ceilings and three other Windows ceilings remain exact; no-renames committed, staged, unstaged, and untracked inventory remains closed",
           "limitations": "this late reconciliation proves final-state closure only; it does not prove pre-change authorization timing, historical gate execution, future hosted-run stability, authenticated host attestation, or any external browser, signing, TCC, or lifecycle authority"
+        },
+        {
+          "kind": "test",
+          "path_or_command": "PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/david_hardening_gate.py; npm --prefix website test; source-bound M8 qualification retained without refresh",
+          "digest": "sha256:1595549aea925948bd22ed36200c7900054239d1ba5882e85a0f98ae3b561ed6",
+          "result": "pass: the immutable full-SHA freeze baseline yields exactly 379 changed path identities, including 36 deletion identities, and every identity is authorized with no missing, duplicate, or surplus path",
+          "timestamp": "2026-08-10T17:56:25Z",
+          "scope": "post-hoc final-state reconciliation after correcting the public README and CLAUDE reference to state explicit opt-in memory capture, binding the README CI badge to the active Oliver workflow, and repairing the v0.17 stable manifest to the exact v0.17 tag revision with source-owned website regressions; no-renames committed, staged, unstaged, and untracked inventory remains closed",
+          "limitations": "this late reconciliation proves current source and local website-test closure only; it does not prove pre-change authorization timing, website deployment, historical gate execution, or any external browser, signing, TCC, lifecycle, or release authority"
         }
       ]
     },
@@ -2456,6 +2467,15 @@
           "timestamp": "2026-08-09T20:53:58Z",
           "scope": "website package lock sha256:a86f490d868af331cb4ae1bd373ee6277d28a892cd2d07974a3a7e7c36cdaa05 supersedes the now-vulnerable historical brace-expansion 1.1.16/5.0.7 closure with 1.1.18/5.0.9 and also binds fast-uri 3.1.5, js-yaml 4.3.1, nanoid 3.3.18, React 19.2.8, Wrangler 4.120.0, and the image-size-free Vinext 0.0.45 closure; uv lock sha256:f7fc6d7c544d6482029ac684f8bfce714859ac80e17e568803dff2aa46d31d73, Cargo lock sha256:066059a4bc3e2f3e8decc9aaf24332c1bcf9a74e55d238bac8431fecbf0da8f7, and Go module sha256:2aac32595d15b4b1936142910694e8c35f943ae82648f69ba0659fcdce83f976 are the audited dependency inputs",
           "limitations": "point-in-time public advisory databases and local arm64 execution do not prove absence of unknown vulnerabilities, hosted cross-platform provenance, authenticated external authorities, Developer ID signing, notarization, Gatekeeper, installed XPC/TCC/browser pairing, or production lifecycle behavior; HARD-072 remains in progress"
+        },
+        {
+          "kind": "test",
+          "path_or_command": "npm --prefix website test; npm --prefix website run lint; npm --prefix website audit; git rev-parse v0.17.0^{commit}; python scripts/check_public_release.py; python scripts/david_hardening_gate.py",
+          "digest": "sha256:b3846c3f8a4870f2ce25af5400057ed2e4f25927f4e19a07ef95a02e4b4f4851",
+          "result": "local pass: the website builds and all four rendered-contract tests pass, lint passes, npm reports zero known vulnerabilities, the public scan passes, and the stable v0.17 manifest now binds the exact peeled v0.17.0 source commit ee9abeb185081538bbe3b3a38545444f252cdeda",
+          "timestamp": "2026-08-10T17:56:26Z",
+          "scope": "public release-integrity correction for the active Oliver CI badge, explicit-opt-in memory-capture documentation in README and CLAUDE, and exact v0.17 tag/source binding with source-owned regression coverage under the 379-path freeze authorization",
+          "limitations": "this is local source, tag, build, lint, dependency, and render evidence only; the live website still requires a separately reviewed post-release deployment, and HARD-072 remains in progress pending protected release authority, hosted provenance, Developer ID signing, notarization, Gatekeeper, installation, browser pairing, and lifecycle evidence"
         }
       ]
     },
