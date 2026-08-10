@@ -27,14 +27,7 @@ SPEC.loader.exec_module(SCRIPT)
 
 @pytest.fixture(scope="module")
 def report() -> dict[str, object]:
-    return benchmark.run_benchmark(
-        contract_repetitions=benchmark.MIN_LATENCY_SAMPLES,
-        context_repetitions=benchmark.MIN_LATENCY_SAMPLES,
-        checkpoint_repetitions=benchmark.MIN_LATENCY_SAMPLES,
-        workload_repetitions=benchmark.MIN_LATENCY_SAMPLES,
-        warmups=5,
-        generated_at="2026-07-23T12:00:00Z",
-    )
+    return SCRIPT.verify_artifact()
 
 
 def _resign_report(report: dict[str, object]) -> None:
@@ -107,6 +100,7 @@ def test_report_validation_uses_stored_windows_profile_not_current_host(
     workload_gate["observed"] = workload_performance["p95_ms"]
     workload_gate["passed"] = True
     windows["status"] = "pass" if all(gate["passed"] is True for gate in windows["gates"].values()) else "fail"
+    windows["claim"] = benchmark.BENCHMARK_PASS_CLAIM
     _resign_report(windows)
 
     def forbid_current_host_access() -> str:
@@ -427,6 +421,45 @@ def test_minimum_latency_corpus_excludes_one_outlier_from_p95() -> None:
         "p95_ms": 5.0,
         "max_ms": 10.0,
     }
+
+
+def test_checkpoint_and_workload_paths_complete_without_latency_gate(tmp_path) -> None:
+    benchmark._checkpoint_cycle(tmp_path, index=1)
+    workload = benchmark._frozen_agent_workload(tmp_path, index=2)
+
+    assert {
+        field: workload[field]
+        for field in (
+            "task_passed",
+            "verifier_passed",
+            "verifier_total",
+            "policy_escapes",
+            "unverified_completions",
+            "duplicate_mutations",
+            "crash_resume_passed",
+            "protocol_correct",
+            "context_useful",
+        )
+    } == {
+        "task_passed": True,
+        "verifier_passed": 2,
+        "verifier_total": 2,
+        "policy_escapes": 0,
+        "unverified_completions": 0,
+        "duplicate_mutations": 0,
+        "crash_resume_passed": True,
+        "protocol_correct": True,
+        "context_useful": True,
+    }
+    assert type(workload["ttfa_ms"]) is float and workload["ttfa_ms"] >= 0.0
+    assert type(workload["total_ms"]) is float and workload["total_ms"] >= workload["ttfa_ms"]
+
+
+def test_every_correctness_probe_passes_live_without_latency_gate(tmp_path) -> None:
+    probes = benchmark._run_probes(tmp_path)
+
+    assert [row["id"] for row in probes] == [probe_id for probe_id, _operation in benchmark.PROBES]
+    assert [row for row in probes if row["passed"] is not True] == []
 
 
 @pytest.mark.parametrize(

@@ -62,10 +62,15 @@ def _store(tmp_path, backend: FakeBackend) -> KeyringKeyStore:
     )
 
 
-def _registered_store(tmp_path, backend: FakeBackend) -> KeyringKeyStore:
+def _registered_store(
+    tmp_path,
+    backend: FakeBackend,
+    *,
+    lease_manager: TargetLeaseManager | None = None,
+) -> KeyringKeyStore:
     store = KeyringKeyStore(
         backend,
-        lease_manager=TargetLeaseManager(tmp_path / "leases"),
+        lease_manager=(lease_manager if lease_manager is not None else TargetLeaseManager(tmp_path / "leases")),
         clock_ms=lambda: 1_800_000_000_000,
     )
     store.initialize_fresh_credential_registry()
@@ -476,7 +481,14 @@ def test_anchor_failure_leaves_a_safe_absent_registry_tombstone(tmp_path) -> Non
 
 def test_concurrent_anchor_registration_has_no_lost_labels(tmp_path) -> None:
     backend = FakeBackend()
-    store = _registered_store(tmp_path, backend)
+    store = _registered_store(
+        tmp_path,
+        backend,
+        lease_manager=TargetLeaseManager(
+            tmp_path / "leases",
+            lock_timeout_seconds=60.0,
+        ),
+    )
     anchors = GraceReceiptAnchorStore(store)
     journal_ids = tuple("sha256:" + f"{index:064x}" for index in range(1, 17))
 
