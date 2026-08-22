@@ -9,6 +9,7 @@ from algo_cli.nathan_runtime import (
     RuntimeAuthoritySession,
     ask_approval,
     authority_session_for,
+    mutation_failure_proves_no_effect,
     preflight_runtime_tool,
 )
 from algo_cli.samuel_policy_engine import PolicyDisposition, resolve_action
@@ -58,6 +59,20 @@ def test_grant_consumption_is_atomic_under_race(tmp_path) -> None:
     assert outcomes.count(False) == 7
 
 
+def test_parallel_baseline_reads_do_not_spuriously_consume_each_other(tmp_path) -> None:
+    cfg = Config(cwd=str(tmp_path))
+
+    def authorize(index: int) -> bool:
+        args = {"path": f"file-{index}.txt"}
+        preflight = preflight_runtime_tool("read_file", args, cfg)
+        return ask_approval("read_file", args, cfg, preflight=preflight)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        outcomes = list(pool.map(authorize, range(32)))
+
+    assert outcomes == [True] * 32
+
+
 def test_interactive_auto_still_prompts_for_action_time(monkeypatch, tmp_path) -> None:
     cfg = Config(cwd=str(tmp_path), auto_mode=True)
     prompts: list[str] = []
@@ -80,6 +95,35 @@ def test_noninteractive_auto_only_preapproves_session_mode(monkeypatch, tmp_path
     assert ask_approval("plugins_load", {"plugin_name": "demo"}, cfg) is False
 
 
+def test_explicit_workspace_process_authority_is_local_and_curated(monkeypatch, tmp_path) -> None:
+    cfg = Config(cwd=str(tmp_path), auto_mode=False)
+    setattr(cfg, "_nathan_approval_mode", "workspace")
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _prompt: (_ for _ in ()).throw(AssertionError("workspace mode prompted")),
+    )
+
+    assert ask_approval("run_shell", {"command": "python3 -m pytest"}, cfg) is True
+    assert ask_approval("remember", {"fact": "must confirm"}, cfg) is False
+    assert ask_approval("web_search", {"query": "public docs"}, cfg) is False
+    assert ask_approval("plugins_load", {"plugin_name": "demo"}, cfg) is False
+    assert ask_approval("session_command", {"command": "/safe off"}, cfg) is False
+
+
+def test_only_closed_workspace_adapter_preconditions_prove_no_effect(tmp_path) -> None:
+    assert mutation_failure_proves_no_effect(
+        "edit_file",
+        f"Error: old_string not found in {tmp_path / 'file.txt'}. No match.",
+    )
+    assert mutation_failure_proves_no_effect(
+        "write_file",
+        f"Error: {tmp_path / 'file.txt'} already exists. Re-run with overwrite=true if intended.",
+    )
+    assert not mutation_failure_proves_no_effect("run_shell", "STDERR: failed\n[exit code: 1]")
+    assert not mutation_failure_proves_no_effect("batch_edit", "Error: partial batch failure")
+    assert not mutation_failure_proves_no_effect("remember", "Tool argument error for remember: bad")
+
+
 def test_exact_session_subcommand_controls_confirmation(monkeypatch, tmp_path) -> None:
     cfg = Config(cwd=str(tmp_path), auto_mode=True)
     prompts: list[str] = []
@@ -100,13 +144,16 @@ def test_force_elevates_a_baseline_read_to_action_time(monkeypatch, tmp_path) ->
     monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "n")
     preflight = preflight_runtime_tool("read_file", {"path": "README.md"}, cfg)
 
-    assert ask_approval(
-        "read_file",
-        {"path": "README.md"},
-        cfg,
-        force=True,
-        preflight=preflight,
-    ) is False
+    assert (
+        ask_approval(
+            "read_file",
+            {"path": "README.md"},
+            cfg,
+            force=True,
+            preflight=preflight,
+        )
+        is False
+    )
     assert len(prompts) == 1
 
 

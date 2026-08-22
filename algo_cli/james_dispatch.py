@@ -683,6 +683,24 @@ def _run_external_effect(
     post_termination = control.signal()
     current_state = EffectState.STARTED
     try:
+        if raw_status == "failed" and runtime.mutation_failure_proves_no_effect(name, raw_result):
+            dependencies.effect_ledger.transition(
+                effect_id,
+                EffectState.FAILED,
+                fencing_token=lease.fencing_token,
+                reason_code="adapter_precondition_failed",
+            )
+            known_failure = normalize_action_outcome(
+                action,
+                raw_result,
+                reported_status="failed",
+                invoked=False,
+                effect_id=effect_id,
+                idempotency_key=key,
+                fencing_token=lease.fencing_token,
+                error_code="adapter_precondition_failed",
+            )
+            return replace(known_failure, invoked=True, retry_allowed=True), duration_ms
         if raw_status == "worked":
             dependencies.effect_ledger.transition(
                 effect_id,
@@ -1049,14 +1067,25 @@ def dispatch_action(
                     )
                 else:
                     raw_status = runtime.classify_tool_status(raw_result, name=name)
-                    outcome = normalize_action_outcome(
-                        action,
-                        raw_result,
-                        reported_status=raw_status,
-                        invoked=True,
-                        fencing_token=lease.fencing_token if lease is not None else 0,
-                        error_code="tool_reported_failure" if raw_status == "failed" else "",
-                    )
+                    if raw_status == "failed" and runtime.mutation_failure_proves_no_effect(name, raw_result):
+                        known_failure = normalize_action_outcome(
+                            action,
+                            raw_result,
+                            reported_status="failed",
+                            invoked=False,
+                            fencing_token=lease.fencing_token if lease is not None else 0,
+                            error_code="adapter_precondition_failed",
+                        )
+                        outcome = replace(known_failure, invoked=True, retry_allowed=True)
+                    else:
+                        outcome = normalize_action_outcome(
+                            action,
+                            raw_result,
+                            reported_status=raw_status,
+                            invoked=True,
+                            fencing_token=lease.fencing_token if lease is not None else 0,
+                            error_code="tool_reported_failure" if raw_status == "failed" else "",
+                        )
     except Exception as exc:
         outcome = _preinvoke_outcome(
             action,

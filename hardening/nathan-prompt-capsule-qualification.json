@@ -1,0 +1,450 @@
+{
+  "baseline": {
+    "cases": {
+      "agent_review": {
+        "schema_tokens": 1216,
+        "system_tokens": 2819,
+        "tools": 8
+      },
+      "code_edit": {
+        "schema_tokens": 2129,
+        "system_tokens": 2819,
+        "tools": 11
+      },
+      "grok": {
+        "schema_tokens": 1216,
+        "system_tokens": 2817,
+        "tools": 8
+      },
+      "memory_conflict": {
+        "schema_tokens": 1084,
+        "system_tokens": 2819,
+        "tools": 7
+      },
+      "named_file": {
+        "schema_tokens": 1328,
+        "system_tokens": 2819,
+        "tools": 9
+      },
+      "oneshot": {
+        "schema_tokens": 2129,
+        "system_tokens": 761,
+        "tools": 11
+      },
+      "pdf": {
+        "schema_tokens": 1084,
+        "system_tokens": 2819,
+        "tools": 7
+      },
+      "simple": {
+        "schema_tokens": 1084,
+        "system_tokens": 2819,
+        "tools": 7
+      },
+      "slash_help": {
+        "schema_tokens": 1438,
+        "system_tokens": 2819,
+        "tools": 8
+      }
+    },
+    "created_at": "2026-08-22T19:24:26Z",
+    "source_revision": "85c877ca0f1573ed8210934d3d6a18264d7070fd"
+  },
+  "benchmark": "nathan-prompt-capsule-ablation-v1",
+  "cases": {
+    "agent_review": {
+      "capsule": {
+        "assembly": {
+          "max_ms": 24.963375,
+          "p50_ms": 13.053834,
+          "p95_ms": 14.446541,
+          "samples": 101
+        },
+        "fallback_reason": "",
+        "included_capsules": [
+          "slash_commands",
+          "agent_runtime"
+        ],
+        "omitted_capsules": [],
+        "prompt_chars": 3812,
+        "prompt_sha256": "sha256:2f966c3206fe616dd73dec7552875e0685ce44b13034b508857bd3da94db3e19",
+        "repeat_stable": true,
+        "schema_tokens": 2060,
+        "sent_mode": "capsule",
+        "system_tokens": 953,
+        "tools": 10
+      },
+      "legacy": {
+        "assembly": {
+          "max_ms": 8.62,
+          "p50_ms": 8.044542,
+          "p95_ms": 8.38275,
+          "samples": 101
+        },
+        "fallback_reason": "",
+        "included_capsules": [],
+        "omitted_capsules": [],
+        "prompt_chars": 11274,
+        "prompt_sha256": "sha256:008eceebe2828b7152f586ee4c7138a4b8d7a09dcb07577a81b037853f75a56a",
+        "repeat_stable": true,
+        "schema_tokens": 1216,
+        "sent_mode": "legacy",
+        "system_tokens": 2819,
+        "tools": 8
+      },
+      "reduction_pct": 66.194
+    },
+    "code_edit": {
+      "capsule": {
+        "assembly": {
+          "max_ms": 28.568125,
+          "p50_ms": 17.959791,
+          "p95_ms": 19.947583,
+          "samples": 101
+        },
+        "fallback_reason": "",
+        "included_capsules": [],
+        "omitted_capsules": [],
+        "prompt_chars": 3085,
+        "prompt_sha256": "sha256:3599c26f04d363c47cf40c3483808fc02cd34a89c3c91c55c500bd9f771a77b4",
+        "repeat_stable": true,
+        "schema_tokens": 2129,
+        "sent_mode": "capsule",
+        "system_tokens": 772,
+        "tools": 11
+      },
+      "legacy": {
+        "assembly": {
+          "max_ms": 23.988417,
+          "p50_ms": 17.822125,
+          "p95_ms": 18.704166,
+          "samples": 101
+        },
+        "fallback_reason": "",
+        "included_capsules": [],
+        "omitted_capsules": [],
+        "prompt_chars": 11274,
+        "prompt_sha256": "sha256:008eceebe2828b7152f586ee4c7138a4b8d7a09dcb07577a81b037853f75a56a",
+        "repeat_stable": true,
+        "schema_tokens": 2129,
+        "sent_mode": "legacy",
+        "system_tokens": 2819,
+        "tools": 11
+      },
+      "reduction_pct": 72.614
+    },
+    "grok": {
+      "capsule": {
+        "assembly": {
+          "max_ms": 21.66425,
+          "p50_ms": 11.814375,
+          "p95_ms": 12.886458,
+          "samples": 101
+        },
+        "fallback_reason": "",
+        "included_capsules": [
+          "grok_xai"
+        ],
+        "omitted_capsules": [],
+        "prompt_chars": 3398,
+        "prompt_sha256": "sha256:32ed6e690636e786b5171dafd703394628fa6ed77514e1abf5473d630dc9e63a",
+        "repeat_stable": true,
+        "schema_tokens": 1468,
+        "sent_mode": "capsule",
+        "system_tokens": 850,
+        "tools": 10
+      },
+      "legacy": {
+        "assembly": {
+          "max_ms": 9.65975,
+          "p50_ms": 7.488291,
+          "p95_ms": 8.770459,
+          "samples": 101
+        },
+        "fallback_reason": "",
+        "included_capsules": [],
+        "omitted_capsules": [],
+        "prompt_chars": 11265,
+        "prompt_sha256": "sha256:42650657019b50f92b8213eb603eed340762bbaca93bb7e7c06ae7ff4bb620e6",
+        "repeat_stable": true,
+        "schema_tokens": 1216,
+        "sent_mode": "legacy",
+        "system_tokens": 2817,
+        "tools": 8
+      },
+      "reduction_pct": 69.826
+    },
+    "memory_conflict": {
+      "capsule": {
+        "assembly": {
+          "max_ms": 24.623875,
+          "p50_ms": 14.738292,
+          "p95_ms": 15.417333,
+          "samples": 101
+        },
+        "fallback_reason": "",
+        "included_capsules": [
+          "memory_administration"
+        ],
+        "omitted_capsules": [],
+        "prompt_chars": 3391,
+        "prompt_sha256": "sha256:7d32cc41e02f358e00f6db346995fb305896efc1394a9e52ab1a4d92a64dc9ce",
+        "repeat_stable": true,
+        "schema_tokens": 1839,
+        "sent_mode": "capsule",
+        "system_tokens": 848,
+        "tools": 11
+      },
+      "legacy": {
+        "assembly": {
+          "max_ms": 6.081,
+          "p50_ms": 5.630584,
+          "p95_ms": 5.957667,
+          "samples": 101
+        },
+        "fallback_reason": "",
+        "included_capsules": [],
+        "omitted_capsules": [],
+        "prompt_chars": 11274,
+        "prompt_sha256": "sha256:008eceebe2828b7152f586ee4c7138a4b8d7a09dcb07577a81b037853f75a56a",
+        "repeat_stable": true,
+        "schema_tokens": 1084,
+        "sent_mode": "legacy",
+        "system_tokens": 2819,
+        "tools": 7
+      },
+      "reduction_pct": 69.918
+    },
+    "named_file": {
+      "capsule": {
+        "assembly": {
+          "max_ms": 19.824541,
+          "p50_ms": 9.666166,
+          "p95_ms": 9.954958,
+          "samples": 101
+        },
+        "fallback_reason": "",
+        "included_capsules": [],
+        "omitted_capsules": [],
+        "prompt_chars": 3085,
+        "prompt_sha256": "sha256:3599c26f04d363c47cf40c3483808fc02cd34a89c3c91c55c500bd9f771a77b4",
+        "repeat_stable": true,
+        "schema_tokens": 1328,
+        "sent_mode": "capsule",
+        "system_tokens": 772,
+        "tools": 9
+      },
+      "legacy": {
+        "assembly": {
+          "max_ms": 19.765458,
+          "p50_ms": 9.637667,
+          "p95_ms": 10.268375,
+          "samples": 101
+        },
+        "fallback_reason": "",
+        "included_capsules": [],
+        "omitted_capsules": [],
+        "prompt_chars": 11274,
+        "prompt_sha256": "sha256:008eceebe2828b7152f586ee4c7138a4b8d7a09dcb07577a81b037853f75a56a",
+        "repeat_stable": true,
+        "schema_tokens": 1328,
+        "sent_mode": "legacy",
+        "system_tokens": 2819,
+        "tools": 9
+      },
+      "reduction_pct": 72.614
+    },
+    "oneshot": {
+      "capsule": {
+        "assembly": {
+          "max_ms": 101.981,
+          "p50_ms": 19.635125,
+          "p95_ms": 20.425167,
+          "samples": 101
+        },
+        "fallback_reason": "",
+        "included_capsules": [],
+        "omitted_capsules": [],
+        "prompt_chars": 2877,
+        "prompt_sha256": "sha256:b1454de44776b2852abf3b5781d9d5535e002a0f79334e6ed3339a15c287dac1",
+        "repeat_stable": true,
+        "schema_tokens": 2129,
+        "sent_mode": "capsule",
+        "system_tokens": 720,
+        "tools": 11
+      },
+      "legacy": {
+        "assembly": {
+          "max_ms": 30.751833,
+          "p50_ms": 19.392375,
+          "p95_ms": 20.253541,
+          "samples": 101
+        },
+        "fallback_reason": "",
+        "included_capsules": [],
+        "omitted_capsules": [],
+        "prompt_chars": 3043,
+        "prompt_sha256": "sha256:da2ed5cebf460cd4d3d556c7902c64c5dab38e9699f8914f8b121f237b2928fd",
+        "repeat_stable": true,
+        "schema_tokens": 2129,
+        "sent_mode": "legacy",
+        "system_tokens": 761,
+        "tools": 11
+      },
+      "reduction_pct": 5.388
+    },
+    "pdf": {
+      "capsule": {
+        "assembly": {
+          "max_ms": 23.088459,
+          "p50_ms": 13.287375,
+          "p95_ms": 16.3205,
+          "samples": 101
+        },
+        "fallback_reason": "",
+        "included_capsules": [
+          "pdf_handling"
+        ],
+        "omitted_capsules": [],
+        "prompt_chars": 3297,
+        "prompt_sha256": "sha256:0ad494829f575fd124c76472d620ec73b4e382bc36f2206cfebebfffe001ec26",
+        "repeat_stable": true,
+        "schema_tokens": 1658,
+        "sent_mode": "capsule",
+        "system_tokens": 825,
+        "tools": 10
+      },
+      "legacy": {
+        "assembly": {
+          "max_ms": 6.1775,
+          "p50_ms": 5.497792,
+          "p95_ms": 5.692084,
+          "samples": 101
+        },
+        "fallback_reason": "",
+        "included_capsules": [],
+        "omitted_capsules": [],
+        "prompt_chars": 11274,
+        "prompt_sha256": "sha256:008eceebe2828b7152f586ee4c7138a4b8d7a09dcb07577a81b037853f75a56a",
+        "repeat_stable": true,
+        "schema_tokens": 1084,
+        "sent_mode": "legacy",
+        "system_tokens": 2819,
+        "tools": 7
+      },
+      "reduction_pct": 70.734
+    },
+    "simple": {
+      "capsule": {
+        "assembly": {
+          "max_ms": 6.567833,
+          "p50_ms": 5.625583,
+          "p95_ms": 6.222042,
+          "samples": 101
+        },
+        "fallback_reason": "",
+        "included_capsules": [],
+        "omitted_capsules": [],
+        "prompt_chars": 3085,
+        "prompt_sha256": "sha256:3599c26f04d363c47cf40c3483808fc02cd34a89c3c91c55c500bd9f771a77b4",
+        "repeat_stable": true,
+        "schema_tokens": 1084,
+        "sent_mode": "capsule",
+        "system_tokens": 772,
+        "tools": 7
+      },
+      "legacy": {
+        "assembly": {
+          "max_ms": 132.225666,
+          "p50_ms": 5.489042,
+          "p95_ms": 6.231125,
+          "samples": 101
+        },
+        "fallback_reason": "",
+        "included_capsules": [],
+        "omitted_capsules": [],
+        "prompt_chars": 11274,
+        "prompt_sha256": "sha256:008eceebe2828b7152f586ee4c7138a4b8d7a09dcb07577a81b037853f75a56a",
+        "repeat_stable": true,
+        "schema_tokens": 1084,
+        "sent_mode": "legacy",
+        "system_tokens": 2819,
+        "tools": 7
+      },
+      "reduction_pct": 72.614
+    },
+    "slash_help": {
+      "capsule": {
+        "assembly": {
+          "max_ms": 24.372583,
+          "p50_ms": 12.585208,
+          "p95_ms": 12.971792,
+          "samples": 101
+        },
+        "fallback_reason": "",
+        "included_capsules": [
+          "slash_commands",
+          "agent_runtime"
+        ],
+        "omitted_capsules": [],
+        "prompt_chars": 3812,
+        "prompt_sha256": "sha256:2f966c3206fe616dd73dec7552875e0685ce44b13034b508857bd3da94db3e19",
+        "repeat_stable": true,
+        "schema_tokens": 1928,
+        "sent_mode": "capsule",
+        "system_tokens": 953,
+        "tools": 9
+      },
+      "legacy": {
+        "assembly": {
+          "max_ms": 9.512375,
+          "p50_ms": 8.16325,
+          "p95_ms": 8.689541,
+          "samples": 101
+        },
+        "fallback_reason": "",
+        "included_capsules": [],
+        "omitted_capsules": [],
+        "prompt_chars": 11274,
+        "prompt_sha256": "sha256:008eceebe2828b7152f586ee4c7138a4b8d7a09dcb07577a81b037853f75a56a",
+        "repeat_stable": true,
+        "schema_tokens": 1438,
+        "sent_mode": "legacy",
+        "system_tokens": 2819,
+        "tools": 8
+      },
+      "reduction_pct": 66.194
+    }
+  },
+  "claim": "The source-bound capsule candidate reduced ordinary controlled interactive system prompts by at least 50 percent while retaining exact selected tool schemas, deterministic routing, and local assembly gates.",
+  "created_at": "2026-08-22T20:33:53Z",
+  "environment": {
+    "operating_system": "macOS-27.0-arm64-arm-64bit",
+    "python": "3.11.15"
+  },
+  "gates": {
+    "assembly_latency": true,
+    "capsule_routing": true,
+    "deterministic_repeat": true,
+    "legacy_baseline_exact": true,
+    "no_candidate_fallback": true,
+    "oneshot_non_regression": true,
+    "ordinary_prompt_reduction": true,
+    "schema_budget": true
+  },
+  "limitations": "This deterministic local ablation measures prompt assembly and exact tool-schema selection with a controlled identity and no memory payload. It does not measure model intelligence, provider time to first token, live task completion, prefix-cache reuse, or cross-harness superiority. Public claims remain ineligible until the frozen live ablation, memory/Agent qualifications, and release freeze gates pass.",
+  "protocol": {
+    "case_count": 9,
+    "identity_fixture_sha256": "sha256:a23077d4d21600f1a90b959a1de62493dcad66be652f19cce69a38f48eb349eb",
+    "model_calls": 0,
+    "network_calls": 0,
+    "repetitions": 101
+  },
+  "public_claim_eligible": false,
+  "registry_sha256": "sha256:06ddfa89cef748a33eaaba6f7aedc2869a982d377a254810983502c18bc5ce36",
+  "report_sha256": "sha256:fd5882126974885a5bcea48562582cc5c078ef5e8d216143684b2f029725284b",
+  "schema_version": 1,
+  "source_revision": "85c877ca0f1573ed8210934d3d6a18264d7070fd",
+  "source_tree_sha256": "sha256:0238f9c067f945f19978e25bd01e8584dd166a7674be708a1501e01056aa08f4",
+  "status": "pass"
+}

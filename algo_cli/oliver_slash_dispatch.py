@@ -99,7 +99,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/clear", "Clear conversation"),
     ("/diff", "Show last verified Git diff captured by an agent pipeline"),
     ("/changes", "Summarize the most recent agent pipeline's per-block activity"),
-    ("/context", "Show or manage context compression"),
+    ("/context", "Inspect prompt capsules or manage context compression"),
     ("/save", "Save conversation"),
     ("/load", "Load conversation"),
     ("/ctx", "Set context window"),

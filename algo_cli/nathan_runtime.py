@@ -96,6 +96,7 @@ _BASELINE_TARGET_SCOPES = frozenset(
         TargetScope.PLUGIN,
     }
 )
+_WORKSPACE_PROCESS_ACTIONS = frozenset({"batch_edit", "edit_file", "run_shell", "write_file"})
 
 
 @dataclass(frozen=True)
@@ -287,7 +288,7 @@ def authority_session_for(cfg: Config) -> RuntimeAuthoritySession:
 
 def approval_mode_for_config(
     cfg: Config,
-) -> Literal["interactive", "never", "auto"]:
+) -> Literal["interactive", "never", "auto", "workspace"]:
     """Return the closed approval mode without changing legacy semantics."""
 
     value = str(getattr(cfg, "_nathan_approval_mode", "interactive")).casefold()
@@ -295,6 +296,8 @@ def approval_mode_for_config(
         return "interactive"
     if value == "auto":
         return "auto"
+    if value == "workspace":
+        return "workspace"
     return "never"
 
 
@@ -319,6 +322,7 @@ def _prepared_grant(
             action,
             source="runtime-baseline",
             now=now,
+            maximum_action_count=_SESSION_GRANT_ACTIONS,
             ttl_seconds=_BASELINE_GRANT_SECONDS,
         )
     auto_preapproved = _approval_mode(cfg) == "auto" or bool(cfg.auto_approve_active)
@@ -557,36 +561,19 @@ def ask_approval(
     needs_prompt = grant is None or action.confirmation_mode is ConfirmationMode.ACTION_TIME
 
     if needs_prompt:
-        if mode != "interactive":
-            return False
-        options = "[y/N/a]" if action.confirmation_mode is ConfirmationMode.SESSION_PREAPPROVAL else "[y/N]"
-        console.print(f"[yellow]Approve exact {name} action?[/] {options}")
-        console.print(
-            json.dumps(
-                {
-                    "target": action.target,
-                    "confirmation": action.confirmation_mode.value,
-                    "capabilities": list(current.policy.capability_names),
-                    "arguments": redact_tool_args(name, args),
-                },
-                indent=2,
+        workspace_process_authorized = (
+            mode == "workspace"
+            and action.name in _WORKSPACE_PROCESS_ACTIONS
+            and action.target_scope is TargetScope.WORKSPACE
+            and action.confirmation_mode is ConfirmationMode.ACTION_TIME
+            and session._workspace_target_allowed(action.target)
+        )
+        if workspace_process_authorized:
+            grant = session.issue(
+                action,
+                source="explicit-workspace-process",
+                now=now,
             )
-        )
-        try:
-            approval = input(f"Approve? {options} ").strip().casefold()
-        except (EOFError, OSError):
-            console.print("[red]No interactive input available; operation denied.[/]")
-            return False
-        session_scope = approval == "a" and action.confirmation_mode is ConfirmationMode.SESSION_PREAPPROVAL
-        if approval != "y" and not session_scope:
-            return False
-        grant = session.issue(
-            action,
-            source="interactive-session" if session_scope else "interactive-action",
-            now=now,
-            maximum_action_count=_SESSION_GRANT_ACTIONS if session_scope else 1,
-        )
-        if action.confirmation_mode is ConfirmationMode.ACTION_TIME:
             confirmation = ConfirmationReceipt(
                 receipt_id=f"confirmation-{uuid.uuid4().hex}",
                 action_digest=action.action_digest,
@@ -594,13 +581,51 @@ def ask_approval(
                 confirmed_at=now,
                 expires_at=now + 120.0,
             )
+        elif mode != "interactive":
+            return False
+        else:
+            options = "[y/N/a]" if action.confirmation_mode is ConfirmationMode.SESSION_PREAPPROVAL else "[y/N]"
+            console.print(f"[yellow]Approve exact {name} action?[/] {options}")
+            console.print(
+                json.dumps(
+                    {
+                        "target": action.target,
+                        "confirmation": action.confirmation_mode.value,
+                        "capabilities": list(current.policy.capability_names),
+                        "arguments": redact_tool_args(name, args),
+                    },
+                    indent=2,
+                )
+            )
+            try:
+                approval = input(f"Approve? {options} ").strip().casefold()
+            except (EOFError, OSError):
+                console.print("[red]No interactive input available; operation denied.[/]")
+                return False
+            session_scope = approval == "a" and action.confirmation_mode is ConfirmationMode.SESSION_PREAPPROVAL
+            if approval != "y" and not session_scope:
+                return False
+            grant = session.issue(
+                action,
+                source="interactive-session" if session_scope else "interactive-action",
+                now=now,
+                maximum_action_count=_SESSION_GRANT_ACTIONS if session_scope else 1,
+            )
+            if action.confirmation_mode is ConfirmationMode.ACTION_TIME:
+                confirmation = ConfirmationReceipt(
+                    receipt_id=f"confirmation-{uuid.uuid4().hex}",
+                    action_digest=action.action_digest,
+                    confirmation_mode=ConfirmationMode.ACTION_TIME,
+                    confirmed_at=now,
+                    expires_at=now + 120.0,
+                )
 
     decision = evaluate_action(
         action,
         grant=grant,
         confirmation=confirmation,
         now=now,
-        auto_approve=mode == "auto" or bool(cfg.auto_approve_active),
+        auto_approve=mode in {"auto", "workspace"} or bool(cfg.auto_approve_active),
     )
     if decision.disposition is not PolicyDisposition.ALLOW or grant is None:
         return False
@@ -808,6 +833,33 @@ def classify_tool_status(
     if exit_matches and int(exit_matches[-1]) != 0:
         return "failed"
     return "worked"
+
+
+def mutation_failure_proves_no_effect(name: str, result: str) -> bool:
+    """Recognize closed adapter preconditions that run before any file write.
+
+    Keep this list deliberately narrow. Shell failures, timeouts, exceptions,
+    partial batches, and external actions remain unknown when their effect
+    cannot be independently ruled out.
+    """
+
+    normalized_name = str(name or "").strip().casefold()
+    text = str(result or "").strip()
+    lowered = text.casefold()
+    if normalized_name not in _WORKSPACE_PROCESS_ACTIONS:
+        return False
+    if lowered.startswith(f"tool argument error for {normalized_name}:"):
+        return True
+    if normalized_name == "edit_file":
+        return lowered.startswith(
+            (
+                "error: old_string not found in ",
+                "error: old_string occurs ",
+            )
+        )
+    if normalized_name == "write_file":
+        return lowered.startswith("error: ") and " already exists. re-run with overwrite=true" in lowered
+    return False
 
 
 def augment_tool_result_with_reflex(

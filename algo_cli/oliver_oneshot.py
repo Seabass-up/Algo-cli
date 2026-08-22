@@ -330,6 +330,8 @@ def run_oneshot(
     - approval_mode="never" (default): protected tools are denied; emits tool_denied.
     - approval_mode="auto": session-preapproval actions are granted for this run only;
       action-time and handoff-required actions remain denied.
+    - approval_mode="workspace": exact curated workspace write/edit/shell actions are
+      authorized for this process; non-workspace and handoff actions remain denied.
     - cfg_overrides: applied to the loaded Config before the run (e.g., {"model": "qwen3"}).
     """
     # Imports deferred to avoid cycle with display + to keep import cost off the
@@ -355,8 +357,8 @@ def run_oneshot(
             if value is not None and hasattr(cfg, key):
                 persistent_values.setdefault(key, getattr(cfg, key))
                 setattr(cfg, key, value)
-    if approval_mode not in {"never", "auto"}:
-        raise ValueError("approval_mode must be 'never' or 'auto'")
+    if approval_mode not in {"never", "auto", "workspace"}:
+        raise ValueError("approval_mode must be 'never', 'auto', or 'workspace'")
     cfg.auto_mode = approval_mode == "auto"
     setattr(cfg, "_nathan_approval_mode", approval_mode)
     cfg.skill_crystallize_enabled = False  # subprocess invocation must not mutate skill store

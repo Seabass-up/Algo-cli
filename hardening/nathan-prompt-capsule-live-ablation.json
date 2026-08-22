@@ -1,0 +1,88 @@
+{
+  "benchmark": "nathan-prompt-capsule-live-ablation-v1",
+  "completed_pairs": 2,
+  "expected_pairs": 4,
+  "generated_at": "2026-08-22T20:28:30Z",
+  "model": "qwen3.6:35b-mlx",
+  "public_claim_eligible": false,
+  "reason_code": "frozen_live_cell_incomplete",
+  "runs": [
+    {
+      "checker_pass": true,
+      "clean_process": true,
+      "duration_seconds": 26.247967,
+      "harness": "algo_cli_legacy",
+      "model_rounds": 9,
+      "return_code": 0,
+      "task": "code_repair_small_repo",
+      "timed_out": false,
+      "tokens": 40532,
+      "tool_calls": 11
+    },
+    {
+      "checker_pass": true,
+      "clean_process": true,
+      "duration_seconds": 133.950487,
+      "harness": "algo_cli_capsule",
+      "model_rounds": 9,
+      "return_code": 0,
+      "task": "code_repair_small_repo",
+      "timed_out": false,
+      "tokens": 40610,
+      "tool_calls": 11
+    },
+    {
+      "checker_pass": true,
+      "clean_process": true,
+      "duration_seconds": 62.575147,
+      "harness": "algo_cli_capsule",
+      "model_rounds": 12,
+      "return_code": 0,
+      "task": "tool_trap_misleading_state",
+      "timed_out": false,
+      "tokens": 56642,
+      "tool_calls": 14
+    },
+    {
+      "checker_pass": true,
+      "clean_process": true,
+      "duration_seconds": 136.075042,
+      "harness": "algo_cli_legacy",
+      "model_rounds": 10,
+      "return_code": 0,
+      "task": "tool_trap_misleading_state",
+      "timed_out": false,
+      "tokens": 44820,
+      "tool_calls": 12
+    },
+    {
+      "checker_pass": true,
+      "clean_process": false,
+      "duration_seconds": 195.758438,
+      "harness": "algo_cli_legacy",
+      "model_rounds": 24,
+      "return_code": 2,
+      "task": "memory_rag_conflict_live_files",
+      "timed_out": false,
+      "tokens": 167165,
+      "tool_calls": 26
+    },
+    {
+      "checker_pass": false,
+      "clean_process": false,
+      "duration_seconds": 360.013135,
+      "harness": "algo_cli_legacy",
+      "model_rounds": 1,
+      "return_code": 124,
+      "task": "memory_rag_conflict_live_files",
+      "timed_out": true,
+      "tokens": null,
+      "tool_calls": 0
+    }
+  ],
+  "schema_version": 1,
+  "source_revision": "85c877ca0f1573ed8210934d3d6a18264d7070fd",
+  "status": "blocked",
+  "summary": "The two completed interleaved legacy/capsule task pairs passed their independent checkers, but the frozen cell did not complete after the legacy memory task exhausted the turn cap and then timed out in the targeted retry. No live speed, quality, memory, or superiority claim is eligible.",
+  "worktree_branch": "hardening/prompt-capsules-v0.19.0"
+}

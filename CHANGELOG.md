@@ -4,8 +4,20 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- Added a deterministic, budgeted prompt-capsule registry with an immutable
+  authority core, shadow/legacy rollback modes, exact-schema tool hints,
+  content-free `/context explain` receipts, and a source-bound qualification.
+- Added an explicit process-local `--approval-mode workspace` for headless
+  changes inside `--cwd`; only curated workspace write, edit, batch-edit, and
+  shell actions are eligible, and existing policy/verification gates remain.
+
 ### Changed
 
+- Appended lossy summaries, memory evidence, and unresolved attempts after the
+  stable static prompt prefix; required capsule or protected-memory overflow
+  falls back to the complete legacy contract instead of truncating policy.
 - Bound the governed memory bridge to Echo Veil's scope-aware 0.7 API, added a
   full-commit-pinned optional extra, and canonicalized Algo's credential-free
   `localhost` Ollama default to an IP-literal loopback before Echo validation.
@@ -20,6 +32,9 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ### Security
 
+- Kept prompt activation separate from tool authority, preserved `never` and
+  `auto` semantics, and prevented generic benchmark wording from activating
+  Agent or harness-search context.
 - Rejected the incompatible Echo Veil 0.5 API instead of reporting it as
   supported, and replaced raw initialization exception classes in optional-mode
   warnings with bounded operational failure codes.
@@ -38,6 +53,12 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 - Applied the same hashed registry audit and separate Echo identity audit to
   release builds, and refreshed the website lock to remove all reported npm
   advisories without restoring the quarantined marketing changes.
+
+### Fixed
+
+- Prevented concurrent baseline reads from racing over a one-use grant, and
+  classified closed file-adapter preconditions as retryable known failures
+  without weakening genuinely unknown mutation outcomes.
 
 ## [0.18.0] - 2026-07-17
 

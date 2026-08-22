@@ -141,7 +141,7 @@ from .james_dispatch import (
 )
 from .marcus_authority import ConfirmationMode, EffectClass, IdempotencyClass
 from .samuel_policy_engine import resolve_action
-from .tool_context import select_tools_for_prompt
+from .tool_context import select_tools_for_prompt_with_receipt
 from .tool_schema import estimate_tool_schema_tokens
 from .oliver_slash_dispatch import (
     SLASH_COMMANDS,
@@ -191,6 +191,8 @@ from .context_budget import (
     fit_optional_context_blocks,
     invalidate_context_usage_cache,
     maybe_compact_context,
+    normalize_prompt_capsule_mode,
+    prompt_capsule_related_tools,
     prune_stale_tool_messages,
     rebuild_context_summary,
     summarize_message_batch,  # noqa: F401
@@ -2000,6 +2002,51 @@ def handle_context_command(arg: str, cfg: Config, client: Client) -> None:
         console.print(f"  summary chars  : [text]{len(cfg.session_summary)}[/]")
         console.print(f"  keep recent    : [text]{CONTEXT_KEEP_MESSAGES} messages[/]")
         console.print(f"  compact at     : [text]{int(CONTEXT_COMPACT_THRESHOLD * 100)}% used[/]")
+        console.print(f"  prompt capsules: [text]{normalize_prompt_capsule_mode(cfg.prompt_capsule_mode)}[/]")
+    elif subcommand == "explain":
+        receipt = cfg.context_state.get("prompt_capsules", {}) if isinstance(cfg.context_state, dict) else {}
+        tool_state = cfg.context_state.get("tool_context", {}) if isinstance(cfg.context_state, dict) else {}
+        if not isinstance(receipt, dict) or not receipt:
+            show_info("No prompt-capsule receipt is available yet. Run one model turn first.")
+            return
+        console.print("[bold]Prompt capsule receipt[/]")
+        for key in (
+            "configured_mode",
+            "sent_mode",
+            "legacy_tokens",
+            "candidate_tokens",
+            "sent_tokens",
+            "reduction_pct",
+            "registry_digest",
+            "fallback_reason",
+        ):
+            value = receipt.get(key, "")
+            if value != "":
+                console.print(f"  {key:<18}: [text]{value}[/]")
+        included = receipt.get("included", [])
+        omitted = [*receipt.get("omitted", []), *receipt.get("omitted_dynamic", [])]
+        active_text = ", ".join(str(item.get("id")) for item in included if isinstance(item, dict) and item.get("id"))
+        omitted_text = ", ".join(
+            f"{item.get('id')} ({item.get('reason')})" for item in omitted if isinstance(item, dict) and item.get("id")
+        )
+        console.print(f"  active capsules   : [text]{active_text or 'none'}[/]")
+        console.print(f"  omitted sections  : [text]{omitted_text or 'none'}[/]")
+        if isinstance(tool_state, dict):
+            console.print(f"  visible tools     : [text]{tool_state.get('visible_tools', 0)}[/]")
+            console.print(f"  tool schema tokens: [text]{tool_state.get('schema_tokens', 0)}[/]")
+    elif subcommand.startswith("capsules"):
+        value = subcommand.removeprefix("capsules").strip() or "status"
+        if value == "status":
+            show_info(f"Prompt capsules: {normalize_prompt_capsule_mode(cfg.prompt_capsule_mode)}")
+            return
+        normalized = normalize_prompt_capsule_mode(value)
+        if value not in {"legacy", "shadow", "capsule", "on"}:
+            show_error("Usage: /context capsules [status|legacy|shadow|on]")
+            return
+        cfg.prompt_capsule_mode = normalized
+        cfg.save()
+        invalidate_context_usage_cache()
+        show_info(f"Prompt capsules: {normalized}")
     elif subcommand == "clear":
         if not cfg.session_summary:
             show_info("No context summary to clear.")
@@ -2014,7 +2061,7 @@ def handle_context_command(arg: str, cfg: Config, client: Client) -> None:
         else:
             show_error(message)
     else:
-        show_error("Usage: /context [status|rebuild|clear]")
+        show_error("Usage: /context [status|explain|capsules [status|legacy|shadow|on]|rebuild|clear]")
 
 
 def onboard_if_needed(cfg: Config) -> None:
@@ -2870,7 +2917,20 @@ def agent_loop(
         optional_context_blocks.append(
             OptionalContextBlock("reconciliation", "Structured Reconciliation", reconciliation_guidance)
         )
-    active_tools = select_tools_for_prompt(user_message, ALL_TOOLS)
+    legacy_tools, legacy_tool_receipt = select_tools_for_prompt_with_receipt(user_message, ALL_TOOLS)
+    prompt_capsule_mode = normalize_prompt_capsule_mode(cfg.prompt_capsule_mode)
+    capsule_tool_hints = (
+        prompt_capsule_related_tools(cfg, user_message, oneshot=json_sink() is not None)
+        if prompt_capsule_mode != "legacy"
+        else ()
+    )
+    capsule_tools, capsule_tool_receipt = select_tools_for_prompt_with_receipt(
+        user_message,
+        ALL_TOOLS,
+        related_tool_names=capsule_tool_hints,
+    )
+    active_tools = capsule_tools if prompt_capsule_mode == "capsule" else legacy_tools
+    active_tool_receipt = capsule_tool_receipt if prompt_capsule_mode == "capsule" else legacy_tool_receipt
     active_schema_tokens = estimate_tool_schema_tokens(active_tools)
     full_schema_tokens = estimate_tool_schema_tokens(ALL_TOOLS)
     schema_reduction_pct = round(
@@ -2880,6 +2940,14 @@ def agent_loop(
     cfg.context_state["tool_context"] = {
         "catalog_tools": len(ALL_TOOLS),
         "visible_tools": len(active_tools),
+        "selected_tools": [str(getattr(tool, "__name__", "") or "") for tool in active_tools],
+        "capsule_bound_tools": [
+            str(item.get("name"))
+            for item in active_tool_receipt.get("selected", [])
+            if isinstance(item, dict) and item.get("reason") == "active_capsule" and item.get("name")
+        ],
+        "selection_receipt": active_tool_receipt,
+        "capsule_shadow_receipt": capsule_tool_receipt if prompt_capsule_mode == "shadow" else {},
         "schema_tokens": active_schema_tokens,
         "full_schema_tokens": full_schema_tokens,
         "reduction_pct": schema_reduction_pct,
@@ -4227,15 +4295,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--approval-mode",
-        choices=["never", "auto"],
+        choices=["never", "auto", "workspace"],
         default="never",
-        help="In --oneshot, control how approval-required tools are handled: never (default, deny + tool_denied event) or auto (auto-approve, equivalent to /auto).",
+        help=(
+            "In --oneshot, deny protected actions (never), grant session-preapproval actions (auto), "
+            "or explicitly authorize exact curated write/edit/shell actions inside --cwd for this process "
+            "(workspace). Handoff and non-workspace actions stay denied."
+        ),
     )
     parser.add_argument(
         "--thinking",
         choices=["auto", "on", "off"],
         default="auto",
         help="In --oneshot, use adaptive deliberation (default), force model thinking on, or force it off.",
+    )
+    parser.add_argument(
+        "--prompt-capsules",
+        choices=["legacy", "shadow", "capsule"],
+        help=(
+            "Select legacy prompts, shadow evaluation, or active prompt capsules for this process. "
+            "The saved config is not changed."
+        ),
     )
     parser.add_argument(
         "prompt",
@@ -4273,6 +4353,8 @@ def _run_oneshot_entry(args: argparse.Namespace) -> int:
         overrides["cwd"] = str(Path(args.cwd).expanduser().resolve())
     if args.thinking != "auto":
         overrides["show_thinking"] = args.thinking == "on"
+    if args.prompt_capsules:
+        overrides["prompt_capsule_mode"] = args.prompt_capsules
     from . import oliver_oneshot as _oneshot_module
 
     return _oneshot_module.run_oneshot(

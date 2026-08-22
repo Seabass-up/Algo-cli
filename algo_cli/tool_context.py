@@ -345,6 +345,7 @@ def select_tools_for_prompt(
     *,
     limit: int = DEFAULT_TOOL_LIMIT,
     schema_token_budget: int = DEFAULT_SCHEMA_TOKEN_BUDGET,
+    related_tool_names: Sequence[str] = (),
 ) -> list[Callable[..., Any]]:
     """Select a bounded model-visible tool catalog for one user turn.
 
@@ -354,26 +355,70 @@ def select_tools_for_prompt(
     runtime's original stable order for provider prompt-cache friendliness.
     """
 
+    selected, _receipt = select_tools_for_prompt_with_receipt(
+        prompt,
+        all_tools,
+        limit=limit,
+        schema_token_budget=schema_token_budget,
+        related_tool_names=related_tool_names,
+    )
+    return selected
+
+
+def select_tools_for_prompt_with_receipt(
+    prompt: str,
+    all_tools: Sequence[Callable[..., Any]],
+    *,
+    limit: int = DEFAULT_TOOL_LIMIT,
+    schema_token_budget: int = DEFAULT_SCHEMA_TOKEN_BUDGET,
+    related_tool_names: Sequence[str] = (),
+) -> tuple[list[Callable[..., Any]], dict[str, Any]]:
+    """Select exact schemas and return a content-free selection receipt."""
+
     tools = list(all_tools)
     declared = declared_tool_classes(prompt)
     if declared is not None:
         allowed_names: set[str] = set()
         for tool_class in declared:
             allowed_names.update(_CLASS_TO_TOOLS.get(tool_class, ()))
-        return [tool for tool in tools if getattr(tool, "__name__", "") in allowed_names]
+        selected = [tool for tool in tools if getattr(tool, "__name__", "") in allowed_names]
+        declared_selected_names = [str(getattr(tool, "__name__", "") or "") for tool in selected]
+        return selected, {
+            "schema": "nathan-tool-selection-receipt-v1",
+            "declared_classes": sorted(declared),
+            "selected": [{"name": name, "reason": "explicit_class"} for name in declared_selected_names],
+            "omitted_related": [],
+            "schema_tokens": estimate_tool_schema_tokens(selected),
+        }
 
     bounded_limit = max(1, int(limit))
     available_names = {str(getattr(tool, "__name__", "") or "") for tool in tools}
     selected_names = set(CORE_TOOL_NAMES & available_names)
     selected_names.update(DEFERRED_TOOL_NAMES & available_names)
+    reasons = {name: "core" if name in CORE_TOOL_NAMES else "deferred_discovery" for name in selected_names}
     if "action_search" not in available_names and "available_actions" in available_names:
         selected_names.add("available_actions")
+        reasons["available_actions"] = "deferred_discovery_fallback"
 
     effective_limit = max(bounded_limit, len(selected_names))
     effective_schema_budget = max(
         int(schema_token_budget),
         estimate_tool_schema_tokens([tool for tool in tools if getattr(tool, "__name__", "") in selected_names]),
     )
+    omitted_related: list[dict[str, str]] = []
+    for name in dict.fromkeys(str(value) for value in related_tool_names):
+        if name not in available_names or name in selected_names:
+            continue
+        if len(selected_names) >= effective_limit:
+            omitted_related.append({"name": name, "reason": "tool_limit"})
+            continue
+        candidate_names = {*selected_names, name}
+        candidate_tools = [item for item in tools if getattr(item, "__name__", "") in candidate_names]
+        if estimate_tool_schema_tokens(candidate_tools) > effective_schema_budget:
+            omitted_related.append({"name": name, "reason": "schema_budget"})
+            continue
+        selected_names.add(name)
+        reasons[name] = "active_capsule"
     for tool in rank_tools_for_prompt(prompt, tools):
         if len(selected_names) >= effective_limit:
             break
@@ -385,7 +430,21 @@ def select_tools_for_prompt(
         if estimate_tool_schema_tokens(candidate_tools) > effective_schema_budget:
             continue
         selected_names.add(name)
-    return [tool for tool in tools if getattr(tool, "__name__", "") in selected_names]
+        reasons[name] = "bm25_relevance"
+    selected = [tool for tool in tools if getattr(tool, "__name__", "") in selected_names]
+    return selected, {
+        "schema": "nathan-tool-selection-receipt-v1",
+        "declared_classes": [],
+        "selected": [
+            {
+                "name": str(getattr(tool, "__name__", "") or ""),
+                "reason": reasons[str(getattr(tool, "__name__", "") or "")],
+            }
+            for tool in selected
+        ],
+        "omitted_related": omitted_related,
+        "schema_tokens": estimate_tool_schema_tokens(selected),
+    }
 
 
 __all__ = [
@@ -396,4 +455,5 @@ __all__ = [
     "declared_tool_classes",
     "rank_tools_for_prompt",
     "select_tools_for_prompt",
+    "select_tools_for_prompt_with_receipt",
 ]

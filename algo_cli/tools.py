@@ -2921,7 +2921,7 @@ def available_actions(topic: str | None = None) -> str:
             "/status",
             "/info",
             "/clear",
-            "/context [status|rebuild|clear]",
+            "/context [status|explain|capsules [status|legacy|shadow|on]|rebuild|clear]",
             "/save NAME",
             "/load NAME",
             "/theme NAME",

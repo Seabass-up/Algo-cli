@@ -61,12 +61,22 @@ algo-cli --model terra
 # One-shot non-interactive JSON event mode (for bridges, scripts, CI)
 algo-cli --oneshot --json "summarize this folder"
 echo "what changed in main.py?" | algo-cli --oneshot --json
-algo-cli --oneshot --json --approval-mode auto --cwd /path/to/project "fix the failing test"
+algo-cli --oneshot --json --approval-mode workspace --cwd /path/to/project "fix the failing test"
 ```
 
 Signed-in local Ollama can run `:cloud` models without `OLLAMA_API_KEY`. `OLLAMA_API_KEY` is only required for the direct Cloud API route (`--cloud` / `/cloud on` when an API key is present) and web tools. Embedding indexes currently use local Ollama models only; a configured cloud embedding backend falls back to local until Ollama Cloud exposes embedding models.
 
-`--oneshot --json` emits one JSON object per line to stdout (NDJSON), suitable for subprocess consumption. `--approval-mode never` (default) denies approval-required tools and emits a `tool_denied` event; pass `--approval-mode auto` to grant them. Skill crystallization is disabled in one-shot mode. Event types: `session_start`, `thinking`, `content`, `tool_call`, `tool_result`, `tool_denied`, `error`, `done`. The bridge can rely on `session_start` first and `done` last as framing.
+`--oneshot --json` emits one JSON object per line to stdout (NDJSON), suitable
+for subprocess consumption. `--approval-mode never` (default) denies protected
+actions. `auto` grants only actions whose central policy allows session
+preapproval; it does not bypass action-time or handoff confirmation. The
+explicit `workspace` mode can authorize exact curated write, edit, batch-edit,
+and shell actions contained inside `--cwd` for that process. Non-workspace,
+external, memory, credential, plugin, destructive, and handoff actions remain
+ineligible, and safe-mode plus verification gates still apply. Skill
+crystallization is disabled in one-shot mode. Event types: `session_start`,
+`thinking`, `content`, `tool_call`, `tool_result`, `tool_denied`, `error`,
+`done`. The bridge can rely on `session_start` first and `done` last as framing.
 
 Runtime environment values can be stored in `~/.algo_cli/env` — the CLI loads them automatically. `algo-cli config` shows safe provider status, and `algo-cli config setup PROVIDER` writes only the selected setting with private file permissions. Point to a different file with `ALGO_CLI_ENV_FILE`. Legacy `~/.ollama_cli` locations are supported as migration aliases.
 

@@ -635,3 +635,25 @@ def test_oneshot_auto_cannot_bypass_action_time_confirmation(monkeypatch):
 
     oneshot.run_oneshot(prompt="x", approval_mode="auto", stream=io.StringIO())
     assert decisions == [("read_file", True), ("write_file", False), ("run_shell", False)]
+
+
+def test_oneshot_workspace_mode_is_process_local_and_does_not_persist(monkeypatch, tmp_path):
+    from algo_cli import main as main_module
+    from algo_cli.config import Config
+
+    cfg = Config(cwd=str(tmp_path), auto_mode=False)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(Config, "load", classmethod(lambda cls: cfg))
+
+    def _spy_agent_loop(_client, loaded_cfg, _msg):
+        captured["mode"] = getattr(loaded_cfg, "_nathan_approval_mode")
+        captured["auto"] = loaded_cfg.auto_mode
+
+    monkeypatch.setattr(main_module, "agent_loop", _spy_agent_loop)
+    monkeypatch.setattr(main_module, "create_client", lambda _cfg: object())
+
+    oneshot.run_oneshot(prompt="x", approval_mode="workspace", stream=io.StringIO())
+
+    assert captured == {"mode": "workspace", "auto": False}
+    assert cfg.auto_mode is False
+    assert not hasattr(cfg, "_nathan_approval_mode")

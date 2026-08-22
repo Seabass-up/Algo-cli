@@ -77,9 +77,14 @@ _NUMERIC_FIELDS = frozenset(
         "messages_compacted",
         "keep_messages",
         "capability_mask",
+        "legacy_tokens",
+        "candidate_tokens",
+        "sent_tokens",
+        "active_capsules",
+        "omitted_capsules",
     }
 )
-_BOOLEAN_FIELDS = frozenset({"cloud", "manual", "log_suppression"})
+_BOOLEAN_FIELDS = frozenset({"cloud", "manual", "log_suppression", "fallback"})
 _LABEL_FIELDS = frozenset(
     {
         "tool",
@@ -94,6 +99,8 @@ _LABEL_FIELDS = frozenset(
         "backend",
         "reason",
         "keep_alive",
+        "mode",
+        "sent_mode",
     }
 )
 _LIST_LABEL_FIELDS = frozenset({"capabilities", "fired_rules"})
@@ -158,6 +165,20 @@ _EVENT_FIELDS: dict[str, frozenset[str]] = {
             "schema_tokens",
             "full_schema_tokens",
             "reduction_pct",
+        }
+    ),
+    "prompt_capsules": frozenset(
+        {
+            "timestamp",
+            "mode",
+            "sent_mode",
+            "legacy_tokens",
+            "candidate_tokens",
+            "sent_tokens",
+            "reduction_pct",
+            "active_capsules",
+            "omitted_capsules",
+            "fallback",
         }
     ),
     "model_round": frozenset(

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from algo_cli.arthur_outcomes import OutcomeStatus, VerificationStatus
 from algo_cli.clara_effect_ledger import EffectLedger, EffectState
 from algo_cli.config import Config
+from algo_cli import execution_guardrails
 from algo_cli.henry_effect_control import TargetLeaseManager
 from algo_cli.james_dispatch import (
     DispatchCancellation,
@@ -137,6 +138,36 @@ def test_unknown_local_mutation_is_never_retried_automatically(monkeypatch, tmp_
     assert second.outcome.status is OutcomeStatus.SKIPPED
     assert invocations == ["remember"]
     assert len(prompts) == 1
+
+
+def test_closed_file_precondition_is_failed_not_unknown(tmp_path) -> None:
+    cfg = Config(cwd=str(tmp_path))
+    setattr(cfg, "_nathan_approval_mode", "workspace")
+    deps = _dependencies(
+        tmp_path,
+        lambda _name, _args, _cfg: (
+            f"Error: {tmp_path / 'existing.txt'} already exists. Re-run with overwrite=true if intended."
+        ),
+    )
+
+    scope = execution_guardrails.begin_execution_scope(tmp_path)
+    try:
+        result = dispatch_action(
+            "write_file",
+            {"path": str(tmp_path / "existing.txt"), "content": "replacement"},
+            cfg,
+            tool_call_id="write-precondition",
+            dependencies=deps,
+            render=False,
+        )
+    finally:
+        execution_guardrails.end_execution_scope(scope)
+
+    assert result.outcome.status is OutcomeStatus.FAILED
+    assert result.outcome.invoked is True
+    assert result.outcome.retry_allowed is True
+    assert result.outcome.error_code == "adapter_precondition_failed"
+    assert "Unknown outcome" not in result.result
 
 
 def test_external_effect_is_verified_and_deduplicated_by_call_id(monkeypatch, tmp_path) -> None:

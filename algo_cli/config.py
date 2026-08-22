@@ -2343,6 +2343,10 @@ class Config:
     code_rag_enabled: bool = False  # opt in to retrieving cfg.cwd source chunks each turn
     code_rag_consent_version: int = 0  # set only by explicit /code-rag on consent
     external_harness_sources_enabled: bool = False  # opt in to ~/.codex, ~/.claude, ~/.openclaw, etc.
+    # legacy sends the established interactive prompt; shadow assembles both
+    # and sends legacy; capsule sends the deterministic budgeted prompt with
+    # an automatic legacy fallback on registry or irreducible-core failure.
+    prompt_capsule_mode: str = "shadow"  # legacy | shadow | capsule
     reasoning_chat_enabled: bool = False  # run reasoning preflight in the chat loop, not just pipelines
     # --- Reasoning engine flags ---
     reasoning_mode: str = "react"  # react | reflexion | tot | got | mcts | qcr | neuro_symbolic | hybrid
@@ -2602,6 +2606,8 @@ class Config:
         # alias-aware routing was available. Canonicalize in memory on load so
         # startup cannot send Sol/Terra/Luna to the local Ollama provider.
         cfg.model = normalize_codex_model(cfg.model)
+        if cfg.prompt_capsule_mode.strip().casefold() not in {"legacy", "shadow", "capsule"}:
+            cfg.prompt_capsule_mode = "shadow"
         # Refresh only the exact prompt shipped by older releases. User-authored
         # system prompts are preserved verbatim.
         if cfg.system == LEGACY_DEFAULT_SYSTEM:

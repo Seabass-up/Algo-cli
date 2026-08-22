@@ -30,7 +30,7 @@ def catalog_for_prompt() -> str:
         "When to use common slash commands:",
         "  - /status or /info: check active model, cwd, context, and toggles before giving configuration advice.",
         "  - /mode execute|explore|publish: switch operating posture only when the user's task clearly needs it or they ask.",
-        "  - /context status|rebuild|clear: inspect or repair compressed context when context quality/length is the issue.",
+        "  - /context status|explain|capsules|rebuild|clear: inspect prompt selection or repair compressed context.",
         "  - /reason status|guide: inspect the active reasoning posture or show mode guidance before changing it.",
         "  - /reason react|reflexion|tot|got|mcts|qcr|neuro_symbolic: change reasoning posture for complex work only; do not switch modes for routine reads/edits.",
         "    Use react for normal tool loops, reflexion after failed/partial attempts, tot/got/mcts for ambiguous multi-path planning, qcr for comparing candidate solutions, and neuro_symbolic for verification-heavy logic/code claims.",
