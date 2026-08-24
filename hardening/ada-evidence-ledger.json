@@ -2586,6 +2586,15 @@
           "timestamp": "2026-07-20T10:58:57Z",
           "scope": "current modified Rust indexer and Go gateway sources, lockfiles, race behavior, security boundaries, and live advisory databases using temporary audit-tool roots",
           "limitations": "local macOS execution does not replace hosted Linux coverage; advisory databases and the locally installed Go driver are time-varying, while the module and CI still pin Go 1.26.5"
+        },
+        {
+          "kind": "audit",
+          "path_or_command": "harness-gateway/go.mod toolchain go1.26.6; CI setup-go 1.26.6; go test -race/coverage/vet; govulncheck 1.6.0",
+          "digest": "",
+          "result": "hosted scan correctly blocked Go 1.26.5 on five reachable standard-library vulnerabilities fixed in Go 1.26.6; exact-toolchain local regression and rescan pass",
+          "timestamp": "2026-08-24T02:37:25Z",
+          "scope": "GO-2026-6218, GO-2026-6090, GO-2026-6089, GO-2026-5972, and GO-2026-5026 across the loopback gateway HTTP client and server paths, plus the existing race, vet, and 67.5 percent coverage gates",
+          "limitations": "the local rescan is point-in-time advisory evidence; hosted Linux must requalify the exact commit and the recurring vulnerability gate remains mandatory"
         }
       ]
     },
@@ -3146,11 +3155,11 @@
         },
         {
           "kind": "qualification",
-          "path_or_command": ".venv/bin/python scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json after hosted Windows dependency-audit and daemon-import repair",
-          "digest": "sha256:fa29b02ee99bebe7fbd13b60090f289ae58a149a06a88fce52b815d16c62b750",
+          "path_or_command": ".venv/bin/python scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json after hosted dependency, Windows daemon-import, and Go 1.26.6 repair",
+          "digest": "sha256:0fbdf97a39f85cc21ae8f692b5f6a8a5b915d27b00e2b530e5de86940e2abf21",
           "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, and public_claim_eligible is false",
-          "timestamp": "2026-08-24T02:29:26Z",
-          "scope": "source digest sha256:5c8b6e5118806b6ba9333c3f970dec0d2e6e565debd9116b79d8add30cce43b9 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind 38 privileged policy classes, 10000 stale-target races at p50/p95 4.296/4.619 ms, 1000 fresh postconditions at p50/p95 5.699/6.037 ms, 84.085 percent median schema reduction, 96.644 percent typed-program reduction, and the focused adversarial suite",
+          "timestamp": "2026-08-24T02:40:14Z",
+          "scope": "source digest sha256:1a2a8efdb4309f13ea3aa50ed7dc24bca6bb833045a60fbbd465d8425680c30d and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind 38 privileged policy classes, 10000 stale-target races at p50/p95 4.320/4.674 ms, 1000 fresh postconditions at p50/p95 5.730/6.058 ms, 84.085 percent median schema reduction, 96.644 percent typed-program reduction, and the focused adversarial suite",
           "limitations": "finite local model-free evidence does not prove production browser completion, selected-Chrome behavior, semantic-route or screenshot efficiency, current registry-backed browser freshness, live provider/model quality, authenticated host attestation, signed XPC/TCC, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, HARD-080 remains in progress, the active freeze remains in force, and public_claim_eligible is false"
         }
       ]
@@ -3802,11 +3811,11 @@
         },
         {
           "kind": "benchmark",
-          "path_or_command": "hardening/grace-m8-local-qualification.json after hosted Windows dependency-audit and daemon-import repair",
-          "digest": "sha256:fa29b02ee99bebe7fbd13b60090f289ae58a149a06a88fce52b815d16c62b750",
+          "path_or_command": "hardening/grace-m8-local-qualification.json after hosted dependency, Windows daemon-import, and Go 1.26.6 repair",
+          "digest": "sha256:0fbdf97a39f85cc21ae8f692b5f6a8a5b915d27b00e2b530e5de86940e2abf21",
           "result": "status blocked: current source-bound local measurements retain exact source and fixture digests, denominators, Wilson 95 percent intervals, p50/p95, 9 local passes, 5 production-browser blocks, zero failed or not-verified metrics, and public_claim_eligible is false",
-          "timestamp": "2026-08-24T02:29:26Z",
-          "scope": "five model-free efficiency repetitions measure 84.085 percent median tool-schema reduction and 96.644 percent typed-program reduction; stale-target p50/p95 are 4.296/4.619 ms and fresh-postcondition p50/p95 are 5.699/6.037 ms; the source-bound Nathan artifact, exact final-green Echo dependency identity, authenticated 46-file source snapshot, and current M8 corpus remained stable across the qualification window",
+          "timestamp": "2026-08-24T02:40:14Z",
+          "scope": "five model-free efficiency repetitions measure 84.085 percent median tool-schema reduction and 96.644 percent typed-program reduction; stale-target p50/p95 are 4.320/4.674 ms and fresh-postcondition p50/p95 are 5.730/6.058 ms; the source-bound Nathan artifact, exact final-green Echo dependency identity, authenticated 46-file source snapshot, and current M8 corpus remained stable across the qualification window",
           "limitations": "synthetic local measurements do not prove live task completion, model quality, semantic-route share, screenshot reduction, confirmation count, provider latency, production concurrency SLOs, future hosted stability, authenticated host attestation, production-signed XPC/TCC readiness, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, HARD-081 stays in progress, the active freeze forbids public benchmark claims, and public_claim_eligible is false"
         }
       ]

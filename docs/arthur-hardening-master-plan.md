@@ -809,10 +809,12 @@ The Python lock, build backend, build/audit tools, Rust toolchain, Go toolchain,
 and external GitHub Actions are exact-version or commit pinned. CI now requires
 Python dependency audit, Rust format/clippy/tests/RustSec audit, Go race tests,
 at least 60 percent gateway coverage, vet, and `govulncheck`. The first live Go
-scan found the workflow's Go 1.26.4 standard library affected by GO-2026-5856;
-the workflow and gateway module now pin Go 1.26.5, ordinary module-local Go
-commands self-select that fixed toolchain, and the rescan reports no known
-vulnerabilities. A deterministic CycloneDX 1.5 artifact records the locked
+scan found the workflow's Go 1.26.4 standard library affected by GO-2026-5856,
+and a later recurring scan found Go 1.26.5 affected by GO-2026-6218,
+GO-2026-6090, GO-2026-6089, GO-2026-5972, and GO-2026-5026. The workflow and
+gateway module now pin Go 1.26.6, ordinary module-local Go commands self-select
+that fixed toolchain, and the rescan reports no known reachable vulnerabilities.
+A deterministic CycloneDX 1.5 artifact records the locked
 runtime resolution, not every unconstrained installer resolution and not
 dependencies embedded in the wheel. Wheel/sdist checksums, Twine validation,
 public-content scan, and isolated wheel smoke pass locally. Release provenance

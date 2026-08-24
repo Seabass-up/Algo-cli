@@ -494,8 +494,8 @@ def test_ci_uses_frozen_lock_native_security_gates_and_separate_publish_artifact
     assert 'version: "0.11.26"' in ci
     assert "cargo clippy" in ci and "cargo audit" in ci
     assert "go test -race" in ci and "govulncheck ./..." in ci
-    assert 'go-version: "1.26.5"' in ci
-    assert "toolchain go1.26.5" in gateway_module
+    assert 'go-version: "1.26.6"' in ci
+    assert "toolchain go1.26.6" in gateway_module
     assert "name: macOS native boundary" in ci
     assert "runs-on: macos-15" in ci
     assert "swift test --package-path native/austin" in ci
