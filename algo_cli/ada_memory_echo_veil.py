@@ -46,10 +46,10 @@ from .config import CONFIG_DIR, _load_json_file
 logger = logging.getLogger(__name__)
 
 SUPPORTED_ECHO_VEIL_MIN = (0, 6, 0)
-SUPPORTED_ECHO_VEIL_MAX_EXCLUSIVE = (0, 8, 0)
-QUALIFIED_ECHO_VEIL_VERSION = "0.7.0"
+SUPPORTED_ECHO_VEIL_MAX_EXCLUSIVE = (0, 9, 0)
+QUALIFIED_ECHO_VEIL_VERSION = "0.8.0"
 QUALIFIED_ECHO_VEIL_REPOSITORY = "https://github.com/Seabass-up/echo-veil.git"
-QUALIFIED_ECHO_VEIL_COMMIT = "aaf8497ddbe33dac2f79e7f02cbce2cb26f706eb"
+QUALIFIED_ECHO_VEIL_COMMIT = "879200fa2e16a1d59f6af011f26e5c7538c482a7"
 DEFAULT_ECHO_PROFILE = "echo-universal-qwen3-v1"
 DEFAULT_ECHO_SCOPE = "local-user"
 DEFAULT_ECHO_DIMENSION = 1024
@@ -607,10 +607,10 @@ class EchoVeilMemoryLayer:
             raise RuntimeError("Echo Veil is not installed in the Algo CLI runtime")
         if not _version_supported():
             raise RuntimeError(
-                "Echo Veil must be a matching supported non-editable distribution in the >=0.6.0,<0.8.0 range"
+                "Echo Veil must be a matching supported non-editable distribution in the >=0.6.0,<0.9.0 range"
             )
         if protection_required(config) and not _qualified_runtime_identity():
-            raise RuntimeError("required Echo Veil protection needs the exact qualified 0.7.0 VCS identity")
+            raise RuntimeError("required Echo Veil protection needs the exact qualified 0.8.0 VCS identity")
         if not _enabled(config):
             raise RuntimeError("Echo Veil is not enabled")
         self.config = config

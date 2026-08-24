@@ -26,16 +26,16 @@ second implementation. Adding another adapter is a security regression.
 ## Runtime identity and policy
 
 Optional mode accepts Echo Veil only when the imported source version and
-installed distribution metadata match in `>=0.6.0,<0.8.0`; editable and
+installed distribution metadata match in `>=0.6.0,<0.9.0`; editable and
 unpinned direct-URL or local-directory installs are rejected. Required mode is
-stricter: PEP 610 metadata must bind version `0.7.0`, the canonical upstream
+stricter: PEP 610 metadata must bind version `0.8.0`, the canonical upstream
 repository, requested revision, and resolved commit to
-`aaf8497ddbe33dac2f79e7f02cbce2cb26f706eb`. A same-version registry wheel,
+`879200fa2e16a1d59f6af011f26e5c7538c482a7`. A same-version registry wheel,
 archive, different repository, or different commit does not satisfy required
 protection.
 
-The development/runtime candidate is pinned to Echo Veil 0.7.0 commit
-`aaf8497ddbe33dac2f79e7f02cbce2cb26f706eb` through the
+The development/runtime candidate is pinned to Echo Veil 0.8.0 commit
+`879200fa2e16a1d59f6af011f26e5c7538c482a7` through the
 `algo-cli-runtime[echo-veil]` extra. This source pin is qualification evidence,
 not a public Echo Veil release or a production-readiness claim.
 
@@ -197,7 +197,7 @@ checkout instead of a stale installed package. The source pin is
 mechanically visible in both dependency files with:
 
 ```bash
-rg -n "aaf8497ddbe33dac2f79e7f02cbce2cb26f706eb" pyproject.toml uv.lock
+rg -n "879200fa2e16a1d59f6af011f26e5c7538c482a7" pyproject.toml uv.lock
 .venv/bin/python scripts/henry_echo_veil_dependency_audit.py
 ```
 
@@ -208,7 +208,7 @@ and `production_ready=false`. However, its archive origin was not the committed
 VCS lock and its installed Algo adapter differed from this checkout. That
 runtime is useful local-staging evidence, but it is not reproducible parity and
 does not satisfy the installed-release gate. The project virtual environment
-now resolves Echo `0.7.0` from the exact locked commit and passes a PEP 610 plus
+now resolves Echo `0.8.0` from the exact locked commit and passes a PEP 610 plus
 wheel-RECORD content audit; an isolated clean Algo wheel remains required.
 
 The runtime tool registry separately passed its curated-authority audit with

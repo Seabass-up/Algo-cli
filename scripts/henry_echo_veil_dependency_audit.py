@@ -35,8 +35,8 @@ from algo_cli.ada_echo_veil_identity import (  # noqa: E402
 PROJECT_PATH = ROOT / "pyproject.toml"
 LOCK_PATH = ROOT / "uv.lock"
 EXPECTED_NAME = "echo-veil"
-EXPECTED_VERSION = "0.7.0"
-EXPECTED_COMMIT = "aaf8497ddbe33dac2f79e7f02cbce2cb26f706eb"
+EXPECTED_VERSION = "0.8.0"
+EXPECTED_COMMIT = "879200fa2e16a1d59f6af011f26e5c7538c482a7"
 EXPECTED_REPOSITORY = "https://github.com/Seabass-up/echo-veil.git"
 EXPECTED_REQUIREMENT = f"echo-veil @ git+{EXPECTED_REPOSITORY}@{EXPECTED_COMMIT}"
 MAX_METADATA_BYTES = 2 * 1024 * 1024

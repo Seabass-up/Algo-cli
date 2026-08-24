@@ -3125,6 +3125,24 @@
           "timestamp": "2026-08-24T00:41:54Z",
           "scope": "source digest sha256:fca7531768cc15f458ae1ecb17871f07eeb1f65f5c88e16629ad21bc8b6fb1d8 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind the current qualification corpus, 38 privileged policy classes, 10000 stale-target races with 0 dispatches and 0 mutations, 1000 unknown outcomes with 0 redispatches, 1000 malformed programs, 1000 privacy canaries, 100000 malformed frames, 1000 fresh postconditions, and the focused adversarial suite; stale-target p50/p95 are 4.517/7.509 ms and fresh-postcondition p50/p95 are 6.166/9.323 ms",
           "limitations": "finite local model-free evidence does not prove production browser completion, selected-Chrome behavior, semantic-route or screenshot efficiency, current registry-backed browser freshness, live provider/model quality, authenticated host attestation, signed XPC/TCC, power-loss recovery, or cross-harness superiority; the live Echo profile remains blocked by qualified-reader/profile compatibility and was not downgraded or rewritten; five production-browser metrics remain blocked, HARD-080 remains in progress, the active freeze remains in force, and public_claim_eligible is false"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": ".venv/bin/python live Algo Echo readiness and harness scorecard probe after exact 0.8.0 repin",
+          "digest": "sha256:10633f9264640d3022234a19708b06c5851428722ac33a7739873e8b934cd3d7",
+          "result": "pass: the exact qualified 0.8.0 VCS identity initializes the existing live profile with all records shielded, restart restoration true, and write, retrieval, and persistence stages true; the project memory/wiki scorecard gate passes without rewriting or downgrading the profile",
+          "timestamp": "2026-08-24T01:49:27Z",
+          "scope": "Echo commit 879200fa2e16a1d59f6af011f26e5c7538c482a7, package and distribution version 0.8.0, 46-file authenticated Python source tree, live profile echo-universal-qwen3-v1, scope local-user, and lifecycle-aware scorecard probe",
+          "limitations": "the live profile remains host-trusted local protection with production_ready false and optional configured policy; this probe does not prove enclave deployment, independent cryptographic review, provider/model quality, cross-harness superiority, or any production-browser metric; HARD-080 remains in progress and the active freeze remains in force"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": ".venv/bin/python scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json after Echo 0.8.0 compatibility repin",
+          "digest": "sha256:5f79186cb7b2890ffcfd52f9efe900e2c70c06ed3937b4bad17f2fc677273684",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-08-24T01:47:55Z",
+          "scope": "source digest sha256:fca6b0286b30c84103e5e1cd26113fd4d7ca6b29d26ea8ba1a416e64bd50ef8c and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind 38 privileged policy classes, 10000 stale-target races at p50/p95 4.293/4.603 ms, 1000 fresh postconditions at p50/p95 5.685/7.611 ms, 84.085 percent median schema reduction, 96.644 percent typed-program reduction, and the focused adversarial suite",
+          "limitations": "finite local model-free evidence does not prove production browser completion, selected-Chrome behavior, semantic-route or screenshot efficiency, current registry-backed browser freshness, live provider/model quality, authenticated host attestation, signed XPC/TCC, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, HARD-080 remains in progress, the active freeze remains in force, and public_claim_eligible is false"
         }
       ]
     },
@@ -3745,6 +3763,24 @@
           "timestamp": "2026-08-24T00:41:54Z",
           "scope": "five model-free efficiency repetitions measure 84.085 percent median tool-schema reduction and 96.644 percent typed-program reduction; stale-target p50/p95 are 4.517/7.509 ms and fresh-postcondition p50/p95 are 6.166/9.323 ms; the source-bound Nathan artifact and current M8 corpus remained stable across the full qualification window",
           "limitations": "synthetic local measurements do not prove live task completion, model quality, semantic-route share, screenshot reduction, confirmation count, provider latency, production concurrency SLOs, future hosted stability, authenticated host attestation, production-signed XPC/TCC readiness, power-loss recovery, or cross-harness superiority; the live Echo profile remains blocked by qualified-reader/profile compatibility and was not downgraded or rewritten; five production-browser metrics remain blocked, HARD-081 stays in progress, the active freeze forbids public benchmark claims, and public_claim_eligible is false"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json verified by scripts/nathan_agent_runtime_qualification.py after Echo 0.8.0 compatibility repin",
+          "digest": "sha256:4693eedde7e730d8c3648b61d2584f4a0ec4a8b41734cd2b69de9470a2026511",
+          "result": "status pass: 17 of 17 adversarial Agent runtime probes and 31 of 31 frozen workloads pass with 100 percent task, verifier, crash-resume, protocol, and context-usefulness rates, zero policy escapes, unverified completions, or duplicate mutations, and public_claim_eligible is false",
+          "timestamp": "2026-08-24T01:47:03Z",
+          "scope": "source digest sha256:1c4bfa9cdfefa6ce7b182704ac5a050d7ab917bf3c73afc65c3a88f19e38b474 and report digest sha256:c7de1036ee69ef06dd8f3a6f18ec2ff498d22eb24a097cc09729b78c1886d58a bind 17 protected/runtime probes, 101 contract samples at p50/p95 0.261375/0.285458 ms, 101 broker samples at 0.040500/0.048417 ms, 31 checkpoint samples at 9.484041/9.755417 ms, and 31 workload samples at 25.470917/33.057958 ms total and 4.106125/5.122916 ms to first Agent event",
+          "limitations": "deterministic local model-free fixtures, temporary files, injected static key and anchor stores, and a self-reported non-attested operating-system label do not prove model intelligence, live provider latency, production Keychain behavior, production concurrency SLOs, process or power-loss recovery, future hosted stability, or superiority over another harness; HARD-081 remains in progress, the active freeze forbids public benchmark claims, and public_claim_eligible is false"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json after Echo 0.8.0 compatibility repin",
+          "digest": "sha256:5f79186cb7b2890ffcfd52f9efe900e2c70c06ed3937b4bad17f2fc677273684",
+          "result": "status blocked: current source-bound local measurements retain exact source and fixture digests, denominators, Wilson 95 percent intervals, p50/p95, 9 local passes, 5 production-browser blocks, zero failed or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-08-24T01:47:55Z",
+          "scope": "five model-free efficiency repetitions measure 84.085 percent median tool-schema reduction and 96.644 percent typed-program reduction; stale-target p50/p95 are 4.293/4.603 ms and fresh-postcondition p50/p95 are 5.685/7.611 ms; the source-bound Nathan artifact, exact Echo 0.8.0 dependency identity, live profile compatibility probe, and current M8 corpus remained stable across the qualification window",
+          "limitations": "synthetic local measurements do not prove live task completion, model quality, semantic-route share, screenshot reduction, confirmation count, provider latency, production concurrency SLOs, future hosted stability, authenticated host attestation, production-signed XPC/TCC readiness, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, HARD-081 stays in progress, the active freeze forbids public benchmark claims, and public_claim_eligible is false"
         }
       ]
     },

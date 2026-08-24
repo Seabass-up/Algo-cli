@@ -48,7 +48,7 @@ def test_repository_and_installed_echo_dependency_pass() -> None:
     workflow = (ROOT / ".github/workflows/oliver-ci.yml").read_text(encoding="utf-8")
 
     assert report["passed"] is True
-    assert report["version"] == "0.7.0"
+    assert report["version"] == "0.8.0"
     assert report["commit"] == SCRIPT.EXPECTED_COMMIT
     assert report["verified_python_files"] > 0
     assert report["verified_module_origins"] == 2
@@ -165,7 +165,7 @@ def test_shadow_package_cannot_borrow_trusted_distribution_identity(tmp_path: Pa
     (shadow / "__init__.py").write_text(
         "from pathlib import Path\n"
         f"Path({str(poison)!r}).write_text('poison', encoding='utf-8')\n"
-        '__version__ = "0.7.0"\n',
+        f'__version__ = "{SCRIPT.EXPECTED_VERSION}"\n',
         encoding="utf-8",
     )
     (shadow / "agent_memory.py").write_text("AgentMemory = object\n", encoding="utf-8")

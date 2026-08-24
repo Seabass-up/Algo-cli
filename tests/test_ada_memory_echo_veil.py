@@ -26,8 +26,8 @@ def _supported(monkeypatch: pytest.MonkeyPatch, module: object) -> None:
     monkeypatch.setattr(module, "ECHO_VEIL_AVAILABLE", True)
     monkeypatch.setattr(module, "ECHO_VEIL_IMPORT_ERROR", "")
     monkeypatch.setattr(module, "ECHO_VEIL_MODULE_IDENTITY_VERIFIED", True)
-    monkeypatch.setattr(module, "ECHO_VEIL_SOURCE_VERSION", "0.7.0")
-    monkeypatch.setattr(module, "ECHO_VEIL_DISTRIBUTION_VERSION", "0.7.0")
+    monkeypatch.setattr(module, "ECHO_VEIL_SOURCE_VERSION", module.QUALIFIED_ECHO_VEIL_VERSION)
+    monkeypatch.setattr(module, "ECHO_VEIL_DISTRIBUTION_VERSION", module.QUALIFIED_ECHO_VEIL_VERSION)
     monkeypatch.setattr(module, "ECHO_VEIL_INSTALLATION_KIND", "vcs-pinned")
     monkeypatch.setattr(
         module,
@@ -136,7 +136,7 @@ def test_static_echo_config_loader_rejects_fifo_without_blocking(
 
 def test_echo_dependency_is_commit_pinned_and_exercised_in_ci() -> None:
     root = Path(__file__).resolve().parents[1]
-    pin = "aaf8497ddbe33dac2f79e7f02cbce2cb26f706eb"
+    pin = "879200fa2e16a1d59f6af011f26e5c7538c482a7"
     project = (root / "pyproject.toml").read_text(encoding="utf-8")
     lock = (root / "uv.lock").read_text(encoding="utf-8")
     workflow = (root / ".github/workflows/oliver-ci.yml").read_text(encoding="utf-8")
@@ -456,8 +456,8 @@ def test_readiness_rejects_unreviewed_future_echo_veil_api(
     from algo_cli import memory_echo_veil
 
     _supported(monkeypatch, memory_echo_veil)
-    monkeypatch.setattr(memory_echo_veil, "ECHO_VEIL_SOURCE_VERSION", "0.8.0")
-    monkeypatch.setattr(memory_echo_veil, "ECHO_VEIL_DISTRIBUTION_VERSION", "0.8.0")
+    monkeypatch.setattr(memory_echo_veil, "ECHO_VEIL_SOURCE_VERSION", "0.9.0")
+    monkeypatch.setattr(memory_echo_veil, "ECHO_VEIL_DISTRIBUTION_VERSION", "0.9.0")
 
     readiness = memory_echo_veil.get_echo_veil_readiness(
         {
@@ -2020,7 +2020,7 @@ package.__path__ = [str(package_file.parent)]
 package.__spec__ = importlib.util.spec_from_file_location(
     "echo_veil", package_file, submodule_search_locations=[str(package_file.parent)]
 )
-package.__version__ = "0.7.0"
+package.__version__ = "0.8.0"
 agent = types.ModuleType("echo_veil.agent_memory")
 agent.__file__ = str(agent_file)
 agent.__spec__ = importlib.util.spec_from_file_location("echo_veil.agent_memory", agent_file)
@@ -2232,7 +2232,7 @@ print(json.dumps({
     assert json.loads(completed.stdout) == {
         "owned": True,
         "poison_executed": False,
-        "version": "0.7.0",
+        "version": "0.8.0",
     }
 
 
