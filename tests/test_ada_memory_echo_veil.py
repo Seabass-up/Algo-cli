@@ -136,7 +136,7 @@ def test_static_echo_config_loader_rejects_fifo_without_blocking(
 
 def test_echo_dependency_is_commit_pinned_and_exercised_in_ci() -> None:
     root = Path(__file__).resolve().parents[1]
-    pin = "879200fa2e16a1d59f6af011f26e5c7538c482a7"
+    pin = "271ebaa959aabd7a83cf338d30cd0fa1c7338488"
     project = (root / "pyproject.toml").read_text(encoding="utf-8")
     lock = (root / "uv.lock").read_text(encoding="utf-8")
     workflow = (root / ".github/workflows/oliver-ci.yml").read_text(encoding="utf-8")
