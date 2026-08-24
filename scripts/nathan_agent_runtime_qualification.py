@@ -83,7 +83,10 @@ def verify_artifact(
             require_current_source=True,
         )
     except benchmark.AgentRuntimeBenchmarkError as exc:
-        raise AgentRuntimeQualificationError(str(exc)) from exc
+        detail = str(exc)
+        if "source digest is stale" in detail:
+            detail += "; refresh with scripts/nathan_agent_runtime_qualification.py --refresh"
+        raise AgentRuntimeQualificationError(detail) from exc
     if report["status"] != "pass":
         raise AgentRuntimeQualificationError("qualification artifact does not pass")
     return report

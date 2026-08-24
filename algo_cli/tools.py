@@ -1801,6 +1801,221 @@ def x_search(
     return _cap("\n".join(out_parts))
 
 
+# ---------------------------------------------------------------------------
+# Browser tools (local Camoufox service at localhost:9377)
+# ---------------------------------------------------------------------------
+
+_BROWSER_UNAVAILABLE = (
+    "Browser service is not available. Start the Camoufox service at "
+    "http://localhost:9377 or set ALGO_BROWSER_URL. Run /doctor for diagnostics."
+)
+
+
+def _browser_guard() -> str | None:
+    """Return an error string if the browser service is unreachable."""
+    from . import cobalt_browser_service
+
+    if not cobalt_browser_service.is_available():
+        return _BROWSER_UNAVAILABLE
+    return None
+
+
+def cobalt_open(url: str) -> str:
+    """Open a URL in the local Camoufox browser and return the tab ID.
+
+    The browser service runs at http://localhost:9377 by default
+    (override with ALGO_BROWSER_URL).  Use cobalt_snapshot or
+    cobalt_screenshot to inspect the page after opening.
+
+    Args:
+        url: The URL to navigate to.
+    """
+    from . import cobalt_browser_service
+
+    guard = _browser_guard()
+    if guard:
+        return guard
+    result = cobalt_browser_service.open_tab(url)
+    if "error" in result:
+        return f"Error opening browser tab: {result['error']}"
+    tab_id = result.get("tabId", "")
+    final_url = result.get("url", url)
+    return f"Opened tab {tab_id} at {final_url}. Use cobalt_snapshot or cobalt_screenshot to inspect the page."
+
+
+def cobalt_snapshot(tab_id: str) -> str:
+    """Get an accessibility-tree snapshot of a browser tab.
+
+    The snapshot lists interactive elements with ref IDs (e.g. ``e1``,
+    ``e2``) that can be used with cobalt_click and cobalt_type.
+
+    Args:
+        tab_id: The tab ID from a previous cobalt_open call.
+    """
+    from . import cobalt_browser_service
+
+    guard = _browser_guard()
+    if guard:
+        return guard
+    result = cobalt_browser_service.snapshot(tab_id)
+    if "error" in result:
+        return f"Error getting snapshot: {result['error']}"
+    snapshot_text = result.get("snapshot", "")
+    refs = result.get("refsCount", 0)
+    page_url = result.get("url", "")
+    truncated = result.get("truncated", False)
+    header = f"URL: {page_url}\nRefs: {refs}"
+    if truncated:
+        total = result.get("totalChars", 0)
+        header += f" (truncated from {total} chars)"
+    return _cap(f"{header}\n\n{snapshot_text}")
+
+
+def cobalt_screenshot(tab_id: str) -> str:
+    """Capture a screenshot of a browser tab and describe it via vision.
+
+    The screenshot is fetched from the browser service and analyzed with
+    the configured Ollama vision model.
+
+    Args:
+        tab_id: The tab ID from a previous cobalt_open call.
+    """
+    from . import cobalt_browser_service
+
+    guard = _browser_guard()
+    if guard:
+        return guard
+    result = cobalt_browser_service.screenshot(tab_id)
+    if "error" in result:
+        return f"Error getting screenshot: {result['error']}"
+    # Save to a temp file for vision_describe
+    import tempfile
+
+    data = result.get("data", b"")
+    if not data:
+        return "Error: browser service returned empty screenshot."
+    suffix = ".png"
+    fd, tmp_path = tempfile.mkstemp(suffix=suffix, prefix="cobalt_screenshot_")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        return vision_describe(tmp_path)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+def cobalt_navigate(tab_id: str, url: str) -> str:
+    """Navigate an existing browser tab to a new URL.
+
+    Args:
+        tab_id: The tab ID to navigate.
+        url: The new URL to load.
+    """
+    from . import cobalt_browser_service
+
+    guard = _browser_guard()
+    if guard:
+        return guard
+    result = cobalt_browser_service.navigate(tab_id, url)
+    if "error" in result:
+        return f"Error navigating: {result['error']}"
+    new_url = result.get("url", url)
+    refs = result.get("refsAvailable", False)
+    hint = " Call cobalt_snapshot to see the page structure." if refs else ""
+    return f"Navigated to {new_url}.{hint}"
+
+
+def cobalt_click(tab_id: str, ref: str | None = None, selector: str | None = None) -> str:
+    """Click an element in a browser tab by accessibility ref or CSS selector.
+
+    Call cobalt_snapshot first to find available refs (e.g. ``e1``, ``e2``).
+
+    Args:
+        tab_id: The tab ID from a previous cobalt_open call.
+        ref: The accessibility ref ID from the snapshot (e.g. ``e1``).
+        selector: A CSS selector as an alternative to ref.
+    """
+    from . import cobalt_browser_service
+
+    guard = _browser_guard()
+    if guard:
+        return guard
+    result = cobalt_browser_service.click(tab_id, ref=ref, selector=selector)
+    if "error" in result:
+        hint = ""
+        if result.get("retryable"):
+            hint = " Call cobalt_snapshot to see the current state and retry."
+        return f"Error clicking: {result['error']}.{hint}"
+    refs = result.get("refsAvailable", False)
+    hint = " Call cobalt_snapshot to see the new page." if refs else ""
+    return f"Clicked {ref or selector}.{hint}"
+
+
+def cobalt_type(tab_id: str, text: str, ref: str | None = None, selector: str | None = None) -> str:
+    """Type text into a fillable element in a browser tab.
+
+    The element must be identified by accessibility ref (from cobalt_snapshot)
+    or CSS selector.
+
+    Args:
+        tab_id: The tab ID from a previous cobalt_open call.
+        text: The text to type into the field.
+        ref: The accessibility ref ID from the snapshot (e.g. ``e1``).
+        selector: A CSS selector as an alternative to ref.
+    """
+    from . import cobalt_browser_service
+
+    guard = _browser_guard()
+    if guard:
+        return guard
+    result = cobalt_browser_service.type_text(tab_id, text, ref=ref, selector=selector)
+    if "error" in result:
+        hint = ""
+        if result.get("retryable"):
+            hint = " Call cobalt_snapshot to see the current state and retry."
+        return f"Error typing: {result['error']}.{hint}"
+    return f"Typed {len(text)} characters into {ref or selector}."
+
+
+def cobalt_scroll(tab_id: str, direction: str = "down", amount: int = 3) -> str:
+    """Scroll a browser tab in a direction.
+
+    Args:
+        tab_id: The tab ID from a previous cobalt_open call.
+        direction: Direction to scroll: up, down, left, or right.
+        amount: Scroll amount (1-20 ticks).
+    """
+    from . import cobalt_browser_service
+
+    guard = _browser_guard()
+    if guard:
+        return guard
+    result = cobalt_browser_service.scroll(tab_id, direction=direction, amount=amount)
+    if "error" in result:
+        return f"Error scrolling: {result['error']}"
+    return f"Scrolled {direction} by {amount}."
+
+
+def cobalt_close(tab_id: str) -> str:
+    """Close a browser tab.
+
+    Args:
+        tab_id: The tab ID to close.
+    """
+    from . import cobalt_browser_service
+
+    guard = _browser_guard()
+    if guard:
+        return guard
+    result = cobalt_browser_service.close_tab(tab_id)
+    if "error" in result:
+        return f"Error closing tab: {result['error']}"
+    return f"Closed tab {tab_id}."
+
+
 def _windows_reparse_entry_is_directory(information: os.stat_result) -> bool:
     return stat.S_ISDIR(information.st_mode) or bool(
         int(getattr(information, "st_file_attributes", 0)) & int(getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0x10))
@@ -3069,6 +3284,16 @@ def available_actions(topic: str | None = None) -> str:
         ],
         "shell": ["run_shell"],
         "web": ["web_search", "web_fetch"],
+        "browser": [
+            "cobalt_open",
+            "cobalt_snapshot",
+            "cobalt_screenshot",
+            "cobalt_navigate",
+            "cobalt_click",
+            "cobalt_type",
+            "cobalt_scroll",
+            "cobalt_close",
+        ],
         "xai": ["x_search"],
         "x_account": [
             "x_account_status",
@@ -4938,6 +5163,14 @@ ALL_TOOLS = [
     web_search,
     web_fetch,
     _hide_cfg_param(x_search),
+    cobalt_open,
+    cobalt_snapshot,
+    cobalt_screenshot,
+    cobalt_navigate,
+    cobalt_click,
+    cobalt_type,
+    cobalt_scroll,
+    cobalt_close,
     x_account_status,
     x_account_draft_post,
     x_account_draft_reply,

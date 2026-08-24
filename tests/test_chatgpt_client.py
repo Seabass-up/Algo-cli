@@ -447,15 +447,65 @@ def test_responses_input_drops_tool_outputs_without_explicit_call_id_for_duplica
     assert not [item for item in built if item.get("type") == "function_call_output"]
 
 
-def test_codex_responses_stream_drops_nameless_tool_calls():
+def test_codex_responses_stream_rejects_nameless_tool_calls_as_empty():
     events = [
         {"type": "response.function_call_arguments.delta", "call_id": "call_bad", "delta": "{\"command\":\"/status\"}"},
         "[DONE]",
     ]
 
+    with pytest.raises(
+        chatgpt_client.ChatGptOAuthAccessError,
+        match="without text or a valid tool call",
+    ):
+        list(chatgpt_client._stream_codex_responses_iter(_FakeStreamResponse(events)))
+
+
+def test_codex_responses_stream_rejects_empty_completion():
+    with pytest.raises(
+        chatgpt_client.ChatGptOAuthAccessError,
+        match="without text or a valid tool call",
+    ):
+        list(chatgpt_client._stream_codex_responses_iter(_FakeStreamResponse(["[DONE]"])))
+
+
+def test_codex_responses_stream_surfaces_failed_event():
+    events = [
+        {
+            "type": "response.failed",
+            "response": {
+                "error": {"code": "server_error", "message": "upstream unavailable"}
+            },
+        }
+    ]
+
+    with pytest.raises(
+        chatgpt_client.ChatGptOAuthAccessError,
+        match="response.failed.*server_error.*upstream unavailable",
+    ):
+        list(chatgpt_client._stream_codex_responses_iter(_FakeStreamResponse(events)))
+
+
+def test_codex_responses_stream_surfaces_incomplete_event():
+    events = [
+        {
+            "type": "response.incomplete",
+            "response": {"incomplete_details": {"reason": "max_output_tokens"}},
+        }
+    ]
+
+    with pytest.raises(
+        chatgpt_client.ChatGptOAuthAccessError,
+        match="response.incomplete.*max_output_tokens",
+    ):
+        list(chatgpt_client._stream_codex_responses_iter(_FakeStreamResponse(events)))
+
+
+def test_codex_responses_stream_accepts_final_only_text():
+    events = [{"type": "response.output_text.done", "text": "Final answer"}, "[DONE]"]
+
     chunks = list(chatgpt_client._stream_codex_responses_iter(_FakeStreamResponse(events)))
 
-    assert chunks == []
+    assert chunks == [{"message": {"content": "Final answer"}}]
 
 
 def test_codex_responses_stream_content_and_tool_calls(monkeypatch):

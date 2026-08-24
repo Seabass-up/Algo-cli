@@ -57,6 +57,8 @@ Principle: **boring algorithms are awesome, exotic algorithms are welcome, and e
 
 ## Track A — Boring Algorithms That Make The Harness Better Now
 
+**Pattern namespace:** `A`
+
 These are high-priority because they improve correctness, speed, retrieval quality, and context efficiency with low implementation risk.
 
 ### A1. Hybrid Retrieval: BM25 + Vector Similarity
@@ -125,9 +127,11 @@ Tests:
 
 ## Track QoL — Quality of Life Algorithms
 
+**Pattern namespace:** `Q`
+
 These are medium-priority because they improve developer experience, reduce friction, and prevent common errors — but don't directly affect correctness or retrieval quality.
 
-### B1. Mojibake Fixer
+### Q1. Mojibake Fixer
 
 **Use for:** cleaning UTF-8 display artifacts (`Â·`, `â€¦`, `â€™`, `â€œ`, etc.) in harness output.
 
@@ -143,7 +147,7 @@ Tests:
 - `periodicâ€¦` becomes `periodic…`.
 - `donâ€™t` becomes `don't`.
 
-### B2. Relevance Threshold Filter
+### Q2. Relevance Threshold Filter
 
 **Use for:** suppressing `## Relevant Context` blocks when none of the top-k records are actually relevant.
 
@@ -159,7 +163,7 @@ Tests:
 - If top record is > 0.7, include all above 0.3.
 - Log filtered records for debugging.
 
-### B3. Probe Query Linter
+### Q3. Probe Query Linter
 
 **Use for:** validating `/selfcheck` probe queries are real indexed records.
 
@@ -177,7 +181,7 @@ Tests:
 
 ---
 
-### B4. Fuzzy Slash-Command Matcher
+### Q4. Fuzzy Slash-Command Matcher
 
 **Use for:** turning typos like `/selfcehck`, `/harnes`, or `/modle-check` into "Did you mean `/selfcheck`, `/harness`, `/model-check`?"
 
@@ -212,7 +216,7 @@ Tests:
 
 ---
 
-### B5. Layered Configuration Precedence
+### Q5. Layered Configuration Precedence
 
 **Use for:** resolving defaults, config file values, environment variables, and per-command flags without surprising overrides.
 
@@ -246,7 +250,7 @@ Tests:
 
 ---
 
-### B6. Progressive Command Aliases
+### Q6. Progressive Command Aliases
 
 **Use for:** letting users type short, memorable forms (`/hs` for `/harness-search`, `/m` for `/model`) without fragmenting the command namespace.
 
@@ -285,7 +289,7 @@ Tests:
 
 ---
 
-### B7. History-Aware Command Suggestions
+### Q7. History-Aware Command Suggestions
 
 **Use for:** surfacing likely next commands based on the current session's command history.
 
@@ -319,7 +323,7 @@ Tests:
 
 ---
 
-### B8. Confidence-Gated Auto-Correction
+### Q8. Confidence-Gated Auto-Correction
 
 **Use for:** automatically fixing low-risk typos (command names, common flag values) while asking the user when confidence is low.
 
@@ -355,7 +359,7 @@ Tests:
 
 ---
 
-### B9. Incremental Build Cache
+### Q9. Incremental Build Cache
 
 **Use for:** caching build artifacts per module and rebuilding only changed parts to cut CI time and keep memory usage predictable.
 
@@ -390,7 +394,7 @@ Tests:
 
 ---
 
-### B10. Progressive Disclosure
+### Q10. Progressive Disclosure
 
 **Use for:** hiding advanced flags/options behind `--advanced` until needed, reducing initial cognitive load for new users while keeping power features accessible.
 
@@ -425,7 +429,7 @@ Tests:
 
 ---
 
-### B11. Session State Snapshotting & Rollback
+### Q11. Session State Snapshotting & Rollback
 
 **Use for:** quick save/restore of the current session (including tool state, context window, and working directory) to recover from accidental changes or agent loops.
 
@@ -469,7 +473,7 @@ Tests:
 
 ---
 
-### B12. Error Recovery with Transactional Undo
+### Q12. Error Recovery with Transactional Undo
 
 **Use for:** wrapping destructive commands (`edit_file`, `run_shell` that mutates files) in a temporary snapshot so that if the operation fails, the CLI automatically reverts to the pre-change state.
 
@@ -511,7 +515,7 @@ Tests:
 
 ---
 
-### B13. Resource Usage Monitoring
+### Q13. Resource Usage Monitoring
 
 **Use for:** real-time display of memory/CPU usage during long-running operations (e.g., indexing, embedding, agent pipelines) to help users spot bottlenecks and set appropriate budgets.
 
@@ -550,6 +554,10 @@ Tests:
 - Samples are emitted at the configured interval, not faster.
 
 ---
+
+## Track A — Continued
+
+**Pattern namespace:** `A`
 
 ### A3. Maximal Marginal Relevance (MMR)
 
@@ -1462,6 +1470,8 @@ Tests:
 ---
 
 ## Track B — Experimental / New Algorithms To Prototype
+
+**Pattern namespace:** `B`
 
 These are also high priority, but they must be isolated behind contracts, test gates, and telemetry before affecting normal agent behavior.
 
@@ -10579,6 +10589,11 @@ Why it matters:
 
 ---
 
+Reserved IDs `B215-B299` are intentionally unassigned. This preserves the
+published numbering of the imported pattern groups below; new entries must use
+an active namespace or the next documented open range instead of silently
+backfilling this provenance gap.
+
 > **Renumbering note:** this vendor-pattern library previously
 > restarted its numbering at B87, colliding with Tracks C-G and the kernel
 > benchmark entries (each number B87-B191 existed twice in this file). All
@@ -11008,6 +11023,8 @@ The relay process bridges network and filesystem between the Linux guest and Win
 ### B431 — WSLDVCPlugin for RDP Dynamic Virtual Channel (WSLDVCPlugin.dll)
 A DVC (Dynamic Virtual Channel) plugin for RDP that enables custom data channels between the WSL guest and the RDP client. This is how clipboard, drag-and-drop, and file transfer work over RDP. Borrowable: use RDP dynamic virtual channels for custom data transport between a sandboxed environment and the host. DVCs are extensible — register a channel name and send/receive arbitrary data.
 
+Reserved IDs `B432-B437` are intentionally unassigned between the WSL and Go
+toolchain source groups. The gap is provenance-preserving, not missing content.
 
 ## Go Toolchain Patterns (B438-B449)
 Source: representative public Go distribution layout; local toolchain version removed.
@@ -11492,6 +11509,13 @@ Why it matters:
   catches it.
 - Running it in CI (or as a pre-push hook) prevents status drift.
 - Coverage percentage gives a single health metric for the catalog.
+- Structural lint is fence-aware so example headings inside Markdown code
+  fences are ignored. It rejects duplicate IDs, malformed pattern headings,
+  and entries that violate declared pattern namespaces before status claims are
+  evaluated.
+- `tests/test_catalog_verifier.py` contains the repository-exact CI test. The
+  checked-in `docs/ALGO.md` must pass that blocking structural gate, not merely
+  a synthetic parser fixture.
 
 Harness contract:
 
@@ -11508,6 +11532,8 @@ Tests:
 - Entry marked "specified" with no code → expected (not a failure).
 - Summary coverage_pct = verified / (verified + failed + untested).
 - Verifier is deterministic for a fixed ALGO.md + test suite.
+- Fenced examples do not become entries; duplicate IDs, malformed pattern
+  headings, and declared namespace mismatches fail the repository-exact test.
 
 ---
 
@@ -14271,3 +14297,159 @@ is a regression gate, not a universal cross-agent superiority claim.
 - Approval and output policy: `algo_cli/samuel_policy_engine.py` and
   `algo_cli/tools.py`
 - Regression coverage: `tests/test_julia_memory_runtime.py`
+
+---
+
+## Track M — Local Agent Daemon Runtime
+
+**Pattern namespace:** `DM`
+
+Track M keeps the daemon an optional latency optimization. It does not change
+the default in-process startup path, expand tool authority, or make a local
+socket a trust boundary. The implementation is original Algo CLI code and uses
+only documented operating-system and JSON-RPC contracts.
+
+### DM1. Owner-Private Daemon Lifecycle
+
+**Problem.** Repeated CLI startup reconstructs runtime services, while a
+carelessly persistent process can leave stale PID files, public sockets, or an
+ambiguous process identity.
+
+**Pattern.** Offer an explicit local daemon whose PID record, guard lock,
+socket, and log live in an owner-only directory. Bind lifecycle ownership to
+PID, process-start identity, inode, and a random instance identifier. Reject
+symlinks, wrong owners, permissive modes, replacement files, and ambiguous
+stale state. Publish readiness only after the socket is listening; drain
+bounded in-flight work on shutdown and remove only objects still owned by the
+same daemon instance.
+
+**Active contract.**
+
+- Normal `algo` execution remains in-process unless the operator explicitly
+  invokes a daemon lifecycle command.
+- Start, status, health, and stop use a versioned readiness handshake instead
+  of treating PID-file existence as proof of service health.
+- Startup and shutdown are linearized, rollback partial publication, enforce
+  bounded deadlines, and preserve replacement objects they no longer own.
+- The Unix socket and all state paths are current-user only; peer identity is
+  checked where the platform exposes it.
+
+**Evidence.** `algo_cli/daemon.py`, `algo_cli/main.py`, and
+`tests/test_daemon.py` cover private-path validation, stale cleanup,
+concurrent starts, startup rollback, identity-safe shutdown, bounded draining,
+endpoint validation, and versioned health checks.
+
+### DM2. Strict Local JSON-RPC Boundary
+
+**Problem.** A long-lived local process needs a small, inspectable protocol
+that rejects malformed or uncorrelated traffic without leaking handler
+arguments, credentials, paths, or exception details.
+
+**Pattern.** Frame strict JSON-RPC 2.0 objects as newline-delimited UTF-8 over
+the owner-private Unix socket. Accept named parameters only, distinguish a
+notification from an explicit null request ID, reject non-finite JSON values,
+bound frame size and client count, correlate every response to its request,
+and return sanitized standard error codes. Keep detailed exceptions only in
+the private daemon log and expose bounded aggregate telemetry.
+
+**Active contract.**
+
+- Invalid version, method, ID, parameter shape, encoding, and numeric values
+  fail closed with the applicable JSON-RPC error.
+- Notifications never receive a response, including notification dispatch
+  errors; streaming is explicitly framed and counted until completion.
+- Client I/O observes one end-to-end deadline and rejects malformed,
+  contradictory, oversized, or incorrectly correlated responses.
+- RPC registration does not confer new tool authority. Handlers remain subject
+  to the same policy and approval boundaries as the in-process runtime.
+
+**Evidence.** `algo_cli/daemon_rpc.py`, `algo_cli/daemon.py`, and
+`tests/test_daemon.py` cover parser strictness, sanitized failures,
+notification semantics, streaming, concurrency, timeout behavior, response
+correlation, and telemetry accounting.
+
+---
+
+## Track N — Black-Box Behavioral Anomaly Signals
+
+**Pattern namespace:** `B`
+
+Track N is a bounded research plan for detecting behavioral changes without
+claiming access to model internals. Every result is prompt/probe-conditioned:
+`not_flagged` means only that no anomaly was observed under the recorded
+probes, models, sampling settings, and decision rule. It never establishes a
+general clean-model conclusion. The result vocabulary is `flagged`,
+`not_flagged`, and
+`unavailable`, with the last state required whenever evidence or calibration
+is insufficient.
+
+### B470. Calibrated Response-Geometry Comparison
+
+**Evidence state:** `planned`
+
+Freeze a benign baseline prompt suite, target probes, model configuration,
+sampling parameters, embedding/scoring implementation, and minimum repeated
+sample count before evaluation. For every scalar feature, report the baseline
+mean, sample standard deviation, sample counts, Hedges' g, and a bootstrap
+confidence interval. A zero-variance baseline, non-finite value, insufficient
+sample, or failed scorer produces `unavailable` rather than an invented
+separation score. Thresholds are calibrated on held-out benign changes and
+then frozen; the evaluation reports individual features as well as the
+predeclared aggregate rule.
+
+The signal can identify a reproducible response-distribution difference. It
+cannot identify its cause, generalize beyond the frozen probes, or prove
+malicious behavior.
+
+### B471. Held-Out Synthetic Canary Protocol
+
+**Evidence state:** `planned`
+
+Construct non-secret synthetic canaries that are safe to disclose and cannot
+grant authority. Partition generation, calibration, and evaluation sets before
+running a candidate model; never train, tune, or select thresholds on the
+evaluation set. Canary presence and expected behavior are independently
+labeled, and negative controls receive the same sampling budget. Record exact
+prompt bytes, ordering, seed availability, repetitions, and all exclusions.
+
+A positive result indicates that the frozen canary protocol elicited its
+predeclared behavioral signature. A negative result remains `not_flagged`, not
+evidence that unrelated hidden behaviors are absent.
+
+### B472. Repeated-Probe Change and Drift Detection
+
+**Evidence state:** `planned`
+
+Compare a candidate only against a versioned baseline using frozen prompts,
+matched decoding settings, repeated samples, and benign control changes.
+Calibrate alert thresholds before examining the candidate. Require both a
+minimum effect size and a bootstrap interval that clears the chosen practical
+threshold, and correct or explicitly budget for multiple comparisons. Report
+per-probe outcomes so one extreme item cannot silently define the model-wide
+claim.
+
+This detects bounded change relative to a named baseline. Ordinary upgrades,
+quantization, templates, and sampling differences are plausible alternate
+causes and must be preserved in the report.
+
+### B473. Independent Signal Triangulation
+
+**Evidence state:** `planned`
+
+Pre-register labels, metrics, exclusions, and the final decision function.
+Use independently labeled examples and a held-out evaluation set, and keep
+label creation separate from feature construction and threshold selection.
+Require agreement from at least two methodologically distinct signal families
+before returning `flagged`; correlated transformations of the same score count
+as one family. Preserve disagreements and return `unavailable` when the
+independence or provenance requirements cannot be demonstrated.
+
+Triangulation can reduce dependence on one fragile metric, but it does not turn
+black-box evidence into a universal security conclusion.
+
+**Research basis.** Effect-size and interval choices follow standard
+meta-analysis and bootstrap practice; anomaly-test design follows held-out
+evaluation and explicit false-positive control. Source material was retrieved
+2026-08-18: NIST AI RMF 1.0, NIST AI 600-1, the SciPy bootstrap documentation,
+and the Cochrane Handbook guidance on standardized mean differences; all were
+retrieved 2026-08-18.

@@ -632,6 +632,7 @@ def _extract_responses_event_text(event: dict[str, Any]) -> str:
 def _stream_codex_responses_iter(resp: Any) -> Iterator[dict[str, Any]]:
     pending_calls: dict[str, dict[str, Any]] = {}
     order: list[str] = []
+    emitted_answer = False
 
     def completed_calls() -> list[dict[str, Any]]:
         return [
@@ -643,6 +644,36 @@ def _stream_codex_responses_iter(resp: Any) -> Iterator[dict[str, Any]]:
 
     for event in _parse_sse_events(resp):
         event_type = str(event.get("type") or "")
+        if event_type in {"error", "response.failed", "response.incomplete"}:
+            response = event.get("response") if isinstance(event.get("response"), dict) else {}
+            response_error = response.get("error")
+            event_error = event.get("error")
+            error = (
+                response_error
+                if isinstance(response_error, dict)
+                else event_error
+                if isinstance(event_error, dict)
+                else {}
+            )
+            incomplete = (
+                response.get("incomplete_details")
+                if isinstance(response.get("incomplete_details"), dict)
+                else {}
+            )
+            code = str(error.get("code") or event.get("code") or "").strip()
+            detail = str(
+                error.get("message")
+                or event.get("message")
+                or incomplete.get("reason")
+                or code
+                or "no provider detail"
+            ).strip()
+            if len(detail) > 500:
+                detail = detail[:497] + "..."
+            label = f" ({code})" if code and code not in detail else ""
+            raise ChatGptOAuthAccessError(
+                f"Codex Responses stream ended with {event_type}{label}: {detail}"
+            )
         if event_type == "response.reasoning_summary_text.delta":
             text = _extract_responses_event_text(event)
             if text:
@@ -651,6 +682,13 @@ def _stream_codex_responses_iter(resp: Any) -> Iterator[dict[str, Any]]:
         if event_type in {"response.output_text.delta", "response.refusal.delta"}:
             text = _extract_responses_event_text(event)
             if text:
+                emitted_answer = True
+                yield {"message": {"content": text}}
+            continue
+        if event_type in {"response.output_text.done", "response.refusal.done"}:
+            text = _extract_responses_event_text(event)
+            if text and not emitted_answer:
+                emitted_answer = True
                 yield {"message": {"content": text}}
             continue
         if event_type == "response.output_item.added":
@@ -689,7 +727,12 @@ def _stream_codex_responses_iter(resp: Any) -> Iterator[dict[str, Any]]:
                 pending_calls[call_id]["function"]["arguments"] = str(item.get("arguments") or "")
     completed = completed_calls()
     if completed:
+        emitted_answer = True
         yield {"message": {"tool_calls": completed}}
+    if not emitted_answer:
+        raise ChatGptOAuthAccessError(
+            "Codex Responses stream completed without text or a valid tool call."
+        )
 
 
 def _nonstream_to_chunk(body: dict[str, Any]) -> dict[str, Any]:

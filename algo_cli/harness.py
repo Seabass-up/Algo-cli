@@ -985,6 +985,10 @@ def _normalize_index_records(index: dict[str, Any]) -> dict[str, Any]:
         normalized.append(normalized_record)
         if normalized_record != record:
             changed = True
+    deduped = _dedup_records(normalized)
+    if len(deduped) != len(normalized):
+        normalized = deduped
+        changed = True
     if not changed and len(normalized) == len(records):
         return index
     embedding_meta = index.get("embeddings")
@@ -1999,23 +2003,29 @@ HARNESS_PRIORITY: dict[str, int] = {
 }
 
 
-def _dedup_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _dedup_records(records: list[Any]) -> list[Any]:
     """Deduplicate records by (harness, kind, relative_path) when paths collide.
 
     When multiple harnesses have the same skill file (e.g. skill-creator.md
     in both codex and openclaw), keep the record from the highest-priority
-    harness per HARNESS_PRIORITY. Records with unique paths are always kept.
+    harness per HARNESS_PRIORITY. Records with unique paths and malformed
+    non-dict rows are always kept.
     """
     buckets: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for record in records:
+        if not isinstance(record, dict):
+            continue
         key = (record.get("harness", ""), record.get("kind", ""), record.get("relative_path", ""))
         if not key[2]:
             continue
         buckets.setdefault(key, []).append(record)
 
-    deduped: list[dict[str, Any]] = []
+    deduped: list[Any] = []
     seen_keys: set[tuple[str, str, str]] = set()
     for record in records:
+        if not isinstance(record, dict):
+            deduped.append(record)
+            continue
         key = (record.get("harness", ""), record.get("kind", ""), record.get("relative_path", ""))
         if not key[2]:
             # No relative_path ? always keep

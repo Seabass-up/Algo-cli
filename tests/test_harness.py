@@ -132,6 +132,27 @@ def test_dedup_records_keeps_same_relative_path_across_harnesses():
     assert [record["id"] for record in out] == ["a", "b"]
 
 
+def test_normalize_index_records_dedupes_same_harness_relative_path():
+    records = [
+        {"id": "same", "harness": "algo-cli", "kind": "skill", "relative_path": "demo.md"},
+        {"id": "same", "harness": "algo-cli", "kind": "skill", "relative_path": "demo.md"},
+    ]
+
+    normalized = harness._normalize_index_records({"record_count": 2, "records": records})
+
+    assert normalized["record_count"] == 1
+    assert [record["id"] for record in normalized["records"]] == ["same"]
+
+
+def test_normalize_index_records_preserves_non_dict_rows():
+    normalized = harness._normalize_index_records(
+        {"record_count": 3, "records": ["malformed", {"id": "same", "harness": "a", "kind": "skill", "relative_path": "x"}, {"id": "same", "harness": "a", "kind": "skill", "relative_path": "x"}]}
+    )
+
+    assert normalized["record_count"] == 2
+    assert normalized["records"][0] == "malformed"
+
+
 def test_score_record():
     record = {"title": "Rust indexer", "relative_path": "rust.md", "search_text": "rust indexer build"}
     assert harness.score_record(record, ["rust"]) > 0

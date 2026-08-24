@@ -146,3 +146,102 @@ def test_extensions_manifest_tool_returns_json():
 
     assert "components" in payload
     assert any(component["name"] == "git" for component in payload["components"])
+
+
+def test_homebrew_helper_catalog_has_all_unique_requested_packages():
+    expected = {
+        "awww", "b4n", "bluetuith", "cliphist", "cuttlefish", "evnx",
+        "fluxcd", "fusesoc", "inshellisense", "kata", "lld@22", "llvm@22",
+        "nats", "rammap", "svlang", "systemd-lsp", "tracy-genomics",
+        "vapoursynth-vszip", "vi-sql", "xmedcon", "bb", "ds4-control",
+        "font-jetendard", "font-nexon-football-gothic",
+        "font-nexon-kart-gothic", "glean", "grok-bot", "mongrel",
+        "muse-code", "owlocr", "petdex", "sentry-cli", "sina-finance",
+        "subtitle-edit", "warp-agent-cli",
+    }
+
+    records = extensions_manifest.HOMEBREW_HELPERS
+
+    assert len(records) == len(expected) == 35
+    assert {name for name, _kind, _probe in records} == expected
+    assert len({name for name, _kind, _probe in records}) == len(records)
+    assert all(kind in {"homebrew-formula", "homebrew-cask", "homebrew-font"}
+               for _name, kind, _probe in records)
+
+
+def test_homebrew_helpers_are_missing_without_brew(monkeypatch):
+    monkeypatch.setattr(extensions_manifest.shutil, "which", lambda _name: None)
+
+    components = extensions_manifest._homebrew_components()
+
+    assert len(components) == 35
+    assert all(component.status == "missing" for component in components)
+    assert all(component.path == "" for component in components)
+
+
+def test_homebrew_formula_detection_uses_receipt_without_execution(tmp_path, monkeypatch):
+    prefix = tmp_path / "homebrew"
+    receipt = prefix / "Cellar" / "fluxcd" / "2.7.0"
+    receipt.mkdir(parents=True)
+    command = prefix / "opt" / "fluxcd" / "bin" / "flux"
+    command.parent.mkdir(parents=True)
+    command.write_text("not executed", encoding="utf-8")
+    calls: list[str] = []
+
+    def fake_which(name: str) -> str | None:
+        calls.append(name)
+        return str(prefix / "bin" / "brew") if name == "brew" else None
+
+    monkeypatch.setattr(extensions_manifest.shutil, "which", fake_which)
+
+    component = extensions_manifest._homebrew_component(
+        "fluxcd", "homebrew-formula", "flux", prefix=prefix
+    )
+
+    assert component.status == "ready"
+    assert component.version == "2.7.0"
+    assert component.path == str(command)
+    assert calls == []
+
+
+def test_homebrew_formula_alias_does_not_satisfy_exact_receipt(tmp_path):
+    prefix = tmp_path / "homebrew"
+    aliased_command = prefix / "opt" / "llvm@22" / "bin" / "clang"
+    aliased_command.parent.mkdir(parents=True)
+    aliased_command.write_text("alias", encoding="utf-8")
+    (prefix / "Cellar" / "llvm" / "22.1.8").mkdir(parents=True)
+
+    component = extensions_manifest._homebrew_component(
+        "llvm@22", "homebrew-formula", "clang", prefix=prefix
+    )
+
+    assert component.status == "missing"
+    assert component.path == ""
+
+
+def test_homebrew_plugin_formula_is_installed_not_ready(tmp_path):
+    prefix = tmp_path / "homebrew"
+    receipt = prefix / "Cellar" / "vapoursynth-vszip"
+    receipt.mkdir(parents=True)
+
+    component = extensions_manifest._homebrew_component(
+        "vapoursynth-vszip", "homebrew-formula", "", prefix=prefix
+    )
+
+    assert component.status == "installed"
+    assert component.path == str(receipt)
+
+
+def test_homebrew_cask_requires_receipt_even_if_colliding_command_exists(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        extensions_manifest.shutil,
+        "which",
+        lambda name: "/usr/local/bin/muse" if name == "muse" else None,
+    )
+
+    component = extensions_manifest._homebrew_component(
+        "muse-code", "homebrew-cask", "muse", prefix=tmp_path / "homebrew"
+    )
+
+    assert component.status == "missing"
+    assert component.path == ""

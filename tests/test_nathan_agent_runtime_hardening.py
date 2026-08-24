@@ -27,7 +27,23 @@ SPEC.loader.exec_module(SCRIPT)
 
 @pytest.fixture(scope="module")
 def report() -> dict[str, object]:
-    return SCRIPT.verify_artifact()
+    # Tamper tests exercise the report contract, not the currency of the
+    # repository evidence file. Build one small, valid report in memory so a
+    # stale stored artifact cannot turn every contract test into a setup error.
+    return benchmark.run_benchmark(
+        contract_repetitions=benchmark.MIN_LATENCY_SAMPLES,
+        context_repetitions=benchmark.MIN_LATENCY_SAMPLES,
+        checkpoint_repetitions=benchmark.MIN_LATENCY_SAMPLES,
+        workload_repetitions=benchmark.MIN_LATENCY_SAMPLES,
+        warmups=0,
+        generated_at="2026-08-23T00:00:00Z",
+    )
+
+
+def test_stored_runtime_qualification_artifact_is_current() -> None:
+    stored = SCRIPT.verify_artifact()
+
+    assert stored["status"] == "pass"
 
 
 def _resign_report(report: dict[str, object]) -> None:

@@ -28,7 +28,7 @@ def test_every_runtime_tool_has_a_curated_authority_policy() -> None:
 
 
 def test_unknown_tool_policy_is_fail_closed() -> None:
-    policy = policy_for_action("browser_click")
+    policy = policy_for_action("zzz_unclassified_placeholder_tool")
     assert policy.curated is False
     assert policy.effect_class is EffectClass.UNCLASSIFIED
     assert policy.confirmation_mode is ConfirmationMode.HANDOFF_REQUIRED
@@ -36,11 +36,11 @@ def test_unknown_tool_policy_is_fail_closed() -> None:
     assert policy.mutates_state is True
     assert policy.requires_approval is True
     assert policy.safe_retry is False
-    assert action_registry.action_requires_approval("browser_click") is True
+    assert action_registry.action_requires_approval("zzz_unclassified_placeholder_tool") is True
 
 
 def test_generated_unknown_spec_cannot_claim_read_only_or_retry_safe() -> None:
-    spec = action_registry._generated_tool_spec("browser_click", lambda: None)
+    spec = action_registry._generated_tool_spec("zzz_unclassified_placeholder_tool", lambda: None)
     assert spec.curated is False
     assert spec.risk_level == "high"
     assert spec.mutates_state is True
@@ -53,7 +53,7 @@ def test_generated_unknown_spec_cannot_claim_read_only_or_retry_safe() -> None:
 def test_runtime_registry_rejects_an_unclassified_tool() -> None:
     registry = CuratedToolRegistry(tools.TOOL_MAP)
     try:
-        registry["browser_click"] = lambda: "clicked"
+        registry["zzz_unclassified_placeholder_tool"] = lambda: "clicked"
     except ValueError as exc:
         assert "no curated authority policy" in str(exc)
     else:  # pragma: no cover - explicit failure message

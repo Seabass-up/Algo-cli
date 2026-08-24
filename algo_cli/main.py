@@ -4240,7 +4240,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "prompt",
         nargs="*",
-        help="Prompt for --oneshot mode. If omitted, read from stdin. Use `update` for the latest release, `doctor` for readiness diagnostics, `plugin list` for plugins, `credential list` for credential helpers, or `url-scheme <url>` for URL scheme parsing.",
+        help="Prompt for --oneshot mode. If omitted, read from stdin. Use `update`, `doctor`, `daemon <start|run|status|stop>`, `plugin list`, `credential list`, or `url-scheme <url>` for built-in command surfaces.",
     )
     ns = parser.parse_args(argv)
     # Normalize nargs="*" list into a single string for downstream code
@@ -4290,6 +4290,94 @@ def _run_update_entry() -> int:
     if result.returncode != 0 and result.details:
         console.print(result.details, markup=False)
     return result.returncode
+
+
+def _run_daemon_entry(prompt: str | None) -> int | None:
+    """Handle explicit Phase 1 daemon lifecycle commands.
+
+    ``None`` preserves the normal in-process runtime for every non-daemon
+    invocation. Automatic client routing, auto-start, launchd, and background
+    refresh workers are deliberately outside this Phase 1 command surface.
+    """
+    parts = (prompt or "").strip().split()
+    if not parts or parts[0].casefold() != "daemon":
+        return None
+    actions = {"start", "run", "status", "stop"}
+    if len(parts) != 2 or parts[1].casefold() not in actions:
+        console.print("[yellow]Usage: algo-cli daemon [start|run|status|stop][/]")
+        return 64
+
+    from . import __version__
+    from .daemon import (
+        AlgoDaemon,
+        DAEMON_PROTOCOL_VERSION,
+        get_default_pid_path,
+        get_default_socket_path,
+        rpc_call,
+        start_daemon_process,
+        stop_daemon_process,
+    )
+
+    configured_dir = os.environ.get("ALGO_CLI_DAEMON_DIR", "").strip()
+    base_dir = Path(configured_dir).expanduser() if configured_dir else None
+    socket_path = get_default_socket_path(base_dir)
+    pid_path = get_default_pid_path(base_dir)
+    action = parts[1].casefold()
+
+    if action == "run":
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
+        try:
+            AlgoDaemon(socket_path, pid_path).start()
+        except (OSError, RuntimeError) as exc:
+            show_error(str(exc))
+            return 1
+        return 0
+
+    if action == "start":
+        try:
+            ok, message = start_daemon_process(base_dir=base_dir)
+        except (OSError, RuntimeError, TimeoutError) as exc:
+            show_error(str(exc))
+            return 1
+        console.print(f"[green]{message}[/]" if ok else f"[red]{message}[/]")
+        return 0 if ok else 1
+
+    if action == "stop":
+        try:
+            ok, message = stop_daemon_process(base_dir=base_dir)
+        except (OSError, RuntimeError, TimeoutError) as exc:
+            show_error(str(exc))
+            return 1
+        console.print(f"[green]{message}[/]" if ok else f"[yellow]{message}[/]")
+        return 0 if ok else 1
+
+    try:
+        response = rpc_call(socket_path, "status")
+    except ConnectionError:
+        console.print(
+            "[yellow]Daemon is not running; Algo CLI will use in-process mode.[/]"
+        )
+        return 1
+    result = response.get("result")
+    if not isinstance(result, dict):
+        show_error("Daemon returned an invalid status response.")
+        return 1
+    compatible = (
+        result.get("ready") is True
+        and result.get("protocol_version") == DAEMON_PROTOCOL_VERSION
+        and result.get("app_version") == __version__
+    )
+    state = "running" if compatible else "incompatible"
+    console.print(
+        f"Daemon {state}: PID {result.get('pid', '?')}, "
+        f"uptime {result.get('uptime_seconds', '?')}s, "
+        f"protocol {result.get('protocol_version', '?')}, "
+        f"Algo CLI {result.get('app_version', '?')}"
+    )
+    return 0 if compatible else 1
 
 
 def _force_utf8_console() -> None:
@@ -4371,6 +4459,11 @@ def main() -> None:
     if args.oneshot:
         _exit = _run_oneshot_entry(args)
         sys.exit(_exit)
+    daemon_exit = _run_daemon_entry(args.prompt)
+    if daemon_exit is not None:
+        if daemon_exit:
+            raise SystemExit(daemon_exit)
+        return
     cfg = Config.load()
     from .elsie_echo_preflight import (
         EchoAuxiliaryPreflightError,
