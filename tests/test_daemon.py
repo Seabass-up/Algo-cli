@@ -41,6 +41,11 @@ from algo_cli.daemon_rpc import (
     parse_frame,
 )
 
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="The optional always-on daemon currently requires Unix domain sockets and fcntl",
+)
+
 
 @pytest.fixture
 def tmp_paths() -> Iterator[tuple[Path, Path]]:

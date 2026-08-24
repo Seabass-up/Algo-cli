@@ -7,7 +7,6 @@ Source: ``docs/ALGO.md`` Track M, patterns DM1 and DM2.
 from __future__ import annotations
 
 import errno
-import fcntl
 import json
 import logging
 import os
@@ -23,6 +22,11 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - exercised by hosted Windows import checks
+    fcntl = None  # type: ignore[assignment]
 
 from . import __version__
 from .config import CONFIG_DIR
@@ -224,6 +228,8 @@ class PIDLock:
 
     def _acquire_guard(self) -> None:
         """Hold a stable advisory lock across PID inspection and ownership."""
+        if fcntl is None:
+            raise RuntimeError("The always-on daemon currently requires a Unix platform")
         flags = os.O_RDWR
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW

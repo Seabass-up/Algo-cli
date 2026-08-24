@@ -3146,11 +3146,11 @@
         },
         {
           "kind": "qualification",
-          "path_or_command": ".venv/bin/python scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json after final green Echo 0.8.0 source repin",
-          "digest": "sha256:67be02dfaaa862292350a512564d55c594c8d193152f09009cb12e1f79830eff",
+          "path_or_command": ".venv/bin/python scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json after hosted Windows dependency-audit and daemon-import repair",
+          "digest": "sha256:fa29b02ee99bebe7fbd13b60090f289ae58a149a06a88fce52b815d16c62b750",
           "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, and public_claim_eligible is false",
-          "timestamp": "2026-08-24T02:15:23Z",
-          "scope": "source digest sha256:dfdf307651db70589d95271860ab2bb7489d8c55293f1131cbdf8ee9bc376eb8 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind 38 privileged policy classes, 10000 stale-target races at p50/p95 4.306/4.643 ms, 1000 fresh postconditions at p50/p95 5.735/6.137 ms, 84.085 percent median schema reduction, 96.644 percent typed-program reduction, and the focused adversarial suite",
+          "timestamp": "2026-08-24T02:29:26Z",
+          "scope": "source digest sha256:5c8b6e5118806b6ba9333c3f970dec0d2e6e565debd9116b79d8add30cce43b9 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind 38 privileged policy classes, 10000 stale-target races at p50/p95 4.296/4.619 ms, 1000 fresh postconditions at p50/p95 5.699/6.037 ms, 84.085 percent median schema reduction, 96.644 percent typed-program reduction, and the focused adversarial suite",
           "limitations": "finite local model-free evidence does not prove production browser completion, selected-Chrome behavior, semantic-route or screenshot efficiency, current registry-backed browser freshness, live provider/model quality, authenticated host attestation, signed XPC/TCC, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, HARD-080 remains in progress, the active freeze remains in force, and public_claim_eligible is false"
         }
       ]
@@ -3793,20 +3793,20 @@
         },
         {
           "kind": "benchmark",
-          "path_or_command": "hardening/nathan-agent-runtime-qualification.json verified by scripts/nathan_agent_runtime_qualification.py after final green Echo 0.8.0 source repin",
-          "digest": "sha256:08b0116802abc64421227221b768ece5102a5e798b936c50da3d5c3ef826a100",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json verified by scripts/nathan_agent_runtime_qualification.py after hosted Windows dependency-audit and daemon-import repair",
+          "digest": "sha256:039bbc205b766a690496b768727f5e576d665bff4508bdac5457380ee03ee0dd",
           "result": "status pass: 17 of 17 adversarial Agent runtime probes and 31 of 31 frozen workloads pass with 100 percent task, verifier, crash-resume, protocol, and context-usefulness rates, zero policy escapes, unverified completions, or duplicate mutations, and public_claim_eligible is false",
-          "timestamp": "2026-08-24T02:14:33Z",
-          "scope": "source digest sha256:74f2bb54d1b1250167a6654bf2b87d0e9ac927537882ee7ea519c8cf65359b12 and report digest sha256:9314248f55db95e2ca42dcaca26e71ece517a0d5b93db1cc8cc5376428dcf4e6 bind 17 protected/runtime probes, 101 contract samples at p50/p95 0.256292/0.292750 ms, 101 broker samples at 0.040458/0.047042 ms, 31 checkpoint samples at 9.514583/9.633959 ms, and 31 workload samples at 25.361042/25.550750 ms total and 4.057167/4.346500 ms to first Agent event",
+          "timestamp": "2026-08-24T02:28:39Z",
+          "scope": "source digest sha256:74f2bb54d1b1250167a6654bf2b87d0e9ac927537882ee7ea519c8cf65359b12 and report digest sha256:859eee7e64846ce705d352666cb99d2e9a5cde5492a11698450c5d63f7c4b692 bind 17 protected/runtime probes, 101 contract samples at p50/p95 0.254375/0.287375 ms, 101 broker samples at 0.040041/0.047250 ms, 31 checkpoint samples at 9.420542/9.871292 ms, and 31 workload samples at 25.097625/25.287958 ms total and 4.037542/4.182292 ms to first Agent event",
           "limitations": "deterministic local model-free fixtures, temporary files, injected static key and anchor stores, and a self-reported non-attested operating-system label do not prove model intelligence, live provider latency, production Keychain behavior, production concurrency SLOs, process or power-loss recovery, future hosted stability, or superiority over another harness; HARD-081 remains in progress, the active freeze forbids public benchmark claims, and public_claim_eligible is false"
         },
         {
           "kind": "benchmark",
-          "path_or_command": "hardening/grace-m8-local-qualification.json after final green Echo 0.8.0 source repin",
-          "digest": "sha256:67be02dfaaa862292350a512564d55c594c8d193152f09009cb12e1f79830eff",
+          "path_or_command": "hardening/grace-m8-local-qualification.json after hosted Windows dependency-audit and daemon-import repair",
+          "digest": "sha256:fa29b02ee99bebe7fbd13b60090f289ae58a149a06a88fce52b815d16c62b750",
           "result": "status blocked: current source-bound local measurements retain exact source and fixture digests, denominators, Wilson 95 percent intervals, p50/p95, 9 local passes, 5 production-browser blocks, zero failed or not-verified metrics, and public_claim_eligible is false",
-          "timestamp": "2026-08-24T02:15:23Z",
-          "scope": "five model-free efficiency repetitions measure 84.085 percent median tool-schema reduction and 96.644 percent typed-program reduction; stale-target p50/p95 are 4.306/4.643 ms and fresh-postcondition p50/p95 are 5.735/6.137 ms; the source-bound Nathan artifact, exact final-green Echo dependency identity, authenticated 46-file source snapshot, and current M8 corpus remained stable across the qualification window",
+          "timestamp": "2026-08-24T02:29:26Z",
+          "scope": "five model-free efficiency repetitions measure 84.085 percent median tool-schema reduction and 96.644 percent typed-program reduction; stale-target p50/p95 are 4.296/4.619 ms and fresh-postcondition p50/p95 are 5.699/6.037 ms; the source-bound Nathan artifact, exact final-green Echo dependency identity, authenticated 46-file source snapshot, and current M8 corpus remained stable across the qualification window",
           "limitations": "synthetic local measurements do not prove live task completion, model quality, semantic-route share, screenshot reduction, confirmation count, provider latency, production concurrency SLOs, future hosted stability, authenticated host attestation, production-signed XPC/TCC readiness, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, HARD-081 stays in progress, the active freeze forbids public benchmark claims, and public_claim_eligible is false"
         }
       ]
