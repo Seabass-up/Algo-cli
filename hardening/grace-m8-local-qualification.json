@@ -11,7 +11,7 @@
     "unknown_trials": 1000
   },
   "fixture_digest": "sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659",
-  "generated_at": "2026-08-24T00:07:52Z",
+  "generated_at": "2026-08-24T00:41:54Z",
   "limitations": [
     "Zero observed failures in a finite local sample is not zero risk.",
     "No production browser, selected-Chrome, Developer ID, notarization, Gatekeeper, or live TCC claim is made.",
@@ -19,7 +19,7 @@
   ],
   "metrics": [
     {
-      "denominator": 37,
+      "denominator": 38,
       "id": "privileged_policy",
       "limitations": "Dynamic session wrappers are excluded because their resolved inner command is independently policy evaluated.",
       "measurements": {
@@ -28,13 +28,13 @@
         "runtime_tools": 74,
         "unconfirmed_protected_actions": 0
       },
-      "numerator": 37,
+      "numerator": 38,
       "rate": 1.0,
       "scope": "Complete current runtime tool registry, curated policy table, effective ActionSpecs, and hostile unknown names.",
       "status": "pass",
       "threshold": "0 generated privileged specs and 0 protected actions without confirmation",
       "wilson_95": [
-        0.905942,
+        0.90819,
         1.0
       ]
     },
@@ -45,8 +45,8 @@
       "measurements": {
         "dispatches": 0,
         "mutations": 0,
-        "p50_ms": 4.603,
-        "p95_ms": 5.277,
+        "p50_ms": 4.517,
+        "p95_ms": 7.509,
         "seed": 310400406105
       },
       "numerator": 10000,
@@ -141,8 +141,8 @@
       "limitations": "Finite adapters do not establish that a future native or browser adapter observes a real external target correctly.",
       "measurements": {
         "mutations": 1000,
-        "p50_ms": 5.704,
-        "p95_ms": 6.034
+        "p50_ms": 6.166,
+        "p95_ms": 9.323
       },
       "numerator": 1000,
       "rate": 1.0,
@@ -159,7 +159,7 @@
       "id": "local_token_efficiency",
       "limitations": "Synthetic local token estimates do not establish task completion, model quality, screenshot reduction, or cross-harness advantage.",
       "measurements": {
-        "median_schema_reduction_pct": 83.968,
+        "median_schema_reduction_pct": 84.085,
         "typed_program_reduction_pct": 96.644
       },
       "numerator": 5,
@@ -231,7 +231,7 @@
   "public_claim_eligible": false,
   "qualification": "henry-m8-local-v1",
   "schema_version": 1,
-  "source_digest": "sha256:e695cf6d4289323a653e99787eafca442b4b85490808af9cf946d9074b1d14e1",
+  "source_digest": "sha256:fca7531768cc15f458ae1ecb17871f07eeb1f65f5c88e16629ad21bc8b6fb1d8",
   "status": "blocked",
   "summary": {
     "blocked": 5,

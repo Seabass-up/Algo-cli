@@ -1087,7 +1087,7 @@ def test_plugin_load_and_credential_store_require_approval(monkeypatch, capsys):
 
 
 def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
-    from algo_cli import action_registry
+    from algo_cli import action_registry, memory_echo_veil
     from algo_cli.evals import algorithm_effectiveness, harness_retrieval_benchmark
 
     monkeypatch.setattr(
@@ -1152,6 +1152,17 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
         },
     }
     monkeypatch.setattr(tools.harness, "stats", lambda: stats_payload)
+    echo_probe = {
+        **stats_payload["echo_veil"],
+        "live_probe_performed": False,
+    }
+    echo_probe_calls: list[tuple[object | None, bool]] = []
+
+    def probe_echo(config=None, *, live_probe=False):
+        echo_probe_calls.append((config, live_probe))
+        return dict(echo_probe)
+
+    monkeypatch.setattr(memory_echo_veil, "get_echo_veil_readiness", probe_echo)
     monkeypatch.setattr(
         tools.harness,
         "search_index",
@@ -1258,14 +1269,56 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     assert capabilities["web tools"]["status"] == "pass"
     assert capabilities["google workspace wiring"]["status"] == "pass"
     assert all(item["scored"] is False for item in capabilities.values())
+    assert echo_probe_calls
+    assert all(live_probe is True for _config, live_probe in echo_probe_calls)
 
-    stats_payload["echo_veil"]["enabled"] = True
+    echo_probe.update(installed=True, enabled=True, live_probe_performed=True)
     enabled_but_unwired = json.loads(tools.harness_scorecard())
     enabled_statuses = {check["name"]: check["status"] for check in enabled_but_unwired["checks"]}
     assert enabled_but_unwired["score"] == 9.0
     assert enabled_but_unwired["overall_status"] == "blocked"
     assert enabled_statuses["project memory/wiki coverage"] == "fail"
-    stats_payload["echo_veil"]["enabled"] = False
+
+    echo_probe.update(
+        write_wired=True,
+        retrieval_wired=True,
+        persistence_wired=True,
+    )
+    enabled_and_wired = json.loads(tools.harness_scorecard())
+    wired_check = next(
+        check for check in enabled_and_wired["checks"] if check["name"] == "project memory/wiki coverage"
+    )
+    assert enabled_and_wired["score"] == 10
+    assert enabled_and_wired["overall_status"] == "ready"
+    assert wired_check["status"] == "pass"
+    assert wired_check["metrics"]["echo_live_probe_performed"] is True
+    assert wired_check["metrics"]["echo_probe_error"] == ""
+    assert wired_check["metrics"]["echo_initialization_error"] == ""
+
+    def unavailable_echo_probe(_config=None, *, live_probe=False):
+        assert live_probe is True
+        raise RuntimeError("synthetic probe failure")
+
+    monkeypatch.setattr(
+        memory_echo_veil,
+        "get_echo_veil_readiness",
+        unavailable_echo_probe,
+    )
+    unavailable_echo = json.loads(tools.harness_scorecard())
+    unavailable_check = next(
+        check for check in unavailable_echo["checks"] if check["name"] == "project memory/wiki coverage"
+    )
+    assert unavailable_check["status"] == "unavailable"
+    assert unavailable_check["metrics"]["echo_probe_error"] == "RuntimeError"
+    monkeypatch.setattr(memory_echo_veil, "get_echo_veil_readiness", probe_echo)
+
+    echo_probe.update(
+        enabled=False,
+        live_probe_performed=False,
+        write_wired=False,
+        retrieval_wired=False,
+        persistence_wired=False,
+    )
 
     stats_payload["runtime_event_store"]["file_private"] = False
     unsafe_store = json.loads(tools.harness_scorecard())
@@ -1315,6 +1368,8 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
 
 
 def test_protected_harness_scorecard_never_reads_legacy_knowledge_graph(monkeypatch):
+    from algo_cli import memory_echo_veil
+
     calls: list[str] = []
 
     def forbidden_query(*_args, **_kwargs):
@@ -1322,6 +1377,20 @@ def test_protected_harness_scorecard_never_reads_legacy_knowledge_graph(monkeypa
         raise AssertionError("legacy graph must not be read under Echo authority")
 
     monkeypatch.setattr(tools, "query_knowledge_graph", forbidden_query)
+    monkeypatch.setattr(
+        memory_echo_veil,
+        "get_echo_veil_readiness",
+        lambda _config=None, *, live_probe=False: {
+            "installed": True,
+            "enabled": True,
+            "write_wired": True,
+            "retrieval_wired": True,
+            "persistence_wired": True,
+            "readiness_source": "test-live-probe",
+            "runtime": "cpython-test",
+            "live_probe_performed": live_probe,
+        },
+    )
     cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
 
     payload = json.loads(tools.harness_scorecard(cfg=cfg))

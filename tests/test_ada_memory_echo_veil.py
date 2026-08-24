@@ -1038,6 +1038,32 @@ def test_static_readiness_never_constructs_the_lifecycle_mutating_layer(
     assert readiness["qualified_runtime_identity"] is True
 
 
+def test_live_readiness_preserves_bounded_initialization_failure_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from algo_cli import memory_echo_veil
+
+    _supported(monkeypatch, memory_echo_veil)
+
+    def fail_doctor(_config: object) -> dict[str, object]:
+        memory_echo_veil._LAST_INITIALIZATION_ERROR = "initialization_failed"
+        raise RuntimeError("private implementation detail")
+
+    monkeypatch.setattr(memory_echo_veil, "doctor_with_echo_veil", fail_doctor)
+
+    readiness = memory_echo_veil.get_echo_veil_readiness(
+        {
+            "echo_veil_enabled": True,
+            "echo_veil_protection": "required",
+        },
+        live_probe=True,
+    )
+
+    assert readiness["live_probe_performed"] is True
+    assert readiness["import_error"] == "initialization_failed"
+    assert "private implementation detail" not in str(readiness)
+
+
 def test_bridge_forwards_full_protected_lifecycle_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

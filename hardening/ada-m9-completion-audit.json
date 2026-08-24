@@ -1,35 +1,35 @@
 {
   "audit_id": "arthur-m9-completion-v1",
-  "audited_at": "2026-08-24T00:07:52Z",
+  "audited_at": "2026-08-24T00:41:54Z",
   "base_commit": "20bb8790ba548866fc88b0a0d976d6600fa84a5e",
   "contract_digest": "sha256:26a6b34c3a7f09df4255f922ce0f12e9da68f291e56da54a6e32a64053cacb32",
   "freeze_id": "algo-cli-hardening-2026-07-18",
-  "ledger_digest": "sha256:0e9e4dda02855cbf84dcfe63b1c83772dc60c2dc85cf50e980287cdb53692aba",
+  "ledger_digest": "sha256:b4089522862511864fecebffa0c7169e0c9f8c156cb4dbb05712207add67ce24",
   "ledger_status": "active",
   "limitations": "This deterministic audit proves contract and evidence completeness only. It does not independently authenticate external services, runner images, signing identities, TCC state, browser containment, or benchmark truth.",
   "local_artifact_currency": {
     "m8": {
       "artifact": "hardening/grace-m8-local-qualification.json",
       "ledger_requirement": "HARD-080",
-      "ledger_timestamp": "2026-08-24T00:07:52Z",
+      "ledger_timestamp": "2026-08-24T00:41:54Z",
       "public_claim_eligible": false,
-      "raw_sha256": "sha256:cfa689395e7cb3f503a3e5e91e55723a5b24690082d56f997b0ca8ccfe6a5b57",
+      "raw_sha256": "sha256:ae1c6bc3e90666e8dc89e7ab0258b71480173036b8fe10a9c7f8be1e6b6521ac",
       "status": "blocked"
     },
     "m8_efficiency": {
       "artifact": "hardening/grace-m8-local-qualification.json",
       "ledger_requirement": "HARD-081",
-      "ledger_timestamp": "2026-08-24T00:07:52Z",
+      "ledger_timestamp": "2026-08-24T00:41:54Z",
       "public_claim_eligible": false,
-      "raw_sha256": "sha256:cfa689395e7cb3f503a3e5e91e55723a5b24690082d56f997b0ca8ccfe6a5b57",
+      "raw_sha256": "sha256:ae1c6bc3e90666e8dc89e7ab0258b71480173036b8fe10a9c7f8be1e6b6521ac",
       "status": "blocked"
     },
     "nathan": {
       "artifact": "hardening/nathan-agent-runtime-qualification.json",
       "ledger_requirement": "HARD-081",
-      "ledger_timestamp": "2026-08-24T00:06:45Z",
+      "ledger_timestamp": "2026-08-24T00:41:02Z",
       "public_claim_eligible": false,
-      "raw_sha256": "sha256:fa935ce14349aa0de7e18bb6dbb2595870110a76b34b104d6e3c9c32d193ca5e",
+      "raw_sha256": "sha256:85a295a88af8145b71882fd044b5d7ed41b3f73971f7868378b9aad16541583f",
       "status": "pass"
     }
   },
@@ -811,10 +811,10 @@
     },
     {
       "audit_status": "blocked",
-      "evidence_count": 58,
+      "evidence_count": 59,
       "external_authoritative_evidence": false,
       "id": "HARD-080",
-      "latest_timestamp": "2026-08-24T00:07:52Z",
+      "latest_timestamp": "2026-08-24T00:41:54Z",
       "ledger_status": "in_progress",
       "milestone": "M8",
       "missing_evidence_kinds": [
@@ -834,10 +834,10 @@
     },
     {
       "audit_status": "blocked",
-      "evidence_count": 66,
+      "evidence_count": 68,
       "external_authoritative_evidence": false,
       "id": "HARD-081",
-      "latest_timestamp": "2026-08-24T00:07:52Z",
+      "latest_timestamp": "2026-08-24T00:41:54Z",
       "ledger_status": "in_progress",
       "milestone": "M8",
       "missing_evidence_kinds": [

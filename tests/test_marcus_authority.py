@@ -109,6 +109,17 @@ def test_memory_writes_require_action_time_confirmation() -> None:
         assert action_registry.action_confirmation_mode(name) is ConfirmationMode.ACTION_TIME
 
 
+def test_lifecycle_aware_harness_scorecard_requires_approval() -> None:
+    policy = policy_for_action("harness_scorecard")
+
+    assert policy.effect_class is EffectClass.LOCAL_MUTATION
+    assert policy.confirmation_mode is ConfirmationMode.ACTION_TIME
+    assert policy.target_scope.value == "memory_store"
+    assert policy.capability_mask.has(Capability.MEMORY)
+    assert policy.safe_retry is False
+    assert action_registry.action_requires_approval("harness_scorecard") is True
+
+
 def test_session_wrappers_declare_dynamic_exact_action_resolution() -> None:
     for name in ("session_command", "session_slash"):
         policy = policy_for_action(name)

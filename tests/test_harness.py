@@ -476,6 +476,7 @@ def test_harness_stats_reports_truthful_echo_veil_readiness(monkeypatch):
     assert stats["echo_veil"]["write_wired"] is False
     assert stats["echo_veil"]["retrieval_wired"] is False
     assert stats["echo_veil"]["persistence_wired"] is False
+    assert stats["echo_veil"]["live_probe_performed"] is False
     assert stats["echo_veil"]["import_error"] == "ModuleNotFoundError"
     assert "module_origin" not in stats["echo_veil"]
     assert tools.harness is harness

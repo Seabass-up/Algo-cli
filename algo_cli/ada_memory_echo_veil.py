@@ -1322,5 +1322,9 @@ def get_echo_veil_readiness(
             and doctor.get("lifecycle_mutation_available") is False
         )
     except Exception as exc:
-        base["import_error"] = type(exc).__name__
+        # ``create_echo_veil_layer`` records a bounded, content-free failure
+        # code before ``doctor_with_echo_veil`` raises. Preserve that code so
+        # diagnostics can distinguish initialization failure from a probe
+        # implementation exception without exposing paths, keys, or payloads.
+        base["import_error"] = _LAST_INITIALIZATION_ERROR or type(exc).__name__
     return base

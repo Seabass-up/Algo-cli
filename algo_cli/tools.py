@@ -3333,7 +3333,7 @@ def available_actions(topic: str | None = None) -> str:
     slash_guidance = [
         "Slash commands are session controls. Writing '/command' in a final answer does not execute it.",
         "Use session_slash for /read, /ls, /cd, and /cwd when you need deterministic cwd-relative file navigation.",
-        "Use session_command for non-file slash commands only when the user asks for that action or session state must change/check before continuing; read-only/status commands such as /kernel list, /code-rag status, /harness status, /agent threads, /harness score, or /harness compare run without approval; state-changing commands such as /code-rag on, /code-rag off, /harness refresh, or /harness embed and agent execution require approval.",
+        "Use session_command for non-file slash commands only when the user asks for that action or session state must change/check before continuing; read-only/status commands such as /kernel list, /code-rag status, /harness status, or /agent threads run without approval. /harness score may live-probe Echo Veil and therefore requires approval, as do state-changing commands such as /code-rag on, /code-rag off, /harness refresh, /harness embed, and agent execution.",
         "Prefer direct tools for actual work: write_file for edits, run_shell for tests/builds, read_pdf/render_pdf_pages for PDFs, cleanup_pdf_render_artifact after vision inspection, and web_search/web_fetch for web.",
         "Prefer explicit on/off/status forms for toggles (/auto on, /safe off, /memory-auto status, /code-rag status, /thinking status, /verify on, /cloud off) so you do not accidentally flip state.",
         "For /reason, check /reason status or /reason guide first; only change reasoning mode for genuinely complex, failed, ambiguous, or verification-heavy work.",
@@ -3888,6 +3888,11 @@ def harness_scorecard(cfg: Config | None = None) -> str:
     benchmark, and proof that every required production algorithm actually ran.
     Optional cloud/Web and Google availability remain visible but unscored so a
     healthy local-first runtime is not penalized for intentionally absent creds.
+
+    When Echo Veil is enabled, this diagnostic performs its lifecycle-aware
+    doctor probe. Echo construction may recover, migrate, or prune state, so the
+    runtime authority registry classifies this scorecard as an approved local
+    memory operation. ``harness.stats()`` remains lifecycle-neutral.
     """
     from . import action_registry
     from .evals.algorithm_effectiveness import (
@@ -3936,12 +3941,23 @@ def harness_scorecard(cfg: Config | None = None) -> str:
         stats_error = type(exc).__name__
     quality_value = stats.get("quality")
     embeddings_value = stats.get("embeddings")
-    echo_value = stats.get("echo_veil")
     runtime_store_value = stats.get("runtime_event_store")
     quality = quality_value if isinstance(quality_value, dict) else {}
     embeddings = embeddings_value if isinstance(embeddings_value, dict) else {}
-    echo_readiness = echo_value if isinstance(echo_value, dict) else {}
     runtime_store = runtime_store_value if isinstance(runtime_store_value, dict) else {}
+
+    echo_probe_error = ""
+    try:
+        from .ada_memory_echo_veil import get_echo_veil_readiness
+
+        echo_config = cfg.__dict__ if cfg is not None else None
+        probed_echo = get_echo_veil_readiness(echo_config, live_probe=True)
+        if not isinstance(probed_echo, dict):
+            raise TypeError("Echo Veil readiness payload must be a mapping")
+        echo_readiness = probed_echo
+    except Exception as exc:
+        echo_readiness = {}
+        echo_probe_error = type(exc).__name__
 
     embedding_fields = (
         stats.get("record_count"),
@@ -4015,7 +4031,12 @@ def harness_scorecard(cfg: Config | None = None) -> str:
         "retrieval": bool(echo_readiness.get("retrieval_wired")),
         "persistence": bool(echo_readiness.get("persistence_wired")),
     }
-    echo_safe = not echo_enabled or (bool(echo_readiness.get("installed")) and all(echo_stages.values()))
+    echo_initialization_error = str(echo_readiness.get("import_error") or "")
+    echo_safe = not echo_enabled or (
+        bool(echo_readiness.get("installed"))
+        and echo_readiness.get("live_probe_performed") is True
+        and all(echo_stages.values())
+    )
     runtime_store_fields_ready = all(
         key in runtime_store
         for key in (
@@ -4082,12 +4103,15 @@ def harness_scorecard(cfg: Config | None = None) -> str:
                 f"categories={len(covered_categories)}/{len(required_categories)} "
                 f"missing={missing_categories} wiki={wiki_records} "
                 f"echo_enabled={echo_enabled} echo_stages={echo_stages} "
+                f"echo_live_probe={echo_readiness.get('live_probe_performed') is True} "
+                f"echo_error={echo_initialization_error or '-'} "
                 f"private_store={runtime_store.get('status') or 'unknown'}"
             ),
             (
                 "Cover every required product-memory category with a curated contract, "
-                "retain at least five curated wiki records, and disable Echo Veil until "
-                "its write/retrieval/persistence stages are all operational. Keep the runtime "
+                "retain at least five curated wiki records, and reconcile the qualified Echo Veil "
+                "dependency with its live profile before requiring write/retrieval/persistence. "
+                "Do not downgrade or rewrite a newer protected profile. Keep the runtime "
                 "event store private, bounded, and compact; then refresh."
                 if status != "pass"
                 else ""
@@ -4105,6 +4129,9 @@ def harness_scorecard(cfg: Config | None = None) -> str:
                 "echo_stages": echo_stages,
                 "echo_readiness_source": echo_readiness.get("readiness_source"),
                 "echo_runtime": echo_readiness.get("runtime"),
+                "echo_live_probe_performed": echo_readiness.get("live_probe_performed") is True,
+                "echo_probe_error": echo_probe_error,
+                "echo_initialization_error": echo_initialization_error,
                 "runtime_event_store": runtime_store,
             },
         )
