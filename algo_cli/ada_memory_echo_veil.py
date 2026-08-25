@@ -225,6 +225,7 @@ def _verify_distribution_record(distribution: Any) -> None:
 
     try:
         members = list(distribution.files or ())
+        install_prefix_alias = Path(os.path.abspath(os.fspath(sys.prefix)))
         install_prefix = Path(sys.prefix).resolve(strict=True)
     except (AttributeError, OSError, TypeError) as exc:
         raise _EchoModuleIdentityError("record_missing") from exc
@@ -241,8 +242,12 @@ def _verify_distribution_record(distribution: Any) -> None:
         seen_members.add(member_name)
         try:
             located = Path(distribution.locate_file(member))
-            candidate = Path(os.path.abspath(os.fspath(located)))
-            relative = candidate.relative_to(install_prefix)
+            candidate_alias = Path(os.path.abspath(os.fspath(located)))
+            try:
+                relative = candidate_alias.relative_to(install_prefix_alias)
+            except ValueError:
+                relative = candidate_alias.relative_to(install_prefix)
+            candidate = install_prefix / relative
         except (OSError, TypeError, ValueError) as exc:
             raise _EchoModuleIdentityError("installed_file_scope") from exc
         if not relative.parts or candidate in seen_files:
@@ -275,7 +280,7 @@ def _verify_distribution_record(distribution: Any) -> None:
         if file_hash is None:
             # Bytecode caches are derived artifacts; pip records them without
             # hashes. They are not part of the authenticated source surface.
-            if candidate.suffix == ".pyc" or "__pycache__" in candidate.parts:
+            if candidate.suffix == ".pyc" and "__pycache__" in candidate.parts:
                 continue
             if Path(member_name).name != "RECORD":
                 raise _EchoModuleIdentityError("record_hash_missing")
