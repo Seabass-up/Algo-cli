@@ -446,13 +446,21 @@ def _version_tuple(value: str) -> tuple[int, int, int] | None:
 def _version_supported() -> bool:
     source = _version_tuple(ECHO_VEIL_SOURCE_VERSION)
     distribution = _version_tuple(ECHO_VEIL_DISTRIBUTION_VERSION)
+    # The source/distribution versions must match exactly (raw string equality),
+    # not merely share a normalized prefix. _version_tuple strips suffixes such
+    # as ".post1" or "+local", so comparing the tuples would wrongly treat
+    # "0.8.0" and "0.8.0.post1" as equal. The tuple form is only used for the
+    # supported-range bound below.
+    versions_match = (
+        str(ECHO_VEIL_SOURCE_VERSION).strip() == str(ECHO_VEIL_DISTRIBUTION_VERSION).strip()
+    )
     return bool(
         ECHO_VEIL_AVAILABLE
         and ECHO_VEIL_MODULE_IDENTITY_VERIFIED
         and ECHO_VEIL_SOURCE_TREE_DIGEST == QUALIFIED_ECHO_SOURCE_TREE_SHA256
         and source is not None
         and distribution is not None
-        and source == distribution
+        and versions_match
         and ECHO_VEIL_INSTALLATION_KIND in {"registry-or-wheel", "archive-pinned", "vcs-pinned"}
         and SUPPORTED_ECHO_VEIL_MIN <= source < SUPPORTED_ECHO_VEIL_MAX_EXCLUSIVE
     )
@@ -1257,6 +1265,13 @@ def get_echo_veil_readiness(
         "qualified_runtime_identity": _qualified_runtime_identity(),
         "enabled": _enabled(resolved),
         "protection_policy": protection_policy(resolved),
+        # True when config.json was unreadable/corrupt and the readiness probe
+        # fell back to a fail-closed mapping (enabled + required). Consumers
+        # can use this to distinguish a genuine required config from a
+        # fail-closed fallback.
+        "config_authority_unavailable": bool(
+            isinstance(resolved, dict) and resolved.get("config_authority_unavailable", False)
+        ),
         "crypto_initialized": False,
         "write_wired": False,
         "index_wired": False,

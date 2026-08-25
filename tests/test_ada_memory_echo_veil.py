@@ -668,6 +668,45 @@ def test_optional_mode_remains_bounded_to_supported_noneditable_distribution(
     assert memory_echo_veil._qualified_runtime_identity() is False
 
 
+def test_version_supported_rejects_suffix_only_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from algo_cli import memory_echo_veil
+
+    _supported(monkeypatch, memory_echo_veil)
+    # Source and distribution differ only by a version suffix. The normalized
+    # tuple comparison would treat these as equal, but the exact-string check
+    # must reject them.
+    monkeypatch.setattr(memory_echo_veil, "ECHO_VEIL_SOURCE_VERSION", "0.8.0")
+    monkeypatch.setattr(memory_echo_veil, "ECHO_VEIL_DISTRIBUTION_VERSION", "0.8.0.post1")
+
+    assert memory_echo_veil._version_supported() is False
+
+
+def test_readiness_surfaces_config_authority_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from algo_cli import memory_echo_veil
+
+    _supported(monkeypatch, memory_echo_veil)
+    # Simulate a corrupt/unreadable config.json: _load_config_mapping returns
+    # the fail-closed mapping with config_authority_unavailable=True.
+    monkeypatch.setattr(
+        memory_echo_veil,
+        "_load_config_mapping",
+        lambda: {
+            "echo_veil_enabled": True,
+            "echo_veil_protection": "required",
+            "config_authority_unavailable": True,
+        },
+    )
+
+    readiness = memory_echo_veil.get_echo_veil_readiness(None, live_probe=False)
+    assert readiness["config_authority_unavailable"] is True
+    assert readiness["protection_policy"] == "required"
+    assert readiness["enabled"] is True
+
+
 def test_authoritative_layer_constructs_agent_memory_without_raw_key_config(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
