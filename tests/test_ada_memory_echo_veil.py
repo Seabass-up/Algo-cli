@@ -516,6 +516,92 @@ def test_distribution_installation_identity_rejects_unreadable_metadata() -> Non
     assert memory_echo_veil._distribution_installation_kind(BrokenDistribution()) == "direct-url-unpinned"
 
 
+def _fake_distribution_with_files(tmp_path: Path, members: list[tuple[str, str | None, int]]) -> object:
+    """Build a distribution whose ``files`` resolve to real files under ``tmp_path``.
+
+    Each member is ``(name, base64url_sha256_or_None, size)``. A ``None`` hash models a
+    pip RECORD entry that omits the hash (as happens for generated ``.pyc`` files).
+    """
+    from algo_cli import memory_echo_veil
+
+    class _Hash:
+        def __init__(self, value: str) -> None:
+            self.mode = "sha256"
+            self.value = value
+
+    class _Member:
+        def __init__(self, name: str, digest: str | None, size: int) -> None:
+            self._name = name
+            self.hash = _Hash(digest) if digest is not None else None
+            self.size = size
+
+        def __str__(self) -> str:
+            return self._name
+
+    class _Distribution:
+        def __init__(self, members: list[_Member]) -> None:
+            self.files = members
+
+        def locate_file(self, member: _Member) -> str:
+            return str(tmp_path / str(member))
+
+    built: list[_Member] = []
+    for name, digest, size in members:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * size)
+        built.append(_Member(name, digest, size))
+    return _Distribution(built)
+
+
+def test_verify_distribution_record_skips_hashless_pyc(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from algo_cli import memory_echo_veil
+
+    monkeypatch.setattr(memory_echo_veil.sys, "prefix", str(tmp_path))
+
+    pyc_size = 8
+    py_size = 17
+    py_digest = base64.urlsafe_b64encode(hashlib.sha256(b"x" * py_size).digest()).rstrip(b"=").decode("ascii")
+
+    dist = _fake_distribution_with_files(
+        tmp_path,
+        [
+            ("echo_veil/agent_memory.py", py_digest, py_size),
+            ("echo_veil/__pycache__/agent_memory.cpython-314.pyc", None, pyc_size),
+        ],
+    )
+
+    # Must not raise record_hash_missing for the hash-less .pyc entry.
+    memory_echo_veil._verify_distribution_record(dist)
+
+
+def test_verify_distribution_record_rejects_hashless_non_pyc(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from algo_cli import memory_echo_veil
+
+    monkeypatch.setattr(memory_echo_veil.sys, "prefix", str(tmp_path))
+
+    py_size = 17
+    py_digest = base64.urlsafe_b64encode(hashlib.sha256(b"x" * py_size).digest()).rstrip(b"=").decode("ascii")
+
+    # A hash-less non-.pyc file (e.g. a data file) must still fail closed.
+    dist = _fake_distribution_with_files(
+        tmp_path,
+        [
+            ("echo_veil/agent_memory.py", py_digest, py_size),
+            ("echo_veil/schema.json", None, 2),
+        ],
+    )
+
+    with pytest.raises(memory_echo_veil._EchoModuleIdentityError, match="record_hash_missing"):
+        memory_echo_veil._verify_distribution_record(dist)
+
+
 def test_required_mode_rejects_editable_or_unpinned_distribution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

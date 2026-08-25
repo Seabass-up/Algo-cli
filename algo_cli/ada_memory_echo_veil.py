@@ -267,6 +267,10 @@ def _verify_distribution_record(distribution: Any) -> None:
         if recorded_size is not None and recorded_size != info.st_size:
             raise _EchoModuleIdentityError("record_size_mismatch")
         if file_hash is None:
+            # Bytecode caches are derived artifacts; pip records them without
+            # hashes. They are not part of the authenticated source surface.
+            if candidate.suffix == ".pyc" or "__pycache__" in candidate.parts:
+                continue
             if Path(member_name).name != "RECORD":
                 raise _EchoModuleIdentityError("record_hash_missing")
             continue
