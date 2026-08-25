@@ -45,6 +45,12 @@ from .config import CONFIG_DIR, _load_json_file
 
 logger = logging.getLogger(__name__)
 
+# The qualified source-tree digest (QUALIFIED_ECHO_SOURCE_TREE_SHA256) is the
+# authoritative gate: it pins to exactly one commit. These version bounds are a
+# defensive sanity check only -- they catch a mis-bumped qualified digest that
+# would otherwise point at a version outside the intended envelope. They do NOT
+# mean "any 0.6.x-0.8.x install is supported"; the digest equality already
+# restricts acceptance to the single qualified source.
 SUPPORTED_ECHO_VEIL_MIN = (0, 6, 0)
 SUPPORTED_ECHO_VEIL_MAX_EXCLUSIVE = (0, 9, 0)
 QUALIFIED_ECHO_VEIL_VERSION = "0.8.0"
@@ -1317,8 +1323,16 @@ def get_echo_veil_readiness(
         base["rotation_state"] = (
             doctor.get("rotation", {}).get("state") if isinstance(doctor.get("rotation"), dict) else None
         )
-        base["healthy"] = bool(base["healthy"] and base["protection_policy"] == "required" and not base["degraded"])
-        base["local_protection_ready"] = bool(base["healthy"] and base["all_records_shielded"])
+        # ``healthy`` reflects actual shield health (doctor-backed and not
+        # degraded), independent of the configured protection tier. The
+        # required-tier enforcement claim is ``local_protection_ready``, which
+        # additionally requires the ``required`` policy and full shielding.
+        base["healthy"] = bool(base["healthy"] and not base["degraded"])
+        base["local_protection_ready"] = bool(
+            base["healthy"]
+            and base["protection_policy"] == "required"
+            and base["all_records_shielded"]
+        )
         base["shielded_read_only_ready"] = bool(
             base["degraded"]
             and base["all_records_shielded"]

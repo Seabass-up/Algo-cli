@@ -1100,6 +1100,57 @@ def test_readiness_exposes_independent_runtime_facts(
     assert "module_origin" not in readiness
 
 
+def test_healthy_reflects_actual_health_independent_of_optional_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from algo_cli import memory_echo_veil
+
+    _supported(monkeypatch, memory_echo_veil)
+
+    class FakeLayer:
+        degraded = False
+
+        def doctor(self):
+            return {
+                "readiness": {
+                    **_complete_readiness(),
+                    "rotation_ready": True,
+                    "healthy": True,
+                },
+                "memory_layers": _shielded_memory_layers(),
+                "degraded": False,
+                "key_id": "ev-0123456789abcdef",
+                "security_schema": "scoped-v2",
+                "quarantined_records": 0,
+                "rotation": {"state": "idle"},
+            }
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        memory_echo_veil,
+        "create_echo_veil_layer",
+        lambda _config: FakeLayer(),
+    )
+    readiness = memory_echo_veil.get_echo_veil_readiness(
+        {
+            "echo_veil_enabled": True,
+            "echo_veil_protection": "optional",
+        },
+        live_probe=True,
+    )
+
+    # A fully working, non-degraded, all-shielded shield must report healthy
+    # even when the protection tier is optional (not required).
+    assert readiness["healthy"] is True
+    assert readiness["degraded"] is False
+    assert readiness["all_records_shielded"] is True
+    # The required-tier enforcement claim stays false in optional mode.
+    assert readiness["local_protection_ready"] is False
+    assert readiness["protection_policy"] == "optional"
+
+
 def test_static_readiness_never_constructs_the_lifecycle_mutating_layer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
