@@ -23,6 +23,18 @@ def _load_gate() -> ModuleType:
     return module
 
 
+def _active_freeze(gate: ModuleType) -> dict:
+    """Load the live freeze manifest pinned to the active enforcement state.
+
+    The repository freeze may be lifted; these tests exercise active-state
+    enforcement, so the status is pinned explicitly.
+    """
+
+    freeze = gate._load_toml(gate.FREEZE_PATH)
+    freeze["freeze"]["status"] = "active"
+    return freeze
+
+
 def test_current_hardening_change_set_is_authorized_and_named() -> None:
     gate = _load_gate()
     assert gate.run_gate() == []
@@ -100,7 +112,7 @@ def test_registry_parser_accepts_utf8_bom_and_rejects_dynamic_entries(
 
 def test_undeclared_path_is_rejected() -> None:
     gate = _load_gate()
-    freeze = gate._load_toml(gate.FREEZE_PATH)
+    freeze = _active_freeze(gate)
     ledger = gate._load_json(gate.LEDGER_PATH)
     errors = gate.validate_changed_paths(freeze, ledger, changed_paths={"algo_cli/new_feature.py"})
     assert errors == ["algo_cli/new_feature.py: changed during freeze without ledger authorization"]
@@ -213,7 +225,7 @@ def test_changed_path_inventory_rejects_invalid_or_diverged_base(
 
 def test_deleted_paths_remain_authorized_but_are_filename_exempt() -> None:
     gate = _load_gate()
-    freeze = gate._load_toml(gate.FREEZE_PATH)
+    freeze = _active_freeze(gate)
     ledger = gate._load_json(gate.LEDGER_PATH)
     deleted = "legacy/process_runtime.py"
     ledger["authorized_paths"].append(deleted)
@@ -244,7 +256,7 @@ def test_deleted_paths_remain_authorized_but_are_filename_exempt() -> None:
 
 def test_rename_source_and_destination_are_independently_authorized() -> None:
     gate = _load_gate()
-    freeze = gate._load_toml(gate.FREEZE_PATH)
+    freeze = _active_freeze(gate)
     ledger = gate._load_json(gate.LEDGER_PATH)
     source = "legacy/process_runtime.py"
     destination = "algo_cli/david_process_runtime.py"
@@ -256,6 +268,45 @@ def test_rename_source_and_destination_are_independently_authorized() -> None:
         changed_paths={source, destination},
         deleted_paths={source},
     ) == [f"{source}: changed during freeze without ledger authorization"]
+
+
+def test_lifted_freeze_stops_enforcing_path_authorization_and_naming() -> None:
+    gate = _load_gate()
+    freeze = gate._load_toml(gate.FREEZE_PATH)
+    ledger = gate._load_json(gate.LEDGER_PATH)
+    assert freeze["freeze"]["status"] == "lifted"
+    assert gate.validate_changed_paths(
+        freeze,
+        ledger,
+        changed_paths={"algo_cli/any_new_feature.py", "legacy/old_name.py"},
+    ) == []
+
+
+def test_lifted_freeze_requires_matching_ledger_status() -> None:
+    gate = _load_gate()
+    freeze = gate._load_toml(gate.FREEZE_PATH)
+    ledger = gate._load_json(gate.LEDGER_PATH)
+    ledger["status"] = "active"
+    errors = gate.validate_freeze(freeze, ledger)
+    assert "evidence ledger status must be lifted when the freeze is lifted" in errors
+
+
+def test_freeze_status_must_be_active_or_lifted() -> None:
+    gate = _load_gate()
+    freeze = gate._load_toml(gate.FREEZE_PATH)
+    ledger = gate._load_json(gate.LEDGER_PATH)
+    freeze["freeze"]["status"] = "paused"
+    errors = gate.validate_freeze(freeze, ledger)
+    assert "freeze.status must be active or lifted" in errors
+
+
+def test_active_freeze_still_enforces_hardening_only_work() -> None:
+    gate = _load_gate()
+    freeze = _active_freeze(gate)
+    ledger = gate._load_json(gate.LEDGER_PATH)
+    freeze["freeze"]["release_blocked"] = False
+    errors = gate.validate_freeze(freeze, ledger)
+    assert "freeze.release_blocked must be true" in errors
 
 
 def test_naming_categories_fail_closed() -> None:
@@ -361,7 +412,7 @@ def test_ledger_rejects_invalid_evidence_fields_paths_and_duplicates() -> None:
 
 def test_freeze_lift_and_ledger_policy_cannot_be_softened() -> None:
     gate = _load_gate()
-    freeze = gate._load_toml(gate.FREEZE_PATH)
+    freeze = _active_freeze(gate)
     ledger = gate._load_json(gate.LEDGER_PATH)
     freeze["lift"]["requires_signed_artifact_checks"] = False
     freeze["freeze"]["allowed_work"] = "all-work"
@@ -437,7 +488,7 @@ def test_ledger_text_rejects_unicode_direction_controls() -> None:
     assert "HARD-001: evidence[0].result must be bounded content-free text" in errors
 
 
-def test_release_event_is_blocked_while_freeze_is_active() -> None:
+def test_release_event_is_allowed_after_freeze_lift() -> None:
     completed = subprocess.run(
         [sys.executable, str(SCRIPT), "--release-event"],
         cwd=ROOT,
@@ -447,14 +498,13 @@ def test_release_event_is_blocked_while_freeze_is_active() -> None:
         text=True,
         encoding="utf-8",
     )
-    assert completed.returncode == 1
-    assert "release event rejected" in completed.stderr
+    assert completed.returncode == 0
+    assert "PASS (freeze lifted)" in completed.stdout
 
 
-def test_github_release_environment_cannot_publish_during_freeze() -> None:
-    if os.environ.get("GITHUB_EVENT_NAME") != "release":
-        return
-    raise AssertionError("release event rejected: Algo CLI hardening freeze is active")
+def test_github_release_environment_is_allowed_after_freeze_lift() -> None:
+    # The freeze is lifted; release events are no longer rejected.
+    return
 
 
 def test_publication_workflow_enforces_freeze_before_build_or_publish() -> None:

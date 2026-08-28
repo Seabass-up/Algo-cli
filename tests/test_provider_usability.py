@@ -129,11 +129,32 @@ def test_codex_alias_routes_to_chatgpt_client(monkeypatch, alias):
     assert model_routing.effective_runtime_host(cfg) == "chatgpt"
 
 
-def test_chatgpt_detection_does_not_steal_gpt_oss_ollama_models():
-    assert model_info.is_chatgpt_model("gpt-5.1") is True
-    assert model_info.is_chatgpt_model("chatgpt-4o-latest") is True
-    assert model_info.is_chatgpt_model("o3-mini") is True
-    assert model_info.is_chatgpt_model("gpt-oss:120b-cloud") is False
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-3.5-turbo",
+        "gpt-4",
+        "gpt-4.1-mini",
+        "gpt-4o-realtime-preview",
+        "gpt-5.1",
+        "chatgpt-4o-latest",
+        "o3-mini",
+    ],
+)
+def test_chatgpt_detection_accepts_known_openai_model_families(model):
+    assert model_info.is_chatgpt_model(model) is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["gpt-local:latest", "gpt-neo", "gpt-j", "gpt4all", "gpt-oss:120b-cloud"],
+)
+def test_auto_provider_does_not_steal_local_gpt_named_models(model):
+    cfg = Config(model=model, model_provider="auto")
+
+    assert model_info.is_chatgpt_model(model) is False
+    assert model_routing.resolved_model_provider(cfg) == "ollama"
+    assert model_routing.runtime_mode_label(cfg) == "local"
 
 
 def test_provider_models_do_not_start_local_ollama(monkeypatch):

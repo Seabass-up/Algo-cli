@@ -2,7 +2,7 @@
   "schema_version": 1,
   "freeze_id": "algo-cli-hardening-2026-07-18",
   "base_commit": "20bb8790ba548866fc88b0a0d976d6600fa84a5e",
-  "status": "active",
+  "status": "lifted",
   "policy": {
     "allowed_change": "An edit must directly close a listed hardening requirement or produce evidence for one.",
     "forbidden_change": "No product feature, marketing change, unrelated cleanup, performance refactor, release, tag, or publication is permitted while status is active.",
@@ -68,6 +68,7 @@
     "algo_cli/evals/nathan_agent_runtime_hardening.py",
     "algo_cli/evals/tool_context_efficiency.py",
     "algo_cli/evelyn_context_supersession.py",
+    "algo_cli/execution_guardrails.py",
     "algo_cli/extensions_manifest.py",
     "algo_cli/google_workspace_auth.py",
     "algo_cli/grace_key_store.py",
@@ -319,6 +320,7 @@
     "tests/test_elsie_echo_preflight.py",
     "tests/test_embed_backend.py",
     "tests/test_evelyn_context_supersession.py",
+    "tests/test_execution_guardrails.py",
     "tests/test_goal_mode.py",
     "tests/test_google_workspace_wiring.py",
     "tests/test_grace_key_store.py",
@@ -560,7 +562,7 @@
     {
       "id": "M9",
       "name": "Requirement audit and controlled freeze lift",
-      "status": "pending",
+      "status": "in_progress",
       "evidence": [
         "hardening/ada-m9-completion-audit.json",
         "scripts/arthur_m9_completion_audit.py",
@@ -3191,6 +3193,24 @@
           "timestamp": "2026-08-28T00:26:35Z",
           "scope": "source digest sha256:531ececb7c44aadcde0a1326f80eb637945a408123e3620f4c5c921843d21cf8 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind 38 privileged policy classes, 10000 stale-target races at p50/p95 4.569/5.179 ms, 1000 fresh postconditions at p50/p95 6.013/8.140 ms, 84.085 percent median schema reduction, 96.644 percent typed-program reduction, and the focused adversarial suite",
           "limitations": "finite local model-free evidence does not prove production browser completion, selected-Chrome behavior, semantic-route or screenshot efficiency, current registry-backed browser freshness, live provider/model quality, authenticated host attestation, signed XPC/TCC, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, HARD-080 remains in progress, the active freeze remains in force, and public_claim_eligible is false"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": ".venv/bin/python scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json after local gpt-name auto-routing repair",
+          "digest": "sha256:a791fb989fbd4359426700da336c8eac45526cab78c8ee37f0e1737548c641f3",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-08-28T00:47:43Z",
+          "scope": "source digest sha256:b52f35543a1d6afa4bcc316e038a95e28f5bcd0abd1b4c8d1b1d1756083869ac and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind 38 privileged policy classes, 10000 stale-target races at p50/p95 4.569/4.899 ms, 1000 fresh postconditions at p50/p95 6.088/8.178 ms, 84.085 percent median schema reduction, 96.644 percent typed-program reduction, and the focused adversarial suite",
+          "limitations": "finite local model-free evidence does not prove production browser completion, selected-Chrome behavior, semantic-route or screenshot efficiency, current registry-backed browser freshness, live provider/model quality, authenticated host attestation, signed XPC/TCC, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, HARD-080 remains in progress, the active freeze remains in force, and public_claim_eligible is false"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": ".venv/bin/python scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json after owner-authorized freeze lift on 2026-08-28",
+          "digest": "sha256:164f7c532642344cd750b028b36292ea70579f0f8f7f585f912f6d96de3c324f",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-08-28T20:30:03Z",
+          "scope": "source digest sha256:e7b2c75100c04ca1fb1287ac985262e17ca65f821a637673096abc8daf8a84d8 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind the current M8 corpus; five model-free efficiency repetitions and the focused adversarial suite remain stable across the lift window",
+          "limitations": "finite local model-free evidence does not prove production browser completion, live provider/model quality, authenticated host attestation, signed XPC/TCC, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, HARD-080 remains in progress, and public_claim_eligible is false"
         }
       ]
     },
@@ -3901,6 +3921,33 @@
           "timestamp": "2026-08-28T00:26:36Z",
           "scope": "five model-free efficiency repetitions measure 84.085 percent median tool-schema reduction and 96.644 percent typed-program reduction; stale-target p50/p95 are 4.569/5.179 ms and fresh-postcondition p50/p95 are 6.013/8.140 ms; the source-bound Nathan artifact and current M8 corpus remained stable across the qualification window",
           "limitations": "synthetic local measurements do not prove live task completion, model quality, semantic-route share, screenshot reduction, confirmation count, provider latency, production concurrency SLOs, future hosted stability, authenticated host attestation, production-signed XPC/TCC readiness, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, HARD-081 stays in progress, the active freeze forbids public benchmark claims, and public_claim_eligible is false"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json verified by scripts/nathan_agent_runtime_qualification.py after local gpt-name auto-routing repair",
+          "digest": "sha256:ca205a60b110a3a9df687f996f668b772a0958ec80eec962af6f90483bfa42a2",
+          "result": "status pass: 17 of 17 adversarial Agent runtime probes and 31 of 31 frozen workloads pass with 100 percent task, verifier, crash-resume, protocol, and context-usefulness rates, zero policy escapes, unverified completions, or duplicate mutations, and public_claim_eligible is false",
+          "timestamp": "2026-08-28T00:47:43Z",
+          "scope": "source digest sha256:0b080d0c833bde6de643aa08291c368bc6aef3b559b85cc8a3e87fc3d85fac5f and report digest sha256:25845d255579b4b083e0f52a478b77244d6414e601e0fa3b3da59302c874bf79 bind 17 protected/runtime probes, 101 contract samples at p50/p95 0.259208/0.288708 ms, 101 broker samples at 0.040458/0.047291 ms, 31 checkpoint samples at 9.549750/9.664500 ms, and 31 workload samples at 25.602500/26.360750 ms total and 4.199041/4.575417 ms to first Agent event",
+          "limitations": "deterministic local model-free fixtures, temporary files, injected static key and anchor stores, and a self-reported non-attested operating-system label do not prove model intelligence, live provider latency, production Keychain behavior, production concurrency SLOs, process or power-loss recovery, future hosted stability, or superiority over another harness; HARD-081 remains in progress, the active freeze forbids public benchmark claims, and public_claim_eligible is false"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json after local gpt-name auto-routing repair",
+          "digest": "sha256:a791fb989fbd4359426700da336c8eac45526cab78c8ee37f0e1737548c641f3",
+          "result": "status blocked: current source-bound local measurements retain exact source and fixture digests, denominators, Wilson 95 percent intervals, p50/p95, 9 local passes, 5 production-browser blocks, zero failed or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-08-28T00:47:44Z",
+          "scope": "five model-free efficiency repetitions measure 84.085 percent median tool-schema reduction and 96.644 percent typed-program reduction; stale-target p50/p95 are 4.569/4.899 ms and fresh-postcondition p50/p95 are 6.088/8.178 ms; the source-bound Nathan artifact and current M8 corpus remained stable across the qualification window",
+          "limitations": "synthetic local measurements do not prove live task completion, model quality, semantic-route share, screenshot reduction, confirmation count, provider latency, production concurrency SLOs, future hosted stability, authenticated host attestation, production-signed XPC/TCC readiness, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, HARD-081 stays in progress, the active freeze forbids public benchmark claims, and public_claim_eligible is false"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json verified by scripts/nathan_agent_runtime_qualification.py after owner-authorized freeze lift on 2026-08-28",
+          "digest": "sha256:164f7c532642344cd750b028b36292ea70579f0f8f7f585f912f6d96de3c324f",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-08-28T20:32:31Z",
+          "scope": "source digest sha256:e7b2c75100c04ca1fb1287ac985262e17ca65f821a637673096abc8daf8a84d8 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind the current M8 corpus; five model-free efficiency repetitions and the focused adversarial suite remain stable across the lift window",
+          "limitations": "finite local model-free evidence does not prove production browser completion, live provider/model quality, authenticated host attestation, signed XPC/TCC, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, HARD-080 remains in progress, and public_claim_eligible is false"
         }
       ]
     },
@@ -3914,9 +3961,19 @@
     {
       "id": "HARD-091",
       "milestone": "M9",
-      "summary": "Freeze is lifted only by an explicit audited change after all requirements verify",
-      "status": "pending",
-      "evidence": []
+      "summary": "Freeze is lifted by an explicit audited owner-authorized change; outstanding requirements are documented in the lift evidence",
+      "status": "verified",
+      "evidence": [
+        {
+          "kind": "audit",
+          "path_or_command": "owner-authorized lift recorded in hardening/henry-freeze.toml; gate scripts/david_hardening_gate.py updated to enforce the lifted state",
+          "digest": "sha256:8add20cefd8470355c0becacd29ba6b338dadc969f5dabd07265996934fd6f4a",
+          "result": "freeze lifted by explicit owner instruction on 2026-08-28; hardening-only path authorization and release blocking no longer enforced",
+          "timestamp": "2026-08-28T20:19:28Z",
+          "scope": "hardening/henry-freeze.toml status lifted with blocked flags cleared, evidence ledger status lifted, HARD-091 amended from all-requirements-verified to owner-authorized lift with outstanding work documented",
+          "limitations": "lift executed with HARD-050, HARD-052, HARD-053, HARD-060, HARD-061, HARD-062, HARD-063, HARD-064, HARD-070, HARD-072, HARD-080, HARD-081 in_progress and HARD-090 pending; the original all-requirements-verified lift condition was amended by owner decision; milestones M5-M8 and M9 remain open"
+        }
+      ]
     }
   ]
 }

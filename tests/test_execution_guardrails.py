@@ -245,6 +245,39 @@ def test_verification_command_classification_accepts_real_verifiers(command: str
     assert "command" not in asdict(decision)
 
 
+@pytest.mark.parametrize(
+    ("command", "kind"),
+    [
+        ("go vet ./... && go test ./...", "test"),
+        ("go test ./... && go vet ./...", "test"),
+        ("ruff check algo_cli && mypy algo_cli", "lint"),
+        ("pytest -q && ruff check algo_cli", "test"),
+        ("cd /tmp/workspace && go vet ./... && go test ./...", "test"),
+    ],
+)
+def test_verification_command_classification_accepts_verifier_chains(
+    command: str, kind: str
+) -> None:
+    decision = guardrails.classify_verification_command(command)
+    assert decision.qualifies is True
+    assert decision.kind == kind
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "go vet ./... && echo done",
+        "go test ./... && go build ./...",
+        "pytest -q && npm install",
+        "go test ./... &&",
+        "&& go test ./...",
+    ],
+)
+def test_verification_command_classification_rejects_non_verifier_chains(command: str) -> None:
+    decision = guardrails.classify_verification_command(command)
+    assert decision.qualifies is False
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX environment-prefix syntax")
 def test_posix_environment_prefix_preserves_inline_verification() -> None:
     decision = guardrails.classify_verification_command(

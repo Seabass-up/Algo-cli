@@ -149,10 +149,10 @@ def test_current_ledger_is_honestly_blocked() -> None:
 
     assert report["status"] == "blocked"
     assert report["summary"] == {
-        "blocked": 14,
+        "blocked": 13,
         "failed": 0,
         "total": 42,
-        "verified": 28,
+        "verified": 29,
     }
     assert report["public_claim_eligible"] is False
     assert report["contract_digest"] == SCRIPT.EXPECTED_CONTRACT_DIGEST

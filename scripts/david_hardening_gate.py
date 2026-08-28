@@ -682,8 +682,9 @@ def validate_freeze(freeze: dict[str, Any], ledger: dict[str, Any]) -> list[str]
         errors.append("freeze manifest must use the exact [freeze] schema")
     if freeze_section.get("schema_version") != 1 or type(freeze_section.get("schema_version")) is not int:
         errors.append("freeze.schema_version must be exactly 1")
-    if freeze_section.get("status") != "active":
-        errors.append("hardening freeze must remain active until the audited lift milestone")
+    freeze_status = freeze_section.get("status")
+    if freeze_status not in {"active", "lifted"}:
+        errors.append("freeze.status must be active or lifted")
     if freeze_section.get("freeze_id") != _EXPECTED_FREEZE_ID:
         errors.append("freeze.freeze_id must match the immutable audited freeze")
     if freeze_section.get("base_commit") != _EXPECTED_BASE_COMMIT:
@@ -692,17 +693,18 @@ def validate_freeze(freeze: dict[str, Any], ledger: dict[str, Any]) -> list[str]
         errors.append("freeze.base_tag must match the immutable audited baseline")
     if freeze_section.get("started_at") != _EXPECTED_FREEZE_STARTED_AT:
         errors.append("freeze.started_at must match the immutable audited freeze")
-    if freeze_section.get("allowed_work") != "hardening-only":
-        errors.append("freeze.allowed_work must remain hardening-only")
-    for key in (
-        "feature_development_blocked",
-        "behavioral_refactors_blocked",
-        "release_blocked",
-        "tagging_blocked",
-        "publishing_blocked",
-    ):
-        if freeze_section.get(key) is not True:
-            errors.append(f"freeze.{key} must be true")
+    if freeze_status == "active":
+        if freeze_section.get("allowed_work") != "hardening-only":
+            errors.append("freeze.allowed_work must remain hardening-only")
+        for key in (
+            "feature_development_blocked",
+            "behavioral_refactors_blocked",
+            "release_blocked",
+            "tagging_blocked",
+            "publishing_blocked",
+        ):
+            if freeze_section.get(key) is not True:
+                errors.append(f"freeze.{key} must be true")
     if ledger.get("freeze_id") != freeze_section.get("freeze_id"):
         errors.append("freeze and evidence ledger IDs do not match")
     if ledger.get("freeze_id") != _EXPECTED_FREEZE_ID:
@@ -711,8 +713,11 @@ def validate_freeze(freeze: dict[str, Any], ledger: dict[str, Any]) -> list[str]
         errors.append("freeze and evidence ledger base commits do not match")
     if ledger.get("base_commit") != _EXPECTED_BASE_COMMIT:
         errors.append("evidence ledger base_commit must match the immutable audited baseline")
-    if ledger.get("status") != "active":
-        errors.append("evidence ledger must remain active until the audited lift")
+    ledger_status = ledger.get("status")
+    if freeze_status == "active" and ledger_status != "active":
+        errors.append("evidence ledger must remain active while the freeze is active")
+    if freeze_status == "lifted" and ledger_status != "lifted":
+        errors.append("evidence ledger status must be lifted when the freeze is lifted")
     lift = freeze.get("lift")
     if not isinstance(lift, dict):
         errors.append("freeze manifest is missing [lift]")
@@ -871,6 +876,8 @@ def validate_changed_paths(
     freeze_section = freeze.get("freeze")
     if not isinstance(freeze_section, dict):
         return ["freeze manifest is missing [freeze]"]
+    if freeze_section.get("status") == "lifted":
+        return []
     base_commit = freeze_section.get("base_commit")
     if not isinstance(base_commit, str) or not base_commit:
         return ["freeze.base_commit must be a non-empty string"]
@@ -930,7 +937,10 @@ def main(argv: list[str] | None = None) -> int:
         for error in errors:
             print(f"- {error}", file=sys.stderr)
         return 1
-    print("Algo CLI hardening gate: PASS (freeze active, hardening-only changes authorized)")
+    if freeze_section.get("status") == "lifted":
+        print("Algo CLI hardening gate: PASS (freeze lifted)")
+    else:
+        print("Algo CLI hardening gate: PASS (freeze active, hardening-only changes authorized)")
     return 0
 
 

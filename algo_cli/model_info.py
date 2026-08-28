@@ -31,9 +31,12 @@ _GEMINI_NAME_RE = re.compile(r"^gemini[-_]", re.IGNORECASE)
 # Grok models route through xAI's documented API-key auth and the
 # OpenAI-compatible chat surface — see xai_client.py.
 _GROK_NAME_RE = re.compile(r"^grok[-_]", re.IGNORECASE)
-# ChatGPT/OpenAI models routed through ChatGPT OAuth. Do not catch gpt-oss,
-# which is an Ollama/Ollama Cloud model family.
-_CHATGPT_NAME_RE = re.compile(r"^(?:chatgpt[-_]|gpt-(?!oss)|o[134](?:[-_]|$))", re.IGNORECASE)
+# ChatGPT/OpenAI models routed through ChatGPT OAuth. Restrict gpt-* matching to
+# recognizable OpenAI families so local names such as gpt-neo remain on Ollama.
+_CHATGPT_NAME_RE = re.compile(
+    r"^(?:chatgpt[-_]|gpt-(?:3\.5|4o?|5)(?:[-_.]|$)|o[134](?:[-_]|$))",
+    re.IGNORECASE,
+)
 
 _CACHE: dict[str, dict[str, Any]] = {}
 
@@ -502,8 +505,8 @@ def is_xai_model(model: str) -> bool:
 def is_chatgpt_model(model: str) -> bool:
     """Detect ChatGPT/OpenAI models routed through ChatGPT OAuth.
 
-    This intentionally excludes gpt-oss so Ollama Cloud/open-weight models are
-    not stolen by the OpenAI provider route.
+    This intentionally limits generic gpt-* matching to known OpenAI model
+    families so Ollama and Ollama Cloud model names are not stolen.
     """
     if not model or not isinstance(model, str):
         return False
