@@ -25,6 +25,16 @@ check_public_release = _load_script("check_public_release", "check_public_releas
 check_public_history = _load_script("check_public_history", "check_public_history.py")
 
 
+def _digest_containing(marker: str, seed: str) -> str:
+    """Deterministic sha256 urlsafe digest (43 chars) containing the marker."""
+    nonce = 0
+    while True:
+        candidate = base64.urlsafe_b64encode(hashlib.sha256(f"{seed}-{nonce}".encode()).digest()).decode().rstrip("=")
+        if marker in candidate.casefold():
+            return candidate
+        nonce += 1
+
+
 def test_machine_path_scan_catches_literal_and_source_escaped_windows_paths():
     literal = "C:" + "\\".join(("", "Users", "private-user", "workspace"))
     source_escaped = "C:" + "\\\\".join(("", "Users", "private-user", "workspace"))
@@ -77,6 +87,43 @@ def test_non_sri_lockfile_integrity_fails_closed():
     lockfile = json.dumps({"packages": {"": {"integrity": private_marker}}})
 
     assert check_public_release._scan_text("package-lock.json", lockfile)
+
+
+def test_record_digests_are_masked_but_paths_are_scanned():
+    private_marker = "x" + "ds"
+    digest = _digest_containing(private_marker, "record")
+    assert private_marker in digest.casefold()
+    assert len(digest) == 43
+    record = (
+        "algo_cli/clean_module.py,sha256=AAAAlegitimateHashValueAAAAAAAAAAAAAAAAAAA,1234\n"
+        f"algo_cli/theodore_runtime_services.py,sha256={digest},13753\n"
+    )
+
+    findings = check_public_release._scan_text("archive!algo_cli_runtime-0.18.0.dist-info/RECORD", record)
+
+    digest_line = next(
+        index for index, line in enumerate(record.splitlines(), 1) if "theodore_runtime_services.py" in line
+    )
+    assert (digest_line, "private marker") not in findings
+
+
+def test_record_digest_masking_fails_closed_on_malformed_digest():
+    private_marker = "sco" + "tt"
+    record = f"algo_cli/module.py,sha256={private_marker},13753\n"
+
+    assert check_public_release._scan_text("archive!algo_cli_runtime-0.18.0.dist-info/RECORD", record)
+
+
+def test_record_masking_only_applies_to_record_files():
+    private_marker = "x" + "ds"
+    digest = _digest_containing(private_marker, "other")
+    assert private_marker in digest.casefold()
+    assert len(digest) == 43
+    text = f"algo_cli/module.py,sha256={digest},13753\n"
+
+    findings = check_public_release._scan_text("archive!algo_cli/module.py", text)
+
+    assert findings
 
 
 def test_binary_payload_is_scanned_for_ascii_secrets():

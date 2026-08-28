@@ -73,6 +73,14 @@ SRI_RE = re.compile(
 )
 SRI_LENGTHS = {"sha1": 20, "sha256": 32, "sha384": 48, "sha512": 64}
 INTEGRITY_FIELD_RE = re.compile(r'("integrity"\s*:\s*)("(?:\\.|[^"\\])*")')
+RECORD_DIGEST_RE = re.compile(r"(,(sha\d+|md5)=)([A-Za-z0-9_+/=-]+)")
+RECORD_DIGEST_LENGTHS = {
+    "md5": {22, 24},
+    "sha1": {27, 28},
+    "sha256": {43, 44},
+    "sha384": {64},
+    "sha512": {86, 88},
+}
 DETECTOR_ASSIGNMENTS = {
     "PRIVATE_TERMS",
     "PRIVATE_FILENAME_PARTS",
@@ -84,6 +92,8 @@ DETECTOR_ASSIGNMENTS = {
     "ALLOWED_EMAIL_DOMAINS",
     "SRI_RE",
     "SRI_LENGTHS",
+    "RECORD_DIGEST_RE",
+    "RECORD_DIGEST_LENGTHS",
 }
 
 
@@ -125,11 +135,7 @@ def _scan_name(name: str) -> list[str]:
 def _scan_artifact_name(name: str) -> list[str]:
     normalized_name = name.replace("\\", "/").lower()
     normalized = f"/{normalized_name}"
-    return [
-        f"{name}: forbidden distribution path"
-        for part in ARTIFACT_FORBIDDEN_PATH_PARTS
-        if part in normalized
-    ]
+    return [f"{name}: forbidden distribution path" for part in ARTIFACT_FORBIDDEN_PATH_PARTS if part in normalized]
 
 
 def _mask_span(text: str, start_line: int, end_line: int) -> str:
@@ -155,8 +161,7 @@ def _mask_detector_definitions(name: str, text: str) -> str:
         {
             (node.lineno, node.end_lineno or node.lineno)
             for node in tree.body
-            if isinstance(node, (ast.Assign, ast.AnnAssign))
-            and _assignment_names(node) & DETECTOR_ASSIGNMENTS
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and _assignment_names(node) & DETECTOR_ASSIGNMENTS
         },
         reverse=True,
     )
@@ -186,6 +191,26 @@ def _mask_lockfile_integrity(name: str, text: str) -> str:
     return INTEGRITY_FIELD_RE.sub(replace, text)
 
 
+def _mask_record_digests(name: str, text: str) -> str:
+    """Mask wheel RECORD digest columns; they are integrity data, not prose.
+
+    Base64 digests are machine-generated and can coincidentally contain a
+    private term (hash lottery), so scanning them is meaningless. Paths stay
+    visible and continue to be scanned for private filenames.
+    """
+    if Path(name.replace("\\", "/")).name != "RECORD":
+        return text
+
+    def replace(match: re.Match[str]) -> str:
+        algorithm = match.group(2)
+        digest = match.group(3)
+        if len(digest) not in RECORD_DIGEST_LENGTHS.get(algorithm, set()):
+            return match.group(0)
+        return f"{match.group(1)}{' ' * len(digest)}"
+
+    return RECORD_DIGEST_RE.sub(replace, text)
+
+
 def _valid_sri(value: str) -> bool:
     if SRI_RE.fullmatch(value) is None:
         return False
@@ -203,7 +228,10 @@ def _valid_sri(value: str) -> bool:
 
 
 def _prepare_text_for_scan(name: str, text: str) -> str:
-    return _mask_detector_definitions(name, _mask_lockfile_integrity(name, text))
+    return _mask_detector_definitions(
+        name,
+        _mask_record_digests(name, _mask_lockfile_integrity(name, text)),
+    )
 
 
 def _scan_text(
