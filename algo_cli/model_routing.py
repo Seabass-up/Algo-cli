@@ -8,6 +8,35 @@ from .config import Config, load_runtime_env
 from . import model_info as _model_info_module
 
 
+MODEL_PROVIDERS = frozenset({"auto", "ollama", "xai", "chatgpt"})
+
+
+def resolved_model_provider(cfg: Config, model: str | None = None) -> str:
+    """Resolve a model provider, honoring an explicit choice for the active model."""
+
+    selected_model = str(model if model is not None else cfg.model)
+    provider = "auto"
+    if model is None or selected_model == cfg.model:
+        candidate = str(getattr(cfg, "model_provider", "auto") or "auto").strip().casefold()
+        if candidate in MODEL_PROVIDERS:
+            provider = candidate
+    if provider != "auto":
+        return provider
+    if _model_info_module.is_xai_model(selected_model):
+        return "xai"
+    if _model_info_module.is_chatgpt_model(selected_model):
+        return "chatgpt"
+    return "ollama"
+
+
+def routes_to_xai(cfg: Config, model: str | None = None) -> bool:
+    return resolved_model_provider(cfg, model) == "xai"
+
+
+def routes_to_chatgpt(cfg: Config, model: str | None = None) -> bool:
+    return resolved_model_provider(cfg, model) == "chatgpt"
+
+
 def is_cloud_model_name(name: str) -> bool:
     return name.endswith(":cloud") or name.endswith("-cloud") or ":cloud-" in name
 
@@ -15,9 +44,9 @@ def is_cloud_model_name(name: str) -> bool:
 def runtime_mode_label(cfg: Config) -> str:
     """Return the configured provider route used by status and dashboard UI."""
 
-    if _model_info_module.is_xai_model(cfg.model):
+    if routes_to_xai(cfg):
         return "xai"
-    if _model_info_module.is_chatgpt_model(cfg.model):
+    if routes_to_chatgpt(cfg):
         return "chatgpt"
     return "cloud" if cfg.cloud else "local"
 
@@ -41,16 +70,16 @@ def uses_ollama_cloud(cfg: Config) -> bool:
     leaves ``cfg.cloud`` false. Even if stale config has ``cfg.cloud`` true, the
     direct API route is active only when ``OLLAMA_API_KEY`` is present.
     """
-    if _model_info_module.is_xai_model(cfg.model) or _model_info_module.is_chatgpt_model(cfg.model):
+    if routes_to_xai(cfg) or routes_to_chatgpt(cfg):
         return False
     return bool(cfg.cloud and _runtime_ollama_api_key())
 
 
 def effective_runtime_host(cfg: Config) -> str:
     """Provider endpoint label for session_start / ops (not necessarily cfg.host)."""
-    if _model_info_module.is_xai_model(cfg.model):
+    if routes_to_xai(cfg):
         return "xai"
-    if _model_info_module.is_chatgpt_model(cfg.model):
+    if routes_to_chatgpt(cfg):
         return "chatgpt"
     if uses_ollama_cloud(cfg):
         return "https://ollama.com"

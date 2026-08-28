@@ -1,8 +1,10 @@
 """Offline tests for ChatGPT/OpenAI-compatible chat client adapter."""
+
 from __future__ import annotations
 
 import io
 import json
+import urllib.error
 from types import SimpleNamespace
 from typing import Any
 
@@ -20,6 +22,12 @@ class _FakeJsonResponse:
 
     def close(self):
         pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
 
 
 class _FakeStreamResponse:
@@ -181,6 +189,33 @@ def test_codex_model_discovery_uses_supported_protocol_and_hides_internal_models
     assert captured["timeout"] == 7
 
 
+def test_codex_model_discovery_refreshes_once_on_token_invalidated(monkeypatch):
+    calls: list[str] = []
+
+    def fake_urlopen(req, timeout):
+        calls.append(req.headers["Authorization"])
+        if len(calls) == 1:
+            raise urllib.error.HTTPError(
+                req.full_url,
+                401,
+                "Unauthorized",
+                {},
+                io.BytesIO(
+                    b'{"error":{"code":"token_invalidated","message":"Authentication token has been invalidated"}}'
+                ),
+            )
+        return _FakeJsonResponse({"models": [{"slug": "gpt-5.6-luna"}]})
+
+    tokens = iter(["old-token", "new-token"])
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_valid_token", lambda: next(tokens))
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_chatgpt_account_id", lambda: "acct_123")
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "force_refresh_token", lambda: "new-token")
+    monkeypatch.setattr(chatgpt_client.urllib.request, "urlopen", fake_urlopen)
+
+    assert chatgpt_client.get_codex_models() == [{"slug": "gpt-5.6-luna"}]
+    assert calls == ["Bearer old-token", "Bearer new-token"]
+
+
 def test_codex_subscription_model_with_tools_uses_chatgpt_backend(monkeypatch):
     captured: dict[str, Any] = {}
 
@@ -188,8 +223,11 @@ def test_codex_subscription_model_with_tools_uses_chatgpt_backend(monkeypatch):
         captured.update(payload)
         return _FakeStreamResponse(
             [
-                {"type": "response.output_item.added", "item": {"type": "function_call", "call_id": "c1", "name": "read_file"}},
-                {"type": "response.function_call_arguments.delta", "call_id": "c1", "delta": "{\"path\":\"x\"}"},
+                {
+                    "type": "response.output_item.added",
+                    "item": {"type": "function_call", "call_id": "c1", "name": "read_file"},
+                },
+                {"type": "response.function_call_arguments.delta", "call_id": "c1", "delta": '{"path":"x"}'},
                 "[DONE]",
             ]
         )
@@ -203,7 +241,9 @@ def test_codex_subscription_model_with_tools_uses_chatgpt_backend(monkeypatch):
     chunk = chatgpt_client.ChatGptClient().chat(
         model="gpt-5.5",
         messages=[{"role": "user", "content": "read x"}],
-        tools=[{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object", "properties": {}}}}],
+        tools=[
+            {"type": "function", "function": {"name": "read_file", "parameters": {"type": "object", "properties": {}}}}
+        ],
         stream=False,
     )
 
@@ -265,7 +305,9 @@ def test_payload_includes_reasoning_effort_from_options(monkeypatch):
     chatgpt_client.ChatGptClient().chat(
         model="gpt-5.5",
         messages=[],
-        tools=[{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object", "properties": {}}}}],
+        tools=[
+            {"type": "function", "function": {"name": "read_file", "parameters": {"type": "object", "properties": {}}}}
+        ],
         stream=False,
         options={"reasoning_effort": "max"},
     )
@@ -335,7 +377,7 @@ def test_responses_input_drops_malformed_empty_tool_call_names():
                     {
                         "id": "call_bad",
                         "type": "function",
-                        "function": {"name": "", "arguments": "{\"command\":\"/status\"}"},
+                        "function": {"name": "", "arguments": '{"command":"/status"}'},
                     }
                 ],
             },
@@ -357,7 +399,7 @@ def test_responses_input_drops_orphaned_tool_calls_without_outputs():
                     {
                         "id": "call_orphan",
                         "type": "function",
-                        "function": {"name": "session_command", "arguments": "{\"command\":\"/models\"}"},
+                        "function": {"name": "session_command", "arguments": '{"command":"/models"}'},
                     }
                 ],
             },
@@ -379,7 +421,7 @@ def test_responses_input_keeps_tool_calls_with_outputs():
                     {
                         "id": "call_ok",
                         "type": "function",
-                        "function": {"name": "session_command", "arguments": "{\"command\":\"/status\"}"},
+                        "function": {"name": "session_command", "arguments": '{"command":"/status"}'},
                     }
                 ],
             },
@@ -387,7 +429,12 @@ def test_responses_input_keeps_tool_calls_with_outputs():
         ]
     )
 
-    assert {"type": "function_call", "call_id": "call_ok", "name": "session_command", "arguments": "{\"command\":\"/status\"}"} in built
+    assert {
+        "type": "function_call",
+        "call_id": "call_ok",
+        "name": "session_command",
+        "arguments": '{"command":"/status"}',
+    } in built
     assert {"type": "function_call_output", "call_id": "call_ok", "output": "Executed: /status"} in built
 
 
@@ -397,8 +444,8 @@ def test_chat_messages_pair_missing_tool_result_ids_by_call_sequence_for_duplica
             {
                 "role": "assistant",
                 "tool_calls": [
-                    {"id": "call_1", "function": {"name": "read_file", "arguments": "{\"path\":\"a\"}"}},
-                    {"id": "call_2", "function": {"name": "read_file", "arguments": "{\"path\":\"b\"}"}},
+                    {"id": "call_1", "function": {"name": "read_file", "arguments": '{"path":"a"}'}},
+                    {"id": "call_2", "function": {"name": "read_file", "arguments": '{"path":"b"}'}},
                 ],
             },
             {"role": "tool", "name": "read_file", "content": "first"},
@@ -434,8 +481,8 @@ def test_responses_input_drops_tool_outputs_without_explicit_call_id_for_duplica
             {
                 "role": "assistant",
                 "tool_calls": [
-                    {"id": "call_1", "function": {"name": "read_file", "arguments": "{\"path\":\"a\"}"}},
-                    {"id": "call_2", "function": {"name": "read_file", "arguments": "{\"path\":\"b\"}"}},
+                    {"id": "call_1", "function": {"name": "read_file", "arguments": '{"path":"a"}'}},
+                    {"id": "call_2", "function": {"name": "read_file", "arguments": '{"path":"b"}'}},
                 ],
             },
             {"role": "tool", "name": "read_file", "content": "first"},
@@ -449,7 +496,7 @@ def test_responses_input_drops_tool_outputs_without_explicit_call_id_for_duplica
 
 def test_codex_responses_stream_rejects_nameless_tool_calls_as_empty():
     events = [
-        {"type": "response.function_call_arguments.delta", "call_id": "call_bad", "delta": "{\"command\":\"/status\"}"},
+        {"type": "response.function_call_arguments.delta", "call_id": "call_bad", "delta": '{"command":"/status"}'},
         "[DONE]",
     ]
 
@@ -472,9 +519,7 @@ def test_codex_responses_stream_surfaces_failed_event():
     events = [
         {
             "type": "response.failed",
-            "response": {
-                "error": {"code": "server_error", "message": "upstream unavailable"}
-            },
+            "response": {"error": {"code": "server_error", "message": "upstream unavailable"}},
         }
     ]
 
@@ -512,8 +557,8 @@ def test_codex_responses_stream_content_and_tool_calls(monkeypatch):
     events = [
         {"type": "response.output_text.delta", "delta": "I'll read it."},
         {"type": "response.output_item.added", "item": {"type": "function_call", "call_id": "c1", "name": "read_file"}},
-        {"type": "response.function_call_arguments.delta", "call_id": "c1", "delta": "{\"path\":\""},
-        {"type": "response.function_call_arguments.delta", "call_id": "c1", "delta": "x\"}"},
+        {"type": "response.function_call_arguments.delta", "call_id": "c1", "delta": '{"path":"'},
+        {"type": "response.function_call_arguments.delta", "call_id": "c1", "delta": 'x"}'},
         "[DONE]",
     ]
     monkeypatch.setattr(chatgpt_client, "_post_codex_responses", lambda payload, **kw: _FakeStreamResponse(events))
@@ -522,13 +567,18 @@ def test_codex_responses_stream_content_and_tool_calls(monkeypatch):
         chatgpt_client.ChatGptClient().chat(
             model="gpt-5.5",
             messages=[{"role": "user", "content": "read x"}],
-            tools=[{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object", "properties": {}}}}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {"name": "read_file", "parameters": {"type": "object", "properties": {}}},
+                }
+            ],
             stream=True,
         )
     )
 
     assert chunks[0]["message"]["content"] == "I'll read it."
-    assert chunks[-1]["message"]["tool_calls"][0]["function"] == {"name": "read_file", "arguments": "{\"path\":\"x\"}"}
+    assert chunks[-1]["message"]["tool_calls"][0]["function"] == {"name": "read_file", "arguments": '{"path":"x"}'}
 
 
 def test_post_codex_responses_requires_account_id(monkeypatch):
@@ -601,11 +651,15 @@ def test_post_codex_responses_refreshes_once_on_token_invalidated(monkeypatch):
                 401,
                 "Unauthorized",
                 hdrs={},
-                fp=io.BytesIO(b'{"error":{"code":"token_invalidated","message":"Your authentication token has been invalidated."}}'),
+                fp=io.BytesIO(
+                    b'{"error":{"code":"token_invalidated","message":"Your authentication token has been invalidated."}}'
+                ),
             )
         return _Response()
 
-    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_valid_token", lambda: "old-token" if len(calls) == 0 else "new-token")
+    monkeypatch.setattr(
+        chatgpt_client.chatgpt_auth, "get_valid_token", lambda: "old-token" if len(calls) == 0 else "new-token"
+    )
     monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_chatgpt_account_id", lambda: "acct_123")
     monkeypatch.setattr(chatgpt_client.chatgpt_auth, "force_refresh_token", lambda: "new-token")
     monkeypatch.setattr(chatgpt_client.urllib.request, "urlopen", fake_urlopen)

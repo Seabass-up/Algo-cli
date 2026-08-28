@@ -52,6 +52,7 @@ def test_defaults():
 def test_save_load_roundtrip():
     cfg = Config()
     cfg.model = "test-model:latest"
+    cfg.model_provider = "ollama"
     cfg.num_ctx = 12345
     cfg.cloud = True
     cfg.chat_stream_timeout_seconds = 45.0
@@ -70,6 +71,7 @@ def test_save_load_roundtrip():
 
     reloaded = Config.load()
     assert reloaded.model == "test-model:latest"
+    assert reloaded.model_provider == "ollama"
     assert reloaded.num_ctx == 12345
     assert reloaded.cloud is True
     assert reloaded.chat_stream_timeout_seconds == 45.0

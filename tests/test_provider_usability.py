@@ -4,6 +4,7 @@ These tests exercise the boundaries that decide which provider receives chat,
 which credential source is required, and whether local Ollama startup is needed.
 No network calls are made: clients/auth helpers are monkeypatched.
 """
+
 from __future__ import annotations
 
 from urllib.error import URLError
@@ -32,6 +33,24 @@ def test_local_ollama_client_uses_configured_host(monkeypatch):
     assert isinstance(client, _FakeOllamaClient)
     assert client.kwargs["host"] == "http://127.0.0.1:11434"
     assert "headers" not in client.kwargs
+
+
+def test_explicit_ollama_provider_keeps_local_gpt_alias_on_ollama(monkeypatch):
+    monkeypatch.setattr(runtime_services, "Client", _FakeOllamaClient)
+    _FakeOllamaClient.calls.clear()
+    cfg = Config(
+        host="http://127.0.0.1:11434",
+        cloud=False,
+        model="gpt-local:latest",
+        model_provider="ollama",
+    )
+
+    client = runtime_services.create_client(cfg)
+
+    assert isinstance(client, _FakeOllamaClient)
+    assert client.kwargs["host"] == "http://127.0.0.1:11434"
+    assert model_routing.runtime_mode_label(cfg) == "local"
+    assert model_routing.effective_runtime_host(cfg) == "http://127.0.0.1:11434"
 
 
 def test_ollama_cloud_client_requires_key_and_uses_bearer(monkeypatch):

@@ -38,6 +38,7 @@ from . import nathan_provider_protocol
 from . import chatgpt_client
 from . import context_budget
 from . import tools as tools_module
+from .model_routing import routes_to_chatgpt
 from .chat_protocol import (
     collapse_tool_history_for_gemini,
     get_attr,
@@ -173,7 +174,7 @@ def _estimate_agent_request_tokens(
 
 def _model_chat_options(model: str, cfg: Config) -> dict[str, Any]:
     options: dict[str, Any] = {"temperature": cfg.temperature, "num_ctx": cfg.num_ctx}
-    if _model_info_module.is_chatgpt_model(model):
+    if routes_to_chatgpt(cfg, model):
         options["reasoning_effort"] = chatgpt_client.reasoning_effort_for_model(model, cfg.chatgpt_reasoning_efforts)
     return options
 

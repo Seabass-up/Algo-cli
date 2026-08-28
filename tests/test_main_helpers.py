@@ -2014,6 +2014,20 @@ def test_model_picker_includes_authenticated_chatgpt_models(monkeypatch, tmp_pat
     assert ("gpt-5.5", "OpenAI Codex · reasoning medium · subscription quota") in captured
 
 
+def test_model_picker_persists_local_provider_for_gpt_named_ollama_model(monkeypatch, tmp_path):
+    cfg = Config(cwd=str(tmp_path))
+    monkeypatch.setattr(main, "local_model_names", lambda _cfg: ["gpt-local:latest"])
+    monkeypatch.setattr(main, "cloud_model_names", lambda: [])
+    monkeypatch.setattr(main, "xai_model_names", lambda: ([], False))
+    monkeypatch.setattr(main, "chatgpt_model_names", lambda: ([], False))
+    monkeypatch.setattr(main, "choose_from_menu", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(cfg, "save", lambda: None)
+
+    assert main.model_picker(cfg) is True
+    assert cfg.model == "gpt-local:latest"
+    assert cfg.model_provider == "ollama"
+
+
 def test_direct_provider_model_selection_requires_verified_catalog(monkeypatch):
     cfg = Config(model="existing-model")
     old_client = object()

@@ -323,6 +323,12 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             # A cloud-suffixed Ollama model selects direct cloud; xAI and
             # ChatGPT models route through their dedicated clients.
             cfg.cloud = m.is_cloud_model_name(arg)
+            if m._model_info_module.is_chatgpt_model(arg):
+                cfg.model_provider = "chatgpt"
+            elif m._model_info_module.is_xai_model(arg):
+                cfg.model_provider = "xai"
+            else:
+                cfg.model_provider = "ollama"
             cfg.save()
             m.show_info(f"Model set to {cfg.model}")
             client = m.create_client(cfg)

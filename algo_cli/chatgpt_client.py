@@ -3,6 +3,7 @@
 Uses ChatGPT/OpenAI OAuth tokens from chatgpt_auth and exposes an
 ollama.Client.chat()-shaped interface so agent_loop can reuse one provider path.
 """
+
 from __future__ import annotations
 
 import json
@@ -107,7 +108,7 @@ def reasoning_effort_for_model(model: str, configured: dict[str, str] | None = N
     return _normalize_reasoning_effort(raw, canonical)
 
 
-def get_codex_models(*, timeout: float = 20.0) -> list[dict[str, Any]]:
+def get_codex_models(*, timeout: float = 20.0, _retried: bool = False) -> list[dict[str, Any]]:
     """Return the current OAuth account's visible Codex model catalog.
 
     The ChatGPT backend gates model metadata by Codex protocol version. Algo
@@ -149,6 +150,10 @@ def get_codex_models(*, timeout: float = 20.0) -> list[dict[str, Any]]:
             detail = exc.read().decode("utf-8", errors="replace")[:1000].strip()
         except Exception:
             pass
+        if exc.code == 401 and _is_token_invalidated_error(detail):
+            if not _retried and chatgpt_auth.force_refresh_token():
+                return get_codex_models(timeout=timeout, _retried=True)
+            raise _invalidated_session_error() from exc
         raise ChatGptOAuthAccessError(
             f"ChatGPT Codex model discovery failed ({exc.code}): {detail or '(no body)'}"
         ) from exc
@@ -214,8 +219,7 @@ def _run_codex_exec(
             codex_home = default_home
         else:
             raise ChatGptOAuthAccessError(
-                "Codex CLI fallback needs a Codex auth file. Run "
-                "`algo-cli config auth chatgpt login --device-code`."
+                "Codex CLI fallback needs a Codex auth file. Run `algo-cli config auth chatgpt login --device-code`."
             )
     prompt = _messages_to_codex_prompt(messages)
     env = os.environ.copy()
@@ -254,8 +258,7 @@ def _run_codex_exec(
             raise ChatGptOAuthAccessError(f"Codex CLI timed out after {timeout:.0f}s for model {model}.") from exc
         except FileNotFoundError as exc:
             raise ChatGptOAuthAccessError(
-                "Codex CLI is not installed or not discoverable. Run "
-                "`algo-cli config auth chatgpt login` again."
+                "Codex CLI is not installed or not discoverable. Run `algo-cli config auth chatgpt login` again."
             ) from exc
         if getattr(result, "returncode", 0) != 0:
             stderr = str(getattr(result, "stderr", "") or "").strip()
@@ -311,7 +314,9 @@ def _build_openai_tools(tools: list[Callable[..., Any]] | list[dict[str, Any]] |
     return out or None
 
 
-def _build_responses_tools(tools: list[Callable[..., Any]] | list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
+def _build_responses_tools(
+    tools: list[Callable[..., Any]] | list[dict[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
     built = _build_openai_tools(tools)
     if not built:
         return None
@@ -359,7 +364,9 @@ def _build_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
                     call_id = f"call_{counter}"
                 call_id = str(call_id)
                 pending_call_ids.append(call_id)
-                calls_out.append({"id": call_id, "type": "function", "function": {"name": name, "arguments": args or "{}"}})
+                calls_out.append(
+                    {"id": call_id, "type": "function", "function": {"name": name, "arguments": args or "{}"}}
+                )
             translated: dict[str, Any] = {"role": "assistant", "tool_calls": calls_out}
             if msg.get("content"):
                 translated["content"] = msg["content"]
@@ -393,9 +400,7 @@ def _build_responses_input(messages: list[dict[str, Any]]) -> list[dict[str, Any
     out: list[dict[str, Any]] = []
     valid_call_ids: set[str] = set()
     output_call_ids = {
-        str(msg.get("tool_call_id"))
-        for msg in messages
-        if msg.get("role") == "tool" and msg.get("tool_call_id")
+        str(msg.get("tool_call_id")) for msg in messages if msg.get("role") == "tool" and msg.get("tool_call_id")
     }
     counter = 0
     for msg in messages:
@@ -444,13 +449,15 @@ def _invalidated_session_error() -> ChatGptOAuthAccessError:
     """Clear a definitively rejected OAuth session and return recovery guidance."""
 
     cleared = chatgpt_auth.clear_tokens()
-    cleanup = "The invalid saved session was cleared." if cleared else (
-        "Algo CLI could not clear the saved session automatically; run "
-        "`algo-cli config auth chatgpt logout` first."
+    cleanup = (
+        "The invalid saved session was cleared."
+        if cleared
+        else (
+            "Algo CLI could not clear the saved session automatically; run `algo-cli config auth chatgpt logout` first."
+        )
     )
     return ChatGptOAuthAccessError(
-        "ChatGPT/Codex sign-in expired or was revoked. "
-        f"{cleanup} Run `algo-cli config setup chatgpt` to sign in again."
+        f"ChatGPT/Codex sign-in expired or was revoked. {cleanup} Run `algo-cli config setup chatgpt` to sign in again."
     )
 
 
@@ -560,7 +567,9 @@ def _post_codex_responses(payload: dict[str, Any], *, timeout: float = 120.0, _r
                 if refreshed:
                     return _post_codex_responses(payload, timeout=timeout, _retried=True)
             raise _invalidated_session_error() from exc
-        raise ChatGptOAuthAccessError(f"ChatGPT Codex Responses request failed ({exc.code}): {detail or '(no body)'}") from exc
+        raise ChatGptOAuthAccessError(
+            f"ChatGPT Codex Responses request failed ({exc.code}): {detail or '(no body)'}"
+        ) from exc
 
 
 def _parse_sse_events(resp: Any) -> Iterator[dict[str, Any]]:
@@ -638,8 +647,7 @@ def _stream_codex_responses_iter(resp: Any) -> Iterator[dict[str, Any]]:
         return [
             pending_calls[call_id]
             for call_id in order
-            if pending_calls.get(call_id)
-            and str(pending_calls[call_id].get("function", {}).get("name") or "").strip()
+            if pending_calls.get(call_id) and str(pending_calls[call_id].get("function", {}).get("name") or "").strip()
         ]
 
     for event in _parse_sse_events(resp):
@@ -656,24 +664,16 @@ def _stream_codex_responses_iter(resp: Any) -> Iterator[dict[str, Any]]:
                 else {}
             )
             incomplete = (
-                response.get("incomplete_details")
-                if isinstance(response.get("incomplete_details"), dict)
-                else {}
+                response.get("incomplete_details") if isinstance(response.get("incomplete_details"), dict) else {}
             )
             code = str(error.get("code") or event.get("code") or "").strip()
             detail = str(
-                error.get("message")
-                or event.get("message")
-                or incomplete.get("reason")
-                or code
-                or "no provider detail"
+                error.get("message") or event.get("message") or incomplete.get("reason") or code or "no provider detail"
             ).strip()
             if len(detail) > 500:
                 detail = detail[:497] + "..."
             label = f" ({code})" if code and code not in detail else ""
-            raise ChatGptOAuthAccessError(
-                f"Codex Responses stream ended with {event_type}{label}: {detail}"
-            )
+            raise ChatGptOAuthAccessError(f"Codex Responses stream ended with {event_type}{label}: {detail}")
         if event_type == "response.reasoning_summary_text.delta":
             text = _extract_responses_event_text(event)
             if text:
@@ -730,9 +730,7 @@ def _stream_codex_responses_iter(resp: Any) -> Iterator[dict[str, Any]]:
         emitted_answer = True
         yield {"message": {"tool_calls": completed}}
     if not emitted_answer:
-        raise ChatGptOAuthAccessError(
-            "Codex Responses stream completed without text or a valid tool call."
-        )
+        raise ChatGptOAuthAccessError("Codex Responses stream completed without text or a valid tool call.")
 
 
 def _nonstream_to_chunk(body: dict[str, Any]) -> dict[str, Any]:

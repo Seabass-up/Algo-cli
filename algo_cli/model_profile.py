@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import model_info as _model_info_module
+from .model_routing import resolved_model_provider
 
 # Config-default sentinels. A field still equal to its default is treated as
 # "untouched" and therefore eligible for adaptation. Kept in sync with
@@ -26,18 +27,18 @@ DEFAULT_TEMPERATURE = 0.4
 DEFAULT_TOOL_THINK_EVERY = 10
 
 # Size bands in billions of parameters.
-SMALL_MAX_B = 9.0      # <=9B  -> small
-MEDIUM_MAX_B = 32.0    # <=32B -> medium; above -> large
+SMALL_MAX_B = 9.0  # <=9B  -> small
+MEDIUM_MAX_B = 32.0  # <=32B -> medium; above -> large
 
 
 @dataclass(frozen=True)
 class ModelProfile:
-    size_class: str            # "small" | "medium" | "large" | "unknown"
-    provider: str              # "local" | "cloud" | "xai" | "chatgpt"
+    size_class: str  # "small" | "medium" | "large" | "unknown"
+    provider: str  # "local" | "cloud" | "xai" | "chatgpt"
     num_ctx: int
     temperature: float
     tool_think_every: int
-    note: str                  # short human-readable rationale
+    note: str  # short human-readable rationale
 
 
 def _size_class(size_b: float | None) -> str:
@@ -51,10 +52,10 @@ def _size_class(size_b: float | None) -> str:
 
 
 def _provider(cfg: Any) -> str:
-    model = getattr(cfg, "model", "")
-    if _model_info_module.is_xai_model(model):
+    provider = resolved_model_provider(cfg)
+    if provider == "xai":
         return "xai"
-    if _model_info_module.is_chatgpt_model(model):
+    if provider == "chatgpt":
         return "chatgpt"
     return "cloud" if getattr(cfg, "cloud", False) else "local"
 

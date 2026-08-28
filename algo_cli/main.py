@@ -104,6 +104,8 @@ from .model_routing import (
     is_embedding_model_name,
     is_vision_model_name,
     require_cloud_api_key,  # noqa: F401
+    routes_to_chatgpt,
+    routes_to_xai,
     uses_ollama_cloud,  # noqa: F401
 )
 from .theodore_runtime_services import (
@@ -505,8 +507,8 @@ def refresh_runtime_status(cfg: Config, client: Any | None = None, *, force: boo
     last_metrics = RUNTIME_STATUS.get("last_metrics")
     RUNTIME_STATUS.clear()
     local_models: list[str] = []
-    is_xai = _model_info_module.is_xai_model(cfg.model)
-    is_chatgpt = _model_info_module.is_chatgpt_model(cfg.model)
+    is_xai = routes_to_xai(cfg)
+    is_chatgpt = routes_to_chatgpt(cfg)
     if not cfg.cloud and not is_xai and not is_chatgpt:
         local_models = local_model_names(cfg)
     if is_xai:
@@ -568,7 +570,7 @@ def _format_short_count(value: Any) -> str:
 
 
 def _connectivity_dot(cfg: Config, palette: dict[str, str]) -> str:
-    if _model_info_module.is_xai_model(cfg.model) or _model_info_module.is_chatgpt_model(cfg.model) or cfg.cloud:
+    if routes_to_xai(cfg) or routes_to_chatgpt(cfg) or cfg.cloud:
         color = palette["info"]
     else:
         cached = SERVER_READY_CACHE.get(cfg.host)
@@ -1822,6 +1824,12 @@ def model_picker(cfg: Config, *, first_run: bool = False) -> bool:
 
     model, mode = choices[selected - 1]
     cfg.model = model
+    if mode.startswith("OpenAI"):
+        cfg.model_provider = "chatgpt"
+    elif mode.startswith("xAI"):
+        cfg.model_provider = "xai"
+    else:
+        cfg.model_provider = "ollama"
     # Cloud flag is only meaningful for Ollama Cloud; xAI uses its own client regardless.
     cfg.cloud = mode == "direct cloud API"
     cfg.save()
@@ -2917,7 +2925,7 @@ def agent_loop(
         _active_model_info = _model_info_module.resolve_model_info(cfg, None)
 
     _turn_local_models: list[str] = []
-    if not cfg.cloud and not _model_info_module.is_xai_model(cfg.model):
+    if not cfg.cloud and not routes_to_xai(cfg) and not routes_to_chatgpt(cfg):
         _turn_local_models = local_model_names(cfg)
 
     retrieved_lessons: list[str] | None = [] if echo_memory_authority else None
@@ -3453,7 +3461,7 @@ def agent_loop(
                 # never evicted by sliding-window truncation during long sessions.
                 "num_keep": estimate_text_tokens(system_prompt),
             }
-            if _model_info_module.is_chatgpt_model(cfg.model):
+            if routes_to_chatgpt(cfg):
                 chat_options["reasoning_effort"] = chatgpt_client.reasoning_effort_for_model(
                     cfg.model, cfg.chatgpt_reasoning_efforts
                 )
@@ -4357,9 +4365,7 @@ def _run_daemon_entry(prompt: str | None) -> int | None:
     try:
         response = rpc_call(socket_path, "status")
     except ConnectionError:
-        console.print(
-            "[yellow]Daemon is not running; Algo CLI will use in-process mode.[/]"
-        )
+        console.print("[yellow]Daemon is not running; Algo CLI will use in-process mode.[/]")
         return 1
     result = response.get("result")
     if not isinstance(result, dict):
@@ -4482,11 +4488,14 @@ def main() -> None:
     )
     if args.model:
         cfg.model = chatgpt_client.normalize_codex_model(args.model)
+        cfg.model_provider = "auto"
     if args.host:
         cfg.host = args.host
         cfg.cloud = False
+        cfg.model_provider = "ollama"
     if args.cloud:
         cfg.cloud = True
+        cfg.model_provider = "ollama"
     if args.cwd:
         cfg.cwd = str(Path(args.cwd).expanduser().resolve())
     if (args.prompt or "").strip().lower() == "doctor" and not args.oneshot:

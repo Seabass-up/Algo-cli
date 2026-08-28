@@ -107,6 +107,27 @@ def test_auth_status_fails_closed_for_expired_or_malformed_token_state(config_di
     assert status["expires_at"] == 0
 
 
+def test_auth_status_is_not_authenticated_when_expired_token_cannot_refresh(config_dir: Path, monkeypatch):
+    chatgpt_auth.save_tokens(
+        {
+            "access_token": "expired",
+            "refresh_token": "revoked",
+            "expires_at": int(time.time()) - 10,
+        }
+    )
+    monkeypatch.setattr(
+        chatgpt_auth,
+        "refresh_access_token",
+        lambda _refresh: (_ for _ in ()).throw(RuntimeError("invalid_grant")),
+    )
+
+    status = chatgpt_auth.auth_status()
+
+    assert status["authenticated"] is False
+    assert status["token_valid"] is False
+    assert status["has_refresh_token"] is True
+
+
 def test_token_normalization_error_does_not_echo_secrets():
     secret = "refresh-secret-not-for-terminal"
 

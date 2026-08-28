@@ -27,6 +27,7 @@ from . import model_info as _model_info_module
 from . import reflex
 from .chat_protocol import get_attr, normalize_tool_call
 from .display import json_sink
+from .model_routing import routes_to_chatgpt, routes_to_xai
 
 CONTEXT_COMPACT_THRESHOLD = 0.85
 CONTEXT_KEEP_MESSAGES = 12
@@ -325,8 +326,10 @@ def build_system_prompt(
     )
     prompt = (identity_block + "\n\n" if identity_block else "") + cfg.system
     load_runtime_env(override=True)
-    if _model_info_module.is_xai_model(cfg.model):
+    if routes_to_xai(cfg):
         provider = "xAI Grok API"
+    elif routes_to_chatgpt(cfg):
+        provider = "ChatGPT/Codex subscription"
     elif cfg.cloud and os.environ.get("OLLAMA_API_KEY", "").strip():
         provider = "Ollama Cloud direct API"
     elif _model_info_module.is_cloud_model_name(cfg.model):

@@ -26,12 +26,12 @@ from . import agent_blocks
 from . import chatgpt_client
 from . import git_evidence
 from . import grace_key_store
-from . import model_info
 from . import samuel_policy
 from . import spawn_budget
 from . import task_router
 from .config import Config
 from .irene_privacy_views import PRIVACY_KEY_LABEL
+from .model_routing import routes_to_chatgpt
 
 
 RUN_CONTRACT_SCHEMA_VERSION = 4
@@ -1030,7 +1030,7 @@ def _workspace_contract(
 
 
 def _reasoning_effort(model: str, cfg: Config) -> str:
-    if model_info.is_chatgpt_model(model):
+    if routes_to_chatgpt(cfg, model):
         return chatgpt_client.reasoning_effort_for_model(
             model,
             cfg.chatgpt_reasoning_efforts,

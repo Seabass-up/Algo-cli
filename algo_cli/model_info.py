@@ -4,6 +4,7 @@ Loads metadata via ``ollama show MODEL`` (preferred when the model is installed)
 and/or ``client.show()``, persists to CONFIG_DIR/model_info/, and writes a
 markdown harness record to CONFIG_DIR/models/ for harness RAG.
 """
+
 from __future__ import annotations
 
 import json
@@ -365,9 +366,10 @@ def resolve_model_info(cfg: Any, client: Any | None) -> dict[str, Any]:
     model = str(getattr(cfg, "model", "") or "")
     if not model:
         return {}
-    if is_xai_model(model):
+    explicit_provider = str(getattr(cfg, "model_provider", "auto") or "auto").strip().casefold()
+    if explicit_provider == "xai" or (explicit_provider == "auto" and is_xai_model(model)):
         return synthesize_xai_info(model)
-    if is_chatgpt_model(model):
+    if explicit_provider == "chatgpt" or (explicit_provider == "auto" and is_chatgpt_model(model)):
         return synthesize_chatgpt_info(model)
 
     cloud = bool(getattr(cfg, "cloud", False))

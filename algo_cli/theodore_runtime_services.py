@@ -25,7 +25,7 @@ from . import model_info as _model_info_module
 from . import xai_auth
 from . import chatgpt_auth
 from .display import show_error, show_info
-from .model_routing import require_cloud_api_key, uses_ollama_cloud
+from .model_routing import require_cloud_api_key, routes_to_chatgpt, routes_to_xai, uses_ollama_cloud
 
 LOCAL_STARTUP_TIMEOUT_SECONDS = 12
 SERVER_READY_TTL_SECONDS = 5.0
@@ -46,11 +46,11 @@ _TOOL_ENV_THREAD_STATE = threading.local()
 
 def create_client(cfg: Config) -> Any:
     load_runtime_env(override=True)
-    if _model_info_module.is_xai_model(cfg.model):
+    if routes_to_xai(cfg):
         from . import xai_client
 
         return xai_client.active_xai_client()
-    if _model_info_module.is_chatgpt_model(cfg.model):
+    if routes_to_chatgpt(cfg):
         from . import chatgpt_client
 
         return chatgpt_client.active_chatgpt_client()
@@ -199,12 +199,7 @@ def ollama_server_ready(host: str) -> bool:
 
 
 def start_ollama_server(cfg: Config) -> bool:
-    if (
-        uses_ollama_cloud(cfg)
-        or _model_info_module.is_xai_model(cfg.model)
-        or _model_info_module.is_chatgpt_model(cfg.model)
-        or not host_is_local(cfg.host)
-    ):
+    if uses_ollama_cloud(cfg) or routes_to_xai(cfg) or routes_to_chatgpt(cfg) or not host_is_local(cfg.host):
         return True
     return start_local_ollama_host(cfg.host)
 
@@ -247,9 +242,7 @@ def start_local_ollama_host(host: str) -> bool:
 
 def gateway_url() -> str:
     return (
-        os.environ.get("ALGO_CLI_GATEWAY_URL")
-        or os.environ.get("OLLAMA_CLI_GATEWAY_URL")
-        or "http://127.0.0.1:8765"
+        os.environ.get("ALGO_CLI_GATEWAY_URL") or os.environ.get("OLLAMA_CLI_GATEWAY_URL") or "http://127.0.0.1:8765"
     ).rstrip("/")
 
 
@@ -312,7 +305,9 @@ def gateway_command() -> tuple[list[str], Path] | None:
     built = source_dir / exe_name
     if built.exists():
         return [str(built)], source_dir
-    go = shutil.which("go") or (r"C:\Program Files\Go\bin\go.exe" if Path(r"C:\Program Files\Go\bin\go.exe").exists() else "")
+    go = shutil.which("go") or (
+        r"C:\Program Files\Go\bin\go.exe" if Path(r"C:\Program Files\Go\bin\go.exe").exists() else ""
+    )
     if go and source_dir.exists():
         return [go, "run", "."], source_dir
     return None
@@ -342,7 +337,9 @@ def start_supplemental_gateway(cfg: Config) -> bool:
         )
         return False
     command, cwd = command_info
-    startup_timeout = 45 if len(command) >= 2 and Path(command[0]).name.lower().startswith("go") and command[1] == "run" else 20
+    startup_timeout = (
+        45 if len(command) >= 2 and Path(command[0]).name.lower().startswith("go") and command[1] == "run" else 20
+    )
     args = command + ["-addr", addr, "-index", str(harness.INDEX_PATH), "-ollama", cfg.host]
     try:
         kwargs: dict[str, Any] = {

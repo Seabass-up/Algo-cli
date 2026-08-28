@@ -2282,6 +2282,9 @@ def _coerce_config_value(current: Any, value: Any) -> Any:
 @dataclass
 class Config:
     model: str = DEFAULT_MODEL
+    # Explicit provider selected by the model picker. "auto" preserves legacy
+    # name-based inference for existing configs and command-line overrides.
+    model_provider: str = "auto"  # auto | ollama | xai | chatgpt
     system: str = DEFAULT_SYSTEM
     theme: str = DEFAULT_THEME
     auto_mode: bool = False
@@ -2598,10 +2601,13 @@ class Config:
         # accepted automatic durable writes under the current policy.
         if not memory_auto_capture_consent_granted(cfg):
             cfg.memory_auto_capture_enabled = False
+        provider = str(cfg.model_provider or "auto").strip().casefold()
+        cfg.model_provider = provider if provider in {"auto", "ollama", "xai", "chatgpt"} else "auto"
         # Older/live sessions may have persisted a short GPT-5.6 name before
         # alias-aware routing was available. Canonicalize in memory on load so
         # startup cannot send Sol/Terra/Luna to the local Ollama provider.
-        cfg.model = normalize_codex_model(cfg.model)
+        if cfg.model_provider != "ollama":
+            cfg.model = normalize_codex_model(cfg.model)
         # Refresh only the exact prompt shipped by older releases. User-authored
         # system prompts are preserved verbatim.
         if cfg.system == LEGACY_DEFAULT_SYSTEM:

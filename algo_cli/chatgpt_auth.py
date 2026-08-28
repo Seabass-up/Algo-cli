@@ -899,12 +899,14 @@ def auth_status() -> dict[str, Any]:
     tokens = load_tokens()
     if not tokens:
         return {"authenticated": False, "client_configured": bool(_client_id())}
+    if is_token_expired(tokens) and tokens.get("refresh_token"):
+        if get_valid_token():
+            tokens = load_tokens() or tokens
     expires_at = _safe_int(tokens.get("expires_at"), 0)
     has_access_token = bool(tokens.get("access_token"))
     token_valid = has_access_token and not is_token_expired(tokens)
-    refreshable = bool(tokens.get("refresh_token")) and bool(_client_id())
     return {
-        "authenticated": token_valid or refreshable,
+        "authenticated": token_valid,
         "client_configured": bool(_client_id()),
         "token_present": has_access_token or bool(tokens.get("refresh_token")),
         "expires_at": expires_at,
