@@ -367,6 +367,53 @@ def test_codex_reasoning_summary_streams_as_thinking():
     assert chunks[1]["message"]["content"] == "Done"
 
 
+def test_codex_completed_event_forwards_authoritative_usage():
+    usage = {
+        "input_tokens": 41,
+        "output_tokens": 7,
+        "total_tokens": 48,
+        "input_tokens_details": {"cached_tokens": 11},
+    }
+    events = [
+        {"type": "response.output_text.delta", "delta": "Done"},
+        {"type": "response.completed", "response": {"usage": usage}},
+        "[DONE]",
+    ]
+
+    chunks = list(chatgpt_client._stream_codex_responses_iter(_FakeStreamResponse(events)))
+
+    assert chunks[-1] == {
+        "message": {},
+        "usage": usage,
+        "prompt_eval_count": 41,
+        "eval_count": 7,
+    }
+
+
+def test_codex_nonstream_response_preserves_completed_usage():
+    events = [
+        {"type": "response.output_text.delta", "delta": "Done"},
+        {
+            "type": "response.completed",
+            "response": {
+                "usage": {
+                    "input_tokens": 13,
+                    "output_tokens": 5,
+                    "total_tokens": 18,
+                }
+            },
+        },
+        "[DONE]",
+    ]
+
+    chunk = chatgpt_client._codex_responses_to_chunk(_FakeStreamResponse(events))
+
+    assert chunk["message"]["content"] == "Done"
+    assert chunk["prompt_eval_count"] == 13
+    assert chunk["eval_count"] == 5
+    assert chunk["usage"]["total_tokens"] == 18
+
+
 def test_responses_input_drops_malformed_empty_tool_call_names():
     built = chatgpt_client._build_responses_input(
         [

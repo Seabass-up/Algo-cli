@@ -638,6 +638,23 @@ def _extract_responses_event_text(event: dict[str, Any]) -> str:
     return ""
 
 
+def _responses_usage_chunk(event: dict[str, Any]) -> dict[str, Any] | None:
+    response = event.get("response")
+    if not isinstance(response, dict):
+        return None
+    usage = response.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    chunk: dict[str, Any] = {"message": {}, "usage": usage}
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+    if type(input_tokens) is int and input_tokens >= 0:
+        chunk["prompt_eval_count"] = input_tokens
+    if type(output_tokens) is int and output_tokens >= 0:
+        chunk["eval_count"] = output_tokens
+    return chunk
+
+
 def _stream_codex_responses_iter(resp: Any) -> Iterator[dict[str, Any]]:
     pending_calls: dict[str, dict[str, Any]] = {}
     order: list[str] = []
@@ -674,6 +691,11 @@ def _stream_codex_responses_iter(resp: Any) -> Iterator[dict[str, Any]]:
                 detail = detail[:497] + "..."
             label = f" ({code})" if code and code not in detail else ""
             raise ChatGptOAuthAccessError(f"Codex Responses stream ended with {event_type}{label}: {detail}")
+        if event_type == "response.completed":
+            usage_chunk = _responses_usage_chunk(event)
+            if usage_chunk is not None:
+                yield usage_chunk
+            continue
         if event_type == "response.reasoning_summary_text.delta":
             text = _extract_responses_event_text(event)
             if text:
@@ -750,18 +772,22 @@ def _nonstream_to_chunk(body: dict[str, Any]) -> dict[str, Any]:
 def _codex_responses_to_chunk(resp: Any) -> dict[str, Any]:
     content_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
+    metrics: dict[str, Any] = {}
     for chunk in _stream_codex_responses_iter(resp):
         message = chunk.get("message") or {}
         if message.get("content"):
             content_parts.append(str(message["content"]))
         if message.get("tool_calls"):
             tool_calls.extend(message["tool_calls"])
+        for field in ("usage", "prompt_eval_count", "eval_count"):
+            if field in chunk:
+                metrics[field] = chunk[field]
     out_msg: dict[str, Any] = {}
     if content_parts:
         out_msg["content"] = "".join(content_parts)
     if tool_calls:
         out_msg["tool_calls"] = tool_calls
-    return {"message": out_msg}
+    return {"message": out_msg, **metrics}
 
 
 class ChatGptClient:
