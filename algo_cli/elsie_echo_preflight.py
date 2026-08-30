@@ -5,8 +5,37 @@ from __future__ import annotations
 from typing import Any
 
 
+_GENERIC_REASON = "echo_auxiliary_unavailable"
+_SAFE_REASON_CODES = frozenset(
+    {
+        "credential_registry_migration_required",
+        "credential_registry_native_enumeration_required",
+        "credential_registry_unavailable",
+    }
+)
+
+
 class EchoAuxiliaryPreflightError(RuntimeError):
     """Echo-protected derived state could not be made safe for retrieval."""
+
+    def __init__(self, reason_code: str = _GENERIC_REASON) -> None:
+        candidate = str(reason_code or "")
+        self.reason_code = candidate if candidate in _SAFE_REASON_CODES else _GENERIC_REASON
+        super().__init__("Echo-protected auxiliary state is unavailable")
+
+    @classmethod
+    def from_exception(cls, error: BaseException) -> "EchoAuxiliaryPreflightError":
+        """Retain only a bounded infrastructure code from a private cause chain."""
+
+        current: BaseException | None = error
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            candidate = str(current)
+            if candidate in _SAFE_REASON_CODES:
+                return cls(candidate)
+            current = current.__cause__ or current.__context__
+        return cls()
 
 
 def prepare_echo_auxiliary_state(
@@ -62,7 +91,7 @@ def prepare_echo_auxiliary_state(
         )
         invalidated = harness.invalidate_user_skill_records()
     except Exception as exc:
-        raise EchoAuxiliaryPreflightError("Echo-protected auxiliary state is unavailable") from exc
+        raise EchoAuxiliaryPreflightError.from_exception(exc) from exc
     return {
         "protected": True,
         "invalidated_skill_records": max(0, int(invalidated)),

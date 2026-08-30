@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from algo_cli import (
     agent_threads,
     code_rag,
@@ -147,6 +149,29 @@ def test_protected_preflight_normalizes_failures_without_payload(monkeypatch) ->
         assert canary not in str(exc)
     else:
         raise AssertionError("protected preflight must fail closed")
+
+
+def test_protected_preflight_retains_only_bounded_infrastructure_reason(monkeypatch) -> None:
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+
+    def fail_with_bounded_cause(**_kwargs):
+        try:
+            raise RuntimeError("credential_registry_unavailable")
+        except RuntimeError as exc:
+            raise RuntimeError("private outer detail") from exc
+
+    monkeypatch.setattr(skills, "prepare_protected_skill_history", fail_with_bounded_cause)
+
+    with pytest.raises(elsie_echo_preflight.EchoAuxiliaryPreflightError) as captured:
+        elsie_echo_preflight.prepare_echo_auxiliary_state(cfg)
+
+    assert captured.value.reason_code == "credential_registry_unavailable"
+    assert "private outer detail" not in str(captured.value)
+
+    shaped_canary = "credential_secret_payload_canary_123"
+    rejected = elsie_echo_preflight.EchoAuxiliaryPreflightError.from_exception(RuntimeError(shaped_canary))
+    assert rejected.reason_code == "echo_auxiliary_unavailable"
+    assert shaped_canary not in str(rejected)
 
 
 def test_protected_preflight_removes_cached_plaintext_skill_canary(

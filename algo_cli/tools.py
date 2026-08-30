@@ -4919,18 +4919,18 @@ def model_show(name: str) -> str:
     return json.dumps(payload, indent=2)
 
 
-def _hide_cfg_param(fn):
-    """Remove the ``cfg`` parameter from the Ollama tool-call schema.
-
-    Runtime-bound tools accept an injected ``cfg`` (Config instance) that the
-    model should never pass. Without this wrapper the Ollama SDK tries to build
-    a Pydantic model from ``Config | None`` and crashes with "not fully
-    defined".
-    """
+def _hide_runtime_params(fn, *names: str):
+    """Remove runtime-injected parameters from the model tool-call schema."""
+    hidden = frozenset(names)
     original_sig = inspect.signature(fn)
-    params = [p for name, p in original_sig.parameters.items() if name != "cfg"]
+    params = [p for name, p in original_sig.parameters.items() if name not in hidden]
     fn.__signature__ = original_sig.replace(parameters=params)
     return fn
+
+
+def _hide_cfg_param(fn):
+    """Remove the runtime-injected ``cfg`` parameter from the tool schema."""
+    return _hide_runtime_params(fn, "cfg")
 
 
 # ---------------------------------------------------------------------------
@@ -5184,7 +5184,7 @@ ALL_TOOLS = [
     search_files,
     find_unique_anchor,
     batch_edit,
-    run_shell,
+    _hide_runtime_params(run_shell, "cwd", "safe_mode"),
     git_status,
     git_diff,
     web_search,

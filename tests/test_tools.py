@@ -676,6 +676,33 @@ def test_safe_mode_blocks_host_destructive_commands(command):
     assert tools.run_shell(command, safe_mode=True).startswith("Blocked by safe mode")
 
 
+def test_run_shell_model_schema_hides_runtime_owned_parameters():
+    signature = inspect.signature(tools.TOOL_MAP["run_shell"])
+
+    assert tuple(signature.parameters) == ("command", "timeout")
+
+
+@pytest.mark.parametrize(
+    ("session_safe_mode", "stale_model_value", "expected"),
+    ((False, True, False), (True, False, True)),
+)
+def test_run_shell_safe_mode_comes_only_from_live_session(
+    session_safe_mode,
+    stale_model_value,
+    expected,
+):
+    cfg = Config()
+    cfg.safe_mode = session_safe_mode
+
+    args = tool_runtime.tool_runtime_args(
+        "run_shell",
+        {"command": "python3 healthcheck.py", "safe_mode": stale_model_value},
+        cfg,
+    )
+
+    assert args["safe_mode"] is expected
+
+
 def test_session_command_requires_approval(monkeypatch):
     cfg = Config()
     cfg.safe_mode = True

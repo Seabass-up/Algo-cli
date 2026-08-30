@@ -3668,6 +3668,17 @@ def agent_loop(
                         }
                     )
                     continue
+                auto_decision = execution_guardrails.auto_verify_working_tree(cfg.cwd)
+                if auto_decision.allowed:
+                    final_content = ""
+                    if auto_decision.verifier_kind == "git_diff":
+                        show_info(
+                            "Auto-verified the last workspace mutation with git diff --check."
+                        )
+                    else:
+                        show_info(f"{auto_decision.reason}.")
+                    turn_completed_normally = True
+                    break
                 final_content = ""
                 show_error(
                     "Completion blocked: the model stopped twice without successful verification "
@@ -4478,8 +4489,11 @@ def main() -> None:
 
     try:
         prepare_echo_auxiliary_state(cfg)
-    except EchoAuxiliaryPreflightError:
-        show_error("Echo-protected auxiliary state could not be prepared safely; startup stopped.")
+    except EchoAuxiliaryPreflightError as exc:
+        message = "Echo-protected auxiliary state could not be prepared safely; startup stopped."
+        if exc.reason_code != "echo_auxiliary_unavailable":
+            message += f" Repair code: {exc.reason_code}."
+        show_error(message)
         raise SystemExit(1) from None
     _drop_plaintext_intuition_if_protected(cfg)
     harness.configure_context_sources(

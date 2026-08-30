@@ -307,6 +307,26 @@ def _recover_protected_goal_store_unlocked(
         if head is None:
             if sequence != 1 or previous:
                 raise ElsieReceiptError("protected goal recovery sequence is invalid")
+            current = _read_protected_ledger()
+            if current is not _LEDGER_MISSING:
+                if not isinstance(current, dict):
+                    raise ElsieReceiptError("protected goal ledger is malformed")
+                if current.get("schema_version") in {
+                    LEDGER_SCHEMA_VERSION,
+                    LEGACY_PROTECTED_LEDGER_SCHEMA_VERSION,
+                }:
+                    # The external anchor is the commit point. A sequence-one
+                    # stage without that anchor is uncommitted and must not
+                    # replace a surviving legacy ledger. Validate the legacy
+                    # source before discarding the stale stage; preflight will
+                    # migrate that source through a fresh anchored transaction.
+                    _legacy_goal_for_protected_migration(current, authority)
+                    try:
+                        pending_path.unlink()
+                    except OSError as exc:
+                        raise ElsieReceiptError("protected goal recovery state is unsafe") from exc
+                    return True
+                raise ElsieReceiptError("protected goal ledger conflicts with a missing anchor")
         else:
             anchored_receipt = "hmac-sha256:" + head.head_digest
             if sequence != head.sequence + 1 or not hmac.compare_digest(previous, anchored_receipt):
@@ -349,15 +369,18 @@ def prepare_protected_goal_store(
     """
 
     pending_exists = _pending_goal_exists()
-    initial = _read_protected_ledger()
     authority = receipt_authority
     if authority is None:
-        if pending_exists or initial is not _LEDGER_MISSING:
+        if pending_exists:
             authority = ElsieReceiptAuthority.from_existing_key_store()
         else:
-            authority = ElsieReceiptAuthority.from_optional_existing_key_store()
-            if authority is None:
-                return False
+            initial = _read_protected_ledger()
+            if initial is not _LEDGER_MISSING:
+                authority = ElsieReceiptAuthority.from_existing_key_store()
+            else:
+                authority = ElsieReceiptAuthority.from_optional_existing_key_store()
+                if authority is None:
+                    return False
     with _exclusive_state_lock(LEDGER_PATH):
         recovered = _recover_protected_goal_store_unlocked(
             authority,
@@ -377,7 +400,27 @@ def prepare_protected_goal_store(
         if not isinstance(current, dict):
             raise ElsieReceiptError("protected goal ledger is malformed")
         if current.get("schema_version") != PROTECTED_LEDGER_SCHEMA_VERSION:
-            raise ElsieReceiptError("legacy goal ledger requires safe migration")
+            legacy = _legacy_goal_for_protected_migration(current, authority)
+            existing_head = load_elsie_store_anchor(
+                authority,
+                ReceiptNamespace.GOAL_STORE,
+                subject=_ledger_subject(),
+                anchor_store=anchor_store,
+            )
+            if existing_head is not None:
+                raise ElsieReceiptError("legacy goal ledger conflicts with protected anchor")
+            payload = _protected_ledger_payload(
+                _protected_goal_payload(legacy, authority),
+                authority,
+                sequence=1,
+                previous_store_receipt="",
+            )
+            _publish_protected_goal_payload_unlocked(
+                payload,
+                authority,
+                anchor_store=anchor_store,
+            )
+            return True
         _validate_protected_ledger(
             current,
             authority,
@@ -568,6 +611,43 @@ def _record_from_mapping(goal_data: object, *, protected: bool) -> GoalRecord | 
     return record
 
 
+def _legacy_goal_for_protected_migration(
+    data: dict[str, Any],
+    authority: ElsieReceiptAuthority,
+) -> GoalRecord:
+    """Project one legacy ledger into the only safe resumability state."""
+
+    schema_version = data.get("schema_version")
+    if schema_version not in {
+        LEDGER_SCHEMA_VERSION,
+        LEGACY_PROTECTED_LEDGER_SCHEMA_VERSION,
+    }:
+        raise ElsieReceiptError("legacy goal ledger requires safe migration")
+    legacy_protected = schema_version == LEGACY_PROTECTED_LEDGER_SCHEMA_VERSION
+    if legacy_protected:
+        if (
+            set(data)
+            != {
+                "schema_version",
+                "protected",
+                "receipt_binding",
+                "goal",
+            }
+            or data.get("protected") is not True
+        ):
+            raise ElsieReceiptError("legacy protected goal ledger fields are invalid")
+        authority.require_binding(data.get("receipt_binding"))
+    legacy = _record_from_mapping(data.get("goal"), protected=legacy_protected)
+    if legacy is None:
+        raise ElsieReceiptError("legacy goal ledger is malformed")
+    legacy.status = STATUS_BLOCKED
+    legacy.reason = "legacy goal progress requires an explicit restart"
+    legacy.rounds_done = min(legacy.rounds_done, legacy.max_rounds)
+    legacy.history = []
+    legacy.reason_receipt = ""
+    return legacy
+
+
 def load_goal(
     *,
     protected: bool = False,
@@ -585,7 +665,6 @@ def load_goal(
             raise ElsieReceiptError("protected goal ledger is malformed")
         authority = receipt_authority or ElsieReceiptAuthority.from_existing_key_store()
         schema_version = data.get("schema_version")
-        goal_data = data.get("goal")
         if schema_version == PROTECTED_LEDGER_SCHEMA_VERSION:
             return _validate_protected_ledger(
                 data,
@@ -597,33 +676,12 @@ def load_goal(
             LEGACY_PROTECTED_LEDGER_SCHEMA_VERSION,
         }:
             raise ElsieReceiptError("unsupported protected goal ledger schema")
-        legacy_protected = schema_version == LEGACY_PROTECTED_LEDGER_SCHEMA_VERSION
-        if legacy_protected:
-            if (
-                set(data)
-                != {
-                    "schema_version",
-                    "protected",
-                    "receipt_binding",
-                    "goal",
-                }
-                or data.get("protected") is not True
-            ):
-                raise ElsieReceiptError("legacy protected goal ledger fields are invalid")
-            authority.require_binding(data.get("receipt_binding"))
         # Legacy structural progress was not store-authenticated. Preserve the
         # explicit user goal/cwd but force a non-resumable state so replaying a
         # modified old file cannot duplicate agent mutations.
-        legacy = _record_from_mapping(goal_data, protected=legacy_protected)
-        if legacy is None:
-            raise ElsieReceiptError("legacy goal ledger is malformed")
         if not migrate_legacy:
             raise ElsieReceiptError("legacy goal ledger requires safe migration")
-        legacy.status = STATUS_BLOCKED
-        legacy.reason = "legacy goal progress requires an explicit restart"
-        legacy.rounds_done = min(legacy.rounds_done, legacy.max_rounds)
-        legacy.history = []
-        legacy.reason_receipt = ""
+        legacy = _legacy_goal_for_protected_migration(data, authority)
         save_goal(
             legacy,
             protected=True,

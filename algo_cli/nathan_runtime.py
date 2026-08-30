@@ -401,9 +401,9 @@ def tool_runtime_args(name: str, args: dict[str, Any], cfg: Config) -> dict[str,
         if not typed_pdf_artifact:
             call_args["cwd"] = cfg.cwd
     if name == "run_shell":
-        # Preserve the session-level /safe guard. A model may opt into stricter
-        # safe_mode, but it may not opt out while cfg.safe_mode is enabled.
-        call_args["safe_mode"] = bool(getattr(cfg, "safe_mode", True)) or bool(call_args.get("safe_mode", False))
+        # safe_mode is session authority, not a model-controlled argument.
+        # Always replace untrusted/stale tool-call input with the live setting.
+        call_args["safe_mode"] = bool(getattr(cfg, "safe_mode", True))
     if name in {"x_account_post", "x_account_reply", "x_account_post_action"}:
         # Confirmation is runtime authority, never a model-controlled argument.
         call_args.pop("confirm", None)

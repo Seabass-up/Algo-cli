@@ -10,6 +10,7 @@ import ast
 import os
 import re
 import shlex
+import subprocess
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -858,3 +859,43 @@ def completion_decision(events: Iterable[EvidenceEvent] | None = None) -> Comple
     if ledger is None or ledger.closed:
         return CompletionDecision(False, "no active execution scope")
     return evaluate_completion(tuple(ledger.events))
+
+
+def auto_verify_working_tree(root: str | Path | None = None) -> CompletionDecision:
+    """Second-stop fallback: run git diff --check HEAD as a structural verifier.
+
+    Restores the pre-hardening behavior: when the model stops twice without a
+    recognized post-mutation verifier, run git diff --check directly. A pass
+    records git_diff verification and allows completion; a missing git binary
+    or a non-git workspace allows completion with a manual-review warning; a
+    failing structural check keeps completion blocked.
+    """
+    ledger = _ACTIVE_LEDGER.get()
+    if ledger is None or ledger.closed:
+        return CompletionDecision(False, "no active execution scope")
+    try:
+        completed = subprocess.run(
+            ["git", "diff", "--check", "HEAD"],
+            cwd=str(root) if root is not None else None,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return CompletionDecision(
+            True,
+            "git is unavailable; review the last workspace change manually",
+        )
+    if completed.returncode != 0:
+        if "not a git repository" in (completed.stderr or "").lower():
+            return CompletionDecision(
+                True,
+                "workspace is not a git repository; review the last change manually",
+            )
+        return CompletionDecision(
+            False,
+            "git diff --check reported structural problems",
+        )
+    record_verification("git_diff", success=True)
+    return completion_decision()

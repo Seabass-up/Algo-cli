@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import errno
 import hashlib
 import json
 import os
@@ -192,6 +193,26 @@ def _assert_owned_test_process(publisher_id: int, test_process_id: int) -> None:
     raise _failure("alice_crash_process_identity")
 
 
+def _safe_kill_process_group(process_id: int) -> None:
+    """Attempt group kill, then fall back to direct PID kill when permission is denied."""
+
+    if process_id <= 0:
+        return
+    try:
+        os.killpg(process_id, signal.SIGKILL)
+        return
+    except ProcessLookupError:
+        return
+    except OSError as exc:
+        if exc.errno == errno.EPERM:
+            try:
+                os.kill(process_id, signal.SIGKILL)
+            except ProcessLookupError:
+                return
+            return
+        raise
+
+
 def _kill_owned_test_process(process: subprocess.Popen[bytes], test_process_id: int) -> tuple[bytes, bytes]:
     _assert_owned_test_process(process.pid, test_process_id)
     try:
@@ -208,17 +229,11 @@ def _kill_owned_test_process(process: subprocess.Popen[bytes], test_process_id: 
             break
         time.sleep(0.01)
     if process.poll() is None:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _safe_kill_process_group(process.pid)
     try:
         stdout, stderr = process.communicate(timeout=10.0)
     except subprocess.TimeoutExpired as exc:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _safe_kill_process_group(process.pid)
         process.wait(timeout=5.0)
         raise _failure("alice_crash_kill") from exc
     _bounded_process_output(stdout, stderr)
@@ -320,10 +335,7 @@ def _run_trial(trial: int, *, skip_build: bool) -> None:
             _assert_private_artifact_safe(directory, artifact_name)
         finally:
             if publisher.poll() is None:
-                try:
-                    os.killpg(publisher.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                _safe_kill_process_group(publisher.pid)
                 publisher.wait(timeout=5.0)
         _run_recovery(directory, recovered, token)
 

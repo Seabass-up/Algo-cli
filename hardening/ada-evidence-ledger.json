@@ -3215,7 +3215,7 @@
         {
           "kind": "qualification",
           "path_or_command": ".venv/bin/python scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json",
-          "digest": "sha256:169168abe8b5c72cc354be062b8d218b01dad02f53a586ccf3e76736f36b62ec",
+          "digest": "sha256:82acff5dfbc1d0680805b63b42a0b29d86bd70a29667b26474fbd823223fba65",
           "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, and public_claim_eligible is false",
           "timestamp": "2026-08-28T23:07:21Z",
           "scope": "source digest sha256:ec88b80f21ada7d9aa0db410ac304954cdd089c8f710c783a021cfd172e793af and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind the current M8 corpus after the focused-test import cleanup; five model-free efficiency repetitions and the focused adversarial suite remain stable",
@@ -3934,7 +3934,7 @@
         {
           "kind": "benchmark",
           "path_or_command": "hardening/nathan-agent-runtime-qualification.json verified by scripts/nathan_agent_runtime_qualification.py after local gpt-name auto-routing repair",
-          "digest": "sha256:ca205a60b110a3a9df687f996f668b772a0958ec80eec962af6f90483bfa42a2",
+          "digest": "sha256:44b85201c6751db5419b61f5e1b81213280146805e24e8881add35074bdccb1b",
           "result": "status pass: 17 of 17 adversarial Agent runtime probes and 31 of 31 frozen workloads pass with 100 percent task, verifier, crash-resume, protocol, and context-usefulness rates, zero policy escapes, unverified completions, or duplicate mutations, and public_claim_eligible is false",
           "timestamp": "2026-08-28T00:47:43Z",
           "scope": "source digest sha256:0b080d0c833bde6de643aa08291c368bc6aef3b559b85cc8a3e87fc3d85fac5f and report digest sha256:25845d255579b4b083e0f52a478b77244d6414e601e0fa3b3da59302c874bf79 bind 17 protected/runtime probes, 101 contract samples at p50/p95 0.259208/0.288708 ms, 101 broker samples at 0.040458/0.047291 ms, 31 checkpoint samples at 9.549750/9.664500 ms, and 31 workload samples at 25.602500/26.360750 ms total and 4.199041/4.575417 ms to first Agent event",
@@ -3961,7 +3961,7 @@
         {
           "kind": "benchmark",
           "path_or_command": "hardening/grace-m8-local-qualification.json verified by scripts/nathan_agent_runtime_qualification.py",
-          "digest": "sha256:169168abe8b5c72cc354be062b8d218b01dad02f53a586ccf3e76736f36b62ec",
+          "digest": "sha256:82acff5dfbc1d0680805b63b42a0b29d86bd70a29667b26474fbd823223fba65",
           "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, and public_claim_eligible is false",
           "timestamp": "2026-08-28T23:07:21Z",
           "scope": "source digest sha256:ec88b80f21ada7d9aa0db410ac304954cdd089c8f710c783a021cfd172e793af and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind the current M8 corpus after the focused-test import cleanup; five model-free efficiency repetitions and the focused adversarial suite remain stable",

@@ -89,6 +89,69 @@ def test_protected_load_atomically_migrates_legacy_derived_fields() -> None:
     assert json.loads(serialized)["schema_version"] == task_ledger.PROTECTED_LEDGER_SCHEMA_VERSION
 
 
+def test_protected_preflight_migrates_legacy_goal_without_resuming_progress() -> None:
+    authority, store = _shared_authority()
+    legacy = task_ledger.GoalRecord(goal="explicit preflight legacy goal", cwd="/tmp/project")
+    legacy.reason = "SECRET_PREFLIGHT_REASON_CANARY"
+    legacy.add_round("SECRET_PREFLIGHT_SUMMARY_CANARY")
+    task_ledger.save_goal(legacy)
+
+    assert task_ledger.prepare_protected_goal_store(
+        receipt_authority=authority,
+        anchor_store=store,
+    )
+
+    migrated = task_ledger.load_goal(
+        protected=True,
+        receipt_authority=authority,
+        anchor_store=store,
+    )
+    assert migrated is not None
+    assert migrated.goal == "explicit preflight legacy goal"
+    assert migrated.cwd == "/tmp/project"
+    assert migrated.status == task_ledger.STATUS_BLOCKED
+    assert migrated.history == []
+    serialized = task_ledger.LEDGER_PATH.read_text(encoding="utf-8")
+    assert "SECRET_PREFLIGHT_REASON_CANARY" not in serialized
+    assert "SECRET_PREFLIGHT_SUMMARY_CANARY" not in serialized
+
+
+def test_unanchored_pending_does_not_replace_surviving_legacy_goal(monkeypatch) -> None:
+    authority, store = _shared_authority()
+    original_advance = task_ledger.advance_elsie_store_anchor
+
+    def fail_before_anchor(*_args, **_kwargs):
+        raise ElsieReceiptError("simulated pre-anchor failure")
+
+    monkeypatch.setattr(task_ledger, "advance_elsie_store_anchor", fail_before_anchor)
+    with pytest.raises(ElsieReceiptError, match="pre-anchor"):
+        task_ledger.save_goal(
+            task_ledger.GoalRecord(goal="older uncommitted goal"),
+            protected=True,
+            receipt_authority=authority,
+            anchor_store=store,
+        )
+    assert task_ledger._pending_goal_path().is_file()
+    task_ledger.save_goal(task_ledger.GoalRecord(goal="surviving legacy goal", cwd="/tmp/current"))
+
+    monkeypatch.setattr(task_ledger, "advance_elsie_store_anchor", original_advance)
+    assert task_ledger.prepare_protected_goal_store(
+        receipt_authority=authority,
+        anchor_store=store,
+    )
+
+    migrated = task_ledger.load_goal(
+        protected=True,
+        receipt_authority=authority,
+        anchor_store=store,
+    )
+    assert migrated is not None
+    assert migrated.goal == "surviving legacy goal"
+    assert migrated.cwd == "/tmp/current"
+    assert migrated.status == task_ledger.STATUS_BLOCKED
+    assert not task_ledger._pending_goal_path().exists()
+
+
 def test_protected_goal_external_anchor_rejects_valid_file_rollback() -> None:
     authority, _store = _shared_authority()
     record = task_ledger.GoalRecord(goal="explicit goal")
@@ -279,6 +342,41 @@ def test_protected_goal_recovers_post_anchor_publication_failure_only_explicitly
     )
     assert recovered is not None
     assert recovered.goal == "explicit crash-safe goal"
+    assert not pending.exists()
+
+
+def test_anchored_pending_recovery_replaces_malformed_active_ledger(monkeypatch) -> None:
+    authority, store = _shared_authority()
+    original_publish = task_ledger.publish_elsie_staged_file
+
+    def fail_publish(*_args, **_kwargs):
+        raise ElsieReceiptError("simulated post-anchor rename failure")
+
+    monkeypatch.setattr(task_ledger, "publish_elsie_staged_file", fail_publish)
+    with pytest.raises(ElsieReceiptError, match="post-anchor"):
+        task_ledger.save_goal(
+            task_ledger.GoalRecord(goal="anchor-authoritative recovery goal"),
+            protected=True,
+            receipt_authority=authority,
+            anchor_store=store,
+        )
+    pending = task_ledger._pending_goal_path()
+    assert pending.is_file()
+    task_ledger.LEDGER_PATH.write_text("MALFORMED_ACTIVE_LEDGER{", encoding="utf-8")
+
+    monkeypatch.setattr(task_ledger, "publish_elsie_staged_file", original_publish)
+    assert task_ledger.prepare_protected_goal_store(
+        receipt_authority=authority,
+        anchor_store=store,
+    )
+
+    recovered = task_ledger.load_goal(
+        protected=True,
+        receipt_authority=authority,
+        anchor_store=store,
+    )
+    assert recovered is not None
+    assert recovered.goal == "anchor-authoritative recovery goal"
     assert not pending.exists()
 
 

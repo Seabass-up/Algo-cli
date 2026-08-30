@@ -4,7 +4,7 @@
   "base_commit": "20bb8790ba548866fc88b0a0d976d6600fa84a5e",
   "contract_digest": "sha256:9d9fa4022f48a2f9245e016493334cceca2c9f849e79a5ad63912a4933f8068c",
   "freeze_id": "algo-cli-hardening-2026-07-18",
-  "ledger_digest": "sha256:5774198f6be26eaee6ac2a08bfeee2db2bb5d634e6b9d8f3113efe4bcb9b8620",
+  "ledger_digest": "sha256:adcec5340eb80752d6e9b176194518df812578ea76816c484290e0981a00d519",
   "ledger_status": "lifted",
   "limitations": "This deterministic audit proves contract and evidence completeness only. It does not independently authenticate external services, runner images, signing identities, TCC state, browser containment, or benchmark truth.",
   "local_artifact_currency": {
@@ -13,7 +13,7 @@
       "ledger_requirement": "HARD-080",
       "ledger_timestamp": "2026-08-28T23:07:21Z",
       "public_claim_eligible": false,
-      "raw_sha256": "sha256:169168abe8b5c72cc354be062b8d218b01dad02f53a586ccf3e76736f36b62ec",
+      "raw_sha256": "sha256:82acff5dfbc1d0680805b63b42a0b29d86bd70a29667b26474fbd823223fba65",
       "status": "blocked"
     },
     "m8_efficiency": {
@@ -21,7 +21,7 @@
       "ledger_requirement": "HARD-081",
       "ledger_timestamp": "2026-08-28T23:07:21Z",
       "public_claim_eligible": false,
-      "raw_sha256": "sha256:169168abe8b5c72cc354be062b8d218b01dad02f53a586ccf3e76736f36b62ec",
+      "raw_sha256": "sha256:82acff5dfbc1d0680805b63b42a0b29d86bd70a29667b26474fbd823223fba65",
       "status": "blocked"
     },
     "nathan": {
@@ -29,7 +29,7 @@
       "ledger_requirement": "HARD-081",
       "ledger_timestamp": "2026-08-28T00:47:43Z",
       "public_claim_eligible": false,
-      "raw_sha256": "sha256:ca205a60b110a3a9df687f996f668b772a0958ec80eec962af6f90483bfa42a2",
+      "raw_sha256": "sha256:44b85201c6751db5419b61f5e1b81213280146805e24e8881add35074bdccb1b",
       "status": "pass"
     }
   },

@@ -4,6 +4,7 @@ from contextvars import Context, copy_context
 from dataclasses import asdict
 import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -520,3 +521,91 @@ def test_model_cd_requires_approval_even_for_auto_approve_session(monkeypatch, t
         )
         is False
     )
+
+
+def _init_git_repo(root: Path) -> None:
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Test",
+        "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.com",
+    }
+    (root / "seed.txt").write_text("seed\n", encoding="utf-8")
+    for command in (
+        ["git", "init", "-q"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-q", "-m", "seed"],
+    ):
+        subprocess.run(command, cwd=root, env=env, check=True, capture_output=True)
+
+
+def test_auto_verify_working_tree_requires_active_scope(tmp_path: Path) -> None:
+    decision = guardrails.auto_verify_working_tree(tmp_path)
+    assert decision.allowed is False
+    assert decision.reason == "no active execution scope"
+
+
+def test_auto_verify_working_tree_records_git_diff_on_clean_tree(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    scope = guardrails.begin_execution_scope(tmp_path)
+    guardrails.record_mutation("module.py", success=True, operation="write_file")
+
+    decision = guardrails.auto_verify_working_tree(tmp_path)
+
+    assert decision.allowed is True
+    assert decision.verifier_kind == "git_diff"
+    guardrails.end_execution_scope(scope)
+
+
+def test_auto_verify_working_tree_blocks_on_structural_problems(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    (tmp_path / "module.py").write_text("value = 1   \n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "module.py"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    scope = guardrails.begin_execution_scope(tmp_path)
+    guardrails.record_mutation("module.py", success=True, operation="write_file")
+
+    decision = guardrails.auto_verify_working_tree(tmp_path)
+
+    assert decision.allowed is False
+    assert decision.reason == "git diff --check reported structural problems"
+    guardrails.end_execution_scope(scope)
+
+
+def test_auto_verify_working_tree_allows_outside_git_repository(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
+    scope = guardrails.begin_execution_scope(tmp_path)
+    guardrails.record_mutation("module.py", success=True, operation="write_file")
+
+    decision = guardrails.auto_verify_working_tree(tmp_path)
+
+    assert decision.allowed is True
+    assert "not a git repository" in decision.reason
+    guardrails.end_execution_scope(scope)
+
+
+def test_auto_verify_working_tree_allows_when_git_is_missing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    scope = guardrails.begin_execution_scope(tmp_path)
+    guardrails.record_mutation("module.py", success=True, operation="write_file")
+
+    def _raise(*args: object, **kwargs: object) -> object:
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(guardrails.subprocess, "run", _raise)
+
+    decision = guardrails.auto_verify_working_tree(tmp_path)
+
+    assert decision.allowed is True
+    assert "unavailable" in decision.reason
+    guardrails.end_execution_scope(scope)
