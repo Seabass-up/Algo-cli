@@ -124,6 +124,11 @@ class TestHandleDeepLink:
         assert result["valid"] is False
         assert "algo-cli://" in result["error"]
 
+    def test_handle_invalid_scheme_includes_colon_alias(self):
+        result = url_scheme.handle_deep_link("htp://example.com")
+        assert result["valid"] is False
+        assert "algo-cli://" in result["error"] or "algo-cli:" in result["error"]
+
     def test_handle_unknown_route(self):
         result = url_scheme.handle_deep_link("algo-cli://bogus/path")
         assert result["valid"] is False
