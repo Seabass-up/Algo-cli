@@ -34,7 +34,7 @@ _GROK_NAME_RE = re.compile(r"^grok[-_]", re.IGNORECASE)
 # ChatGPT/OpenAI models routed through ChatGPT OAuth. Restrict gpt-* matching to
 # recognizable OpenAI families so local names such as gpt-neo remain on Ollama.
 _CHATGPT_NAME_RE = re.compile(
-    r"^(?:chatgpt[-_]|gpt-(?:3\.5|4o?|5)(?:[-_.]|$)|o[134](?:[-_]|$))",
+    r"^(?:chatgpt[-_]|gpt-6-astra$|gpt-(?:3\.5|4o?|5)(?:[-_.]|$)|o[134](?:[-_]|$))",
     re.IGNORECASE,
 )
 
@@ -515,6 +515,7 @@ def is_chatgpt_model(model: str) -> bool:
 
 
 _CHATGPT_CONTEXT_LENGTHS: dict[str, int] = {
+    "gpt-6-astra": 272_000,
     # The ChatGPT/Codex subscription catalog currently exposes a 272K runtime
     # window for these models. Public API model pages advertise a wider window,
     # but Algo routes this family through the subscription backend.
@@ -530,16 +531,19 @@ _CHATGPT_CONTEXT_LENGTHS: dict[str, int] = {
 
 def synthesize_chatgpt_info(model: str) -> dict[str, Any]:
     """Build a model_info dict for ChatGPT/OpenAI models (no client.show())."""
+    from .chatgpt_client import codex_model_metadata
+
     bare = _bare_model_name(model)
+    metadata = codex_model_metadata(model)
     return {
         "name": model,
         "family": "chatgpt",
         "families": ["chatgpt", "openai"],
         "parameter_size": "",
         "quantization": "",
-        "context_length": _CHATGPT_CONTEXT_LENGTHS.get(bare, 128_000),
+        "context_length": metadata.get("context_window", _CHATGPT_CONTEXT_LENGTHS.get(bare, 128_000)),
         "supports_thinking": True,
-        "supports_vision": bare.startswith("gpt-5.6"),
+        "supports_vision": metadata.get("supports_vision", bare.startswith("gpt-5.6") or bare == "gpt-6-astra"),
         "supports_tools": True,
         "provider": "chatgpt",
     }

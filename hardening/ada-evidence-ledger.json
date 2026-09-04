@@ -3238,6 +3238,24 @@
           "timestamp": "2026-09-04T19:30:06Z",
           "scope": "source digest sha256:4b206e939586f6f1a9071d67f31eda518a7d2e013e00bcf8c4117866438a9654 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind the current M8 corpus, including execution guardrails and their regressions, strict evidence JSON parsing, and isolated model-metadata tests; the focused adversarial suite passes",
           "limitations": "finite local model-free evidence does not prove production browser completion, selected-Chrome behavior, hosted runtime execution, signed XPC/TCC, or cross-harness superiority; five production-browser metrics remain blocked, HARD-080 remains in progress, and public_claim_eligible is false"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": ".venv/bin/python scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json after Astra and diagnostic repairs",
+          "digest": "sha256:ca5a7ace31baf50c0091660abb77321c1dc639963c34def094230eab6d999aae",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-09-04T20:47:27Z",
+          "scope": "source digest sha256:528b609a4c3de3bb7d0649b225a0848f77f002e68cd3fe7f0d473c61ada2b661 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind the current M8 corpus after Astra discovery, transport and stream correlation repairs; stale hard-coded freeze wording was replaced without changing qualification gates",
+          "limitations": "finite local model-free evidence does not establish external browser completion, selected-Chrome behavior, signed native execution, or cross-harness superiority; HARD-080 remains in progress and public_claim_eligible is false"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": ".venv/bin/python scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json after owner-approved browser environment policy change",
+          "digest": "sha256:4899777a3afd51d095fbbc218ecea5915af60d6c29df00af3ebb5197ed608fd9",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-09-04T21:04:37Z",
+          "scope": "source digest sha256:c56dc599c2d478252b20a982b6ff89821fdb814e25a4104598e4055db5e9a2fe binds the owner-only browser workflow policy and focused local adversarial suite; qualification thresholds are unchanged",
+          "limitations": "owner self-approval is not independent review; local qualification and prerequisite repairs do not establish hosted browser tasks, selected-Chrome behavior, or signed native execution; HARD-080 remains in progress and public_claim_eligible is false"
         }
       ]
     },
@@ -4011,6 +4029,33 @@
           "timestamp": "2026-09-04T19:30:06Z",
           "scope": "source digest sha256:4b206e939586f6f1a9071d67f31eda518a7d2e013e00bcf8c4117866438a9654 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind five model-free repetitions measuring 83.969 percent median schema reduction and 96.644 percent typed-program reduction; the focused adversarial suite passes",
           "limitations": "synthetic local measurements do not prove live task completion, semantic-route or screenshot efficiency, hosted execution, signed XPC/TCC, or cross-harness superiority; five production-browser metrics remain blocked, HARD-081 remains in progress, and public_claim_eligible is false"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": ".venv/bin/python scripts/nathan_agent_runtime_qualification.py --refresh; hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:937a64a45e5227713225b6d28092d4234e66879dac6caff069b7c244d4399667",
+          "result": "status pass: 17 of 17 correctness probes and 31 of 31 workloads pass with zero policy escapes, unverified completions, or duplicate mutations, and public_claim_eligible is false",
+          "timestamp": "2026-09-04T20:42:40Z",
+          "scope": "source digest sha256:d4858528b7960d156b9129f3a1d43b48bd7f086d4574c51978fa0f48dd810779 and report digest sha256:db35eb6508bf79a49275deb314f84e667434fd40872d086c8f2c03ca0d12b7c4 bind the current runtime after Astra subscription and Responses stream argument-correlation repairs",
+          "limitations": "deterministic local fixtures do not establish model intelligence, provider latency, production browser completion, hosted execution, or cross-harness superiority; HARD-081 remains in progress and public_claim_eligible is false"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json verified by scripts/henry_m8_qualification.py after Astra and diagnostic repairs",
+          "digest": "sha256:ca5a7ace31baf50c0091660abb77321c1dc639963c34def094230eab6d999aae",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-09-04T20:47:27Z",
+          "scope": "source digest sha256:528b609a4c3de3bb7d0649b225a0848f77f002e68cd3fe7f0d473c61ada2b661 binds five model-free repetitions measuring 83.969 percent median schema reduction and 96.644 percent typed-program reduction; the focused adversarial suite passes",
+          "limitations": "synthetic local measurements do not establish live task completion, semantic-route or screenshot efficiency, signed native execution, or cross-harness superiority; HARD-081 remains in progress and public_claim_eligible is false"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json verified by scripts/henry_m8_qualification.py after owner-approved browser environment policy change",
+          "digest": "sha256:4899777a3afd51d095fbbc218ecea5915af60d6c29df00af3ebb5197ed608fd9",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-09-04T21:04:37Z",
+          "scope": "source digest sha256:c56dc599c2d478252b20a982b6ff89821fdb814e25a4104598e4055db5e9a2fe binds five model-free repetitions measuring 83.969 percent median schema reduction and 96.644 percent typed-program reduction",
+          "limitations": "synthetic local measurements and owner self-approval do not establish external task completion, independent review, semantic-route or screenshot efficiency, or signed native execution; HARD-081 remains in progress and public_claim_eligible is false"
         }
       ]
     },

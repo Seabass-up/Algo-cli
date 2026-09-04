@@ -118,6 +118,8 @@ def test_report_stays_blocked_when_live_browser_evidence_is_absent() -> None:
     assert report["public_claim_eligible"] is False
     assert report["summary"]["blocked"] == 5
     assert report["summary"]["fail"] == 0
+    assert not any("freeze remains in force" in line for line in report["limitations"])
+    assert any("outstanding external gates" in line for line in report["limitations"])
     assert report["fixture_digest"].startswith("sha256:")
     rendered = json.dumps(report, sort_keys=True)
     assert "algo-private-" not in rendered

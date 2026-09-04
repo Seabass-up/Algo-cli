@@ -4,6 +4,7 @@ from __future__ import annotations
 
 
 CODEX_MODEL_ALIASES = {
+    "astra": "gpt-6-astra",
     "gpt-5.6": "gpt-5.6-sol",
     "sol": "gpt-5.6-sol",
     "terra": "gpt-5.6-terra",

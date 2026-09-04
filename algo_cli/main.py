@@ -330,6 +330,7 @@ XAI_MODEL_CHOICES = [
 # for the picker because ChatGPT OAuth tokens can be valid for Codex while
 # api.openai.com model listing is unavailable or missing model.request scope.
 CHATGPT_MODEL_CHOICES = [
+    "gpt-6-astra",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -1441,8 +1442,7 @@ def _show_chatgpt_models_after_login() -> None:
     names, _authenticated = chatgpt_model_names()
     if names:
         show_info(f"Codex models enabled: {', '.join(names)}")
-        if any(name.startswith("gpt-5.6-") for name in names):
-            show_info("GPT-5.6 reasoning is configurable per model with /thinking effort [MODEL] LEVEL.")
+        show_info("Codex reasoning is configurable per model with /thinking effort [MODEL] LEVEL.")
 
 
 def run_chatgpt_logout() -> bool:
@@ -1800,6 +1800,7 @@ def model_picker(cfg: Config, *, first_run: bool = False) -> bool:
     for name in chatgpt_names:
         effort = chatgpt_client.reasoning_effort_for_model(name, cfg.chatgpt_reasoning_efforts)
         family = {
+            "gpt-6-astra": "Astra · complex reasoning",
             "gpt-5.6-sol": "Sol · detail and polish",
             "gpt-5.6-terra": "Terra · everyday workhorse",
             "gpt-5.6-luna": "Luna · fast repeatable work",

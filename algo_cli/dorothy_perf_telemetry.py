@@ -520,7 +520,7 @@ def render_runtime_quality_snapshot(cfg: Config) -> str:
             (
                 f"  tool cadence: {sequence['pattern']} "
                 f"(score {sequence['sequence_score']:.2f}, "
-                f"verification {'yes' if sequence['verification_present'] else 'no'})"
+                f"verification {sequence['verification_status']})"
             ),
             (
                 f"  latency trend: {performance['state']} "

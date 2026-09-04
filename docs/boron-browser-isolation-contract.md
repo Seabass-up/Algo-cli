@@ -148,12 +148,17 @@ The candidate closes several source-level provenance gaps:
   and BuildKit `v0.32.2` by OCI-index digest
   `sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8`,
   uses an isolated Docker configuration directory, resets BuildKit's default
-  insecure entitlements, and requires the separately reviewed
+  insecure entitlements, and requires the owner-approved
   `browser-hardening` GitHub Environment. A no-privilege authority job fails a
   protected-main run unless the repository readiness marker is explicitly set;
   it then verifies the live GitHub Environment API reports protected branches,
-  a nonempty required-reviewer rule with self-review prevention, and disabled
-  admin bypass. The publisher and attester remain skipped rather than
+  exactly one required reviewer (`Seabass-up`, immutable user ID `184999458`),
+  self-review explicitly permitted, and disabled admin bypass. Both the
+  original actor ID and rerun initiator must match the owner. This is a
+  single-maintainer policy authorized by the owner on 2026-09-04, not
+  independent approval. It retains manual approval but cannot provide
+  separation of duties. Native signing and PyPI approval policies are unchanged.
+  The publisher and attester remain skipped rather than
   auto-creating an unprotected Environment.
 - Retained CI artifacts are named with the producing run attempt and passed to
   consumers by immutable artifact ID. Because the hosted report and Sigstore
@@ -186,12 +191,11 @@ real GHCR authenticate/publish/pull/logout lifecycle, five distinct
 fresh-ephemeral sessions, independent reconstruction of the retained report,
 and the report-digest GitHub attestation.
 
-At the candidate date, the `browser-hardening` Environment and
-`BORON_HARDENING_ENVIRONMENT_READY=true` repository marker are not configured,
-so the protected-main authority job is intentionally red and no publisher can
-run. Configure the Environment first with required reviewers and admin bypass
-disabled, restrict it to protected branches, enable self-review prevention,
-audit it, then set the marker. The dedicated browser-contract job is also not
+Configure the `browser-hardening` Environment with only the owner as a required
+reviewer and admin bypass disabled, restrict it to protected branches, and
+permit self-review. Audit the live configuration, land the matching workflow on
+protected main, then set `BORON_HARDENING_ENVIRONMENT_READY=true`. The marker
+does not assert M8 completion. The dedicated browser-contract job is also not
 yet a required ruleset check; the existing required runtime-quality job
 exercises the same tests, but that does not substitute for hosted evidence.
 

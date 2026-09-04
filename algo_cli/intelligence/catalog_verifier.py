@@ -62,10 +62,11 @@ class VerificationReport:
     total_entries: int = 0
     verified_count: int = 0
     failed_count: int = 0
+    unchecked_count: int = 0
 
     @property
     def all_verified(self) -> bool:
-        return self.failed_count == 0
+        return self.total_entries > 0 and self.verified_count == self.total_entries and self.failed_count == 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -73,6 +74,7 @@ class VerificationReport:
             "total_entries": self.total_entries,
             "verified_count": self.verified_count,
             "failed_count": self.failed_count,
+            "unchecked_count": self.unchecked_count,
             "all_verified": self.all_verified,
         }
 
@@ -114,7 +116,11 @@ class CatalogVerifier:
     _NAMESPACE_RE = re.compile(r"^\*\*Pattern namespace:\*\*\s+(?P<names>.+?)\s*$")
     _FENCE_RE = re.compile(r"^\s*(?P<fence>`{3,}|~{3,})")
     # Match status markers
-    _STATUS_RE = re.compile(r"\b(implemented|proposed|partial|retired)\b", re.IGNORECASE)
+    _STATUS_RE = re.compile(
+        r"^\s*(?:\*\*)?(?:Status|Evidence state):(?:\*\*)?\s*`?"
+        r"(implemented|wired|proposed|planned|partial|retired|preview|unknown)\b",
+        re.IGNORECASE,
+    )
 
     def parse_catalog(self, markdown_text: str) -> list[CatalogEntry]:
         """Parse ALGO.md markdown and return catalog entries."""
@@ -144,6 +150,8 @@ class CatalogVerifier:
     def _scan_catalog(self, markdown_text: str) -> tuple[list[CatalogEntry], list[CatalogDiagnostic]]:
         lines = markdown_text.splitlines(keepends=True)
         headings: list[tuple[str, str, int, str]] = []
+        statuses: dict[int, str] = {}
+        current_entry: int | None = None
         diagnostics: list[CatalogDiagnostic] = []
         section = ""
         namespaces: tuple[str, ...] = ()
@@ -172,6 +180,7 @@ class CatalogVerifier:
             if section_match:
                 section = section_match.group("title").strip()
                 namespaces = ()
+                current_entry = None
                 continue
 
             namespace_match = self._NAMESPACE_RE.match(stripped)
@@ -191,6 +200,7 @@ class CatalogVerifier:
             if entry_match:
                 entry_id = entry_match.group("id")
                 headings.append((entry_id, entry_match.group("title").strip(), line_number, section))
+                current_entry = line_number
                 prefix_match = re.match(r"[A-Z]+", entry_id)
                 prefix = prefix_match.group(0) if prefix_match else ""
                 if namespaces and prefix not in namespaces:
@@ -207,7 +217,21 @@ class CatalogVerifier:
                     )
                 continue
 
+            status_match = self._STATUS_RE.match(stripped)
+            if current_entry is not None and status_match:
+                status = status_match.group(1).lower()
+                status = "implemented" if status == "wired" else status
+                if current_entry in statuses and statuses[current_entry] != status:
+                    diagnostics.append(CatalogDiagnostic(
+                        code="conflicting_status", line_number=line_number,
+                        message="pattern has competing explicit statuses; retain unknown until reconciled",
+                    ))
+                    statuses[current_entry] = "unknown"
+                else:
+                    statuses[current_entry] = status
+
             if self._PATTERNISH_HEADING_RE.match(stripped):
+                current_entry = None
                 diagnostics.append(
                     CatalogDiagnostic(
                         code="malformed_pattern_heading",
@@ -226,11 +250,8 @@ class CatalogVerifier:
             )
 
         entries: list[CatalogEntry] = []
-        for index, (entry_id, title, line_number, entry_section) in enumerate(headings):
-            next_line = headings[index + 1][2] if index + 1 < len(headings) else len(lines) + 1
-            body = "".join(lines[line_number : next_line - 1])
-            status_match = self._STATUS_RE.search(body[:500])
-            status = status_match.group(1).lower() if status_match else "unknown"
+        for entry_id, title, line_number, entry_section in headings:
+            status = statuses.get(line_number, "unknown")
             entries.append(
                 CatalogEntry(
                     id=entry_id,
@@ -258,17 +279,18 @@ class CatalogVerifier:
         results: list[VerificationResult] = []
         verified = 0
         failed = 0
+        unchecked = 0
         for entry in entries:
             if entry.status != "implemented":
                 results.append(
                     VerificationResult(
                         entry_id=entry.id,
                         claimed_status=entry.status,
-                        verified=True,
-                        reason=f"Status is '{entry.status}' — no verification needed",
+                        verified=False,
+                        reason=f"Status is '{entry.status}' — implementation not verified",
                     )
                 )
-                verified += 1
+                unchecked += 1
                 continue
             # Check if we have test results
             test_passed = test_results.get(entry.id)
@@ -282,7 +304,7 @@ class CatalogVerifier:
                     )
                 )
                 failed += 1
-            elif test_passed:
+            elif test_passed is True:
                 results.append(
                     VerificationResult(
                         entry_id=entry.id,
@@ -307,4 +329,5 @@ class CatalogVerifier:
             total_entries=len(entries),
             verified_count=verified,
             failed_count=failed,
+            unchecked_count=unchecked,
         )

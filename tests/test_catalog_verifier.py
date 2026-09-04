@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from algo_cli.intelligence.catalog_verifier import CatalogVerifier
 
 
@@ -45,8 +47,9 @@ def test_verify_all_pass() -> None:
     verifier = CatalogVerifier()
     entries = verifier.parse_catalog(SAMPLE_MARKDOWN)
     report = verifier.verify(entries, test_results={"H1": True, "H2": True})
-    assert report.all_verified is True
-    assert report.verified_count == 3  # H3 is "proposed" — auto-verified
+    assert report.all_verified is False
+    assert report.verified_count == 2
+    assert report.unchecked_count == 1
 
 
 def test_verify_fails_on_missing_tests() -> None:
@@ -70,8 +73,8 @@ def test_verify_proposed_not_checked() -> None:
     entries = verifier.parse_catalog(SAMPLE_MARKDOWN)
     report = verifier.verify(entries, test_results={"H1": True, "H2": True})
     h3_result = next(r for r in report.results if r.entry_id == "H3")
-    assert h3_result.verified is True
-    assert "no verification needed" in h3_result.reason
+    assert h3_result.verified is False
+    assert "not verified" in h3_result.reason
 
 
 def test_report_to_dict() -> None:
@@ -80,13 +83,56 @@ def test_report_to_dict() -> None:
     report = verifier.verify(entries, test_results={"H1": True, "H2": True})
     d = report.to_dict()
     assert d["total_entries"] == 3
-    assert d["all_verified"] is True
+    assert d["all_verified"] is False
+    assert d["unchecked_count"] == 1
 
 
 def test_parse_empty_markdown() -> None:
     verifier = CatalogVerifier()
     entries = verifier.parse_catalog("")
     assert entries == []
+    assert verifier.verify(entries).all_verified is False
+
+
+def test_status_requires_explicit_marker_outside_fences_and_sections():
+    markdown = """### A1. First
+This is not implemented.
+```text
+Status: implemented
+```
+## Unrelated notes
+Status: implemented
+### A2. Second
+""" + "Detailed contract. " * 100 + "\n**Status:** `implemented`\n"
+    entries = CatalogVerifier().parse_catalog(markdown)
+    assert [e.status for e in entries] == ["unknown", "implemented"]
+
+
+@pytest.mark.parametrize("evidence", ["false", "true", 1, [], {"passed": True}])
+def test_verifier_requires_exact_boolean_evidence(evidence):
+    verifier = CatalogVerifier()
+    entries = verifier.parse_catalog("### A1. Example\nStatus: implemented\n")
+    report = verifier.verify(entries, {"A1": evidence})
+    assert not report.all_verified
+    assert report.failed_count == 1
+
+
+def test_only_tested_implemented_entries_are_verified():
+    verifier = CatalogVerifier()
+    entries = verifier.parse_catalog("### A1. Example\nStatus: implemented\n")
+    assert verifier.verify(entries, {"A1": True}).all_verified
+
+
+def test_planned_evidence_marker_is_not_an_implementation_claim():
+    entries = CatalogVerifier().parse_catalog("### A1. Example\n**Evidence state:** `planned`\n")
+    assert entries[0].status == "planned"
+
+
+def test_conflicting_status_markers_fail_catalog_lint():
+    markdown = "### A1. Example\nStatus: implemented\nStatus: planned\n"
+    verifier = CatalogVerifier()
+    assert verifier.parse_catalog(markdown)[0].status == "unknown"
+    assert not verifier.lint_catalog(markdown).all_valid
 
 
 def test_entry_to_dict() -> None:

@@ -25,7 +25,8 @@ def test_tool_sequence_detects_tdd_cadence() -> None:
 
     assert result.pattern == SequencePattern.TDD_EDIT_TEST_EDIT
     assert result.sequence_score >= 0.9
-    assert result.verification_present is True
+    assert result.verification_present is False
+    assert result.to_dict()["verification_status"] == "not_evaluated"
 
 
 def test_tool_sequence_detects_bash_read_loop() -> None:
@@ -53,7 +54,8 @@ def test_runtime_quality_snapshot_uses_attempt_ledger_without_private_reasoning(
     snapshot = runtime_quality_snapshot(cfg)
 
     assert snapshot["tool_sequence"]["pattern"] == "tdd_edit_test_edit"
-    assert snapshot["tool_sequence"]["verification_present"] is True
+    assert snapshot["tool_sequence"]["verification_present"] is False
+    assert snapshot["tool_sequence"]["evidence_scope"] == "tool_name_cadence_only"
     assert snapshot["reasoning_quality"]["status"] == "not_collected"
 
 

@@ -31,6 +31,7 @@ class ChatGptOAuthAccessError(RuntimeError):
 
 
 CODEX_SUBSCRIPTION_MODELS = {
+    "gpt-6-astra",
     "gpt-5.6",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
@@ -42,7 +43,9 @@ CODEX_SUBSCRIPTION_MODELS = {
     "gpt-5.1-codex",
 }
 CODEX_56_MODELS = frozenset({"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"})
-CODEX_MODELS_CLIENT_VERSION = os.environ.get("OPENAI_CODEX_MODELS_CLIENT_VERSION", "0.144.2").strip() or "0.144.2"
+CODEX_LITE_MODELS = CODEX_56_MODELS | {"gpt-6-astra"}
+CODEX_MODELS_CLIENT_VERSION = os.environ.get("OPENAI_CODEX_MODELS_CLIENT_VERSION", "0.153.1").strip() or "0.153.1"
+_CODEX_MODEL_METADATA: dict[str, dict[str, Any]] = {}
 _MODEL_REQUEST_SCOPE_MISSING = False
 CODEX_RESPONSES_BASE_URL = os.environ.get("OPENAI_CODEX_RESPONSES_BASE", "https://chatgpt.com/backend-api").rstrip("/")
 CODEX_RESPONSES_ORIGINATOR = os.environ.get("OPENAI_CODEX_ORIGINATOR", "pi").strip() or "pi"
@@ -68,14 +71,31 @@ def reset_model_request_scope_cache() -> None:
 
     global _MODEL_REQUEST_SCOPE_MISSING
     _MODEL_REQUEST_SCOPE_MISSING = False
+    _CODEX_MODEL_METADATA.clear()
 
 
 def is_codex_subscription_model(model: str) -> bool:
-    return normalize_codex_model(model) in CODEX_SUBSCRIPTION_MODELS
+    canonical = normalize_codex_model(model)
+    return canonical in CODEX_SUBSCRIPTION_MODELS or canonical in _CODEX_MODEL_METADATA
+
+
+def codex_model_metadata(model: str) -> dict[str, Any]:
+    """Return only normalized capabilities from the last successful catalog."""
+    return dict(_CODEX_MODEL_METADATA.get(normalize_codex_model(model), {}))
+
+
+def uses_responses_lite(model: str) -> bool:
+    canonical = normalize_codex_model(model)
+    metadata = _CODEX_MODEL_METADATA.get(canonical, {})
+    return metadata.get("use_responses_lite", canonical in CODEX_LITE_MODELS) is True
 
 
 def supported_reasoning_efforts(model: str) -> tuple[str, ...]:
-    if normalize_codex_model(model) in CODEX_56_MODELS:
+    metadata = _CODEX_MODEL_METADATA.get(normalize_codex_model(model), {})
+    levels = metadata.get("reasoning_efforts")
+    if levels:
+        return tuple(levels)
+    if normalize_codex_model(model) in CODEX_LITE_MODELS:
         return ("low", "medium", "high", "xhigh", "max")
     return ("low", "medium", "high", "xhigh")
 
@@ -84,7 +104,7 @@ def parse_reasoning_effort(value: Any, model: str) -> str:
     text = str(value or "").strip().lower()
     normalized = _REASONING_EFFORT_ALIASES.get(text, text)
     supported = supported_reasoning_efforts(model)
-    if normalized == "max" and "max" not in supported:
+    if normalized == "max" and "max" not in supported and "xhigh" in supported:
         return "xhigh"
     if normalized not in supported:
         raise ValueError(f"reasoning effort must be one of: {', '.join(supported)}")
@@ -94,11 +114,12 @@ def parse_reasoning_effort(value: Any, model: str) -> str:
 def _normalize_reasoning_effort(value: Any, model: str = "") -> str:
     text = str(value or "").strip().lower()
     normalized = _REASONING_EFFORT_ALIASES.get(text, text)
-    if normalized == "max" and normalize_codex_model(model) not in CODEX_56_MODELS:
+    supported = supported_reasoning_efforts(model)
+    if normalized == "max" and "max" not in supported and "xhigh" in supported:
         return "xhigh"
-    if normalized in _REASONING_EFFORT_LEVELS:
+    if normalized in supported:
         return normalized
-    return "medium"
+    return "medium" if "medium" in supported else supported[0]
 
 
 def reasoning_effort_for_model(model: str, configured: dict[str, str] | None = None) -> str:
@@ -115,8 +136,10 @@ def get_codex_models(*, timeout: float = 20.0, _retried: bool = False) -> list[d
     advertises the protocol version it implements instead of inheriting a stale
     locally installed Codex binary version.
     """
+    global _CODEX_MODEL_METADATA
     token = chatgpt_auth.get_valid_token()
     if not token:
+        _CODEX_MODEL_METADATA = {}
         raise ChatGptOAuthAccessError(
             "Not authenticated with ChatGPT/Codex OAuth. Run `algo-cli config auth chatgpt login` first."
         )
@@ -163,15 +186,36 @@ def get_codex_models(*, timeout: float = 20.0, _retried: bool = False) -> list[d
     if not isinstance(items, list):
         raise ChatGptOAuthAccessError("ChatGPT Codex model discovery returned no model list.")
     visible: list[dict[str, Any]] = []
+    capabilities: dict[str, dict[str, Any]] = {}
     for item in items:
-        if not isinstance(item, dict) or item.get("visibility") == "hide":
+        if not isinstance(item, dict) or item.get("visibility", "list") != "list":
             continue
         slug = item.get("slug") or item.get("id")
-        if not slug:
+        if not isinstance(slug, str) or not slug.strip() or slug.strip() in capabilities:
             continue
+        slug = slug.strip()
         normalized = dict(item)
-        normalized["slug"] = str(slug)
+        normalized["slug"] = slug
         visible.append(normalized)
+        metadata: dict[str, Any] = {}
+        if type(item.get("use_responses_lite")) is bool:
+            metadata["use_responses_lite"] = item["use_responses_lite"]
+        levels = item.get("supported_reasoning_levels")
+        if isinstance(levels, list):
+            # Ultra requires orchestration semantics this adapter does not implement.
+            metadata["reasoning_efforts"] = tuple(dict.fromkeys(
+                level["effort"] for level in levels
+                if isinstance(level, dict) and isinstance(level.get("effort"), str)
+                and level["effort"] in _REASONING_EFFORT_LEVELS
+            ))
+        context = item.get("context_window")
+        if type(context) is int and context > 0:
+            metadata["context_window"] = context
+        modalities = item.get("input_modalities")
+        if isinstance(modalities, list):
+            metadata["supports_vision"] = "image" in modalities
+        capabilities[slug] = metadata
+    _CODEX_MODEL_METADATA = capabilities
     return visible
 
 
@@ -528,7 +572,7 @@ def _build_codex_responses_request(payload: dict[str, Any], *, token: str, accou
         "OpenAI-Beta": "responses=experimental",
         "x-client-request-id": request_id,
     }
-    if normalize_codex_model(str(payload.get("model") or "")) in CODEX_56_MODELS:
+    if uses_responses_lite(str(payload.get("model") or "")):
         headers["X-OpenAI-Internal-Codex-Responses-Lite"] = "true"
         headers["originator"] = CODEX_LITE_ORIGINATOR
         headers["User-Agent"] = f"codex_cli_rs/{CODEX_MODELS_CLIENT_VERSION}"
@@ -657,6 +701,7 @@ def _responses_usage_chunk(event: dict[str, Any]) -> dict[str, Any] | None:
 
 def _stream_codex_responses_iter(resp: Any) -> Iterator[dict[str, Any]]:
     pending_calls: dict[str, dict[str, Any]] = {}
+    item_call_ids: dict[str, str] = {}
     order: list[str] = []
     emitted_answer = False
 
@@ -715,9 +760,13 @@ def _stream_codex_responses_iter(resp: Any) -> Iterator[dict[str, Any]]:
             continue
         if event_type == "response.output_item.added":
             item = event.get("item") or {}
+            if not isinstance(item, dict):
+                continue
             if item.get("type") != "function_call":
                 continue
             call_id = str(item.get("call_id") or item.get("id") or f"call_{len(order) + 1}")
+            if item.get("id"):
+                item_call_ids[str(item["id"])] = call_id
             if call_id not in pending_calls:
                 order.append(call_id)
             pending_calls[call_id] = {
@@ -727,7 +776,8 @@ def _stream_codex_responses_iter(resp: Any) -> Iterator[dict[str, Any]]:
             }
             continue
         if event_type == "response.function_call_arguments.delta":
-            call_id = str(event.get("call_id") or event.get("item_id") or "")
+            item_id = str(event.get("item_id") or "")
+            call_id = str(event.get("call_id") or item_call_ids.get(item_id, item_id))
             if not call_id:
                 continue
             if call_id not in pending_calls:
@@ -737,7 +787,12 @@ def _stream_codex_responses_iter(resp: Any) -> Iterator[dict[str, Any]]:
             continue
         if event_type in {"response.function_call_arguments.done", "response.output_item.done"}:
             item = event.get("item") or {}
-            call_id = str(event.get("call_id") or item.get("call_id") or item.get("id") or "")
+            if not isinstance(item, dict):
+                continue
+            if event_type == "response.output_item.done" and item.get("type") != "function_call":
+                continue
+            item_id = str(event.get("item_id") or item.get("id") or "")
+            call_id = str(event.get("call_id") or item.get("call_id") or item_call_ids.get(item_id, item_id))
             if not call_id:
                 continue
             if call_id not in pending_calls:
@@ -747,6 +802,8 @@ def _stream_codex_responses_iter(resp: Any) -> Iterator[dict[str, Any]]:
                 pending_calls[call_id]["function"]["name"] = str(item["name"])
             if item.get("arguments") is not None:
                 pending_calls[call_id]["function"]["arguments"] = str(item.get("arguments") or "")
+            elif event_type == "response.function_call_arguments.done" and event.get("arguments") is not None:
+                pending_calls[call_id]["function"]["arguments"] = str(event.get("arguments") or "")
     completed = completed_calls()
     if completed:
         emitted_answer = True
@@ -820,7 +877,7 @@ class ChatGptClient:
             return chunk
 
         if is_codex_subscription_model(model):
-            is_gpt_56 = codex_model in CODEX_56_MODELS
+            use_lite = uses_responses_lite(codex_model)
             payload: dict[str, Any] = {
                 "model": codex_model,
                 "store": False,
@@ -828,7 +885,7 @@ class ChatGptClient:
                 "input": _build_responses_input(messages),
                 "include": ["reasoning.encrypted_content"],
             }
-            if is_gpt_56:
+            if use_lite:
                 payload["parallel_tool_calls"] = False
                 payload["reasoning"] = {
                     "effort": _reasoning_effort_from_options(options, codex_model),
@@ -839,11 +896,11 @@ class ChatGptClient:
             if built_tools:
                 payload["tools"] = built_tools
                 payload["tool_choice"] = "auto"
-                if not is_gpt_56:
+                if not use_lite:
                     payload["parallel_tool_calls"] = True
             if options:
                 effort = options.get("reasoning_effort") or options.get("chatgpt_reasoning_effort")
-                if effort and not is_gpt_56:
+                if effort and not use_lite:
                     payload["reasoning"] = {
                         "effort": _normalize_reasoning_effort(effort, codex_model),
                         "summary": "auto",

@@ -236,18 +236,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
-      - name: Require externally reviewed Boron environment readiness
+      - name: Require owner-approved Boron environment readiness
         env:
           BORON_HARDENING_ENVIRONMENT_READY: ${{ vars.BORON_HARDENING_ENVIRONMENT_READY }}
           HENRY_REPOSITORY_ID: ${{ github.repository_id }}
           HENRY_REF_PROTECTED: ${{ github.ref_protected }}
           HENRY_SOURCE_SHA: ${{ github.sha }}
           HENRY_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          HENRY_ACTOR_ID: ${{ github.actor_id }}
+          HENRY_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
         run: |
           set -euo pipefail
           test "${HENRY_REPOSITORY_ID}" = "1297752684"
           test "${HENRY_REF_PROTECTED}" = "true"
           test "${HENRY_WORKFLOW_SHA}" = "${HENRY_SOURCE_SHA}"
+          test "${HENRY_ACTOR_ID}" = "184999458"
+          test "${HENRY_TRIGGERING_ACTOR}" = "Seabass-up"
           test "${BORON_HARDENING_ENVIRONMENT_READY}" = "true"
           response="${RUNNER_TEMP}/henry-boron-environment.json"
           umask 077
@@ -294,15 +298,16 @@ jobs:
                   or policy.get("protected_branches") is not True
                   or policy.get("custom_branch_policies") is not False
                   or len(reviewers) != 1
-                  or reviewers[0].get("prevent_self_review") is not True
+                  or reviewers[0].get("prevent_self_review") is not False
                   or type(reviewer_rows) is not list
-                  or not reviewer_rows
+                  or len(reviewer_rows) != 1
                   or any(
                       type(row) is not dict
-                      or row.get("type") not in {"User", "Team"}
+                      or row.get("type") != "User"
                       or type(row.get("reviewer")) is not dict
                       or type(row["reviewer"].get("id")) is not int
-                      or row["reviewer"]["id"] <= 0
+                      or row["reviewer"]["id"] != 184999458
+                      or row["reviewer"].get("login") != "Seabass-up"
                       for row in reviewer_rows
                   )
               ):
@@ -313,7 +318,7 @@ jobs:
 
   browser-isolation:
     name: Boron public-browser boundary
-    if: ${{ github.event_name == 'push' && github.repository == 'Seabass-up/Algo-cli' && github.repository_id == '1297752684' && github.ref == 'refs/heads/main' && github.ref_protected && github.workflow_sha == github.sha && vars.BORON_HARDENING_ENVIRONMENT_READY == 'true' }}
+    if: ${{ github.event_name == 'push' && github.repository == 'Seabass-up/Algo-cli' && github.repository_id == '1297752684' && github.ref == 'refs/heads/main' && github.ref_protected && github.workflow_sha == github.sha && vars.BORON_HARDENING_ENVIRONMENT_READY == 'true' && github.actor_id == '184999458' && github.triggering_actor == 'Seabass-up' }}
     needs: [browser-contracts, browser-authority]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -495,7 +500,7 @@ jobs:
 
   browser-evidence-validation:
     name: Validate Boron hosted evidence
-    if: ${{ github.event_name == 'push' && github.repository == 'Seabass-up/Algo-cli' && github.repository_id == '1297752684' && github.ref == 'refs/heads/main' && github.ref_protected && github.workflow_sha == github.sha && vars.BORON_HARDENING_ENVIRONMENT_READY == 'true' }}
+    if: ${{ github.event_name == 'push' && github.repository == 'Seabass-up/Algo-cli' && github.repository_id == '1297752684' && github.ref == 'refs/heads/main' && github.ref_protected && github.workflow_sha == github.sha && vars.BORON_HARDENING_ENVIRONMENT_READY == 'true' && github.actor_id == '184999458' && github.triggering_actor == 'Seabass-up' }}
     needs: browser-isolation
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -534,7 +539,7 @@ jobs:
 
   browser-evidence-attestation:
     name: Attest Boron hosted evidence
-    if: ${{ github.event_name == 'push' && github.repository == 'Seabass-up/Algo-cli' && github.repository_id == '1297752684' && github.ref == 'refs/heads/main' && github.ref_protected && github.workflow_sha == github.sha && vars.BORON_HARDENING_ENVIRONMENT_READY == 'true' }}
+    if: ${{ github.event_name == 'push' && github.repository == 'Seabass-up/Algo-cli' && github.repository_id == '1297752684' && github.ref == 'refs/heads/main' && github.ref_protected && github.workflow_sha == github.sha && vars.BORON_HARDENING_ENVIRONMENT_READY == 'true' && github.actor_id == '184999458' && github.triggering_actor == 'Seabass-up' }}
     needs: browser-evidence-validation
     runs-on: ubuntu-24.04
     timeout-minutes: 5

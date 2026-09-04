@@ -938,7 +938,11 @@ def test_ci_runs_repeated_cell_and_attests_push_evidence() -> None:
         "&& github.repository_id == '1297752684' && github.ref == 'refs/heads/main' "
         "&& github.ref_protected && github.workflow_sha == github.sha"
     )
-    protected_main = protected_main_base + " && vars.BORON_HARDENING_ENVIRONMENT_READY == 'true'"
+    protected_main = (
+        protected_main_base
+        + " && vars.BORON_HARDENING_ENVIRONMENT_READY == 'true'"
+        + " && github.actor_id == '184999458' && github.triggering_actor == 'Seabass-up'"
+    )
     authority_trigger = (
         "github.event_name == 'push' && github.repository == 'Seabass-up/Algo-cli' && github.ref == 'refs/heads/main'"
     )
@@ -951,7 +955,11 @@ def test_ci_runs_repeated_cell_and_attests_push_evidence() -> None:
     assert "api.github.com/repos/Seabass-up/Algo-cli/environments/browser-hardening" in authority_job
     assert 'document.get("can_admins_bypass") is not False' in authority_job
     assert 'policy.get("protected_branches") is not True' in authority_job
-    assert 'reviewers[0].get("prevent_self_review") is not True' in authority_job
+    assert 'reviewers[0].get("prevent_self_review") is not False' in authority_job
+    assert 'test "${HENRY_ACTOR_ID}" = "184999458"' in authority_job
+    assert 'test "${HENRY_TRIGGERING_ACTOR}" = "Seabass-up"' in authority_job
+    assert "HENRY_ACTOR_ID: ${{ github.actor_id }}" in authority_job
+    assert "HENRY_TRIGGERING_ACTOR: ${{ github.triggering_actor }}" in authority_job
     assert "Boron environment authority verification failed" in authority_job
     assert "secrets." not in authority_job
     assert "actions/checkout" not in authority_job

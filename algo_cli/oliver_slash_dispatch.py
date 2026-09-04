@@ -480,11 +480,13 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         thinking_args = arg.strip().split()
         sub = thinking_args[0].lower() if thinking_args else "status"
         if sub in {"efforts", "models"}:
-            for model in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+            for model in dict.fromkeys((cfg.model, "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")):
+                if not m.chatgpt_client.is_codex_subscription_model(model):
+                    continue
                 effort = m.chatgpt_client.reasoning_effort_for_model(model, cfg.chatgpt_reasoning_efforts)
                 supported = ", ".join(m.chatgpt_client.supported_reasoning_efforts(model))
                 m.show_info(f"{model}: {effort} (supports {supported})")
-            m.show_info("Ultra is multi-agent orchestration, not an effort level; use /agent team for that workflow.")
+            m.show_info("Ultra is advertised by Codex but requires orchestration this adapter does not implement.")
         elif sub == "effort":
             if len(thinking_args) == 1:
                 if not m.chatgpt_client.is_codex_subscription_model(cfg.model):

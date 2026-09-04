@@ -964,7 +964,7 @@ def build_qualification_report(
         "limitations": [
             "Zero observed failures in a finite local sample is not zero risk.",
             "No production browser, selected-Chrome, Developer ID, notarization, Gatekeeper, or live TCC claim is made.",
-            "The active hardening freeze remains in force.",
+            "Local qualification does not establish release eligibility or override outstanding external gates.",
         ],
     }
 

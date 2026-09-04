@@ -51,6 +51,10 @@
 
 Reusable algorithm patterns and experimental algorithm tracks for Algo CLI.
 
+Current review: `docs/ASTRA-HARNESS-REVIEW.md`. A catalog entry is not proof of
+runtime activation or benefit. Explicit status, executable tests, production
+wiring, and a comparative measurement are separate evidence requirements.
+
 Principle: **boring algorithms are awesome, exotic algorithms are welcome, and every algorithm must earn its place with a clear harness contract, tests, and telemetry.**
 
 ---
@@ -11485,6 +11489,17 @@ Tests:
 
 ### H2. Algorithm Catalog Verifier
 
+**Status:** implemented
+
+The active verifier parses explicit `Status:` / `Evidence state:` lines outside
+code fences, within the owning pattern. It consumes supplied test results; it
+does not discover or execute tests itself. Only the exact boolean `True` verifies
+an implemented entry. Proposed, planned, unknown, and retired entries count as
+unchecked, not verified. An empty report cannot claim `all_verified`. Ordinary
+prose such as "not implemented" is never an implementation marker. Conflicting
+explicit markers fail structural lint. The pseudocode below describes the
+larger desired runner, not an implemented automatic test-discovery facility.
+
 **Use for:** re-deriving the status of every ALGO.md entry from live code and tests,
 the equivalent of T3MP3ST's `npm run verify-claims`.
 
@@ -13030,17 +13045,29 @@ Tests:
 
 **Provenance:** Analysis of `Glint-Research/Fable-5-traces` (4,665 rows / 60 sessions / 31 tools, model `claude-fable-5`, AGPL-3.0). Audited 2026-07-06 from `fable5_cot_merged.jsonl` (69.8 MB).
 
-**Purpose:** Surface empirically-observed patterns from a large public agent trace corpus that we can borrow or guard against in algo-cli. These patterns are not invented — they are what the Fable-5 model **actually did** across 60 real coding sessions, and they generalize well to any tool-using CLI agent.
+**Purpose:** Surface observed patterns from a public trace corpus as hypotheses
+to test in Algo CLI. Correlation within those sessions does not establish causal
+benefit or generalization to other agents, models, or tasks.
 
 **Source artifacts:** public Fable-5 trace data, a reproducible analyzer, and its generated pattern review. Local temporary paths are intentionally excluded.
 
 ### I1. Tool-Call Boundary Preservation with CoT-Proportional Reasoning
 
-**Use for:** every algo-cli tool call. Don't fire-and-forget — emit a thinking block whose length is roughly proportional to the action it precedes.
+**Use for:** offline analysis of explicitly public trace text, not enforcing a
+private-reasoning length requirement on runtime models. User-facing explanations
+should be concise and proportionate to the action's risk.
 
 **Pattern from Fable-5:** Median `cot` length 2,365 chars, median `completion` 2,726 chars → **CoT/completion ratio median = 1.14, mean = 1.28**. The model thinks about as much as it acts. No reflex calls, no 10×-overthinking.
 
-**Borrowable:** Set a soft floor (`cot >= 0.5 * completion`) and ceiling (`cot <= 5.0 * completion`) on the reasoning-to-action ratio. Outside that band, the agent is either under-thinking (reflex calls) or over-thinking (analysis paralysis). The 5.0 ceiling is calibrated against the Fable-5 corpus: median ratio 1.14, p90 1.79, max observed 4.21 — the 5.0 ceiling catches true outliers without false-flagging healthy thinking. Implemented in `algo_cli/evals/cot_quality.py::score_cot` with `Band.UNDER / IN_BAND / OVER` and a `structure_score` in [0, 1].
+**Descriptive heuristic:** `score_cot` in `algo_cli/evals/cot_quality.py` labels
+length ratios below 0.5, from 0.5 to 5.0, and above 5.0 using legacy
+`Band.UNDER / IN_BAND / OVER` names. These are string-length bins; they do not
+prove under-thinking, over-thinking, correctness, or absence of false positives.
+
+**Runtime boundary:** these historical length bands are descriptive heuristics,
+not validated measures of correctness or intelligence. Do not request, collect,
+or persist private reasoning to satisfy them. The live runtime reports reasoning
+quality as `not_collected`; assess observable actions and verification receipts.
 
 **Tests:**
 - A scripted agent that emits 100 trivial `Read` calls with no preceding CoT should be flagged.
@@ -13124,7 +13151,17 @@ Tests:
 
 ---
 
-### I7. Tool-Sequence TDD Pattern (Edit→Bash→Edit is the healthy cadence)
+### I7. Observed Tool-Sequence Cadence
+
+**Status:** implemented
+
+**Evidence scope:** the active detector recognizes tool-name cadence only. The
+historical enum names remain for compatibility, but a shell call may be `ls`,
+may fail, or may occur before another unverified edit. `/selfcheck` therefore
+reports `verification_status=not_evaluated`, never successful verification from
+names alone. Completion gates must use exit status, workspace/source identity,
+and applicable evidence receipts independently of this score. Loop warnings
+below remain proposals, not behavior supplied by the cadence detector.
 
 **Use for:** detecting runaway edit loops.
 
@@ -13138,7 +13175,9 @@ Tests:
 
 **Tests:**
 - 3 Edits in a row without Bash/Read → warning.
-- Edit→Bash→Edit → healthy.
+- Edit→Bash→Edit → observed edit/shell/edit cadence, not a correctness verdict.
+- Edit→Bash→Edit with no command/result receipts → cadence recognized,
+  verification not evaluated.
 - Bash→Bash→Bash → allowed (compound shell pipelines).
 
 ---
@@ -14453,3 +14492,114 @@ evaluation and explicit false-positive control. Source material was retrieved
 2026-08-18: NIST AI RMF 1.0, NIST AI 600-1, the SciPy bootstrap documentation,
 and the Cochrane Handbook guidance on standardized mean differences; all were
 retrieved 2026-08-18.
+
+---
+
+## Track O - Provider Compatibility and Evidence-Bounded Diagnostics
+
+**Pattern namespace:** `O`
+
+These are local harness contracts, not copied third-party implementations.
+They extend the existing transport, H2 catalog verifier, and I7 diagnostic
+boundaries rather than creating parallel authority or execution systems.
+
+### O1. Capability-Snapshot Model Routing
+
+**Status:** implemented
+
+**Use for:** keeping discovered model names, transport, reasoning settings, and
+context/vision metadata consistent when a provider adds or changes models.
+
+Algorithm: validate the authenticated catalog, discard hidden/malformed entries,
+deduplicate stable IDs, and atomically replace the in-memory capability map after
+a successful response. Retain only typed transport, reasoning, context, and
+modality fields; provider prompt templates are not harness instructions. Static
+known-model defaults support restarts, but do not imply account entitlement.
+Reset discovered capabilities when credentials are replaced or cleared.
+
+**Failure behavior:** a discovery error does not manufacture menu entries;
+unsupported reasoning modes cannot enable orchestration. Explicitly selected
+Ollama routes remain local even if a model name resembles an OpenAI model.
+
+**Evidence:** `algo_cli/chatgpt_client.py`, `algo_cli/model_info.py`,
+`tests/test_chatgpt_client.py`, `tests/test_model_info.py`, and
+`tests/test_main_helpers.py`. Regressions cover Astra, a synthetic future model,
+hidden and malformed entries, duplicate IDs, transport headers, aliases, and
+reasoning/capability parity. This establishes compatibility, not model quality.
+
+### O2. Version-Gated Catalog Canary
+
+**Status:** partial
+
+**Use for:** diagnosing a missing model without confusing protocol gating with
+authentication failure or removing account checks.
+
+Hold account, endpoint, and request shape constant; compare discovery at the
+supported protocol version and the candidate version. Record only model IDs,
+minimum versions, and typed capabilities. Advance the advertised version only
+after transport regressions and a bounded, tool-free completion succeed. Do not
+advertise an arbitrarily high version or inherit any newly installed binary's
+version without compatibility checks.
+
+**Evidence:** the Astra repair reproduced absence at 0.144.2 and 0.149.1 and
+presence at 0.153.1; the provider declared minimum 0.153.0. The default protocol
+and request tests are active in `algo_cli/chatgpt_client.py` and
+`tests/test_chatgpt_client.py`. Automated scheduled drift detection is not shipped.
+
+### O3. Installed-Artifact Identity Check
+
+**Status:** implemented
+
+**Use for:** preventing a successful source fix from being mistaken for a fixed
+user-facing executable.
+
+Resolve the actual launcher and interpreter; build the wheel; compare installed
+package content hashes with source outside the repository import path. Exercise
+the installed provider catalog and one no-tool request before declaring repair.
+Keep the prior installed package available for rollback. A version string alone
+cannot establish parity, especially for a local patch with an unchanged version.
+
+**Evidence:** `scripts/oliver_installed_source_parity.py`,
+`scripts/oliver_smoke_wheel_install.py`, `scripts/smoke_installed_release.py`, and
+their focused tests. Installation parity does not authorize publishing a release
+or bypass external qualification gates.
+
+### O4. Prerequisite-Partitioned Diagnostic Probes
+
+**Status:** proposed
+
+**Use for:** improving diagnosis when one unavailable prerequisite currently
+prevents unrelated checks from running.
+
+Model checks as a dependency DAG: lexical/cache/top-k/memory checks need no
+embedding; cosine and fusion checks require a valid vector/model pair. Evaluate
+every reachable check, retain `unavailable` on dependent checks, and preserve the
+aggregate all-required rule. Never convert partial execution into an overall pass.
+
+**Acceptance:** remove the canonical embedding and prove independent checks still
+execute while vector checks remain unavailable; inject failures and prove they
+cannot be hidden by unavailable neighbors. Compare executed-check coverage and
+latency against the current all-or-nothing prerequisite probe. No runtime benefit
+is claimed until `algo_cli/evals/algorithm_effectiveness.py` and its tests adopt
+and measure this behavior.
+
+## Runtime Pattern Review - 2026-09-04
+
+This bounded review separates correctness, wiring, and benefit. Full details and
+remaining limits are in `docs/ASTRA-HARNESS-REVIEW.md`.
+
+| Pattern/path | Current evidence | Limit |
+|---|---|---|
+| A1/A2 hybrid retrieval | Regression fixtures verify lexical/vector provenance, stable ordering, and coverage-neutral fusion | Not a new end-to-end answer-quality benchmark |
+| Reusable BM25 | Local 896-record snapshot: 45.135 ms rebuild vs 0.966 ms reuse median across five queries; 46.73x ratio | In-process ranking only, excluding embeddings and generation |
+| Stable top-k | Heap output equals stable full-sort output including ties | No new universal crossover claim |
+| L1 TinyLFU | Frozen 576-request scan workload: 88/96 hot-key hits vs 0/96 for equal-capacity LRU | Workload-specific cache benefit |
+| L3 CUSUM | Regression tests distinguish isolated spikes from sustained comparable-series regressions | No live latency improvement inferred from detection |
+| L11 memory admission | Tests cover duplicate/privacy rejection and bounded metadata-only state | No claim of memory superiority over other harnesses |
+| H2 catalog verifier | Explicit status parsing and exact-boolean evidence; unknown/proposed entries stay unchecked | It does not auto-discover tests or certify every catalog proposal |
+| I7 cadence | Shell names no longer manufacture successful verification | Actual completion evidence remains owned by execution guardrails |
+
+The seven frozen offline retrieval-quality cases pass their recall, MRR, nDCG,
+and citation-precision thresholds. This is evidence for those fixtures, not a
+global score for all catalog entries. Historical measurements above remain dated;
+they are not silently promoted to current performance claims.
