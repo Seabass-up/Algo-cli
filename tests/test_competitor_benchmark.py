@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,9 +22,7 @@ sys.modules[SPEC.name] = runner
 SPEC.loader.exec_module(runner)
 
 PUBLISHER_PATH = ROOT / "benchmarks/competitors/publish_website.py"
-PUBLISHER_SPEC = importlib.util.spec_from_file_location(
-    "competitor_benchmark_publisher", PUBLISHER_PATH
-)
+PUBLISHER_SPEC = importlib.util.spec_from_file_location("competitor_benchmark_publisher", PUBLISHER_PATH)
 assert PUBLISHER_SPEC and PUBLISHER_SPEC.loader
 publisher = importlib.util.module_from_spec(PUBLISHER_SPEC)
 sys.modules[PUBLISHER_SPEC.name] = publisher
@@ -48,6 +51,7 @@ def test_every_measured_product_has_an_adapter() -> None:
         "oh_my_pi",
         "hermes_agent",
         "openclaw",
+        "grok_build",
     }
 
 
@@ -65,9 +69,7 @@ def test_rotating_order_is_deterministic_and_complete() -> None:
             assert sum(row[1:] == (task, harness) for row in first) == 3
 
 
-def test_model_warmup_is_receipted_and_excluded_from_scores(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_model_warmup_is_receipted_and_excluded_from_scores(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(runner, "resolve_executable", lambda _candidates: "/usr/bin/ollama")
     monkeypatch.setattr(
         runner.subprocess,
@@ -134,14 +136,10 @@ def test_memory_checker_requires_live_values_and_allows_stale_comparison(tmp_pat
 
 def test_evidence_reconciliation_checker_fails_then_passes(tmp_path: Path) -> None:
     workspace, artifacts = fixture_copy(tmp_path, "evidence_reconciliation_medium_repo")
-    passed, _receipt = runner.run_task_checker(
-        "evidence_reconciliation_medium_repo", workspace, artifacts
-    )
+    passed, _receipt = runner.run_task_checker("evidence_reconciliation_medium_repo", workspace, artifacts)
     assert passed is False
 
-    manifest = json.loads(
-        (workspace / "control_plane/release_manifest.json").read_text()
-    )
+    manifest = json.loads((workspace / "control_plane/release_manifest.json").read_text())
     updates = {
         "services/gateway/settings.json": {
             "apiEndpoint": manifest["api_base"],
@@ -174,9 +172,7 @@ def test_evidence_reconciliation_checker_fails_then_passes(tmp_path: Path) -> No
         encoding="utf-8",
     )
 
-    passed, receipt = runner.run_task_checker(
-        "evidence_reconciliation_medium_repo", workspace, artifacts
-    )
+    passed, receipt = runner.run_task_checker("evidence_reconciliation_medium_repo", workspace, artifacts)
 
     assert passed is True
     assert "PASS evidence_reconciliation_medium_repo" in receipt
@@ -185,9 +181,7 @@ def test_evidence_reconciliation_checker_fails_then_passes(tmp_path: Path) -> No
 def test_task_suite_digest_is_stable_and_changes_with_selection() -> None:
     first = runner.task_suite_digest(["code_repair_small_repo"])
     second = runner.task_suite_digest(["code_repair_small_repo"])
-    expanded = runner.task_suite_digest(
-        ["code_repair_small_repo", "evidence_reconciliation_medium_repo"]
-    )
+    expanded = runner.task_suite_digest(["code_repair_small_repo", "evidence_reconciliation_medium_repo"])
 
     assert first == second
     assert first != expanded
@@ -204,6 +198,124 @@ def test_generated_cache_files_do_not_fail_scope_gate(tmp_path: Path) -> None:
     assert runner.changed_paths(before, after) == []
 
 
+def test_checker_does_not_inherit_parent_credentials(tmp_path: Path, monkeypatch) -> None:
+    workspace, artifacts = fixture_copy(tmp_path, "code_repair_small_repo")
+    monkeypatch.setenv("ALGO_BENCHMARK_TEST_SECRET", "synthetic-canary")
+    source = workspace / "src/calculator.py"
+    source.write_text(
+        "import os\nassert 'ALGO_BENCHMARK_TEST_SECRET' not in os.environ\n"
+        + source.read_text().replace(" // ", " / "),
+        encoding="utf-8",
+    )
+
+    passed, receipt = runner.run_task_checker("code_repair_small_repo", workspace, artifacts)
+    assert passed, receipt
+
+
+def test_checker_has_a_time_limit(tmp_path: Path) -> None:
+    workspace, artifacts = fixture_copy(tmp_path, "code_repair_small_repo")
+    (workspace / "src/calculator.py").write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    started = time.monotonic()
+
+    passed, receipt = runner.run_task_checker("code_repair_small_repo", workspace, artifacts, timeout=0.2)
+
+    assert passed is False
+    assert "timed out" in receipt
+    assert time.monotonic() - started < 10
+
+
+def test_process_keeps_non_utf8_output_in_failure_receipts(tmp_path: Path) -> None:
+    result = runner.run_process(
+        [sys.executable, "-c", "import os; os.write(1, b'\\xff'); os.write(2, b'\\xfe')"],
+        cwd=tmp_path,
+        env=dict(os.environ),
+        timeout=5,
+    )
+    assert result["return_code"] == 0
+    assert result["stdout"] == "\ufffd"
+    assert result["stderr"] == "\ufffd"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses POSIX process sessions")
+def test_timeout_is_bounded_when_a_detached_child_keeps_output_open(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(runner, "PROCESS_CLEANUP_TIMEOUT", 0.2, raising=False)
+    pid_path = tmp_path / "detached.pid"
+    command = [
+        sys.executable,
+        "-c",
+        "import subprocess, sys, time; from pathlib import Path; "
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(3)'], start_new_session=True); "
+        f"Path({str(pid_path)!r}).write_text(str(child.pid)); "
+        "print('started', flush=True); time.sleep(30)",
+    ]
+    started = time.monotonic()
+    try:
+        result = runner.run_process(command, cwd=tmp_path, env=dict(os.environ), timeout=0.5)
+        assert time.monotonic() - started < 2
+        assert result["timed_out"] is True
+        assert "started" in result["stdout"]
+    finally:
+        if pid_path.is_file():
+            try:
+                os.kill(int(pid_path.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_interrupted_process_is_reaped(tmp_path: Path, monkeypatch) -> None:
+    processes = []
+    popen = subprocess.Popen
+
+    def start(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        processes.append(process)
+
+        def interrupt(*args, **kwargs):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(process, "communicate", interrupt)
+        return process
+
+    monkeypatch.setattr(runner.subprocess, "Popen", start)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            runner.run_process(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                cwd=tmp_path,
+                env=dict(os.environ),
+                timeout=5,
+            )
+        assert processes[0].poll() is not None
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+
+
+@pytest.mark.parametrize("deleted", ["run_context.json", "run_prompt.md", "definition/task.md"])
+def test_deleted_protected_run_inputs_are_scored_as_failures(tmp_path: Path, monkeypatch, deleted: str) -> None:
+    run_process = runner.run_process
+
+    def simulated_agent(command, *, cwd, env, timeout):
+        if cwd.name == "workspace":
+            return run_process(command, cwd=cwd, env=env, timeout=timeout)
+        source = cwd / "workspace/src/calculator.py"
+        source.write_text(source.read_text().replace(" // ", " / "), encoding="utf-8")
+        (cwd / deleted).unlink()
+        return {"stdout": "{}\n", "stderr": "", "return_code": 0, "timed_out": False, "duration_seconds": 1.0}
+
+    monkeypatch.setattr(runner, "run_process", simulated_agent)
+    metrics = runner.execute_run(tmp_path, "code_repair_small_repo", "algo_cli", 1, "test-model", 5, "algo-cli")
+
+    assert metrics["protected_inputs_unchanged"] is False
+    assert metrics["clean_process"] is False
+    assert (Path(metrics["result_path"]) / "metrics.json").is_file()
+
+
 def test_base_environment_does_not_inherit_credentials(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-leak")
     monkeypatch.setenv("GITHUB_TOKEN", "must-not-leak")
@@ -215,6 +327,103 @@ def test_base_environment_does_not_inherit_credentials(tmp_path: Path, monkeypat
     assert environment["HOME"].startswith(str(tmp_path))
     assert "OPENAI_API_KEY" not in environment
     assert "GITHUB_TOKEN" not in environment
+
+
+def test_grok_command_uses_isolated_home_and_local_model(tmp_path: Path) -> None:
+    result = tmp_path / "result"
+    state = result / "state"
+    result.mkdir()
+    state.mkdir()
+
+    command, environment = runner.command_for(
+        "grok_build",
+        "/usr/local/bin/grok",
+        result,
+        state,
+        "private benchmark prompt",
+        "qwen-test-model",
+        60,
+    )
+
+    grok_home = Path(environment["GROK_HOME"])
+    config = (grok_home / "config.toml").read_text(encoding="utf-8")
+    assert grok_home.is_relative_to(state)
+    assert environment["GROK_BENCHMARK_API_KEY"] == "ollama"
+    assert "XAI_API_KEY" not in environment
+    assert 'model = "qwen-test-model"' in config
+    assert 'base_url = "http://127.0.0.1:11434/v1"' in config
+    assert "streaming-json" in command
+    assert "--no-subagents" in command
+    assert "--no-memory" in command
+
+
+def test_grok_streaming_events_feed_tool_and_final_metrics(tmp_path: Path) -> None:
+    events = [
+        {
+            "type": "tool_call",
+            "toolCallId": "tool-one",
+            "toolName": "run_terminal_command",
+            "rawInput": {"command": "private command"},
+        },
+        {
+            "type": "text",
+            "data": "verified",
+        },
+        {
+            "type": "end",
+            "usage": {"total_tokens": 42},
+        },
+    ]
+
+    metrics = runner.event_metrics("grok_build", events, tmp_path)
+
+    assert metrics["tool_calls"] == 1
+    assert metrics["final_text"] == "verified"
+    assert metrics["tokens"] == 42
+
+
+def test_timed_out_process_kills_its_descendants(tmp_path: Path) -> None:
+    if os.name != "posix":
+        return
+
+    child_pid_path = tmp_path / "child.pid"
+    launcher = tmp_path / "spawn_child.py"
+    launcher.write_text(
+        "\n".join(
+            [
+                "import subprocess",
+                "import sys",
+                "import time",
+                "from pathlib import Path",
+                f"pid_path = Path({str(child_pid_path)!r})",
+                "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])",
+                "pid_path.write_text(str(child.pid), encoding='utf-8')",
+                "time.sleep(30)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.run_process(
+        [sys.executable, str(launcher)],
+        cwd=tmp_path,
+        env=dict(os.environ),
+        timeout=1,
+    )
+
+    assert result["timed_out"] is True
+    assert result["return_code"] == 124
+    child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        os.kill(child_pid, signal.SIGKILL)
+        raise AssertionError(f"timed-out descendant survived: {child_pid}")
 
 
 def test_algo_round_receipts_feed_diagnostic_metrics(tmp_path: Path) -> None:
@@ -261,8 +470,17 @@ def test_tool_trap_checker_fails_closed_when_live_settings_are_deleted(tmp_path:
 
 def publication_fixture() -> dict:
     harnesses = [
-        "algo_cli", "codex_cli", "claude_code", "opencode", "pi", "copilot_cli",
-        "droid", "goose", "oh_my_pi", "hermes_agent", "openclaw",
+        "algo_cli",
+        "codex_cli",
+        "claude_code",
+        "opencode",
+        "pi",
+        "copilot_cli",
+        "droid",
+        "goose",
+        "oh_my_pi",
+        "hermes_agent",
+        "openclaw",
     ]
     task_ids = list(publisher.TASKS)
     runs = []
@@ -341,9 +559,8 @@ def publication_fixture() -> dict:
                 "reason": "adapter is implemented",
             }
             for harness in harnesses
-        ] + [
-            {"product": "grok_build", "label": "Grok Build", "status": "blocked", "reason": "not authenticated"}
-        ],
+        ]
+        + [{"product": "grok_build", "label": "Grok Build", "status": "blocked", "reason": "not authenticated"}],
         "runs": runs,
     }
 
@@ -358,9 +575,7 @@ def test_website_publisher_validates_and_sanitizes_complete_cell() -> None:
     assert curated["protocol"]["total_runs"] == 132
     assert curated["results"][0]["clean_runs"] == 12
     assert curated["results"][0]["task_passes"]["evidence_reconciliation_medium_repo"] == 3
-    assert curated["blocked_or_non_comparable"] == [
-        {"product": "Grok Build", "reason": "not authenticated"}
-    ]
+    assert curated["blocked_or_non_comparable"] == [{"product": "Grok Build", "reason": "not authenticated"}]
     assert "executable" not in json.dumps(curated)
 
 

@@ -54,7 +54,7 @@ def test_shell_hint_empty_on_clean_output():
 
 def test_run_tool_returns_corrective_message():
     from algo_cli.config import Config
-    from algo_cli.tool_runtime import run_tool
+    from algo_cli.nathan_runtime import run_tool
 
     # 'pattern' is required for search_files; omit it to force a TypeError.
     result = run_tool("read_file", {"bogus_param": "y"}, Config())
@@ -64,7 +64,7 @@ def test_run_tool_returns_corrective_message():
 
 def test_run_tool_unknown_tool_lists_alternatives():
     from algo_cli.config import Config
-    from algo_cli.tool_runtime import run_tool
+    from algo_cli.nathan_runtime import run_tool
 
     result = run_tool("definitely_not_a_tool", {}, Config())
     assert "Unknown tool" in result

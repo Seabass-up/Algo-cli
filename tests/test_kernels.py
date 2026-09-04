@@ -122,6 +122,21 @@ def test_active_kernel_actions_have_explicit_action_specs() -> None:
             assert get_action_spec(action).kind == "kernel"
 
 
+def test_extensions_manifest_kernel_names_executable_tool() -> None:
+    from algo_cli.action_registry import get_action_spec
+    from algo_cli.kernels.manifest import get_kernel
+    from algo_cli.tools import ALL_TOOLS
+
+    kernel = get_kernel("extensions-manifest")
+    action = get_action_spec("extensions.manifest")
+    tool_names = {tool.__name__ for tool in ALL_TOOLS}
+
+    assert list(kernel.actions) == ["extensions.manifest"]
+    assert action.kind == "kernel"
+    assert "extensions_manifest_build" in action.known_limitations[0]
+    assert "extensions_manifest_build" in tool_names
+
+
 def test_kernel_list_slash_includes_known_kernels(monkeypatch) -> None:
     from algo_cli import main as main_module
 
@@ -191,7 +206,7 @@ def test_kernel_check_reports_full_and_single_kernel_readiness(monkeypatch) -> N
 
 def test_kernel_actions_are_registered_and_read_only() -> None:
     from algo_cli.action_registry import get_action_spec, list_action_specs
-    from algo_cli.tool_runtime import session_command_requires_approval
+    from algo_cli.nathan_runtime import session_command_requires_approval
 
     names = {spec.name for spec in list_action_specs()}
 

@@ -13,6 +13,7 @@ allowing provider configuration through environment variables:
 The runtime shape intentionally mirrors xai_auth.py so tests and user-facing
 commands behave consistently across cloud providers.
 """
+
 from __future__ import annotations
 
 import base64
@@ -24,14 +25,32 @@ import re
 import secrets
 import shutil
 import socket
+import stat
 import subprocess
 import time
 import urllib.parse
 import urllib.request
 import webbrowser
+from pathlib import Path
 from typing import Any
 
-from .config import CONFIG_DIR, _atomic_write_text, _exclusive_state_lock
+from .config import (
+    CONFIG_DIR,
+    _atomic_write_text,
+    _config_relative_path,
+    _ensure_private_config_parent,
+    _ensure_windows_private_directory,
+    _exclusive_state_lock,
+    _path_is_reparse_point,
+    _portable_directory_identity,
+    _portable_state_identity,
+    _recheck_directory_chain,
+    _state_descriptor_payload,
+    _windows_canonicalize_private_path,
+    _windows_dacl_is_safe,
+    _windows_pinned_directory_chain,
+    _windows_private_dacl,
+)
 
 CHATGPT_CLIENT_ID = os.environ.get("OPENAI_OAUTH_CLIENT_ID", "").strip()
 CHATGPT_AUTHORIZE_URL = os.environ.get("OPENAI_OAUTH_AUTHORIZE_URL", "https://auth.openai.com/oauth/authorize")
@@ -49,6 +68,7 @@ CODEX_AUTH_HOME = CONFIG_DIR / "codex-chatgpt"
 AUTH_FILE = CONFIG_DIR / "chatgpt_auth.json"
 _REFRESH_WINDOW_SECONDS = 60
 _CALLBACK_TIMEOUT_SECONDS = 300.0
+_MAX_AUTH_FILE_BYTES = 2 * 1024 * 1024
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -199,7 +219,9 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
         return
 
 
-def run_loopback_capture(*, timeout: float = _CALLBACK_TIMEOUT_SECONDS, redirect_port: int = CHATGPT_REDIRECT_PORT) -> dict[str, str]:
+def run_loopback_capture(
+    *, timeout: float = _CALLBACK_TIMEOUT_SECONDS, redirect_port: int = CHATGPT_REDIRECT_PORT
+) -> dict[str, str]:
     class Handler(_CallbackHandler):
         received: dict[str, str] = {}
 
@@ -334,19 +356,350 @@ def _extract_codex_tokens(payload: dict[str, Any]) -> dict[str, Any]:
     raise RuntimeError("Codex auth.json did not contain ChatGPT access tokens.")
 
 
-def import_codex_auth_file(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    auth_path = os.fspath(path or (CODEX_AUTH_HOME / "auth.json"))
+def _dedicated_codex_auth_path() -> Path:
+    return Path(CODEX_AUTH_HOME) / "auth.json"
+
+
+def _same_path(left: Path, right: Path) -> bool:
     try:
-        payload = json.loads(open(auth_path, "r", encoding="utf-8").read())
+        left_info = left.lstat()
+        right_info = right.lstat()
+    except OSError:
+        pass
+    else:
+        if (left_info.st_dev, left_info.st_ino) == (right_info.st_dev, right_info.st_ino):
+            return True
+    try:
+        return os.path.abspath(os.fspath(left)) == os.path.abspath(os.fspath(right))
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _read_private_auth_json(path: Path) -> dict[str, Any]:
+    """Read one bounded owner-only auth file through no-follow descriptors."""
+
+    try:
+        before = path.lstat()
     except FileNotFoundError as exc:
-        raise RuntimeError(f"Codex auth file was not created at {auth_path}.") from exc
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"Could not read Codex auth file at {auth_path}: {exc}") from exc
+        raise RuntimeError(f"Codex auth file was not created at {path}.") from exc
+    except OSError as exc:
+        raise RuntimeError(f"Could not inspect Codex auth file at {path}.") from exc
+    external_windows_acl_safe = False
+    if os.name == "nt":
+        if _config_relative_path(path) is not None:
+            try:
+                _ensure_private_config_parent(path)
+                before = path.lstat()
+            except OSError as exc:
+                raise RuntimeError(f"Codex auth file at {path} could not be made private.") from exc
+        else:
+            # An explicit Codex auth source is caller-owned rather than Algo's
+            # storage.  Windows-created files commonly inherit a safe
+            # current-user/System DACL without SE_DACL_PROTECTED.  Accept that
+            # confidentiality contract without rewriting the caller's file;
+            # all untrusted read/write ACEs and untrusted owners still fail.
+            external_windows_acl_safe = _windows_dacl_is_safe(
+                path,
+                require_current_owner=False,
+                reject_untrusted_read=True,
+                require_protected_dacl=False,
+            )
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or before.st_size > _MAX_AUTH_FILE_BYTES
+        or (hasattr(os, "getuid") and before.st_uid != os.getuid())
+        or (os.name == "posix" and before.st_mode & 0o077)
+        or (os.name == "nt" and not (_windows_private_dacl(path) or external_windows_acl_safe))
+    ):
+        raise RuntimeError(f"Codex auth file at {path} is not a private owner-only regular file.")
+    try:
+        raw = _state_descriptor_payload(path, max_bytes=_MAX_AUTH_FILE_BYTES)
+        after = path.lstat()
+        if (after.st_dev, after.st_ino, after.st_mode, after.st_nlink) != (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_nlink,
+        ):
+            raise OSError("auth source changed during read")
+        payload = json.loads(raw.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Could not safely read Codex auth file at {path}.") from exc
     if not isinstance(payload, dict):
-        raise RuntimeError(f"Codex auth file at {auth_path} did not contain a JSON object.")
+        raise RuntimeError(f"Codex auth file at {path} did not contain a JSON object.")
+    return payload
+
+
+def _prepare_codex_auth_home() -> None:
+    """Create the dedicated transient Codex home as an owner-only real directory."""
+
+    home = Path(CODEX_AUTH_HOME)
+    if os.name == "nt" and _config_relative_path(home) is not None:
+        _ensure_windows_private_directory(CONFIG_DIR)
+    windows_home_chain = _ensure_windows_private_directory(home) if os.name == "nt" else ()
+    if os.name != "nt":
+        home.mkdir(parents=True, mode=0o700, exist_ok=True)
+    info = home.lstat()
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISDIR(info.st_mode)
+        or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+        or (os.name == "posix" and info.st_mode & 0o022)
+        or (os.name == "nt" and (_path_is_reparse_point(home, info) or not _windows_private_dacl(home)))
+    ):
+        raise RuntimeError("The dedicated Codex auth directory is unsafe.")
+    if os.name == "posix":
+        os.chmod(home, 0o700)
+    elif windows_home_chain:
+        _recheck_directory_chain(windows_home_chain)
+
+
+def _remove_primary_auth_unlocked() -> bool:
+    """Remove the authoritative token file, refusing aliases and special files."""
+
+    if os.name == "nt":
+        with _windows_pinned_directory_chain(AUTH_FILE.parent) as parent_chain:
+            removed = _remove_primary_auth_unlocked_bound()
+            _recheck_directory_chain(parent_chain)
+            return removed
+    return _remove_primary_auth_unlocked_bound()
+
+
+def _remove_primary_auth_unlocked_bound() -> bool:
+    try:
+        info = AUTH_FILE.lstat()
+    except FileNotFoundError:
+        return False
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+        or (os.name == "nt" and (_path_is_reparse_point(AUTH_FILE, info) or not _windows_private_dacl(AUTH_FILE)))
+    ):
+        raise OSError("primary ChatGPT auth state identity is unsafe")
+    AUTH_FILE.unlink()
+    if AUTH_FILE.exists() or AUTH_FILE.is_symlink():
+        raise OSError("primary ChatGPT auth state remained after cleanup")
+    return True
+
+
+def _snapshot_primary_auth_unlocked() -> bytes | None:
+    """Capture exact safe primary bytes so a failed import can restore them."""
+
+    try:
+        info = AUTH_FILE.lstat()
+    except FileNotFoundError:
+        return None
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or info.st_size > _MAX_AUTH_FILE_BYTES
+        or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+        or (os.name == "posix" and info.st_mode & 0o077)
+        or (os.name == "nt" and (_path_is_reparse_point(AUTH_FILE, info) or not _windows_private_dacl(AUTH_FILE)))
+    ):
+        raise OSError("primary ChatGPT auth state identity is unsafe")
+    return _state_descriptor_payload(AUTH_FILE, max_bytes=_MAX_AUTH_FILE_BYTES)
+
+
+def _restore_primary_auth_unlocked(snapshot: bytes | None) -> None:
+    if snapshot is None:
+        _remove_primary_auth_unlocked()
+        return
+    try:
+        text = snapshot.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise OSError("prior ChatGPT auth state was not UTF-8") from exc
+    _write_tokens_text_unlocked(text)
+
+
+def _remove_dedicated_codex_auth_source() -> bool:
+    home = Path(CODEX_AUTH_HOME)
+    if os.name == "nt":
+        try:
+            with _windows_pinned_directory_chain(home.parent) as parent_chain:
+                return _remove_dedicated_codex_auth_source_unpinned(parent_chain=parent_chain)
+        except FileNotFoundError:
+            return False
+    return _remove_dedicated_codex_auth_source_unpinned(parent_chain=())
+
+
+def _remove_dedicated_codex_auth_source_unpinned(
+    *,
+    parent_chain: tuple[tuple[Path, tuple[int, ...]], ...],
+) -> bool:
+    """Remove the exact transient Codex source and its empty private home.
+
+    The directory is intentionally flat. Any alias, hardlink, special file, or
+    unexpected sibling makes cleanup fail closed because deleting it would not
+    prove that all credential copies were removed.
+    """
+
+    home = Path(CODEX_AUTH_HOME)
+    if os.name == "nt":
+        _recheck_directory_chain(parent_chain)
+        if not _windows_private_dacl(home.parent):
+            raise OSError("dedicated Codex auth parent ACL is unsafe")
+        try:
+            home_info = home.lstat()
+        except FileNotFoundError:
+            return False
+        if (
+            _path_is_reparse_point(home, home_info)
+            or not stat.S_ISDIR(home_info.st_mode)
+            or not _windows_dacl_is_safe(
+                home,
+                require_current_owner=False,
+                reject_untrusted_read=True,
+                require_protected_dacl=False,
+            )
+        ):
+            raise OSError("dedicated Codex auth directory identity is unsafe")
+        if not _windows_private_dacl(home):
+            home_info = _windows_canonicalize_private_path(home, directory=True)
+        home_identity = _portable_directory_identity(home_info)
+        names = sorted(item.name for item in home.iterdir())
+        if names not in ([], ["auth.json"]):
+            raise OSError("dedicated Codex auth directory contains unexpected state")
+        if names:
+            source = home / "auth.json"
+            auth_info = source.lstat()
+            if (
+                _path_is_reparse_point(source, auth_info)
+                or not stat.S_ISREG(auth_info.st_mode)
+                or auth_info.st_nlink != 1
+                or not _windows_dacl_is_safe(
+                    source,
+                    require_current_owner=False,
+                    reject_untrusted_read=True,
+                    require_protected_dacl=False,
+                )
+            ):
+                raise OSError("dedicated Codex auth source identity is unsafe")
+            if not _windows_private_dacl(source):
+                auth_info = _windows_canonicalize_private_path(source, directory=False)
+            source_identity = _portable_state_identity(auth_info)
+            _recheck_directory_chain(parent_chain)
+            current = source.lstat()
+            if _portable_state_identity(current) != source_identity:
+                raise OSError("dedicated Codex auth source changed during cleanup")
+            source.unlink()
+        if any(home.iterdir()):
+            raise OSError("dedicated Codex auth state remained after cleanup")
+        current_home = home.lstat()
+        if _path_is_reparse_point(home, current_home) or _portable_directory_identity(current_home) != home_identity:
+            raise OSError("dedicated Codex auth directory changed during cleanup")
+        _recheck_directory_chain(parent_chain)
+        home.rmdir()
+        _recheck_directory_chain(parent_chain)
+        if home.exists() or home.is_symlink():
+            raise OSError("dedicated Codex auth directory remained after cleanup")
+        return True
+    directory_flags = (
+        os.O_RDONLY
+        | int(getattr(os, "O_CLOEXEC", 0))
+        | int(getattr(os, "O_DIRECTORY", 0))
+        | int(getattr(os, "O_NOFOLLOW", 0))
+    )
+    try:
+        parent_fd = os.open(home.parent, directory_flags)
+    except FileNotFoundError:
+        return False
+    try:
+        try:
+            home_info = os.stat(home.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        if (
+            stat.S_ISLNK(home_info.st_mode)
+            or not stat.S_ISDIR(home_info.st_mode)
+            or (hasattr(os, "getuid") and home_info.st_uid != os.getuid())
+        ):
+            raise OSError("dedicated Codex auth directory identity is unsafe")
+        home_fd = os.open(home.name, directory_flags, dir_fd=parent_fd)
+        try:
+            opened_home = os.fstat(home_fd)
+            if (opened_home.st_dev, opened_home.st_ino) != (home_info.st_dev, home_info.st_ino):
+                raise OSError("dedicated Codex auth directory changed during cleanup")
+            if os.name == "posix":
+                os.fchmod(home_fd, 0o700)
+            names = sorted(os.listdir(home_fd))
+            if names not in ([], ["auth.json"]):
+                raise OSError("dedicated Codex auth directory contains unexpected state")
+            if names:
+                auth_info = os.stat("auth.json", dir_fd=home_fd, follow_symlinks=False)
+                if (
+                    not stat.S_ISREG(auth_info.st_mode)
+                    or auth_info.st_nlink != 1
+                    or (hasattr(os, "getuid") and auth_info.st_uid != os.getuid())
+                ):
+                    raise OSError("dedicated Codex auth source identity is unsafe")
+                os.unlink("auth.json", dir_fd=home_fd)
+            if os.listdir(home_fd):
+                raise OSError("dedicated Codex auth state remained after cleanup")
+        finally:
+            os.close(home_fd)
+        current_home = os.stat(home.name, dir_fd=parent_fd, follow_symlinks=False)
+        if (current_home.st_dev, current_home.st_ino) != (home_info.st_dev, home_info.st_ino):
+            raise OSError("dedicated Codex auth directory changed during cleanup")
+        os.rmdir(home.name, dir_fd=parent_fd)
+        try:
+            os.stat(home.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return True
+        raise OSError("dedicated Codex auth directory remained after cleanup")
+    finally:
+        os.close(parent_fd)
+
+
+def stored_auth_state_present() -> bool:
+    """Return whether either ChatGPT credential location has any path state."""
+
+    for path in (AUTH_FILE, Path(CODEX_AUTH_HOME)):
+        try:
+            path.lstat()
+            return True
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+    return False
+
+
+def _import_codex_auth_file_unlocked(auth_path: Path, *, consume_source: bool) -> dict[str, Any]:
+    payload = _read_private_auth_json(auth_path)
     tokens = _extract_codex_tokens(payload)
-    save_tokens(tokens)
+    previous_primary = _snapshot_primary_auth_unlocked() if consume_source else None
+    _write_tokens_unlocked(tokens)
+    if consume_source:
+        try:
+            _remove_dedicated_codex_auth_source()
+        except OSError as exc:
+            rollback_error: OSError | None = None
+            try:
+                _restore_primary_auth_unlocked(previous_primary)
+            except OSError as rollback_exc:
+                rollback_error = rollback_exc
+            if rollback_error is not None:
+                raise RuntimeError(
+                    "Codex authentication could not prove duplicate cleanup or roll back the imported token."
+                ) from exc
+            raise RuntimeError("Codex authentication could not prove duplicate credential cleanup.") from exc
     return tokens
+
+
+def import_codex_auth_file(
+    path: str | os.PathLike[str] | None = None,
+    *,
+    consume_source: bool | None = None,
+) -> dict[str, Any]:
+    auth_path = Path(path or _dedicated_codex_auth_path())
+    should_consume = _same_path(auth_path, _dedicated_codex_auth_path())
+    if consume_source is not None and bool(consume_source) is not should_consume:
+        raise RuntimeError("Codex auth source-consumption policy is fixed by the selected path.")
+    with _exclusive_state_lock(AUTH_FILE, timeout_seconds=60.0):
+        return _import_codex_auth_file_unlocked(auth_path, consume_source=should_consume)
 
 
 def run_codex_device_login(*, codex_bin: str | None = None, runner: Any = subprocess.run) -> dict[str, Any]:
@@ -357,22 +710,40 @@ def run_codex_device_login(*, codex_bin: str | None = None, runner: Any = subpro
             "npm install -g @openai/codex. If it is already installed, restart "
             "your terminal or set CODEX_BIN to the full path to codex.cmd."
         )
-    CODEX_AUTH_HOME.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
-    env["CODEX_HOME"] = str(CODEX_AUTH_HOME)
-    cmd = [resolved_codex_bin, "login", "--device-auth", "-c", 'cli_auth_credentials_store="file"']
-    try:
-        result = runner(cmd, env=env, check=False)
-    except FileNotFoundError as exc:
-        raise RuntimeError(
-            "Codex CLI is not installed or not discoverable. Install it with: "
-            "npm install -g @openai/codex. If it is already installed, restart "
-            "your terminal or set CODEX_BIN to the full path to codex.cmd."
-        ) from exc
-    returncode = getattr(result, "returncode", 0)
-    if returncode != 0:
-        raise RuntimeError(f"Codex device-code login failed with exit code {returncode}.")
-    return import_codex_auth_file(CODEX_AUTH_HOME / "auth.json")
+    with _exclusive_state_lock(AUTH_FILE, timeout_seconds=60.0):
+        _prepare_codex_auth_home()
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(CODEX_AUTH_HOME)
+        cmd = [resolved_codex_bin, "login", "--device-auth", "-c", 'cli_auth_credentials_store="file"']
+        try:
+            result = runner(cmd, env=env, check=False)
+            returncode = getattr(result, "returncode", 0)
+            if returncode != 0:
+                raise RuntimeError(f"Codex device-code login failed with exit code {returncode}.")
+            return _import_codex_auth_file_unlocked(
+                _dedicated_codex_auth_path(),
+                consume_source=True,
+            )
+        except FileNotFoundError as exc:
+            try:
+                _remove_dedicated_codex_auth_source()
+            except OSError as cleanup_exc:
+                raise RuntimeError(
+                    "Codex CLI was unavailable and transient credential cleanup could not be proven."
+                ) from cleanup_exc
+            raise RuntimeError(
+                "Codex CLI is not installed or not discoverable. Install it with: "
+                "npm install -g @openai/codex. If it is already installed, restart "
+                "your terminal or set CODEX_BIN to the full path to codex.cmd."
+            ) from exc
+        except Exception:
+            try:
+                _remove_dedicated_codex_auth_source()
+            except OSError as cleanup_exc:
+                raise RuntimeError(
+                    "Codex device-code login failed and transient credential cleanup could not be proven."
+                ) from cleanup_exc
+            raise
 
 
 def exchange_code(code: str, code_verifier: str, *, redirect_uri: str | None = None) -> dict[str, Any]:
@@ -411,13 +782,16 @@ def refresh_codex_access_token(refresh_token: str) -> dict[str, Any]:
     return tokens
 
 
-def _write_tokens_unlocked(tokens: dict[str, Any]) -> None:
-    AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write_text(AUTH_FILE, json.dumps(tokens, indent=2))
+def _write_tokens_text_unlocked(text: str) -> None:
+    _atomic_write_text(AUTH_FILE, text)
     try:
         os.chmod(AUTH_FILE, 0o600)
     except (OSError, NotImplementedError):
         pass
+
+
+def _write_tokens_unlocked(tokens: dict[str, Any]) -> None:
+    _write_tokens_text_unlocked(json.dumps(tokens, indent=2))
 
 
 def save_tokens(tokens: dict[str, Any]) -> None:
@@ -426,24 +800,31 @@ def save_tokens(tokens: dict[str, Any]) -> None:
 
 
 def load_tokens() -> dict[str, Any] | None:
-    if not AUTH_FILE.exists():
-        return None
     try:
-        payload = json.loads(AUTH_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        payload = _read_private_auth_json(AUTH_FILE)
+    except RuntimeError:
         return None
     return payload if isinstance(payload, dict) else None
 
 
 def clear_tokens() -> bool:
+    removed = False
+    complete = True
     try:
         with _exclusive_state_lock(AUTH_FILE, timeout_seconds=60.0):
-            if not AUTH_FILE.exists():
-                return False
-            AUTH_FILE.unlink()
-            return True
+            try:
+                removed = _remove_primary_auth_unlocked() or removed
+            except OSError:
+                complete = False
+            try:
+                removed = _remove_dedicated_codex_auth_source() or removed
+            except OSError:
+                complete = False
+            if stored_auth_state_present():
+                complete = False
     except (OSError, TimeoutError):
         return False
+    return bool(removed and complete)
 
 
 def is_token_expired(tokens: dict[str, Any], *, window: int = _REFRESH_WINDOW_SECONDS) -> bool:
@@ -518,12 +899,14 @@ def auth_status() -> dict[str, Any]:
     tokens = load_tokens()
     if not tokens:
         return {"authenticated": False, "client_configured": bool(_client_id())}
+    if is_token_expired(tokens) and tokens.get("refresh_token"):
+        if get_valid_token():
+            tokens = load_tokens() or tokens
     expires_at = _safe_int(tokens.get("expires_at"), 0)
     has_access_token = bool(tokens.get("access_token"))
     token_valid = has_access_token and not is_token_expired(tokens)
-    refreshable = bool(tokens.get("refresh_token")) and bool(_client_id())
     return {
-        "authenticated": token_valid or refreshable,
+        "authenticated": token_valid,
         "client_configured": bool(_client_id()),
         "token_present": has_access_token or bool(tokens.get("refresh_token")),
         "expires_at": expires_at,

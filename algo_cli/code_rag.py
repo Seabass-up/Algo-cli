@@ -23,18 +23,30 @@ import hashlib
 import json
 import os
 import re
+import stat
 import time
 from pathlib import Path
 from typing import Any, Callable
 
 try:
     import numpy as _np
+
     _NUMPY = True
 except ImportError:
     _np = None  # type: ignore[assignment]
     _NUMPY = False
 
-from .config import CONFIG_DIR, _atomic_write_text
+from .config import (
+    CONFIG_DIR,
+    _atomic_write_text,
+    _directory_chain,
+    _path_is_reparse_point,
+    _portable_directory_identity,
+    _portable_state_identity,
+    _recheck_directory_chain,
+    _windows_pinned_directory_chain,
+    _windows_safe_creation_dacl,
+)
 from .intelligence.project_graph import build_project_graph
 from .intelligence.repo_map import rank_repo_map, render_repo_map, snapshot_project_graph
 from .retrieval_algorithms import stable_top_k
@@ -52,18 +64,71 @@ SNIPPET_CHARS = 600
 STRUCTURAL_WEIGHT = 0.18
 REPO_MAP_TOKEN_BUDGET = 320
 
-CODE_EXTENSIONS: frozenset[str] = frozenset({
-    ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".kt",
-    ".c", ".h", ".cpp", ".hpp", ".cc", ".cs", ".rb", ".php", ".swift", ".scala",
-    ".sh", ".ps1", ".sql", ".lua", ".r", ".jl", ".ml", ".ex", ".exs",
-    ".toml", ".cfg", ".ini", ".yaml", ".yml", ".json", ".md",
-})
-SKIP_DIRS: frozenset[str] = frozenset({
-    ".git", "node_modules", ".venv", "venv", "env", "__pycache__", "dist",
-    "build", "target", ".next", ".mypy_cache", ".pytest_cache", ".ruff_cache",
-    "site-packages", ".tox", ".idea", ".vscode", "coverage", ".cache",
-    "benchmark-results", "htmlcov",
-})
+CODE_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".py",
+        ".pyi",
+        ".js",
+        ".jsx",
+        ".ts",
+        ".tsx",
+        ".go",
+        ".rs",
+        ".java",
+        ".kt",
+        ".c",
+        ".h",
+        ".cpp",
+        ".hpp",
+        ".cc",
+        ".cs",
+        ".rb",
+        ".php",
+        ".swift",
+        ".scala",
+        ".sh",
+        ".ps1",
+        ".sql",
+        ".lua",
+        ".r",
+        ".jl",
+        ".ml",
+        ".ex",
+        ".exs",
+        ".toml",
+        ".cfg",
+        ".ini",
+        ".yaml",
+        ".yml",
+        ".json",
+        ".md",
+    }
+)
+SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        "node_modules",
+        ".venv",
+        "venv",
+        "env",
+        "__pycache__",
+        "dist",
+        "build",
+        "target",
+        ".next",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "site-packages",
+        ".tox",
+        ".idea",
+        ".vscode",
+        "coverage",
+        ".cache",
+        "benchmark-results",
+        "htmlcov",
+    }
+)
 
 # Same policy as harness.SECRET_RE: never index files whose names suggest
 # credentials. Their contents would otherwise be embedded, persisted under
@@ -88,6 +153,7 @@ _SYMBOL_LINE_RE = re.compile(
 _INDEX_MEM: dict[str, dict[str, Any]] = {}
 _LAST_SCAN: dict[str, float] = {}
 SCAN_TTL_SECONDS = 15.0
+MAX_PERSISTED_INDEX_ENTRIES = 1024
 
 
 def _index_path_for(cwd: str) -> Path:
@@ -96,19 +162,21 @@ def _index_path_for(cwd: str) -> Path:
 
 
 def _iter_source_files(root: Path) -> list[Path]:
-    resolved_root = root.resolve()
     found: list[Path] = []
     for current, dirs, files in os.walk(root):
-        dirs[:] = sorted(
-            [
-                directory
-                for directory in dirs
-                if directory not in SKIP_DIRS
-                and not directory.startswith(".")
-                and not SECRET_RE.search(directory)
-            ],
-            key=str.lower,
-        )
+        retained_dirs: list[str] = []
+        for directory in dirs:
+            if directory in SKIP_DIRS or directory.startswith(".") or SECRET_RE.search(directory):
+                continue
+            candidate = Path(current) / directory
+            try:
+                directory_info = candidate.lstat()
+            except OSError:
+                continue
+            if _path_is_reparse_point(candidate, directory_info) or not stat.S_ISDIR(directory_info.st_mode):
+                continue
+            retained_dirs.append(directory)
+        dirs[:] = sorted(retained_dirs, key=str.lower)
         for name in sorted(files, key=str.lower):
             if Path(name).suffix.lower() not in CODE_EXTENSIONS:
                 continue
@@ -120,18 +188,19 @@ def _iter_source_files(root: Path) -> list[Path]:
             if SECRET_RE.search(rel):
                 continue
             try:
-                resolved = path.resolve(strict=True)
-                resolved_rel = resolved.relative_to(resolved_root).as_posix()
-            except (OSError, ValueError):
-                # Broken links, permission failures, and links escaping cwd are
-                # skipped. In-root file symlinks are allowed after this check.
-                continue
-            if SECRET_RE.search(resolved_rel):
-                continue
-            try:
-                if path.stat().st_size > MAX_FILE_BYTES:
-                    continue
+                source_stat = path.lstat()
             except OSError:
+                continue
+            # Code snippets cross the active model boundary and are persisted in
+            # the local code index.  Accept only a single-link regular file:
+            # symlinks, devices/FIFOs, and hardlink aliases can otherwise smuggle
+            # a legacy memory file into an apparently safe working directory.
+            if (
+                _path_is_reparse_point(path, source_stat)
+                or not stat.S_ISREG(source_stat.st_mode)
+                or source_stat.st_nlink != 1
+                or source_stat.st_size > MAX_FILE_BYTES
+            ):
                 continue
             found.append(path)
             if len(found) >= MAX_FILES:
@@ -139,11 +208,106 @@ def _iter_source_files(root: Path) -> list[Path]:
     return found
 
 
-def _chunk_file(path: Path, root: Path) -> list[dict[str, Any]]:
+def _validated_source_stat(path: Path) -> os.stat_result | None:
+    """Return a safe source lstat or ``None`` without following an alias."""
+
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        ancestry = _directory_chain(Path(os.path.abspath(os.fspath(path.parent)))) if os.name == "nt" else ()
+        if ancestry:
+            _recheck_directory_chain(ancestry)
+        source_stat = path.lstat()
+        if ancestry:
+            _recheck_directory_chain(ancestry)
     except OSError:
+        return None
+    if (
+        _path_is_reparse_point(path, source_stat)
+        or not stat.S_ISREG(source_stat.st_mode)
+        or source_stat.st_nlink != 1
+        or source_stat.st_size > MAX_FILE_BYTES
+    ):
+        return None
+    return source_stat
+
+
+def _read_source_text(path: Path) -> tuple[str, os.stat_result] | None:
+    """Read one bounded regular single-link source through a no-follow fd.
+
+    The pre/post descriptor checks make a leaf replacement or mutation during
+    the read fail closed. ``O_NONBLOCK`` prevents a swap to a FIFO from hanging
+    before ``fstat`` can reject it.
+    """
+
+    if os.name == "nt":
+        try:
+            with _windows_pinned_directory_chain(Path(os.path.abspath(os.fspath(path.parent)))) as ancestry:
+                return _read_source_text_bound(path, ancestry=ancestry)
+        except OSError:
+            return None
+    return _read_source_text_bound(path, ancestry=())
+
+
+def _read_source_text_bound(
+    path: Path,
+    *,
+    ancestry: tuple[tuple[Path, tuple[int, ...]], ...],
+) -> tuple[str, os.stat_result] | None:
+    before = _validated_source_stat(path)
+    if before is None:
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or opened.st_size > MAX_FILE_BYTES
+            or _portable_state_identity(opened) != _portable_state_identity(before)
+        ):
+            return None
+        remaining = MAX_FILE_BYTES + 1
+        chunks: list[bytes] = []
+        while remaining > 0:
+            block = os.read(descriptor, min(64 * 1024, remaining))
+            if not block:
+                break
+            chunks.append(block)
+            remaining -= len(block)
+        payload = b"".join(chunks)
+        after = os.fstat(descriptor)
+        current = path.lstat()
+        if (
+            len(payload) > MAX_FILE_BYTES
+            or _path_is_reparse_point(path, current)
+            or _portable_state_identity(after) != _portable_state_identity(opened)
+            or _portable_state_identity(current) != _portable_state_identity(opened)
+        ):
+            return None
+        if ancestry:
+            _recheck_directory_chain(ancestry)
+        return payload.decode("utf-8", errors="replace"), after
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+
+
+def _chunk_file(path: Path, root: Path) -> list[dict[str, Any]]:
+    source = _read_source_text(path)
+    if source is None:
         return []
+    text, _source_stat = source
+    return _chunk_source_text(text, path, root)
+
+
+def _chunk_source_text(text: str, path: Path, root: Path) -> list[dict[str, Any]]:
+    """Chunk text captured by ``_read_source_text`` without reopening it."""
+
     lines = text.splitlines()
     if not lines:
         return []
@@ -154,18 +318,20 @@ def _chunk_file(path: Path, root: Path) -> list[dict[str, Any]]:
     chunks: list[dict[str, Any]] = []
     step = max(1, CHUNK_LINES - CHUNK_OVERLAP)
     for start in range(0, len(lines), step):
-        block = lines[start:start + CHUNK_LINES]
+        block = lines[start : start + CHUNK_LINES]
         body = "\n".join(block).strip()
         if not body:
             continue
         chunk_text = f"{rel}:{start + 1}\n{body}"
-        chunks.append({
-            "relative_path": rel,
-            "start_line": start + 1,
-            "end_line": min(len(lines), start + CHUNK_LINES),
-            "text": chunk_text,
-            "content_hash": _chunk_content_hash(chunk_text),
-        })
+        chunks.append(
+            {
+                "relative_path": rel,
+                "start_line": start + 1,
+                "end_line": min(len(lines), start + CHUNK_LINES),
+                "text": chunk_text,
+                "content_hash": _chunk_content_hash(chunk_text),
+            }
+        )
         if start + CHUNK_LINES >= len(lines):
             break
     return chunks
@@ -227,10 +393,53 @@ def _load_index(cwd: str) -> dict[str, Any]:
     return {"cwd": str(Path(cwd).resolve()), "files": {}, "chunks": []}
 
 
-def _save_index(cwd: str, index: dict[str, Any]) -> None:
-    CODE_INDEX_DIR.mkdir(parents=True, exist_ok=True)
+def _index_sources_valid(cwd: str, index: dict[str, Any]) -> bool:
+    """Verify every indexed source is still the exact safe file recorded."""
+
+    root = Path(cwd).resolve()
+    if index.get("cwd") != str(root):
+        return False
+    files = index.get("files")
+    if not isinstance(files, dict) or len(files) > MAX_FILES:
+        return False
+    for relative, signature in files.items():
+        if not isinstance(relative, str) or not isinstance(signature, dict):
+            return False
+        relative_path = Path(relative)
+        if (
+            relative_path.is_absolute()
+            or not relative_path.parts
+            or any(part in {"", ".", ".."} for part in relative_path.parts)
+        ):
+            return False
+        candidate = root / relative_path
+        source_stat = _validated_source_stat(candidate)
+        if source_stat is None:
+            return False
+        expected = (
+            signature.get("device"),
+            signature.get("inode"),
+            signature.get("size"),
+            signature.get("mtime_ns"),
+        )
+        actual = (
+            int(source_stat.st_dev),
+            int(source_stat.st_ino),
+            int(source_stat.st_size),
+            int(source_stat.st_mtime_ns),
+        )
+        if expected != actual:
+            return False
+    return True
+
+
+def _save_index(cwd: str, index: dict[str, Any]) -> bool:
+    if not _index_sources_valid(cwd, index):
+        invalidate_cache(cwd)
+        return False
     _atomic_write_text(_index_path_for(cwd), json.dumps(index, separators=(",", ":")))
     _INDEX_MEM[str(Path(cwd).resolve())] = index
+    return True
 
 
 def embed_text_for(chunk: dict[str, Any]) -> str:
@@ -269,40 +478,213 @@ def invalidate_cache(cwd: str | None = None) -> None:
 
 
 def persisted_index_count() -> int:
-    """Return the number of persisted code-index files without creating state."""
+    """Return the number of entries below the code-index root without creating state."""
 
-    if CODE_INDEX_DIR.is_symlink() or CODE_INDEX_DIR.is_file():
+    try:
+        root_info = CODE_INDEX_DIR.lstat()
+    except FileNotFoundError:
+        return 0
+    except OSError:
+        return 1
+    if not stat.S_ISDIR(root_info.st_mode):
         return 1
     try:
-        return sum(1 for path in CODE_INDEX_DIR.iterdir() if path.is_file() or path.is_symlink())
+        return sum(1 for _path in CODE_INDEX_DIR.iterdir())
     except OSError:
+        return 1
+
+
+def _windows_path_purge_required() -> bool:
+    return os.name == "nt"
+
+
+def _purge_persisted_indexes_by_path(
+    index_dir: Path,
+    parent_chain: tuple[tuple[Path, tuple[int, ...]], ...],
+) -> int:
+    from .tools import (
+        _windows_delete_path_by_identity,
+        _windows_reparse_entry_is_directory,
+        _windows_supported_name_reparse_tag,
+    )
+
+    def delete_bound(path: Path, expected: os.stat_result, *, allow_directory: bool) -> None:
+        if os.name == "nt":
+            _windows_delete_path_by_identity(path, expected, allow_directory=allow_directory)
+            return
+        current = path.lstat()
+        expected_directory = stat.S_ISDIR(expected.st_mode)
+        current_directory = stat.S_ISDIR(current.st_mode)
+        expected_identity = (
+            _portable_directory_identity(expected) if expected_directory else _portable_state_identity(expected)
+        )
+        current_identity = (
+            _portable_directory_identity(current) if current_directory else _portable_state_identity(current)
+        )
+        if expected_directory != current_directory or expected_identity != current_identity:
+            raise OSError("code index deletion target identity changed")
+        if current_directory:
+            if not allow_directory:
+                raise OSError("code index contains an unexpected directory")
+            path.rmdir()
+        else:
+            path.unlink()
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return
+        raise OSError("code index deletion target was rebound")
+
+    _recheck_directory_chain(parent_chain)
+    if not _windows_safe_creation_dacl(index_dir.parent):
+        raise OSError("code index parent ACL is unsafe")
+    try:
+        root_info = index_dir.lstat()
+    except FileNotFoundError:
         return 0
+    if _path_is_reparse_point(index_dir, root_info):
+        if os.name == "nt":
+            _windows_supported_name_reparse_tag(root_info)
+        _recheck_directory_chain(parent_chain)
+        delete_bound(index_dir, root_info, allow_directory=False)
+        _recheck_directory_chain(parent_chain)
+        return 1
+    if stat.S_ISREG(root_info.st_mode):
+        if root_info.st_nlink != 1:
+            raise OSError("code index root has an external hardlink")
+        if _portable_state_identity(index_dir.lstat()) != _portable_state_identity(root_info):
+            raise OSError("code index root changed during purge")
+        delete_bound(index_dir, root_info, allow_directory=False)
+        _recheck_directory_chain(parent_chain)
+        return 1
+    if not stat.S_ISDIR(root_info.st_mode):
+        raise OSError("code index root is not a regular file, symlink, or directory")
+    if not _windows_safe_creation_dacl(index_dir):
+        raise OSError("code index root ACL is unsafe")
+    root_identity = _portable_directory_identity(root_info)
+    removed = 0
+    with _windows_pinned_directory_chain(index_dir) as root_chain:
+        path_entries: list[Path] = []
+        with os.scandir(index_dir) as scanned:
+            for directory_entry in scanned:
+                if len(path_entries) >= MAX_PERSISTED_INDEX_ENTRIES:
+                    raise OSError("code index entry count exceeds the purge bound")
+                path_entries.append(index_dir / directory_entry.name)
+        path_entries.sort(key=lambda path: path.name)
+        captured: list[tuple[Path, os.stat_result]] = []
+        for entry_path in path_entries:
+            information = entry_path.lstat()
+            reparse = _path_is_reparse_point(entry_path, information)
+            if os.name == "nt" and reparse:
+                _windows_supported_name_reparse_tag(information)
+            directory = (
+                _windows_reparse_entry_is_directory(information)
+                if os.name == "nt"
+                else stat.S_ISDIR(information.st_mode)
+            )
+            if directory and not reparse:
+                raise OSError("code index contains an unexpected nested or special entry")
+            if not directory and not reparse and (not stat.S_ISREG(information.st_mode) or information.st_nlink != 1):
+                raise OSError("code index contains an unexpected nested or special entry")
+            captured.append((entry_path, information))
+        _recheck_directory_chain(root_chain)
+        for entry_path, expected in captured:
+            delete_bound(entry_path, expected, allow_directory=False)
+            removed += 1
+            _recheck_directory_chain(root_chain)
+        if any(index_dir.iterdir()):
+            raise OSError("code index changed during purge")
+        current_root = index_dir.lstat()
+        if (
+            _path_is_reparse_point(index_dir, current_root)
+            or _portable_directory_identity(current_root) != root_identity
+        ):
+            raise OSError("code index root changed during purge")
+        _recheck_directory_chain(root_chain)
+
+    current_root = index_dir.lstat()
+    if _path_is_reparse_point(index_dir, current_root) or _portable_directory_identity(current_root) != root_identity:
+        raise OSError("code index root changed during purge")
+    _recheck_directory_chain(parent_chain)
+    delete_bound(index_dir, current_root, allow_directory=True)
+    _recheck_directory_chain(parent_chain)
+    return removed
 
 
 def purge_persisted_indexes() -> int:
-    """Delete every persisted code-index file and clear process-local caches."""
+    """Delete the flat persisted code-index store without following aliases.
+
+    Code indexes have always used a flat directory. Unexpected nested or
+    special entries therefore fail closed instead of being silently ignored or
+    traversed. The Echo preflight treats this exception as an unavailable
+    protected state, so it cannot report a successful purge while plaintext
+    remains below the declared root.
+    """
 
     invalidate_cache()
-    # Never follow a user-created directory symlink while deleting generated
-    # state. Remove only the link (or an unexpected file at the index path).
-    if CODE_INDEX_DIR.is_symlink() or CODE_INDEX_DIR.is_file():
-        CODE_INDEX_DIR.unlink()
-        return 1
+    if _windows_path_purge_required():
+        index_dir = Path(os.path.abspath(os.fspath(CODE_INDEX_DIR)))
+        with _windows_pinned_directory_chain(index_dir.parent) as parent_chain:
+            return _purge_persisted_indexes_by_path(index_dir, parent_chain)
+    directory_flags = (
+        os.O_RDONLY
+        | int(getattr(os, "O_CLOEXEC", 0))
+        | int(getattr(os, "O_DIRECTORY", 0))
+        | int(getattr(os, "O_NOFOLLOW", 0))
+    )
     try:
-        paths = tuple(CODE_INDEX_DIR.iterdir())
+        parent_fd = os.open(CODE_INDEX_DIR.parent, directory_flags)
     except FileNotFoundError:
         return 0
-    removed = 0
-    for path in paths:
-        if not (path.is_file() or path.is_symlink()):
-            continue
-        path.unlink()
-        removed += 1
     try:
-        CODE_INDEX_DIR.rmdir()
-    except OSError:
-        pass
-    return removed
+        try:
+            root_info = os.stat(CODE_INDEX_DIR.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return 0
+        if stat.S_ISLNK(root_info.st_mode):
+            os.unlink(CODE_INDEX_DIR.name, dir_fd=parent_fd)
+            return 1
+        if stat.S_ISREG(root_info.st_mode):
+            if root_info.st_nlink != 1:
+                raise OSError("code index root has an external hardlink")
+            os.unlink(CODE_INDEX_DIR.name, dir_fd=parent_fd)
+            return 1
+        if not stat.S_ISDIR(root_info.st_mode):
+            raise OSError("code index root is not a regular file, symlink, or directory")
+        root_fd = os.open(CODE_INDEX_DIR.name, directory_flags, dir_fd=parent_fd)
+        try:
+            opened_root = os.fstat(root_fd)
+            if (opened_root.st_dev, opened_root.st_ino) != (root_info.st_dev, root_info.st_ino):
+                raise OSError("code index root changed during purge")
+            names = sorted(os.listdir(root_fd))
+            if len(names) > MAX_PERSISTED_INDEX_ENTRIES:
+                raise OSError("code index entry count exceeds the purge bound")
+            descriptor_entries: list[tuple[str, tuple[int, int, int]]] = []
+            for name in names:
+                info = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+                if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+                    raise OSError("code index contains an unexpected nested or special entry")
+                if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+                    raise OSError("code index entry has an external hardlink")
+                descriptor_entries.append((name, (info.st_dev, info.st_ino, info.st_mode)))
+            removed = 0
+            for name, expected in descriptor_entries:
+                current = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+                if (current.st_dev, current.st_ino, current.st_mode) != expected:
+                    raise OSError("code index entry changed during purge")
+                os.unlink(name, dir_fd=root_fd)
+                removed += 1
+            if os.listdir(root_fd):
+                raise OSError("code index changed during purge")
+        finally:
+            os.close(root_fd)
+        current_root = os.stat(CODE_INDEX_DIR.name, dir_fd=parent_fd, follow_symlinks=False)
+        if (current_root.st_dev, current_root.st_ino) != (root_info.st_dev, root_info.st_ino):
+            raise OSError("code index root changed during purge")
+        os.rmdir(CODE_INDEX_DIR.name, dir_fd=parent_fd)
+        return removed
+    finally:
+        os.close(parent_fd)
 
 
 def build_or_update_index(cwd: str, *, force: bool = False) -> dict[str, Any]:
@@ -315,7 +697,10 @@ def build_or_update_index(cwd: str, *, force: bool = False) -> dict[str, Any]:
     key = str(root)
     now = time.monotonic()
     if not force and key in _INDEX_MEM and (now - _LAST_SCAN.get(key, 0.0)) < SCAN_TTL_SECONDS:
-        return _INDEX_MEM[key]
+        cached = _INDEX_MEM[key]
+        if _index_sources_valid(cwd, cached):
+            return cached
+        invalidate_cache(cwd)
     _LAST_SCAN[key] = now
     index = _INDEX_MEM.get(key) or _load_index(cwd)
     old_files: dict[str, Any] = index.get("files", {}) if index.get("cwd") == str(root) else {}
@@ -329,20 +714,25 @@ def build_or_update_index(cwd: str, *, force: bool = False) -> dict[str, Any]:
     reused_chunk_embeddings = 0
     rebuilt_chunks = 0
     for path in _iter_source_files(root):
-        try:
-            st = path.stat()
-        except OSError:
+        source = _read_source_text(path)
+        if source is None:
             continue
+        source_text, st = source
         rel = path.relative_to(root).as_posix() if root in path.parents or path.parent == root else path.name
-        sig = {"size": int(st.st_size), "mtime_ns": int(st.st_mtime_ns)}
+        sig = {
+            "device": int(st.st_dev),
+            "inode": int(st.st_ino),
+            "size": int(st.st_size),
+            "mtime_ns": int(st.st_mtime_ns),
+        }
         prior = old_files.get(rel)
-        if prior and prior.get("size") == sig["size"] and prior.get("mtime_ns") == sig["mtime_ns"] and rel in old_chunks_by_file:
+        if prior == sig and rel in old_chunks_by_file:
             reused = old_chunks_by_file[rel]
             new_chunks.extend(reused)
             new_files[rel] = sig
             reused_files += 1
         else:
-            fresh = _chunk_file(path, root)
+            fresh = _chunk_source_text(source_text, path, root)
             reused_chunk_embeddings += _reuse_content_embeddings(
                 fresh,
                 old_chunks_by_file.get(rel, []),
@@ -379,7 +769,8 @@ def build_or_update_index(cwd: str, *, force: bool = False) -> dict[str, Any]:
             "rebuilt_chunks": rebuilt_chunks,
         },
     }
-    _save_index(cwd, index)  # also refreshes _INDEX_MEM
+    if not _save_index(cwd, index):
+        return {"cwd": str(root), "files": {}, "chunks": [], "structural": {}}
     return index
 
 
@@ -400,7 +791,8 @@ def ensure_embeddings(cwd: str, embed_fn: EmbedFn, model: str, *, cap: int = EMB
     for chunk, vec in zip(batch, vectors):
         chunk["embedding"] = vec
         chunk["embedding_model"] = model
-    _save_index(cwd, index)
+    if not _save_index(cwd, index):
+        return {"cwd": str(Path(cwd).resolve()), "files": {}, "chunks": [], "structural": {}}
     return index
 
 
@@ -414,7 +806,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
         nb += y * y
     if na == 0.0 or nb == 0.0:
         return 0.0
-    return float(dot / ((na ** 0.5) * (nb ** 0.5)))
+    return float(dot / ((na**0.5) * (nb**0.5)))
 
 
 def retrieve(
@@ -455,44 +847,35 @@ def retrieve(
         if qnorm > 0.0:
             qv = qv / qnorm
         sims = (mat @ qv).tolist()
-        semantic_scored = [
-            (float(score), candidates[index])
-            for index, score in enumerate(sims)
-            if score > 0.0
-        ]
+        semantic_scored = [(float(score), candidates[index]) for index, score in enumerate(sims) if score > 0.0]
     else:
         semantic_scored = [(_cosine(qvec, chunk["embedding"]), chunk) for chunk in candidates]
-        semantic_scored = [
-            (score, chunk) for score, chunk in semantic_scored if score > 0.0
-        ]
+        semantic_scored = [(score, chunk) for score, chunk in semantic_scored if score > 0.0]
 
     structural_snapshot = index.get("structural", {})
     structural_by_path = (
-        {entry.path: entry.rank for entry in rank_repo_map(structural_snapshot, query)}
-        if structural_weight
-        else {}
+        {entry.path: entry.rank for entry in rank_repo_map(structural_snapshot, query)} if structural_weight else {}
     )
     scored = []
     for semantic_score, chunk in semantic_scored:
         structural_score = structural_by_path.get(str(chunk.get("relative_path", "")), 0.0)
-        combined_score = (
-            (1.0 - structural_weight) * semantic_score
-            + structural_weight * structural_score
-        )
+        combined_score = (1.0 - structural_weight) * semantic_score + structural_weight * structural_score
         scored.append((combined_score, semantic_score, structural_score, chunk))
     scored = stable_top_k(scored, k, score=lambda row: row[0])
     out: list[dict[str, Any]] = []
     for combined_score, semantic_score, structural_score, chunk in scored:
-        out.append({
-            "relative_path": chunk.get("relative_path", ""),
-            "start_line": chunk.get("start_line", 1),
-            "end_line": chunk.get("end_line", 1),
-            "text": chunk.get("text", ""),
-            "score": round(float(combined_score), 4),
-            "semantic_score": round(float(semantic_score), 4),
-            "structural_score": round(float(structural_score), 4),
-            "retrieval_strategy": "semantic+structural" if structural_weight else "semantic",
-        })
+        out.append(
+            {
+                "relative_path": chunk.get("relative_path", ""),
+                "start_line": chunk.get("start_line", 1),
+                "end_line": chunk.get("end_line", 1),
+                "text": chunk.get("text", ""),
+                "score": round(float(combined_score), 4),
+                "semantic_score": round(float(semantic_score), 4),
+                "structural_score": round(float(structural_score), 4),
+                "retrieval_strategy": "semantic+structural" if structural_weight else "semantic",
+            }
+        )
     if out and structural_weight:
         repo_map = render_repo_map(
             structural_snapshot,
@@ -533,8 +916,16 @@ def looks_like_code_project(cwd: str) -> bool:
     if not root.is_dir():
         return False
     markers = (
-        "pyproject.toml", "setup.py", "package.json", "Cargo.toml", "go.mod",
-        "pom.xml", "build.gradle", ".git", "requirements.txt", "tsconfig.json",
+        "pyproject.toml",
+        "setup.py",
+        "package.json",
+        "Cargo.toml",
+        "go.mod",
+        "pom.xml",
+        "build.gradle",
+        ".git",
+        "requirements.txt",
+        "tsconfig.json",
     )
     try:
         for marker in markers:

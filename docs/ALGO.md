@@ -12,11 +12,11 @@
 ## Architecture
 
 - Main CLI: `algo_cli/main.py` owns process startup, provider setup, chat loop helpers, and re-exports display helpers used by slash dispatch.
-- Slash commands: `algo_cli/slash_dispatch.py` routes interactive `/...` commands and should preserve existing command behavior when adding subcommands.
-- Tool system: `algo_cli/tools.py`, `algo_cli/tool_context.py`, `algo_cli/tool_schema.py`, `algo_cli/program_runtime.py`, `algo_cli/tool_runtime.py`, `algo_cli/tool_policy.py`, and `algo_cli/action_registry.py` define deferred discovery, typed programs, callable tools, execution policy, and capability display.
+- Slash commands: `algo_cli/oliver_slash_dispatch.py` routes interactive `/...` commands and should preserve existing command behavior when adding subcommands.
+- Tool system: `algo_cli/tools.py`, `algo_cli/tool_context.py`, `algo_cli/tool_schema.py`, `algo_cli/nathan_program_runtime.py`, `algo_cli/nathan_runtime.py`, `algo_cli/samuel_policy.py`, and `algo_cli/action_registry.py` define deferred discovery, typed programs, callable tools, scoped execution policy, and capability display.
 - Legacy harness/RAG: `algo_cli/harness.py` and `algo_cli/code_rag.py` provide the existing file/asset index and embedding-backed retrieval.
 - Algorithmic runtime: `algo_cli/intelligence/`, `algo_cli/evals/`, `algo_cli/_internal/`, `algo_cli/harness.py`, and `algo_cli/agent_pipeline.py` provide deterministic graph, retrieval, workflow, policy, multi-agent, and evaluation algorithms.
-- Gateway: `algo_cli/plugin_gateway.py` and `algo_cli/plugin_gateway_adapters.py` own plugin gateway routing and must remain behavior-compatible.
+- Plugins: `algo_cli/william_plugins.py` owns strict manifest-only discovery. No plugin gateway modules or local code-execution route are currently shipped.
 - Config: `algo_cli/config.py` owns persisted settings under the Algo CLI config directory.
 - Worktree isolation: `algo_cli/worktree_runtime.py` allocates repository-hashed paths, protects ignored data, and binds durable agent threads to verified Git identity.
 - Structured publish: `algo_cli/git_publish.py` implements fingerprinted, scoped, scrubbed, divergence-aware commit → push → draft-PR phases and activates the pre-push kernel.
@@ -41,8 +41,8 @@
 
 ## Recipes
 
-- Add CLI command: add the deterministic implementation in a small module, expose a command facade, then wire a slash branch in `algo_cli/slash_dispatch.py` without breaking the old branch.
-- Add plugin: update gateway adapter code and plugin tests; preserve `confirm` and safety semantics.
+- Add CLI command: add the deterministic implementation in a small module, expose a command facade, then wire a slash branch in `algo_cli/oliver_slash_dispatch.py` without breaking the old branch.
+- Add plugin manifest: use William schema version 1 for discovery metadata only. Executable adapters remain prohibited until a reviewed gateway and dispatcher contract exist.
 - Add test: create a focused `tests/test_*.py` file that builds temporary repo fixtures instead of relying on global machine state.
 - Fix mypy issue: reproduce with `python -m mypy algo_cli --show-error-codes`, fix by narrowing/typing the local boundary, then rerun mypy before broader gates.
 - Add algorithmic harness capability: define input, output, data model, algorithm, scoring/decision rule, failure behavior, verification, CLI entrypoint, tests, and docs.
@@ -51,11 +51,17 @@
 
 Reusable algorithm patterns and experimental algorithm tracks for Algo CLI.
 
+Current review: `docs/ASTRA-HARNESS-REVIEW.md`. A catalog entry is not proof of
+runtime activation or benefit. Explicit status, executable tests, production
+wiring, and a comparative measurement are separate evidence requirements.
+
 Principle: **boring algorithms are awesome, exotic algorithms are welcome, and every algorithm must earn its place with a clear harness contract, tests, and telemetry.**
 
 ---
 
 ## Track A — Boring Algorithms That Make The Harness Better Now
+
+**Pattern namespace:** `A`
 
 These are high-priority because they improve correctness, speed, retrieval quality, and context efficiency with low implementation risk.
 
@@ -125,9 +131,11 @@ Tests:
 
 ## Track QoL — Quality of Life Algorithms
 
+**Pattern namespace:** `Q`
+
 These are medium-priority because they improve developer experience, reduce friction, and prevent common errors — but don't directly affect correctness or retrieval quality.
 
-### B1. Mojibake Fixer
+### Q1. Mojibake Fixer
 
 **Use for:** cleaning UTF-8 display artifacts (`Â·`, `â€¦`, `â€™`, `â€œ`, etc.) in harness output.
 
@@ -143,7 +151,7 @@ Tests:
 - `periodicâ€¦` becomes `periodic…`.
 - `donâ€™t` becomes `don't`.
 
-### B2. Relevance Threshold Filter
+### Q2. Relevance Threshold Filter
 
 **Use for:** suppressing `## Relevant Context` blocks when none of the top-k records are actually relevant.
 
@@ -159,7 +167,7 @@ Tests:
 - If top record is > 0.7, include all above 0.3.
 - Log filtered records for debugging.
 
-### B3. Probe Query Linter
+### Q3. Probe Query Linter
 
 **Use for:** validating `/selfcheck` probe queries are real indexed records.
 
@@ -177,7 +185,7 @@ Tests:
 
 ---
 
-### B4. Fuzzy Slash-Command Matcher
+### Q4. Fuzzy Slash-Command Matcher
 
 **Use for:** turning typos like `/selfcehck`, `/harnes`, or `/modle-check` into "Did you mean `/selfcheck`, `/harness`, `/model-check`?"
 
@@ -212,7 +220,7 @@ Tests:
 
 ---
 
-### B5. Layered Configuration Precedence
+### Q5. Layered Configuration Precedence
 
 **Use for:** resolving defaults, config file values, environment variables, and per-command flags without surprising overrides.
 
@@ -246,7 +254,7 @@ Tests:
 
 ---
 
-### B6. Progressive Command Aliases
+### Q6. Progressive Command Aliases
 
 **Use for:** letting users type short, memorable forms (`/hs` for `/harness-search`, `/m` for `/model`) without fragmenting the command namespace.
 
@@ -285,7 +293,7 @@ Tests:
 
 ---
 
-### B7. History-Aware Command Suggestions
+### Q7. History-Aware Command Suggestions
 
 **Use for:** surfacing likely next commands based on the current session's command history.
 
@@ -319,7 +327,7 @@ Tests:
 
 ---
 
-### B8. Confidence-Gated Auto-Correction
+### Q8. Confidence-Gated Auto-Correction
 
 **Use for:** automatically fixing low-risk typos (command names, common flag values) while asking the user when confidence is low.
 
@@ -355,7 +363,7 @@ Tests:
 
 ---
 
-### B9. Incremental Build Cache
+### Q9. Incremental Build Cache
 
 **Use for:** caching build artifacts per module and rebuilding only changed parts to cut CI time and keep memory usage predictable.
 
@@ -390,7 +398,7 @@ Tests:
 
 ---
 
-### B10. Progressive Disclosure
+### Q10. Progressive Disclosure
 
 **Use for:** hiding advanced flags/options behind `--advanced` until needed, reducing initial cognitive load for new users while keeping power features accessible.
 
@@ -425,7 +433,7 @@ Tests:
 
 ---
 
-### B11. Session State Snapshotting & Rollback
+### Q11. Session State Snapshotting & Rollback
 
 **Use for:** quick save/restore of the current session (including tool state, context window, and working directory) to recover from accidental changes or agent loops.
 
@@ -469,7 +477,7 @@ Tests:
 
 ---
 
-### B12. Error Recovery with Transactional Undo
+### Q12. Error Recovery with Transactional Undo
 
 **Use for:** wrapping destructive commands (`edit_file`, `run_shell` that mutates files) in a temporary snapshot so that if the operation fails, the CLI automatically reverts to the pre-change state.
 
@@ -511,7 +519,7 @@ Tests:
 
 ---
 
-### B13. Resource Usage Monitoring
+### Q13. Resource Usage Monitoring
 
 **Use for:** real-time display of memory/CPU usage during long-running operations (e.g., indexing, embedding, agent pipelines) to help users spot bottlenecks and set appropriate budgets.
 
@@ -550,6 +558,10 @@ Tests:
 - Samples are emitted at the configured interval, not faster.
 
 ---
+
+## Track A — Continued
+
+**Pattern namespace:** `A`
 
 ### A3. Maximal Marginal Relevance (MMR)
 
@@ -872,35 +884,55 @@ Tests:
 
 ---
 
-### A12a. Semantic Supersession by Resource Key
+### A12a. Epoch-Bound Semantic Supersession
 
-**Status:** implemented in `algo_cli/context_supersession.py` and invoked before count-based pruning on every turn.
+**Status:** implemented in `algo_cli/evelyn_context_supersession.py` and invoked before count-based pruning on every turn.
 
-**Use for:** replacing older successful snapshots of the same file, directory, status query, or exact search without deleting the provider-visible tool-call/result pair.
+**Use for:** replacing older successful snapshots of the same local resource or
+authenticated external target generation without deleting the provider-visible
+tool-call/result pair.
 
 Pattern:
 
 ```text
-semantic key = (tool family, normalized workspace/resource, normalized query arguments)
-older successful snapshot -> bounded SHA-256 supersession receipt
-latest snapshot            -> full content
-mutation/failure/verifier  -> protected
+local key    = (tool, normalized resource/arguments, mutation epoch)
+external key = (tool, HMAC argument ID, target ID, epoch, revision, fence, segment)
+older local snapshot    -> bounded SHA-256 receipt
+older external snapshot -> bounded HMAC content-ID receipt
+latest snapshot         -> full content
+mutation/failure/verifier/unbound external result -> protected
 ```
 
-This is an O(n) reverse scan with latest-value-register semantics. It reduces repeated context while preserving causal protocol structure, provenance hashes, and current evidence.
+This is an O(n) reverse scan with segmented latest-value-register semantics.
+External bindings are a closed, HMAC-authenticated result-side schema; model
+arguments and assistant metadata cannot authorize compaction. The raw URL or
+surface identity is replaced by a keyed target ID. An unbound observation,
+target/revision/fence change, incomplete transcript, or A-to-B-to-A sequence is
+a hard segment boundary. Epoch, fencing, or same-generation revision regression
+invalidates compaction for that target. External results are never removed by
+lossy count pruning.
+
+`web_fetch` is admitted only as an `external_resource` and the binding's target
+ID must match the exact requested URL. The current `web_fetch` adapter does not
+issue target epochs, so its results remain protected and ineligible. M5 browser
+and M6 desktop adapters must derive epochs from their independently observed
+document/surface lifecycle before external compaction can activate.
 
 Tests:
 
 - Repeated identical reads supersede only older successful results.
 - Different paths/queries do not collide.
 - Mutations, failures, shell verification, and Git diffs remain byte-stable.
+- External bindings reject tampering, replay onto a different target, missing or
+  extra fields, wrong target kinds, generation regressions, and protocol gaps.
+- External content receipts expose neither plaintext nor an unkeyed content hash.
 - A second pass is idempotent.
 
 ---
 
 ### A12b. Bounded Typed Dataflow Programs
 
-**Status:** implemented in `algo_cli/program_runtime.py`, exposed through `action_search` and `action_program`, and measured by `algo_cli.evals.tool_context_efficiency`.
+**Status:** implemented in `algo_cli/nathan_program_runtime.py`, exposed through `action_search` and `action_program`, and measured by `algo_cli.evals.tool_context_efficiency`.
 
 **Use for:** composing several registered actions and deterministic transforms while keeping large intermediate results out of the main model transcript.
 
@@ -909,24 +941,177 @@ Algorithm stack:
 ```text
 BM25 action discovery
 -> versioned JSON DAG compilation
--> earlier-step reference validation
+-> closed action/transform schema validation before step one
+-> static action arguments (no observation-to-action dataflow in v1)
 -> runtime-owned capability intersection
--> ActionSpec/preflight/approval dispatch
+-> exact ActionSpec target/effect preflight and revalidation
 -> bounded deterministic transforms
--> SHA-256 content-addressed artifacts
--> hash-chained immutable receipts
+-> sensitivity/untrusted taint propagation
+-> encrypted run-capability-scoped artifacts
+-> hash-linked tamper-evident receipts
+-> typed cancellation, unknown-outcome reconciliation
 ```
 
-The compiler rejects forward references, recursive/meta actions, oversized plans, excessive steps/outputs, non-finite JSON, and actions outside the runtime ceiling. The executor bounds elapsed time between calls, total intermediate bytes, collection sizes, output previews, and step count. It never evaluates generated code or grants ambient filesystem, process, environment, import, or network capabilities.
+The compiler rejects forward references, recursive/meta actions, open-ended or
+malformed action schemas, observation-derived action arguments, oversized plans,
+excessive steps/outputs, non-finite JSON, policy/target drift, and actions outside
+the runtime ceiling. Version 1 allows multiple observations but at most one
+state-changing, code-execution, or external action; that action must be the final
+step and the sole direct output. This prevents page, tool, or file content from
+becoming a shell command, credential value, upload, message, or publication
+without a future typed output schema and reviewed declassification boundary.
+
+The executor propagates one absolute dispatch deadline and cooperative
+cancellation signal, bounds total intermediate bytes, collection sizes, output
+previews, and step count, and preserves a typed mutation outcome even when an
+outer program limit trips after dispatch. Protected values receive generic
+previews, keyed identities, and encrypted short-lived artifacts; plaintext and
+ordinary SHA-256 identities are excluded from serialized outputs and receipt
+ledgers. Unknown mutation outcomes require reconciliation and are never reported
+as ordinary failures. The runtime never evaluates generated code or grants
+ambient filesystem, process, environment, import, or network capabilities.
+
+The receipts are local hash-linked, tamper-evident evidence. They are not
+immutable or signed; signed sequence heads remain a packaging milestone.
 
 Tests:
 
-- Forward/cyclic capability attempts fail before any action executes.
+- A malformed late action or transform fails before any earlier action executes.
 - Restricted authorization cannot be widened by plan JSON.
-- Nested mutations retain individual approval and a compact immutable receipt.
-- Large intermediates become content-addressed private artifacts.
+- Workspace, safe-mode, policy, target, and authority drift fail before dispatch.
+- Observation output cannot flow into shell, writes, credentials, uploads,
+  messages, or publication in the version-1 language.
+- A final mutation retains individual approval and a compact tamper-evident receipt.
+- Protected intermediates are encrypted and never appear in receipt plaintext.
+- Cancellation, clock regression, typed timeout, and unknown outcome fail safely.
 - Numeric sorting and deterministic transforms preserve correctness.
 - Repeated benchmark cells must pass token-reduction and recall gates.
+
+---
+
+### A12c. Fenced Dispatch-Once Control State Machine
+
+**Status:** implemented as a disabled hardening foundation in
+`algo_cli/david_control_kernel.py`, `algo_cli/ada_control_journal.py`, and
+`algo_cli/david_control_runtime.py`. It is not registered as a normal tool or a
+public browser/computer-use feature.
+
+**Use for:** executing one finite browser or desktop action under exact signed
+authority while preventing stale-target mutation, permit replay, and blind retry
+after an uncertain external effect.
+
+Algorithm stack:
+
+```text
+strict length-framed JSON
+-> finite typed operation and derived effects
+-> request/grant/permit/policy/live-route set intersection
+-> exact target epoch + revision + fencing check
+-> atomic one-use permit claim and session sequence advance
+-> revocation/expiry/snapshot recheck
+-> durable started state
+-> adapter dispatch at most once
+-> effect-ID reconciliation without redispatch
+-> signed content-free transition receipt
+```
+
+Why it helps Algo CLI:
+
+- A finite state machine is smaller and more auditable than a generic code
+  sandbox for UI actions.
+- Set intersection makes the executable route the least-authority choice shared
+  by the request, signed authority, local policy, target kind, and live adapter.
+- Epoch/revision/fencing tuples reject ABA and stale-object races across browser
+  navigation, process relaunch, PID reuse, focus/display changes, and user
+  interleaving.
+- Atomic permit consumption plus `prepared -> started` journaling separates a
+  proven-not-dispatched crash from an uncertain post-dispatch crash.
+- Effect-ID reconciliation turns uncertainty into an explicit state; it never
+  treats a timeout as safe permission to repeat a possible mutation.
+
+Harness contract:
+
+- Input: one closed typed request, signed exact grant and permit, live target
+  snapshot, finite ordered adapter routes, local policy.
+- Output: signed content-free `verified`, `failed`, or `unknown` transition
+  receipt with structural evidence only.
+- Durable state: opaque IDs, enums, counters, timestamps, reason codes, digests,
+  and signed receipt blobs; no text, URL, selector, file path, or screenshot.
+- Fallback: fail closed before dispatch; after possible dispatch, preserve
+  `unknown` and require effect-ID reconciliation or user handoff.
+
+Tests and measured evidence:
+
+- Every one of eight operations round-trips under exact closed arguments.
+- Every one of eight route priorities and all six effect states are finite.
+- Cross-process replay, revocation, expiry, wrong-target, stale-fence, sequence,
+  schema, signature, and adapter-boundary attacks reject.
+- Eight crash checkpoints recover with dispatch and mutation both at most once.
+- A deterministic 100,000-case malformed-frame run recorded zero unexpected
+  accepts and zero uncaught crashes; this is bounded simulator evidence, not a
+  claim of zero real-world risk.
+
+---
+
+### A12d. Split-Horizon Browser Mediation
+
+**Status:** M5 implementation in progress in
+`algo_cli/xenon_browser_egress.py`, `algo_cli/xenon_browser_broker.py`,
+`algo_cli/boron_browser_isolation.py`, and
+`algo_cli/boron_browser_wrapper.py`. It is disabled and not registered as a
+normal action.
+
+**Use for:** allowing a finite managed-browser session without treating Chrome
+flags, an HTTP proxy, or raw DevTools access as a security boundary.
+
+Algorithm stack:
+
+```text
+signed one-session origin permit
+-> canonical URL and poisoned-set DNS validation
+-> isolated browser-only network
+-> pinned-address broker connection + actual-peer verification
+-> upstream TLS validation + bounded HTTP mediation
+-> Upgrade/WebSocket and unexpected redirect rejection
+-> finite NUL-framed DevTools pipe vocabulary
+-> top-frame + loader + document lifecycle fencing
+-> independent post-navigation origin check
+-> structural receipt or fail-closed handoff
+```
+
+Why it helps Algo CLI:
+
+- The broker can enforce network facts the browser process cannot be trusted to
+  report, while the wrapper can enforce page lifecycle facts hidden inside an
+  ordinary HTTPS tunnel.
+- The intersection of an exact session permit, broker origin policy, Docker
+  topology, and wrapper lifecycle is smaller than any single component's
+  authority.
+- DNS poisoning, rebinding, redirect drift, WebSocket upgrades, stale loaders,
+  popups, dialogs, downloads, and raw-CDP escape fail independently.
+- Structural receipts preserve route, counts, versions, and decision digests
+  without URLs, page content, selectors, cookies, or certificate material.
+
+Harness contract:
+
+- Input: one signed bounded session permit, one current digest-pinned public
+  browser image, one private browser network, and one finite navigation request.
+- Output: a fenced structural navigation observation or an explicit blocked,
+  handoff, failed, or unknown state.
+- Fallback: no direct network, no generic tunnel, no broad extension grant, and
+  no automatic redispatch after an uncertain navigation or browser crash.
+
+Tests:
+
+- HTTP parser, TLS peer, DNS, redirect, byte/deadline, origin, Upgrade, and
+  connection-limit attacks reject.
+- DevTools framing, duplicate JSON, oversized messages, unexpected methods,
+  stale loader/frame events, dialogs, popups, downloads, file pickers,
+  WebSockets, crashes, and version skew reject.
+- Live evidence must include the actual Docker topology, broker peer, current
+  stable image digest/version, pipe transport, and independent origin checker.
+- This entry remains in progress until those live gates pass; unit simulations
+  are not a public browser-readiness claim.
 
 ---
 
@@ -1289,6 +1474,8 @@ Tests:
 ---
 
 ## Track B — Experimental / New Algorithms To Prototype
+
+**Pattern namespace:** `B`
 
 These are also high priority, but they must be isolated behind contracts, test gates, and telemetry before affecting normal agent behavior.
 
@@ -2049,11 +2236,17 @@ staleness_penalty = clamp((age_hours - recency_window) / max_age, 0, 1)
 - Repeated failures do not exceed retry cap.
 - Telemetry captures final path and time to resolution.
 
-## Plugin Gateway
+## Plugin Gateway Design (Not Currently Enabled)
 
-Algo CLI includes a manifest-discovery plus allowlisted-invocation gateway for local harness plugins. Discovery scans installed harness roots for `algo-plugin.json`, `algo_plugin.json`, `gateway-plugin.json`, or `plugin.json` and remains read-only: manifests are treated as untrusted metadata and their `entrypoint` strings are never executed directly.
+The planned gateway is a manifest-discovery plus allowlisted-invocation design
+for local harness plugins. The current v0.18 hardening runtime does not ship or
+register the gateway tools listed below; this section is a design contract, not
+a readiness claim. A future implementation may scan installed harness roots for
+`algo-plugin.json`, `algo_plugin.json`, `gateway-plugin.json`, or `plugin.json`,
+but discovery must remain read-only: manifests are untrusted metadata and their
+`entrypoint` strings must never execute directly.
 
-Model-callable gateway tools:
+Proposed model-callable gateway tools (unregistered):
 
 - `plugin_gateway_list(harness_name=None, transport=None)` — discover advertised plugin manifests.
 - `plugin_gateway_read_manifest(plugin_id)` — inspect one manifest.
@@ -2062,7 +2255,7 @@ Model-callable gateway tools:
 - `plugin_gateway_config_template(plugin_id)` — show safe setup/template instructions.
 - `plugin_gateway_invoke(plugin_id, action, params=None, confirm=False)` — invoke an allowlisted action with approval gates.
 
-First-class plugin IDs:
+Proposed first-class plugin IDs (unregistered):
 
 - `algo.telegram.hermes` — Hermes-style Telegram scaffold with HTML/MarkdownV2 escaping, allowlists, group mention policy, and command-preview-only `start_gateway`. `send_message` requires `confirm=True`; bot tokens live in `telegram.local.json` and are masked.
 - `algo.google.workspace` — Gmail/Drive/Sheets/Calendar/Chat adapter resolved from a user-configured integration root. OAuth files stay under the user's configuration directory. Sends and writes require `confirm=True`.
@@ -2075,6 +2268,23 @@ Safety invariants:
 - Never send Telegram/Gmail/Chat or write Sheets/Drive/Calendar without explicit confirmation.
 - Never install packages or execute arbitrary plugin manifest commands from discovery.
 - Unknown plugin IDs/actions fail closed.
+
+The separate William local-plugin directory is manifest-only during the
+hardening freeze. `~/.algo_cli/plugins/<name>/plugin.json` uses strict schema
+version 1, canonical lowercase kebab-case names that must equal the directory,
+bounded UTF-8 metadata, duplicate-key rejection, exact fields, non-symlink paths,
+and non-group/world-writable files. Invalid entries appear as content-free
+rejections in plugin status. Executable entry points, tools, commands, actions,
+effects, permissions, and capabilities are prohibited.
+
+`plugins_load` is a compatibility status action, not a loader. It always reports
+that in-process Python loading is blocked. `collect_plugin_tools`,
+`collect_plugin_actions`, and `collect_plugin_slash_commands` cannot invoke or
+register callable contributions, even if handed a forged loaded-plugin object.
+This is deliberate: Python's import machinery executes module code, so path
+containment cannot turn an in-process plugin into a security boundary. No local
+plugin execution route is enabled. A future reviewed, finite, allowlisted
+adapter would also have to use the ordinary Algo policy/approval dispatcher.
 
 
 ### Plugin Gateway
@@ -10383,6 +10593,11 @@ Why it matters:
 
 ---
 
+Reserved IDs `B215-B299` are intentionally unassigned. This preserves the
+published numbering of the imported pattern groups below; new entries must use
+an active namespace or the next documented open range instead of silently
+backfilling this provenance gap.
+
 > **Renumbering note:** this vendor-pattern library previously
 > restarted its numbering at B87, colliding with Tracks C-G and the kernel
 > benchmark entries (each number B87-B191 existed twice in this file). All
@@ -10812,6 +11027,8 @@ The relay process bridges network and filesystem between the Linux guest and Win
 ### B431 — WSLDVCPlugin for RDP Dynamic Virtual Channel (WSLDVCPlugin.dll)
 A DVC (Dynamic Virtual Channel) plugin for RDP that enables custom data channels between the WSL guest and the RDP client. This is how clipboard, drag-and-drop, and file transfer work over RDP. Borrowable: use RDP dynamic virtual channels for custom data transport between a sandboxed environment and the host. DVCs are extensible — register a channel name and send/receive arbitrary data.
 
+Reserved IDs `B432-B437` are intentionally unassigned between the WSL and Go
+toolchain source groups. The gap is provenance-preserving, not missing content.
 
 ## Go Toolchain Patterns (B438-B449)
 Source: representative public Go distribution layout; local toolchain version removed.
@@ -11272,6 +11489,17 @@ Tests:
 
 ### H2. Algorithm Catalog Verifier
 
+**Status:** implemented
+
+The active verifier parses explicit `Status:` / `Evidence state:` lines outside
+code fences, within the owning pattern. It consumes supplied test results; it
+does not discover or execute tests itself. Only the exact boolean `True` verifies
+an implemented entry. Proposed, planned, unknown, and retired entries count as
+unchecked, not verified. An empty report cannot claim `all_verified`. Ordinary
+prose such as "not implemented" is never an implementation marker. Conflicting
+explicit markers fail structural lint. The pseudocode below describes the
+larger desired runner, not an implemented automatic test-discovery facility.
+
 **Use for:** re-deriving the status of every ALGO.md entry from live code and tests,
 the equivalent of T3MP3ST's `npm run verify-claims`.
 
@@ -11296,6 +11524,13 @@ Why it matters:
   catches it.
 - Running it in CI (or as a pre-push hook) prevents status drift.
 - Coverage percentage gives a single health metric for the catalog.
+- Structural lint is fence-aware so example headings inside Markdown code
+  fences are ignored. It rejects duplicate IDs, malformed pattern headings,
+  and entries that violate declared pattern namespaces before status claims are
+  evaluated.
+- `tests/test_catalog_verifier.py` contains the repository-exact CI test. The
+  checked-in `docs/ALGO.md` must pass that blocking structural gate, not merely
+  a synthetic parser fixture.
 
 Harness contract:
 
@@ -11312,6 +11547,8 @@ Tests:
 - Entry marked "specified" with no code → expected (not a failure).
 - Summary coverage_pct = verified / (verified + failed + untested).
 - Verifier is deterministic for a fixed ALGO.md + test suite.
+- Fenced examples do not become entries; duplicate IDs, malformed pattern
+  headings, and declared namespace mismatches fail the repository-exact test.
 
 ---
 
@@ -12808,17 +13045,29 @@ Tests:
 
 **Provenance:** Analysis of `Glint-Research/Fable-5-traces` (4,665 rows / 60 sessions / 31 tools, model `claude-fable-5`, AGPL-3.0). Audited 2026-07-06 from `fable5_cot_merged.jsonl` (69.8 MB).
 
-**Purpose:** Surface empirically-observed patterns from a large public agent trace corpus that we can borrow or guard against in algo-cli. These patterns are not invented — they are what the Fable-5 model **actually did** across 60 real coding sessions, and they generalize well to any tool-using CLI agent.
+**Purpose:** Surface observed patterns from a public trace corpus as hypotheses
+to test in Algo CLI. Correlation within those sessions does not establish causal
+benefit or generalization to other agents, models, or tasks.
 
 **Source artifacts:** public Fable-5 trace data, a reproducible analyzer, and its generated pattern review. Local temporary paths are intentionally excluded.
 
 ### I1. Tool-Call Boundary Preservation with CoT-Proportional Reasoning
 
-**Use for:** every algo-cli tool call. Don't fire-and-forget — emit a thinking block whose length is roughly proportional to the action it precedes.
+**Use for:** offline analysis of explicitly public trace text, not enforcing a
+private-reasoning length requirement on runtime models. User-facing explanations
+should be concise and proportionate to the action's risk.
 
 **Pattern from Fable-5:** Median `cot` length 2,365 chars, median `completion` 2,726 chars → **CoT/completion ratio median = 1.14, mean = 1.28**. The model thinks about as much as it acts. No reflex calls, no 10×-overthinking.
 
-**Borrowable:** Set a soft floor (`cot >= 0.5 * completion`) and ceiling (`cot <= 5.0 * completion`) on the reasoning-to-action ratio. Outside that band, the agent is either under-thinking (reflex calls) or over-thinking (analysis paralysis). The 5.0 ceiling is calibrated against the Fable-5 corpus: median ratio 1.14, p90 1.79, max observed 4.21 — the 5.0 ceiling catches true outliers without false-flagging healthy thinking. Implemented in `algo_cli/evals/cot_quality.py::score_cot` with `Band.UNDER / IN_BAND / OVER` and a `structure_score` in [0, 1].
+**Descriptive heuristic:** `score_cot` in `algo_cli/evals/cot_quality.py` labels
+length ratios below 0.5, from 0.5 to 5.0, and above 5.0 using legacy
+`Band.UNDER / IN_BAND / OVER` names. These are string-length bins; they do not
+prove under-thinking, over-thinking, correctness, or absence of false positives.
+
+**Runtime boundary:** these historical length bands are descriptive heuristics,
+not validated measures of correctness or intelligence. Do not request, collect,
+or persist private reasoning to satisfy them. The live runtime reports reasoning
+quality as `not_collected`; assess observable actions and verification receipts.
 
 **Tests:**
 - A scripted agent that emits 100 trivial `Read` calls with no preceding CoT should be flagged.
@@ -12902,7 +13151,17 @@ Tests:
 
 ---
 
-### I7. Tool-Sequence TDD Pattern (Edit→Bash→Edit is the healthy cadence)
+### I7. Observed Tool-Sequence Cadence
+
+**Status:** implemented
+
+**Evidence scope:** the active detector recognizes tool-name cadence only. The
+historical enum names remain for compatibility, but a shell call may be `ls`,
+may fail, or may occur before another unverified edit. `/selfcheck` therefore
+reports `verification_status=not_evaluated`, never successful verification from
+names alone. Completion gates must use exit status, workspace/source identity,
+and applicable evidence receipts independently of this score. Loop warnings
+below remain proposals, not behavior supplied by the cadence detector.
 
 **Use for:** detecting runaway edit loops.
 
@@ -12916,7 +13175,9 @@ Tests:
 
 **Tests:**
 - 3 Edits in a row without Bash/Read → warning.
-- Edit→Bash→Edit → healthy.
+- Edit→Bash→Edit → observed edit/shell/edit cadence, not a correctness verdict.
+- Edit→Bash→Edit with no command/result receipts → cadence recognized,
+  verification not evaluated.
 - Bash→Bash→Bash → allowed (compound shell pipelines).
 
 ---
@@ -13081,7 +13342,7 @@ Tests:
 
 ### J5. SHAuthorizationRight (auth gate as a stable string ID)
 
-**Use for:** `algo_cli/tool_policy.py` right-lookup mechanism.
+**Use for:** `algo_cli/samuel_policy.py` right-lookup mechanism.
 
 **Pattern from /System:** `ssh.plist` declares `SHAuthorizationRight = system.preferences`. The auth gate is a string ID in `authorizationdb`, not code.
 
@@ -13169,7 +13430,7 @@ Tests:
 
 ### J10. PAM-style Policy Chain (required/sufficient/requisite/include)
 
-**Use for:** `algo_cli/tool_policy.py` — the **biggest structural upgrade** to `aip-shell-tool-policy-gate`.
+**Use for:** `algo_cli/samuel_policy.py` — the **biggest structural upgrade** to `aip-shell-tool-policy-gate`.
 
 **Pattern from /System:** `/etc/pam.d/sudo` composes a chain:
 ```
@@ -13445,15 +13706,15 @@ For each Track I and Track J pattern, the recommended home:
 | I11 Heavy-tail cost estimator | Kernel | `algo_cli/evals/session_distribution.py` | ACTIVE |
 | I12 Project-family concentration | Skill | eval design | NEW |
 | J1 Tiered service declaration | Kernel | `algo_cli/tools.py` Tool dataclass | UPGRADE |
-| J2 Capability flag set | Kernel | `algo_cli/capability_mask.py` + `algo_cli/tool_policy.py` | ACTIVE |
+| J2 Capability flag set | Kernel | `algo_cli/marcus_authority.py` + `algo_cli/samuel_policy.py` | ACTIVE |
 | J3 PathState KeepAlive | Script | `algo_cli/_internal/path_state.py` | NEW |
 | J4 On-demand daemon | Script | `algo_cli/_internal/on_demand.py` | NEW |
-| J5 SHAuthorizationRight | Kernel | `algo_cli/tool_policy.py` | ACTIVE |
-| J6 POSIXSpawnType (QoS) | Kernel (Q) | `algo_cli/runtime_qos.py` | ACTIVE (classification + bounded-batch ordering) |
-| J7 Named log destinations | Kernel (Q) | `algo_cli/runtime_qos.py` + tool telemetry | ACTIVE (metadata) |
-| J8 Explicit /dev/null suppression | Kernel (Q) | `algo_cli/runtime_qos.py` | ACTIVE |
+| J5 SHAuthorizationRight | Kernel | `algo_cli/samuel_policy.py` | ACTIVE |
+| J6 POSIXSpawnType (QoS) | Kernel (Q) | `algo_cli/theodore_runtime_qos.py` | ACTIVE (ActionSpec-derived classification + bounded-batch ordering) |
+| J7 Named log destinations | Kernel (Q) | `algo_cli/theodore_runtime_qos.py` + tool telemetry | ACTIVE (metadata) |
+| J8 Explicit /dev/null suppression | Kernel (Q) | `algo_cli/theodore_runtime_qos.py` | ACTIVE |
 | J9 QueueDirectories | Script | `algo_cli/_internal/dir_watch.py` | NEW |
-| J10 PAM-style policy chain | Kernel | `algo_cli/_internal/policy_chain.py` + `algo_cli/tool_policy.py` | ACTIVE |
+| J10 PAM-style policy chain | Kernel | `algo_cli/_internal/policy_chain.py` + `algo_cli/samuel_policy.py` | ACTIVE |
 | J11 Audit class bit-mask | Kernel | `algo_cli/capability_mask.py` | ACTIVE |
 | J12 Stable event IDs | Script | `algo_cli/event_ids.py` | NEW |
 | J13 Flat-text policy file | Script | `algo_cli/_internal/policy_conf.py` | NEW |
@@ -13565,7 +13826,7 @@ Tests:
 **Use for:** turning `runtime-qos` labels into actual scheduling behavior across
 interactive tools, background indexing, embeddings, and agent-team work.
 
-**Runtime status:** LIMITED. `algo_cli/runtime_qos.py` actively classifies calls
+**Runtime status:** LIMITED. `algo_cli/theodore_runtime_qos.py` actively classifies calls
 and deterministically orders one bounded read-tool batch. The live runtime does
 not yet maintain a persistent arrival queue, preempt running work, expose queue
 wait, or apply aging across batches. With no more calls than worker slots, calls
@@ -14020,3 +14281,325 @@ deletions, concurrency barriers, and the live index shape.
 - Either wire the preview Reflex error-interceptor into an executor with explicit
   retry semantics or remove the dead claim; diagnostic suggestion code alone is
   not an active retry loop.
+
+---
+
+## Julia Governed System Memory — 2026-07-21
+
+Algo CLI retains its small `memory.json` compatibility list for pinned facts and
+adds an original governed catalog within `julia_memory_runtime.py`. This does not
+import or copy another agent's memory implementation. It expresses scalable
+recall and simple editing through Algo's existing authority, privacy, context,
+and hardening boundaries.
+
+### Active contract
+
+- `system_memory.json` stores stable IDs, record text, tier, source, scope,
+  confidence, sensitivity, timestamps, and explicit supersession links.
+- `system_memory_index.json` is a disposable local sidecar containing only
+  record IDs, content hashes, and vectors; record prose remains in the
+  inspectable catalog.
+- Pinned facts remain always-on. Curated and history records are retrieved only
+  for relevant turns and enter the normal optional-context budget.
+- Recall fuses BM25-style lexical evidence, bounded deterministic query aliases,
+  local cosine similarity, Reciprocal Rank Fusion, source authority, confidence,
+  and history freshness. Lexical recall remains available when embeddings fail.
+- Archived, expired, restricted, and superseded records are excluded from
+  automatic recall. A same-scope semantic slot cannot hold two active values;
+  replacement requires explicit supersession.
+- `/remember` and automatic capture use the same deterministic privacy gate.
+  `/forget` hard-deletes matching catalog and vector records; demotion and
+  archival are separate lifecycle operations.
+
+### Operator surface
+
+With legacy memory selected, `/memory home`, `search`, `show`, and `doctor` do
+not deliberately mutate the catalog. With Echo selected, construction and
+these observations may recover, migrate, prune, or account for lifecycle
+state. Model-invoked `/memory` lifecycle observations therefore require
+approval. `add`, `supersede`, `promote`, `demote`, `archive`, and `reindex` are
+explicit mutations; legacy catalog mutations are unavailable while Echo is
+authoritative. `/memory benchmark` runs a temporary frozen corpus only in
+legacy mode.
+
+The qualification reports exact Recall@3, paraphrase and multilingual semantic
+Recall@3, authority precision@1, MRR, stale-hit rate, unrelated-query rejection,
+lexical fallback, mean latency, and p95 latency. Passing this small frozen corpus
+is a regression gate, not a universal cross-agent superiority claim.
+
+### Active homes
+
+- Lifecycle, retrieval, commands, capture seam, and benchmark:
+  `algo_cli/julia_memory_runtime.py`
+- Chat and runtime-agent prompt injection: `algo_cli/main.py` and
+  `algo_cli/agent_pipeline.py`
+- Approval and output policy: `algo_cli/samuel_policy_engine.py` and
+  `algo_cli/tools.py`
+- Regression coverage: `tests/test_julia_memory_runtime.py`
+
+---
+
+## Track M — Local Agent Daemon Runtime
+
+**Pattern namespace:** `DM`
+
+Track M keeps the daemon an optional latency optimization. It does not change
+the default in-process startup path, expand tool authority, or make a local
+socket a trust boundary. The implementation is original Algo CLI code and uses
+only documented operating-system and JSON-RPC contracts.
+
+### DM1. Owner-Private Daemon Lifecycle
+
+**Problem.** Repeated CLI startup reconstructs runtime services, while a
+carelessly persistent process can leave stale PID files, public sockets, or an
+ambiguous process identity.
+
+**Pattern.** Offer an explicit local daemon whose PID record, guard lock,
+socket, and log live in an owner-only directory. Bind lifecycle ownership to
+PID, process-start identity, inode, and a random instance identifier. Reject
+symlinks, wrong owners, permissive modes, replacement files, and ambiguous
+stale state. Publish readiness only after the socket is listening; drain
+bounded in-flight work on shutdown and remove only objects still owned by the
+same daemon instance.
+
+**Active contract.**
+
+- Normal `algo` execution remains in-process unless the operator explicitly
+  invokes a daemon lifecycle command.
+- Start, status, health, and stop use a versioned readiness handshake instead
+  of treating PID-file existence as proof of service health.
+- Startup and shutdown are linearized, rollback partial publication, enforce
+  bounded deadlines, and preserve replacement objects they no longer own.
+- The Unix socket and all state paths are current-user only; peer identity is
+  checked where the platform exposes it.
+
+**Evidence.** `algo_cli/daemon.py`, `algo_cli/main.py`, and
+`tests/test_daemon.py` cover private-path validation, stale cleanup,
+concurrent starts, startup rollback, identity-safe shutdown, bounded draining,
+endpoint validation, and versioned health checks.
+
+### DM2. Strict Local JSON-RPC Boundary
+
+**Problem.** A long-lived local process needs a small, inspectable protocol
+that rejects malformed or uncorrelated traffic without leaking handler
+arguments, credentials, paths, or exception details.
+
+**Pattern.** Frame strict JSON-RPC 2.0 objects as newline-delimited UTF-8 over
+the owner-private Unix socket. Accept named parameters only, distinguish a
+notification from an explicit null request ID, reject non-finite JSON values,
+bound frame size and client count, correlate every response to its request,
+and return sanitized standard error codes. Keep detailed exceptions only in
+the private daemon log and expose bounded aggregate telemetry.
+
+**Active contract.**
+
+- Invalid version, method, ID, parameter shape, encoding, and numeric values
+  fail closed with the applicable JSON-RPC error.
+- Notifications never receive a response, including notification dispatch
+  errors; streaming is explicitly framed and counted until completion.
+- Client I/O observes one end-to-end deadline and rejects malformed,
+  contradictory, oversized, or incorrectly correlated responses.
+- RPC registration does not confer new tool authority. Handlers remain subject
+  to the same policy and approval boundaries as the in-process runtime.
+
+**Evidence.** `algo_cli/daemon_rpc.py`, `algo_cli/daemon.py`, and
+`tests/test_daemon.py` cover parser strictness, sanitized failures,
+notification semantics, streaming, concurrency, timeout behavior, response
+correlation, and telemetry accounting.
+
+---
+
+## Track N — Black-Box Behavioral Anomaly Signals
+
+**Pattern namespace:** `B`
+
+Track N is a bounded research plan for detecting behavioral changes without
+claiming access to model internals. Every result is prompt/probe-conditioned:
+`not_flagged` means only that no anomaly was observed under the recorded
+probes, models, sampling settings, and decision rule. It never establishes a
+general clean-model conclusion. The result vocabulary is `flagged`,
+`not_flagged`, and
+`unavailable`, with the last state required whenever evidence or calibration
+is insufficient.
+
+### B470. Calibrated Response-Geometry Comparison
+
+**Evidence state:** `planned`
+
+Freeze a benign baseline prompt suite, target probes, model configuration,
+sampling parameters, embedding/scoring implementation, and minimum repeated
+sample count before evaluation. For every scalar feature, report the baseline
+mean, sample standard deviation, sample counts, Hedges' g, and a bootstrap
+confidence interval. A zero-variance baseline, non-finite value, insufficient
+sample, or failed scorer produces `unavailable` rather than an invented
+separation score. Thresholds are calibrated on held-out benign changes and
+then frozen; the evaluation reports individual features as well as the
+predeclared aggregate rule.
+
+The signal can identify a reproducible response-distribution difference. It
+cannot identify its cause, generalize beyond the frozen probes, or prove
+malicious behavior.
+
+### B471. Held-Out Synthetic Canary Protocol
+
+**Evidence state:** `planned`
+
+Construct non-secret synthetic canaries that are safe to disclose and cannot
+grant authority. Partition generation, calibration, and evaluation sets before
+running a candidate model; never train, tune, or select thresholds on the
+evaluation set. Canary presence and expected behavior are independently
+labeled, and negative controls receive the same sampling budget. Record exact
+prompt bytes, ordering, seed availability, repetitions, and all exclusions.
+
+A positive result indicates that the frozen canary protocol elicited its
+predeclared behavioral signature. A negative result remains `not_flagged`, not
+evidence that unrelated hidden behaviors are absent.
+
+### B472. Repeated-Probe Change and Drift Detection
+
+**Evidence state:** `planned`
+
+Compare a candidate only against a versioned baseline using frozen prompts,
+matched decoding settings, repeated samples, and benign control changes.
+Calibrate alert thresholds before examining the candidate. Require both a
+minimum effect size and a bootstrap interval that clears the chosen practical
+threshold, and correct or explicitly budget for multiple comparisons. Report
+per-probe outcomes so one extreme item cannot silently define the model-wide
+claim.
+
+This detects bounded change relative to a named baseline. Ordinary upgrades,
+quantization, templates, and sampling differences are plausible alternate
+causes and must be preserved in the report.
+
+### B473. Independent Signal Triangulation
+
+**Evidence state:** `planned`
+
+Pre-register labels, metrics, exclusions, and the final decision function.
+Use independently labeled examples and a held-out evaluation set, and keep
+label creation separate from feature construction and threshold selection.
+Require agreement from at least two methodologically distinct signal families
+before returning `flagged`; correlated transformations of the same score count
+as one family. Preserve disagreements and return `unavailable` when the
+independence or provenance requirements cannot be demonstrated.
+
+Triangulation can reduce dependence on one fragile metric, but it does not turn
+black-box evidence into a universal security conclusion.
+
+**Research basis.** Effect-size and interval choices follow standard
+meta-analysis and bootstrap practice; anomaly-test design follows held-out
+evaluation and explicit false-positive control. Source material was retrieved
+2026-08-18: NIST AI RMF 1.0, NIST AI 600-1, the SciPy bootstrap documentation,
+and the Cochrane Handbook guidance on standardized mean differences; all were
+retrieved 2026-08-18.
+
+---
+
+## Track O - Provider Compatibility and Evidence-Bounded Diagnostics
+
+**Pattern namespace:** `O`
+
+These are local harness contracts, not copied third-party implementations.
+They extend the existing transport, H2 catalog verifier, and I7 diagnostic
+boundaries rather than creating parallel authority or execution systems.
+
+### O1. Capability-Snapshot Model Routing
+
+**Status:** implemented
+
+**Use for:** keeping discovered model names, transport, reasoning settings, and
+context/vision metadata consistent when a provider adds or changes models.
+
+Algorithm: validate the authenticated catalog, discard hidden/malformed entries,
+deduplicate stable IDs, and atomically replace the in-memory capability map after
+a successful response. Retain only typed transport, reasoning, context, and
+modality fields; provider prompt templates are not harness instructions. Static
+known-model defaults support restarts, but do not imply account entitlement.
+Reset discovered capabilities when credentials are replaced or cleared.
+
+**Failure behavior:** a discovery error does not manufacture menu entries;
+unsupported reasoning modes cannot enable orchestration. Explicitly selected
+Ollama routes remain local even if a model name resembles an OpenAI model.
+
+**Evidence:** `algo_cli/chatgpt_client.py`, `algo_cli/model_info.py`,
+`tests/test_chatgpt_client.py`, `tests/test_model_info.py`, and
+`tests/test_main_helpers.py`. Regressions cover Astra, a synthetic future model,
+hidden and malformed entries, duplicate IDs, transport headers, aliases, and
+reasoning/capability parity. This establishes compatibility, not model quality.
+
+### O2. Version-Gated Catalog Canary
+
+**Status:** partial
+
+**Use for:** diagnosing a missing model without confusing protocol gating with
+authentication failure or removing account checks.
+
+Hold account, endpoint, and request shape constant; compare discovery at the
+supported protocol version and the candidate version. Record only model IDs,
+minimum versions, and typed capabilities. Advance the advertised version only
+after transport regressions and a bounded, tool-free completion succeed. Do not
+advertise an arbitrarily high version or inherit any newly installed binary's
+version without compatibility checks.
+
+**Evidence:** the Astra repair reproduced absence at 0.144.2 and 0.149.1 and
+presence at 0.153.1; the provider declared minimum 0.153.0. The default protocol
+and request tests are active in `algo_cli/chatgpt_client.py` and
+`tests/test_chatgpt_client.py`. Automated scheduled drift detection is not shipped.
+
+### O3. Installed-Artifact Identity Check
+
+**Status:** implemented
+
+**Use for:** preventing a successful source fix from being mistaken for a fixed
+user-facing executable.
+
+Resolve the actual launcher and interpreter; build the wheel; compare installed
+package content hashes with source outside the repository import path. Exercise
+the installed provider catalog and one no-tool request before declaring repair.
+Keep the prior installed package available for rollback. A version string alone
+cannot establish parity, especially for a local patch with an unchanged version.
+
+**Evidence:** `scripts/oliver_installed_source_parity.py`,
+`scripts/oliver_smoke_wheel_install.py`, `scripts/smoke_installed_release.py`, and
+their focused tests. Installation parity does not authorize publishing a release
+or bypass external qualification gates.
+
+### O4. Prerequisite-Partitioned Diagnostic Probes
+
+**Status:** proposed
+
+**Use for:** improving diagnosis when one unavailable prerequisite currently
+prevents unrelated checks from running.
+
+Model checks as a dependency DAG: lexical/cache/top-k/memory checks need no
+embedding; cosine and fusion checks require a valid vector/model pair. Evaluate
+every reachable check, retain `unavailable` on dependent checks, and preserve the
+aggregate all-required rule. Never convert partial execution into an overall pass.
+
+**Acceptance:** remove the canonical embedding and prove independent checks still
+execute while vector checks remain unavailable; inject failures and prove they
+cannot be hidden by unavailable neighbors. Compare executed-check coverage and
+latency against the current all-or-nothing prerequisite probe. No runtime benefit
+is claimed until `algo_cli/evals/algorithm_effectiveness.py` and its tests adopt
+and measure this behavior.
+
+## Runtime Pattern Review - 2026-09-04
+
+This bounded review separates correctness, wiring, and benefit. Full details and
+remaining limits are in `docs/ASTRA-HARNESS-REVIEW.md`.
+
+| Pattern/path | Current evidence | Limit |
+|---|---|---|
+| A1/A2 hybrid retrieval | Regression fixtures verify lexical/vector provenance, stable ordering, and coverage-neutral fusion | Not a new end-to-end answer-quality benchmark |
+| Reusable BM25 | Local 896-record snapshot: 45.135 ms rebuild vs 0.966 ms reuse median across five queries; 46.73x ratio | In-process ranking only, excluding embeddings and generation |
+| Stable top-k | Heap output equals stable full-sort output including ties | No new universal crossover claim |
+| L1 TinyLFU | Frozen 576-request scan workload: 88/96 hot-key hits vs 0/96 for equal-capacity LRU | Workload-specific cache benefit |
+| L3 CUSUM | Regression tests distinguish isolated spikes from sustained comparable-series regressions | No live latency improvement inferred from detection |
+| L11 memory admission | Tests cover duplicate/privacy rejection and bounded metadata-only state | No claim of memory superiority over other harnesses |
+| H2 catalog verifier | Explicit status parsing and exact-boolean evidence; unknown/proposed entries stay unchecked | It does not auto-discover tests or certify every catalog proposal |
+| I7 cadence | Shell names no longer manufacture successful verification | Actual completion evidence remains owned by execution guardrails |
+
+The seven frozen offline retrieval-quality cases pass their recall, MRR, nDCG,
+and citation-precision thresholds. This is evidence for those fixtures, not a
+global score for all catalog entries. Historical measurements above remain dated;
+they are not silently promoted to current performance claims.

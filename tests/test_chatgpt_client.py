@@ -1,8 +1,10 @@
 """Offline tests for ChatGPT/OpenAI-compatible chat client adapter."""
+
 from __future__ import annotations
 
 import io
 import json
+import urllib.error
 from types import SimpleNamespace
 from typing import Any
 
@@ -20,6 +22,12 @@ class _FakeJsonResponse:
 
     def close(self):
         pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
 
 
 class _FakeStreamResponse:
@@ -40,6 +48,7 @@ class _FakeStreamResponse:
 @pytest.fixture(autouse=True)
 def _reset_missing_scope_cache(monkeypatch):
     monkeypatch.setattr(chatgpt_client, "_MODEL_REQUEST_SCOPE_MISSING", False)
+    monkeypatch.setattr(chatgpt_client, "_CODEX_MODEL_METADATA", {}, raising=False)
 
 
 def test_requires_chatgpt_oauth_token(monkeypatch):
@@ -176,9 +185,119 @@ def test_codex_model_discovery_uses_supported_protocol_and_hides_internal_models
     models = chatgpt_client.get_codex_models(timeout=7)
 
     assert models == [{"slug": "gpt-5.6-sol", "visibility": "list"}]
-    assert "client_version=0.144.2" in captured["url"]
+    assert "client_version=0.153.1" in captured["url"]
     assert captured["headers"]["Chatgpt-account-id"] == "acct_123"
     assert captured["timeout"] == 7
+
+
+@pytest.mark.parametrize("model", ["astra", "gpt-6-astra"])
+def test_astra_uses_lite_transport_and_preserves_max(monkeypatch, model):
+    captured = {}
+
+    def post(payload, **kwargs):
+        captured.update(payload)
+        return _FakeStreamResponse([{"type": "response.output_text.delta", "delta": "ok"}, "[DONE]"])
+
+    monkeypatch.setattr(chatgpt_client, "_post_codex_responses", post)
+    result = chatgpt_client.ChatGptClient().chat(
+        model=model, messages=[{"role": "user", "content": "hi"}],
+        options={"reasoning_effort": "max"},
+    )
+    assert result["message"]["content"] == "ok"
+    assert captured["model"] == "gpt-6-astra"
+    assert captured["reasoning"]["effort"] == "max"
+    assert captured["parallel_tool_calls"] is False
+    req = chatgpt_client._build_codex_responses_request(captured, token="test", account_id="test")
+    assert req.get_header("X-openai-internal-codex-responses-lite") == "true"
+
+
+def test_discovered_model_capabilities_drive_transport(monkeypatch):
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_valid_token", lambda: "token")
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_chatgpt_account_id", lambda: "test")
+    monkeypatch.setattr(chatgpt_client.urllib.request, "urlopen", lambda *a, **kw: _FakeJsonResponse({
+        "models": [
+            {"slug": "future-codex", "visibility": "list", "use_responses_lite": True,
+             "supported_reasoning_levels": [{"effort": "medium"}, {"effort": "max"}, {"effort": "ultra"}]},
+            {"slug": "internal", "visibility": "hide"},
+            {"slug": ["invalid"]},
+            {"slug": "future-codex", "use_responses_lite": False},
+        ]}))
+    models = chatgpt_client.get_codex_models()
+    assert [m["slug"] for m in models] == ["future-codex"]
+    assert chatgpt_client.is_codex_subscription_model("future-codex")
+    assert not chatgpt_client.is_codex_subscription_model("internal")
+    assert chatgpt_client.supported_reasoning_efforts("future-codex") == ("medium", "max")
+    req = chatgpt_client._build_codex_responses_request({"model": "future-codex"}, token="test", account_id="test")
+    assert req.get_header("X-openai-internal-codex-responses-lite") == "true"
+    payloads = []
+    monkeypatch.setattr(chatgpt_client, "_post_codex_responses", lambda payload, **kw: (
+        payloads.append(payload) or _FakeStreamResponse([{"type": "response.output_text.delta", "delta": "ok"}, "[DONE]"])
+    ))
+    chatgpt_client.ChatGptClient().chat(model="future-codex", messages=[], options={"reasoning_effort": "max"})
+    assert payloads[0]["reasoning"]["effort"] == "max"
+    assert payloads[0]["parallel_tool_calls"] is False
+    chatgpt_client.reset_model_request_scope_cache()
+    assert not chatgpt_client.is_codex_subscription_model("future-codex")
+
+
+def test_astra_ultra_does_not_silently_enable_orchestration():
+    with pytest.raises(ValueError):
+        chatgpt_client.parse_reasoning_effort("ultra", "astra")
+
+
+@pytest.mark.parametrize("use_done", [False, True])
+def test_codex_tool_arguments_correlate_item_id_to_call_id(use_done):
+    events = [
+        {"type": "response.output_item.added", "item": {
+            "type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "read_file", "arguments": "",
+        }},
+        {"type": "response.function_call_arguments.delta", "item_id": "fc_1", "delta": '{"path":'},
+        {"type": "response.function_call_arguments.delta", "item_id": "fc_1", "delta": '"README.md"}'},
+    ]
+    if use_done:
+        events.append({"type": "response.function_call_arguments.done", "item_id": "fc_1", "arguments": '{"path":"final.md"}'})
+    chunks = list(chatgpt_client._stream_codex_responses_iter(_FakeStreamResponse(events)))
+    calls = chunks[-1]["message"]["tool_calls"]
+    assert len(calls) == 1
+    assert calls[0]["id"] == "call_1"
+    assert json.loads(calls[0]["function"]["arguments"]) == {"path": "final.md" if use_done else "README.md"}
+
+
+def test_lite_metadata_requires_boolean_and_reasoning_is_model_specific(monkeypatch):
+    monkeypatch.setattr(chatgpt_client, "_CODEX_MODEL_METADATA", {
+        "future-codex": {"use_responses_lite": "false", "reasoning_efforts": ("low", "high")},
+    })
+    assert not chatgpt_client.uses_responses_lite("future-codex")
+    with pytest.raises(ValueError):
+        chatgpt_client.parse_reasoning_effort("max", "future-codex")
+    assert chatgpt_client.reasoning_effort_for_model("future-codex") == "low"
+
+
+def test_codex_model_discovery_refreshes_once_on_token_invalidated(monkeypatch):
+    calls: list[str] = []
+
+    def fake_urlopen(req, timeout):
+        calls.append(req.headers["Authorization"])
+        if len(calls) == 1:
+            raise urllib.error.HTTPError(
+                req.full_url,
+                401,
+                "Unauthorized",
+                {},
+                io.BytesIO(
+                    b'{"error":{"code":"token_invalidated","message":"Authentication token has been invalidated"}}'
+                ),
+            )
+        return _FakeJsonResponse({"models": [{"slug": "gpt-5.6-luna"}]})
+
+    tokens = iter(["old-token", "new-token"])
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_valid_token", lambda: next(tokens))
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_chatgpt_account_id", lambda: "acct_123")
+    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "force_refresh_token", lambda: "new-token")
+    monkeypatch.setattr(chatgpt_client.urllib.request, "urlopen", fake_urlopen)
+
+    assert chatgpt_client.get_codex_models() == [{"slug": "gpt-5.6-luna"}]
+    assert calls == ["Bearer old-token", "Bearer new-token"]
 
 
 def test_codex_subscription_model_with_tools_uses_chatgpt_backend(monkeypatch):
@@ -188,8 +307,11 @@ def test_codex_subscription_model_with_tools_uses_chatgpt_backend(monkeypatch):
         captured.update(payload)
         return _FakeStreamResponse(
             [
-                {"type": "response.output_item.added", "item": {"type": "function_call", "call_id": "c1", "name": "read_file"}},
-                {"type": "response.function_call_arguments.delta", "call_id": "c1", "delta": "{\"path\":\"x\"}"},
+                {
+                    "type": "response.output_item.added",
+                    "item": {"type": "function_call", "call_id": "c1", "name": "read_file"},
+                },
+                {"type": "response.function_call_arguments.delta", "call_id": "c1", "delta": '{"path":"x"}'},
                 "[DONE]",
             ]
         )
@@ -203,7 +325,9 @@ def test_codex_subscription_model_with_tools_uses_chatgpt_backend(monkeypatch):
     chunk = chatgpt_client.ChatGptClient().chat(
         model="gpt-5.5",
         messages=[{"role": "user", "content": "read x"}],
-        tools=[{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object", "properties": {}}}}],
+        tools=[
+            {"type": "function", "function": {"name": "read_file", "parameters": {"type": "object", "properties": {}}}}
+        ],
         stream=False,
     )
 
@@ -265,7 +389,9 @@ def test_payload_includes_reasoning_effort_from_options(monkeypatch):
     chatgpt_client.ChatGptClient().chat(
         model="gpt-5.5",
         messages=[],
-        tools=[{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object", "properties": {}}}}],
+        tools=[
+            {"type": "function", "function": {"name": "read_file", "parameters": {"type": "object", "properties": {}}}}
+        ],
         stream=False,
         options={"reasoning_effort": "max"},
     )
@@ -325,6 +451,53 @@ def test_codex_reasoning_summary_streams_as_thinking():
     assert chunks[1]["message"]["content"] == "Done"
 
 
+def test_codex_completed_event_forwards_authoritative_usage():
+    usage = {
+        "input_tokens": 41,
+        "output_tokens": 7,
+        "total_tokens": 48,
+        "input_tokens_details": {"cached_tokens": 11},
+    }
+    events = [
+        {"type": "response.output_text.delta", "delta": "Done"},
+        {"type": "response.completed", "response": {"usage": usage}},
+        "[DONE]",
+    ]
+
+    chunks = list(chatgpt_client._stream_codex_responses_iter(_FakeStreamResponse(events)))
+
+    assert chunks[-1] == {
+        "message": {},
+        "usage": usage,
+        "prompt_eval_count": 41,
+        "eval_count": 7,
+    }
+
+
+def test_codex_nonstream_response_preserves_completed_usage():
+    events = [
+        {"type": "response.output_text.delta", "delta": "Done"},
+        {
+            "type": "response.completed",
+            "response": {
+                "usage": {
+                    "input_tokens": 13,
+                    "output_tokens": 5,
+                    "total_tokens": 18,
+                }
+            },
+        },
+        "[DONE]",
+    ]
+
+    chunk = chatgpt_client._codex_responses_to_chunk(_FakeStreamResponse(events))
+
+    assert chunk["message"]["content"] == "Done"
+    assert chunk["prompt_eval_count"] == 13
+    assert chunk["eval_count"] == 5
+    assert chunk["usage"]["total_tokens"] == 18
+
+
 def test_responses_input_drops_malformed_empty_tool_call_names():
     built = chatgpt_client._build_responses_input(
         [
@@ -335,7 +508,7 @@ def test_responses_input_drops_malformed_empty_tool_call_names():
                     {
                         "id": "call_bad",
                         "type": "function",
-                        "function": {"name": "", "arguments": "{\"command\":\"/status\"}"},
+                        "function": {"name": "", "arguments": '{"command":"/status"}'},
                     }
                 ],
             },
@@ -357,7 +530,7 @@ def test_responses_input_drops_orphaned_tool_calls_without_outputs():
                     {
                         "id": "call_orphan",
                         "type": "function",
-                        "function": {"name": "session_command", "arguments": "{\"command\":\"/models\"}"},
+                        "function": {"name": "session_command", "arguments": '{"command":"/models"}'},
                     }
                 ],
             },
@@ -379,7 +552,7 @@ def test_responses_input_keeps_tool_calls_with_outputs():
                     {
                         "id": "call_ok",
                         "type": "function",
-                        "function": {"name": "session_command", "arguments": "{\"command\":\"/status\"}"},
+                        "function": {"name": "session_command", "arguments": '{"command":"/status"}'},
                     }
                 ],
             },
@@ -387,7 +560,12 @@ def test_responses_input_keeps_tool_calls_with_outputs():
         ]
     )
 
-    assert {"type": "function_call", "call_id": "call_ok", "name": "session_command", "arguments": "{\"command\":\"/status\"}"} in built
+    assert {
+        "type": "function_call",
+        "call_id": "call_ok",
+        "name": "session_command",
+        "arguments": '{"command":"/status"}',
+    } in built
     assert {"type": "function_call_output", "call_id": "call_ok", "output": "Executed: /status"} in built
 
 
@@ -397,8 +575,8 @@ def test_chat_messages_pair_missing_tool_result_ids_by_call_sequence_for_duplica
             {
                 "role": "assistant",
                 "tool_calls": [
-                    {"id": "call_1", "function": {"name": "read_file", "arguments": "{\"path\":\"a\"}"}},
-                    {"id": "call_2", "function": {"name": "read_file", "arguments": "{\"path\":\"b\"}"}},
+                    {"id": "call_1", "function": {"name": "read_file", "arguments": '{"path":"a"}'}},
+                    {"id": "call_2", "function": {"name": "read_file", "arguments": '{"path":"b"}'}},
                 ],
             },
             {"role": "tool", "name": "read_file", "content": "first"},
@@ -434,8 +612,8 @@ def test_responses_input_drops_tool_outputs_without_explicit_call_id_for_duplica
             {
                 "role": "assistant",
                 "tool_calls": [
-                    {"id": "call_1", "function": {"name": "read_file", "arguments": "{\"path\":\"a\"}"}},
-                    {"id": "call_2", "function": {"name": "read_file", "arguments": "{\"path\":\"b\"}"}},
+                    {"id": "call_1", "function": {"name": "read_file", "arguments": '{"path":"a"}'}},
+                    {"id": "call_2", "function": {"name": "read_file", "arguments": '{"path":"b"}'}},
                 ],
             },
             {"role": "tool", "name": "read_file", "content": "first"},
@@ -447,23 +625,71 @@ def test_responses_input_drops_tool_outputs_without_explicit_call_id_for_duplica
     assert not [item for item in built if item.get("type") == "function_call_output"]
 
 
-def test_codex_responses_stream_drops_nameless_tool_calls():
+def test_codex_responses_stream_rejects_nameless_tool_calls_as_empty():
     events = [
-        {"type": "response.function_call_arguments.delta", "call_id": "call_bad", "delta": "{\"command\":\"/status\"}"},
+        {"type": "response.function_call_arguments.delta", "call_id": "call_bad", "delta": '{"command":"/status"}'},
         "[DONE]",
     ]
 
+    with pytest.raises(
+        chatgpt_client.ChatGptOAuthAccessError,
+        match="without text or a valid tool call",
+    ):
+        list(chatgpt_client._stream_codex_responses_iter(_FakeStreamResponse(events)))
+
+
+def test_codex_responses_stream_rejects_empty_completion():
+    with pytest.raises(
+        chatgpt_client.ChatGptOAuthAccessError,
+        match="without text or a valid tool call",
+    ):
+        list(chatgpt_client._stream_codex_responses_iter(_FakeStreamResponse(["[DONE]"])))
+
+
+def test_codex_responses_stream_surfaces_failed_event():
+    events = [
+        {
+            "type": "response.failed",
+            "response": {"error": {"code": "server_error", "message": "upstream unavailable"}},
+        }
+    ]
+
+    with pytest.raises(
+        chatgpt_client.ChatGptOAuthAccessError,
+        match="response.failed.*server_error.*upstream unavailable",
+    ):
+        list(chatgpt_client._stream_codex_responses_iter(_FakeStreamResponse(events)))
+
+
+def test_codex_responses_stream_surfaces_incomplete_event():
+    events = [
+        {
+            "type": "response.incomplete",
+            "response": {"incomplete_details": {"reason": "max_output_tokens"}},
+        }
+    ]
+
+    with pytest.raises(
+        chatgpt_client.ChatGptOAuthAccessError,
+        match="response.incomplete.*max_output_tokens",
+    ):
+        list(chatgpt_client._stream_codex_responses_iter(_FakeStreamResponse(events)))
+
+
+def test_codex_responses_stream_accepts_final_only_text():
+    events = [{"type": "response.output_text.done", "text": "Final answer"}, "[DONE]"]
+
     chunks = list(chatgpt_client._stream_codex_responses_iter(_FakeStreamResponse(events)))
 
-    assert chunks == []
+    assert chunks == [{"message": {"content": "Final answer"}}]
 
 
 def test_codex_responses_stream_content_and_tool_calls(monkeypatch):
     events = [
         {"type": "response.output_text.delta", "delta": "I'll read it."},
         {"type": "response.output_item.added", "item": {"type": "function_call", "call_id": "c1", "name": "read_file"}},
-        {"type": "response.function_call_arguments.delta", "call_id": "c1", "delta": "{\"path\":\""},
-        {"type": "response.function_call_arguments.delta", "call_id": "c1", "delta": "x\"}"},
+        {"type": "response.function_call_arguments.delta", "call_id": "c1", "delta": '{"path":"'},
+        {"type": "response.function_call_arguments.delta", "call_id": "c1", "delta": 'x"}'},
         "[DONE]",
     ]
     monkeypatch.setattr(chatgpt_client, "_post_codex_responses", lambda payload, **kw: _FakeStreamResponse(events))
@@ -472,13 +698,18 @@ def test_codex_responses_stream_content_and_tool_calls(monkeypatch):
         chatgpt_client.ChatGptClient().chat(
             model="gpt-5.5",
             messages=[{"role": "user", "content": "read x"}],
-            tools=[{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object", "properties": {}}}}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {"name": "read_file", "parameters": {"type": "object", "properties": {}}},
+                }
+            ],
             stream=True,
         )
     )
 
     assert chunks[0]["message"]["content"] == "I'll read it."
-    assert chunks[-1]["message"]["tool_calls"][0]["function"] == {"name": "read_file", "arguments": "{\"path\":\"x\"}"}
+    assert chunks[-1]["message"]["tool_calls"][0]["function"] == {"name": "read_file", "arguments": '{"path":"x"}'}
 
 
 def test_post_codex_responses_requires_account_id(monkeypatch):
@@ -534,7 +765,7 @@ def test_gpt_56_uses_codex_responses_lite_header(monkeypatch):
 
     assert captured["headers"]["X-openai-internal-codex-responses-lite"] == "true"
     assert captured["headers"]["Originator"] == "codex_cli_rs"
-    assert captured["headers"]["User-agent"] == "codex_cli_rs/0.144.2"
+    assert captured["headers"]["User-agent"] == "codex_cli_rs/0.153.1"
 
 
 def test_post_codex_responses_refreshes_once_on_token_invalidated(monkeypatch):
@@ -551,11 +782,15 @@ def test_post_codex_responses_refreshes_once_on_token_invalidated(monkeypatch):
                 401,
                 "Unauthorized",
                 hdrs={},
-                fp=io.BytesIO(b'{"error":{"code":"token_invalidated","message":"Your authentication token has been invalidated."}}'),
+                fp=io.BytesIO(
+                    b'{"error":{"code":"token_invalidated","message":"Your authentication token has been invalidated."}}'
+                ),
             )
         return _Response()
 
-    monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_valid_token", lambda: "old-token" if len(calls) == 0 else "new-token")
+    monkeypatch.setattr(
+        chatgpt_client.chatgpt_auth, "get_valid_token", lambda: "old-token" if len(calls) == 0 else "new-token"
+    )
     monkeypatch.setattr(chatgpt_client.chatgpt_auth, "get_chatgpt_account_id", lambda: "acct_123")
     monkeypatch.setattr(chatgpt_client.chatgpt_auth, "force_refresh_token", lambda: "new-token")
     monkeypatch.setattr(chatgpt_client.urllib.request, "urlopen", fake_urlopen)

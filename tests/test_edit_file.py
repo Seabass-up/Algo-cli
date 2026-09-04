@@ -178,21 +178,21 @@ def test_edit_file_in_verification_layer():
 
 
 def test_edit_file_in_mutating_tools():
-    from algo_cli.tool_policy import MUTATING_TOOLS, WRITE_TOOLS
+    from algo_cli.samuel_policy import MUTATING_TOOLS, WRITE_TOOLS
 
     assert "edit_file" in MUTATING_TOOLS
     assert "edit_file" in WRITE_TOOLS
 
 
 def test_edit_file_described_as_mutation():
-    from algo_cli.tool_policy import describes_mutation_action
+    from algo_cli.samuel_policy import describes_mutation_action
 
     desc = describes_mutation_action("edit_file", {"path": "/tmp/foo.py"})
     assert desc == "edit_file: /tmp/foo.py"
 
 
 def test_edit_file_in_oneshot_dangerous_tools():
-    from algo_cli import oneshot
+    from algo_cli import oliver_oneshot as oneshot
 
     assert "edit_file" in oneshot.DANGEROUS_TOOLS
 

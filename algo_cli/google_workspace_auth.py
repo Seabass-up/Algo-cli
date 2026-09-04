@@ -29,13 +29,14 @@ import os
 import re
 import secrets
 import socket
+import stat
 import time
 import urllib.parse
 import urllib.request
 import webbrowser
 from typing import Any
 
-from .config import CONFIG_DIR, _atomic_write_text, _exclusive_state_lock
+from .config import CONFIG_DIR, _atomic_write_text, _exclusive_state_lock, _state_descriptor_payload
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -79,6 +80,7 @@ PENDING_AUTH_FILE = CONFIG_DIR / "google_workspace_pending_login.json"
 _REFRESH_WINDOW_SECONDS = 60
 _CALLBACK_TIMEOUT_SECONDS = 300.0
 _PENDING_LOGIN_TTL_SECONDS = 900
+_MAX_PENDING_LOGIN_BYTES = 64 * 1024
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -278,8 +280,7 @@ def _normalize_token_response(
 ) -> dict[str, Any]:
     if "error" in payload:
         raise RuntimeError(
-            f"Google OAuth error: {payload.get('error')}: "
-            f"{payload.get('error_description', '(no description)')}"
+            f"Google OAuth error: {payload.get('error')}: {payload.get('error_description', '(no description)')}"
         )
     access_token = payload.get("access_token")
     if not access_token:
@@ -385,11 +386,27 @@ def save_pending_login(prep: dict[str, Any]) -> None:
 
 
 def load_pending_login(*, max_age_seconds: int = _PENDING_LOGIN_TTL_SECONDS) -> dict[str, str] | None:
-    if not PENDING_AUTH_FILE.exists():
-        return None
     try:
-        payload = json.loads(PENDING_AUTH_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        before = PENDING_AUTH_FILE.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size > _MAX_PENDING_LOGIN_BYTES
+            or (hasattr(os, "getuid") and before.st_uid != os.getuid())
+            or (os.name == "posix" and before.st_mode & 0o077)
+        ):
+            return None
+        raw = _state_descriptor_payload(PENDING_AUTH_FILE, max_bytes=_MAX_PENDING_LOGIN_BYTES)
+        after = PENDING_AUTH_FILE.lstat()
+        if (after.st_dev, after.st_ino, after.st_mode, after.st_nlink) != (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_nlink,
+        ):
+            return None
+        payload = json.loads(raw.decode("utf-8", errors="strict"))
+    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     if not isinstance(payload, dict):
         return None
@@ -407,13 +424,32 @@ def load_pending_login(*, max_age_seconds: int = _PENDING_LOGIN_TTL_SECONDS) -> 
 
 
 def clear_pending_login() -> bool:
-    if not PENDING_AUTH_FILE.exists():
-        return False
     try:
+        info = PENDING_AUTH_FILE.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+        ):
+            return False
         PENDING_AUTH_FILE.unlink()
-        return True
-    except OSError:
+        return not (PENDING_AUTH_FILE.exists() or PENDING_AUTH_FILE.is_symlink())
+    except (FileNotFoundError, OSError):
         return False
+
+
+def stored_auth_state_present() -> bool:
+    """Return whether active tokens or a pending PKCE secret path exists."""
+
+    for path in (AUTH_FILE, PENDING_AUTH_FILE):
+        try:
+            path.lstat()
+            return True
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+    return False
 
 
 def is_token_expired(tokens: dict[str, Any], *, window: int = _REFRESH_WINDOW_SECONDS) -> bool:
@@ -528,13 +564,12 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
 
 def run_loopback_capture(*, redirect_port: int, timeout: float = _CALLBACK_TIMEOUT_SECONDS) -> dict[str, str]:
     """Block until a callback arrives, then return the query parameters."""
+
     class Handler(_CallbackHandler):
         query_params: dict[str, str] = {}
         done = False
 
-    server = http.server.HTTPServer(
-        (GOOGLE_REDIRECT_HOST, redirect_port), Handler
-    )
+    server = http.server.HTTPServer((GOOGLE_REDIRECT_HOST, redirect_port), Handler)
     server.timeout = 1.0
     deadline = time.time() + max(1.0, float(timeout))
     try:
@@ -543,9 +578,7 @@ def run_loopback_capture(*, redirect_port: int, timeout: float = _CALLBACK_TIMEO
     finally:
         server.server_close()
     if not Handler.done:
-        raise RuntimeError(
-            f"Timed out after {int(timeout)}s waiting for Google OAuth callback."
-        )
+        raise RuntimeError(f"Timed out after {int(timeout)}s waiting for Google OAuth callback.")
     return dict(Handler.query_params)
 
 
@@ -574,9 +607,7 @@ def begin_login(*, no_browser: bool = False, redirect_port: int = GOOGLE_REDIREC
         "auth_url": url,
         "redirect_uri": redirect_uri,
         "redirect_port": str(redirect_port),
-        "ssh_tunnel_cmd": (
-            f"ssh -N -L {redirect_port}:{GOOGLE_REDIRECT_HOST}:{redirect_port} you@remote-host"
-        ),
+        "ssh_tunnel_cmd": (f"ssh -N -L {redirect_port}:{GOOGLE_REDIRECT_HOST}:{redirect_port} you@remote-host"),
         "browser_opened": not no_browser,
     }
     save_pending_login(prep)
@@ -608,9 +639,7 @@ def complete_login(
     if not callback:
         raise RuntimeError("Timed out waiting for OAuth callback.")
     if "error" in callback:
-        raise RuntimeError(
-            f"OAuth error: {callback.get('error_description', callback['error'])}"
-        )
+        raise RuntimeError(f"OAuth error: {callback.get('error_description', callback['error'])}")
     if callback.get("state") != state:
         raise RuntimeError("OAuth state mismatch - possible CSRF attack.")
     code = callback.get("code")

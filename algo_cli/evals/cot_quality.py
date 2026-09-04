@@ -62,6 +62,8 @@ class ToolSequenceQuality:
             "pattern": self.pattern.value,
             "sequence_score": round(self.sequence_score, 2),
             "verification_present": self.verification_present,
+            "verification_status": "not_evaluated",
+            "evidence_scope": "tool_name_cadence_only",
             "edit_count": self.edit_count,
             "shell_count": self.shell_count,
             "read_count": self.read_count,
@@ -109,7 +111,7 @@ def _normalize_tool_name(name: str) -> str:
 def score_tool_sequence(tool_names: list[str] | tuple[str, ...]) -> ToolSequenceQuality:
     """Score a sequence of tool calls for the Fable-5 TDD cadence (I7).
 
-    The strongest healthy pattern is Edit→Bash→Edit: change, verify, repair.
+    Edit→Bash→Edit is an observed cadence, not evidence of a successful test.
     Bash→Bash→Read is recognized as an inspection loop, useful but weaker.
     """
     names = tuple(tool_names or ())
@@ -117,7 +119,8 @@ def score_tool_sequence(tool_names: list[str] | tuple[str, ...]) -> ToolSequence
     edit_count = normalized.count("edit")
     shell_count = normalized.count("bash")
     read_count = normalized.count("read")
-    verification_present = shell_count > 0
+    # Tool names contain neither command semantics nor exit/evidence receipts.
+    verification_present = False
 
     pattern = SequencePattern.UNCLASSIFIED
     score = 0.0
@@ -141,7 +144,7 @@ def score_tool_sequence(tool_names: list[str] | tuple[str, ...]) -> ToolSequence
             elif not normalized:
                 pattern = SequencePattern.EMPTY
                 score = 0.0
-            elif verification_present:
+            elif shell_count > 0:
                 score = 0.35
             elif read_count > 0:
                 score = 0.2

@@ -1,0 +1,898 @@
+{
+  "audit_id": "arthur-m9-completion-v1",
+  "audited_at": "2026-09-04T21:04:37Z",
+  "base_commit": "20bb8790ba548866fc88b0a0d976d6600fa84a5e",
+  "contract_digest": "sha256:9d9fa4022f48a2f9245e016493334cceca2c9f849e79a5ad63912a4933f8068c",
+  "freeze_id": "algo-cli-hardening-2026-07-18",
+  "ledger_digest": "sha256:0bd300c3a58d0148cd7cb4db452722a822a323ddeb90007d4517f5e91a21ced9",
+  "ledger_status": "lifted",
+  "limitations": "This deterministic audit proves contract and evidence completeness only. It does not independently authenticate external services, runner images, signing identities, TCC state, browser containment, or benchmark truth.",
+  "local_artifact_currency": {
+    "m8": {
+      "artifact": "hardening/grace-m8-local-qualification.json",
+      "ledger_requirement": "HARD-080",
+      "ledger_timestamp": "2026-09-04T21:04:37Z",
+      "public_claim_eligible": false,
+      "raw_sha256": "sha256:4899777a3afd51d095fbbc218ecea5915af60d6c29df00af3ebb5197ed608fd9",
+      "status": "blocked"
+    },
+    "m8_efficiency": {
+      "artifact": "hardening/grace-m8-local-qualification.json",
+      "ledger_requirement": "HARD-081",
+      "ledger_timestamp": "2026-09-04T21:04:37Z",
+      "public_claim_eligible": false,
+      "raw_sha256": "sha256:4899777a3afd51d095fbbc218ecea5915af60d6c29df00af3ebb5197ed608fd9",
+      "status": "blocked"
+    },
+    "nathan": {
+      "artifact": "hardening/nathan-agent-runtime-qualification.json",
+      "ledger_requirement": "HARD-081",
+      "ledger_timestamp": "2026-09-04T20:42:40Z",
+      "public_claim_eligible": false,
+      "raw_sha256": "sha256:937a64a45e5227713225b6d28092d4234e66879dac6caff069b7c244d4399667",
+      "status": "pass"
+    }
+  },
+  "milestones": [
+    {
+      "id": "M0",
+      "ledger_status": "verified"
+    },
+    {
+      "id": "M1",
+      "ledger_status": "verified"
+    },
+    {
+      "id": "M2",
+      "ledger_status": "verified"
+    },
+    {
+      "id": "M3",
+      "ledger_status": "verified"
+    },
+    {
+      "id": "M4",
+      "ledger_status": "verified"
+    },
+    {
+      "id": "M5",
+      "ledger_status": "in_progress"
+    },
+    {
+      "id": "M6",
+      "ledger_status": "in_progress"
+    },
+    {
+      "id": "M7",
+      "ledger_status": "in_progress"
+    },
+    {
+      "id": "M8",
+      "ledger_status": "in_progress"
+    },
+    {
+      "id": "M9",
+      "ledger_status": "in_progress"
+    }
+  ],
+  "public_claim_eligible": false,
+  "requirements": [
+    {
+      "audit_status": "verified",
+      "evidence_count": 1,
+      "external_authoritative_evidence": true,
+      "id": "HARD-001",
+      "latest_timestamp": "2026-07-19T00:39:26Z",
+      "ledger_status": "verified",
+      "milestone": "M0",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 20,
+      "external_authoritative_evidence": true,
+      "id": "HARD-002",
+      "latest_timestamp": "2026-08-18T22:12:23Z",
+      "ledger_status": "verified",
+      "milestone": "M0",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "command",
+        "test",
+        "workflow"
+      ],
+      "required_evidence_kinds": [
+        "test",
+        "workflow"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 2,
+      "external_authoritative_evidence": true,
+      "id": "HARD-003",
+      "latest_timestamp": "2026-08-18T22:12:24Z",
+      "ledger_status": "verified",
+      "milestone": "M0",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "audit",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "audit"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 3,
+      "external_authoritative_evidence": true,
+      "id": "HARD-004",
+      "latest_timestamp": "2026-07-19T00:44:38Z",
+      "ledger_status": "verified",
+      "milestone": "M0",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "command",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "command",
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 1,
+      "external_authoritative_evidence": true,
+      "id": "HARD-010",
+      "latest_timestamp": "2026-07-19T01:22:33Z",
+      "ledger_status": "verified",
+      "milestone": "M1",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 2,
+      "external_authoritative_evidence": true,
+      "id": "HARD-011",
+      "latest_timestamp": "2026-07-19T01:22:33Z",
+      "ledger_status": "verified",
+      "milestone": "M1",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "command",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 1,
+      "external_authoritative_evidence": true,
+      "id": "HARD-012",
+      "latest_timestamp": "2026-07-19T01:22:33Z",
+      "ledger_status": "verified",
+      "milestone": "M1",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 1,
+      "external_authoritative_evidence": true,
+      "id": "HARD-013",
+      "latest_timestamp": "2026-07-19T01:22:33Z",
+      "ledger_status": "verified",
+      "milestone": "M1",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 2,
+      "external_authoritative_evidence": true,
+      "id": "HARD-014",
+      "latest_timestamp": "2026-07-19T01:22:33Z",
+      "ledger_status": "verified",
+      "milestone": "M1",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "command",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "command",
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 2,
+      "external_authoritative_evidence": true,
+      "id": "HARD-020",
+      "latest_timestamp": "2026-07-19T02:31:51Z",
+      "ledger_status": "verified",
+      "milestone": "M2",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "command",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "command",
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 2,
+      "external_authoritative_evidence": true,
+      "id": "HARD-021",
+      "latest_timestamp": "2026-07-19T02:31:51Z",
+      "ledger_status": "verified",
+      "milestone": "M2",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "audit",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "audit",
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 1,
+      "external_authoritative_evidence": true,
+      "id": "HARD-022",
+      "latest_timestamp": "2026-07-19T02:31:51Z",
+      "ledger_status": "verified",
+      "milestone": "M2",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 1,
+      "external_authoritative_evidence": true,
+      "id": "HARD-023",
+      "latest_timestamp": "2026-07-19T02:31:51Z",
+      "ledger_status": "verified",
+      "milestone": "M2",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 1,
+      "external_authoritative_evidence": true,
+      "id": "HARD-024",
+      "latest_timestamp": "2026-07-19T02:31:51Z",
+      "ledger_status": "verified",
+      "milestone": "M2",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 2,
+      "external_authoritative_evidence": true,
+      "id": "HARD-030",
+      "latest_timestamp": "2026-07-19T03:23:41Z",
+      "ledger_status": "verified",
+      "milestone": "M3",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "command",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 4,
+      "external_authoritative_evidence": true,
+      "id": "HARD-031",
+      "latest_timestamp": "2026-07-24T20:07:37Z",
+      "ledger_status": "verified",
+      "milestone": "M3",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "audit",
+        "runtime",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "audit",
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 1,
+      "external_authoritative_evidence": true,
+      "id": "HARD-032",
+      "latest_timestamp": "2026-07-19T03:23:41Z",
+      "ledger_status": "verified",
+      "milestone": "M3",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 3,
+      "external_authoritative_evidence": true,
+      "id": "HARD-033",
+      "latest_timestamp": "2026-07-19T03:53:12Z",
+      "ledger_status": "verified",
+      "milestone": "M3",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "benchmark",
+        "command",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "benchmark",
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 3,
+      "external_authoritative_evidence": true,
+      "id": "HARD-034",
+      "latest_timestamp": "2026-07-19T04:10:38Z",
+      "ledger_status": "verified",
+      "milestone": "M3",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "audit",
+        "command",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "audit",
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 4,
+      "external_authoritative_evidence": true,
+      "id": "HARD-035",
+      "latest_timestamp": "2026-07-19T04:32:27Z",
+      "ledger_status": "verified",
+      "milestone": "M3",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "audit",
+        "benchmark",
+        "command",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "audit",
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 3,
+      "external_authoritative_evidence": true,
+      "id": "HARD-040",
+      "latest_timestamp": "2026-07-19T13:52:40Z",
+      "ledger_status": "verified",
+      "milestone": "M4",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "audit",
+        "command",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "audit",
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 2,
+      "external_authoritative_evidence": true,
+      "id": "HARD-041",
+      "latest_timestamp": "2026-07-19T13:52:40Z",
+      "ledger_status": "verified",
+      "milestone": "M4",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "audit",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "audit",
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 3,
+      "external_authoritative_evidence": true,
+      "id": "HARD-042",
+      "latest_timestamp": "2026-07-19T13:52:40Z",
+      "ledger_status": "verified",
+      "milestone": "M4",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "command",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "command",
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 2,
+      "external_authoritative_evidence": true,
+      "id": "HARD-043",
+      "latest_timestamp": "2026-07-19T13:52:40Z",
+      "ledger_status": "verified",
+      "milestone": "M4",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "audit",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "audit",
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "blocked",
+      "evidence_count": 11,
+      "external_authoritative_evidence": false,
+      "id": "HARD-050",
+      "latest_timestamp": "2026-07-20T05:28:00Z",
+      "ledger_status": "in_progress",
+      "milestone": "M5",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "qualification",
+        "runtime",
+        "test",
+        "workflow"
+      ],
+      "required_evidence_kinds": [
+        "qualification",
+        "workflow"
+      ],
+      "requires_external_execution": true
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 2,
+      "external_authoritative_evidence": true,
+      "id": "HARD-051",
+      "latest_timestamp": "2026-07-19T14:39:40Z",
+      "ledger_status": "verified",
+      "milestone": "M5",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "runtime",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "runtime",
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "blocked",
+      "evidence_count": 1,
+      "external_authoritative_evidence": false,
+      "id": "HARD-052",
+      "latest_timestamp": "2026-07-19T14:39:40Z",
+      "ledger_status": "in_progress",
+      "milestone": "M5",
+      "missing_evidence_kinds": [
+        "runtime"
+      ],
+      "observed_evidence_kinds": [
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "runtime",
+        "test"
+      ],
+      "requires_external_execution": true
+    },
+    {
+      "audit_status": "blocked",
+      "evidence_count": 1,
+      "external_authoritative_evidence": false,
+      "id": "HARD-053",
+      "latest_timestamp": "2026-07-19T14:39:40Z",
+      "ledger_status": "in_progress",
+      "milestone": "M5",
+      "missing_evidence_kinds": [
+        "runtime"
+      ],
+      "observed_evidence_kinds": [
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "runtime",
+        "test"
+      ],
+      "requires_external_execution": true
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 2,
+      "external_authoritative_evidence": true,
+      "id": "HARD-054",
+      "latest_timestamp": "2026-07-19T14:39:40Z",
+      "ledger_status": "verified",
+      "milestone": "M5",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "runtime",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "runtime",
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "blocked",
+      "evidence_count": 24,
+      "external_authoritative_evidence": false,
+      "id": "HARD-060",
+      "latest_timestamp": "2026-07-20T14:04:31Z",
+      "ledger_status": "in_progress",
+      "milestone": "M6",
+      "missing_evidence_kinds": [
+        "artifact"
+      ],
+      "observed_evidence_kinds": [
+        "audit",
+        "environment",
+        "qualification",
+        "runtime",
+        "test",
+        "workflow"
+      ],
+      "required_evidence_kinds": [
+        "artifact",
+        "qualification",
+        "runtime"
+      ],
+      "requires_external_execution": true
+    },
+    {
+      "audit_status": "blocked",
+      "evidence_count": 6,
+      "external_authoritative_evidence": false,
+      "id": "HARD-061",
+      "latest_timestamp": "2026-07-20T07:22:26Z",
+      "ledger_status": "in_progress",
+      "milestone": "M6",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "environment",
+        "runtime",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "runtime",
+        "test"
+      ],
+      "requires_external_execution": true
+    },
+    {
+      "audit_status": "blocked",
+      "evidence_count": 4,
+      "external_authoritative_evidence": false,
+      "id": "HARD-062",
+      "latest_timestamp": "2026-07-20T06:59:29Z",
+      "ledger_status": "in_progress",
+      "milestone": "M6",
+      "missing_evidence_kinds": [
+        "runtime"
+      ],
+      "observed_evidence_kinds": [
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "runtime",
+        "test"
+      ],
+      "requires_external_execution": true
+    },
+    {
+      "audit_status": "blocked",
+      "evidence_count": 10,
+      "external_authoritative_evidence": false,
+      "id": "HARD-063",
+      "latest_timestamp": "2026-07-20T21:48:19Z",
+      "ledger_status": "in_progress",
+      "milestone": "M6",
+      "missing_evidence_kinds": [
+        "runtime"
+      ],
+      "observed_evidence_kinds": [
+        "qualification",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "runtime",
+        "test"
+      ],
+      "requires_external_execution": true
+    },
+    {
+      "audit_status": "blocked",
+      "evidence_count": 4,
+      "external_authoritative_evidence": false,
+      "id": "HARD-064",
+      "latest_timestamp": "2026-07-20T06:59:29Z",
+      "ledger_status": "in_progress",
+      "milestone": "M6",
+      "missing_evidence_kinds": [
+        "runtime"
+      ],
+      "observed_evidence_kinds": [
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "runtime",
+        "test"
+      ],
+      "requires_external_execution": true
+    },
+    {
+      "audit_status": "blocked",
+      "evidence_count": 10,
+      "external_authoritative_evidence": false,
+      "id": "HARD-070",
+      "latest_timestamp": "2026-07-21T19:07:46Z",
+      "ledger_status": "in_progress",
+      "milestone": "M7",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "audit",
+        "runtime",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "runtime",
+        "test"
+      ],
+      "requires_external_execution": true
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 8,
+      "external_authoritative_evidence": true,
+      "id": "HARD-071",
+      "latest_timestamp": "2026-07-20T00:37:15Z",
+      "ledger_status": "verified",
+      "milestone": "M7",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "audit",
+        "runtime",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "audit",
+        "test"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "blocked",
+      "evidence_count": 36,
+      "external_authoritative_evidence": false,
+      "id": "HARD-072",
+      "latest_timestamp": "2026-08-10T18:56:06Z",
+      "ledger_status": "in_progress",
+      "milestone": "M7",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "artifact",
+        "audit",
+        "runtime",
+        "test",
+        "workflow"
+      ],
+      "required_evidence_kinds": [
+        "artifact",
+        "audit",
+        "workflow"
+      ],
+      "requires_external_execution": true
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 6,
+      "external_authoritative_evidence": true,
+      "id": "HARD-073",
+      "latest_timestamp": "2026-08-24T02:37:25Z",
+      "ledger_status": "verified",
+      "milestone": "M7",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "audit",
+        "command"
+      ],
+      "required_evidence_kinds": [
+        "audit",
+        "command"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "blocked",
+      "evidence_count": 72,
+      "external_authoritative_evidence": false,
+      "id": "HARD-080",
+      "latest_timestamp": "2026-09-04T21:04:37Z",
+      "ledger_status": "in_progress",
+      "milestone": "M8",
+      "missing_evidence_kinds": [
+        "runtime"
+      ],
+      "observed_evidence_kinds": [
+        "benchmark",
+        "qualification",
+        "test"
+      ],
+      "required_evidence_kinds": [
+        "benchmark",
+        "qualification",
+        "runtime"
+      ],
+      "requires_external_execution": true
+    },
+    {
+      "audit_status": "blocked",
+      "evidence_count": 88,
+      "external_authoritative_evidence": false,
+      "id": "HARD-081",
+      "latest_timestamp": "2026-09-04T21:04:37Z",
+      "ledger_status": "in_progress",
+      "milestone": "M8",
+      "missing_evidence_kinds": [
+        "runtime"
+      ],
+      "observed_evidence_kinds": [
+        "benchmark"
+      ],
+      "required_evidence_kinds": [
+        "benchmark",
+        "runtime"
+      ],
+      "requires_external_execution": true
+    },
+    {
+      "audit_status": "blocked",
+      "evidence_count": 0,
+      "external_authoritative_evidence": true,
+      "id": "HARD-090",
+      "latest_timestamp": "",
+      "ledger_status": "pending",
+      "milestone": "M9",
+      "missing_evidence_kinds": [
+        "audit"
+      ],
+      "observed_evidence_kinds": [],
+      "required_evidence_kinds": [
+        "audit"
+      ],
+      "requires_external_execution": false
+    },
+    {
+      "audit_status": "verified",
+      "evidence_count": 1,
+      "external_authoritative_evidence": true,
+      "id": "HARD-091",
+      "latest_timestamp": "2026-08-28T20:19:28Z",
+      "ledger_status": "verified",
+      "milestone": "M9",
+      "missing_evidence_kinds": [],
+      "observed_evidence_kinds": [
+        "audit"
+      ],
+      "required_evidence_kinds": [
+        "audit"
+      ],
+      "requires_external_execution": false
+    }
+  ],
+  "schema_version": 1,
+  "status": "blocked",
+  "summary": {
+    "blocked": 13,
+    "failed": 0,
+    "total": 42,
+    "verified": 29
+  }
+}

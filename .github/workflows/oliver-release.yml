@@ -1,0 +1,1983 @@
+name: Publish release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing non-prerelease draft release tag (for example v0.19.0)
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: oliver-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch-authority:
+    name: Validate the protected-main dispatch before the freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      source-sha: ${{ steps.dispatch.outputs.source-sha }}
+    steps:
+      - name: Fail closed before checking out the dispatch revision
+        env:
+          EXPECTED_REPOSITORY: Seabass-up/Algo-cli
+          EXPECTED_REPOSITORY_ID: "1297752684"
+          EXPECTED_WORKFLOW_REF: Seabass-up/Algo-cli/.github/workflows/oliver-release.yml@refs/heads/main
+        run: |
+          set -euo pipefail
+          fail() { printf '%s\n' '{"reason_code":"release_dispatch_authority","status":"blocked"}' >&2; exit 2; }
+          [[ "${GITHUB_ACTIONS}" == "true" ]] || fail
+          [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]] || fail
+          [[ "${GITHUB_REPOSITORY}" == "${EXPECTED_REPOSITORY}" ]] || fail
+          [[ "${GITHUB_REPOSITORY_ID}" == "${EXPECTED_REPOSITORY_ID}" ]] || fail
+          [[ "${GITHUB_REF}" == "refs/heads/main" ]] || fail
+          [[ "${GITHUB_REF_PROTECTED}" == "true" ]] || fail
+          [[ "${GITHUB_WORKFLOW_REF}" == "${EXPECTED_WORKFLOW_REF}" ]] || fail
+          [[ "${GITHUB_WORKFLOW_SHA}" == "${GITHUB_SHA}" ]] || fail
+          [[ "${RUNNER_ENVIRONMENT}" == "github-hosted" && "${RUNNER_OS}" == "Linux" && "${RUNNER_ARCH}" == "X64" ]] || fail
+          [[ "${GITHUB_SHA}" =~ ^[0-9a-f]{40}$ ]] || fail
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Revalidate the checked-out dispatch authority
+        id: dispatch
+        run: python -I -B -S scripts/oliver_release_authority.py dispatch --github-output "${GITHUB_OUTPUT}"
+      - name: Reject every release side effect while the hardening freeze is active
+        run: python -I -B -S scripts/david_hardening_gate.py --release-event
+
+  environment-authority:
+    name: Verify protected release-authority environment controls
+    needs: dispatch-authority
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Fetch only environment and readiness authority
+        env:
+          AUTHORITY_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          fail() { printf '%s\n' '{"reason_code":"release_environment_authority","status":"blocked"}' >&2; exit 2; }
+          state="${RUNNER_TEMP}/release-environment-authority"
+          install -d -m 0700 "${state}"
+          api_get() {
+            local endpoint="$1" output="$2"
+            curl --silent --fail --proto '=https' --tlsv1.2 --max-time 30 --max-filesize 8388608 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${AUTHORITY_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "https://api.github.com/${endpoint}" > "${output}" || fail
+          }
+          api_get "repos/Seabass-up/Algo-cli/environments/release-authority" "${state}/environment.json"
+          api_get "repos/Seabass-up/Algo-cli/actions/variables/ALGO_RELEASE_AUTHORITY_READY" "${state}/readiness.json"
+          unset AUTHORITY_TOKEN
+          STATE="${state}" ACTOR_ID="${GITHUB_ACTOR_ID}" python -I -B -S - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          def fail():
+              raise SystemExit('{"reason_code":"release_environment_authority","status":"blocked"}')
+
+          try:
+              state = Path(os.environ["STATE"])
+              environment = json.loads((state / "environment.json").read_bytes())
+              readiness = json.loads((state / "readiness.json").read_bytes())
+              actor_id = int(os.environ["ACTOR_ID"])
+          except (OSError, ValueError, TypeError, json.JSONDecodeError):
+              fail()
+          if type(environment) is not dict or environment.get("name") != "release-authority":
+              fail()
+          policy = environment.get("deployment_branch_policy")
+          if policy != {"protected_branches": True, "custom_branch_policies": False}:
+              fail()
+          if environment.get("can_admins_bypass") is not False:
+              fail()
+          rules = environment.get("protection_rules")
+          if type(rules) is not list or len(rules) != 2:
+              fail()
+          rules_by_type = {}
+          for candidate in rules:
+              if type(candidate) is not dict:
+                  fail()
+              rule_type = candidate.get("type")
+              if rule_type not in {"required_reviewers", "branch_policy"} or rule_type in rules_by_type:
+                  fail()
+              rules_by_type[rule_type] = candidate
+          if set(rules_by_type) != {"required_reviewers", "branch_policy"}:
+              fail()
+          rule = rules_by_type["required_reviewers"]
+          reviewers = rule.get("reviewers")
+          if rule.get("prevent_self_review") is not True:
+              fail()
+          if type(reviewers) is not list or not reviewers:
+              fail()
+          external = False
+          seen = set()
+          for row in reviewers:
+              if type(row) is not dict or row.get("type") not in {"User", "Team"}:
+                  fail()
+              reviewer = row.get("reviewer")
+              if type(reviewer) is not dict or type(reviewer.get("id")) is not int or reviewer["id"] < 1:
+                  fail()
+              identity = (row["type"], reviewer["id"])
+              if identity in seen:
+                  fail()
+              seen.add(identity)
+              external = external or row["type"] == "Team" or reviewer["id"] != actor_id
+          if not external:
+              fail()
+          if (
+              type(readiness) is not dict
+              or readiness.get("name") != "ALGO_RELEASE_AUTHORITY_READY"
+              or readiness.get("value") != "true"
+              or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", readiness.get("updated_at", "")) is None
+          ):
+              fail()
+          print('{"status":"passed"}')
+          PY
+
+  repository-policy:
+    name: Capture immutable-release and no-bypass tag policy
+    needs: [dispatch-authority, environment-authority]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: release-authority
+    permissions: {}
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Mint the repository-scoped policy-audit token
+        id: policy-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.ALGO_RELEASE_POLICY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ALGO_RELEASE_POLICY_APP_PRIVATE_KEY }}
+          owner: Seabass-up
+          repositories: Algo-cli
+          permission-administration: write
+      - name: Reject missing policy authority with a fixed code
+        if: ${{ steps.policy-token.outcome != 'success' }}
+        run: |
+          printf '%s\n' '{"reason_code":"release_immutability_authority","status":"blocked"}' >&2
+          exit 2
+      - name: Perform only fixed repository-policy GET requests
+        env:
+          POLICY_TOKEN: ${{ steps.policy-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          fail() { printf '%s\n' '{"reason_code":"release_immutability_authority","status":"blocked"}' >&2; exit 2; }
+          state="${RUNNER_TEMP}/repository-policy"
+          install -d -m 0700 "${state}"
+          api_get() {
+            local endpoint="$1" output="$2"
+            curl --silent --fail --proto '=https' --tlsv1.2 --max-time 30 --max-filesize 8388608 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${POLICY_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "https://api.github.com/${endpoint}" > "${output}" || fail
+          }
+          api_get "repos/Seabass-up/Algo-cli/immutable-releases" "${state}/immutable.json"
+          api_get "repos/Seabass-up/Algo-cli/rulesets?per_page=100" "${state}/rulesets.json"
+          mapfile -t ids < <(jq -er 'if type == "array" and length > 0 and length < 100 and all(.[]; (.id | type) == "number" and .id > 0 and .id == (.id | floor)) then .[].id else error("shape") end' "${state}/rulesets.json") || fail
+          declare -A seen=()
+          for id in "${ids[@]}"; do
+            [[ "${id}" =~ ^[1-9][0-9]*$ && -z "${seen[$id]:-}" ]] || fail
+            seen["${id}"]=1
+            api_get "repos/Seabass-up/Algo-cli/rulesets/${id}" "${state}/ruleset-${id}.json"
+          done
+          unset POLICY_TOKEN
+          for document in "${state}"/*.json; do
+            jq --sort-keys --compact-output . "${document}" > "${document}.canonical" || fail
+            mv -- "${document}.canonical" "${document}"
+          done
+      - name: Upload the exact read-only policy snapshot
+        id: upload
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: oliver-repository-policy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/repository-policy
+          if-no-files-found: error
+          retention-days: 90
+
+  release-authority:
+    name: Bind release, protected source, same-SHA CI, and Boron evidence
+    needs: [dispatch-authority, repository-policy]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+    outputs:
+      release-id: ${{ steps.authority.outputs.release-id }}
+      release-state: ${{ steps.authority.outputs.release-state }}
+      source-sha: ${{ steps.authority.outputs.source-sha }}
+      boron-run-id: ${{ steps.authority.outputs.boron-run-id }}
+      boron-run-attempt: ${{ steps.authority.outputs.boron-run-attempt }}
+      boron-artifact-id: ${{ steps.authority.outputs.boron-artifact-id }}
+      report-digest: ${{ steps.report.outputs.report-digest }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.dispatch-authority.outputs.source-sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.repository-policy.outputs.artifact-id }}
+          path: ${{ runner.temp }}/repository-policy
+      - name: Validate the exact immutable-release and tag-ruleset snapshot
+        run: >-
+          python -I -B -S scripts/oliver_release_authority.py policy
+          --directory "${RUNNER_TEMP}/repository-policy"
+          --output "${RUNNER_TEMP}/oliver-release-repository-policy.json"
+      - name: Install the immutable GitHub CLI verifier
+        env:
+          GH_CLI_ARCHIVE_SHA256: 25d1e4729e8808c9ed3d613e96ebd3f3e44446f2d368c89d878a71a36ddb3d8c
+          GH_CLI_VERSION: "2.95.0"
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/gh_${GH_CLI_VERSION}_linux_amd64.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --output "${archive}" "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "${GH_CLI_ARCHIVE_SHA256}" "${archive}" | sha256sum --check --strict
+          tar --extract --gzip --file "${archive}" --directory "${RUNNER_TEMP}"
+          gh_bin="${RUNNER_TEMP}/gh_${GH_CLI_VERSION}_linux_amd64/bin/gh"
+          test -f "${gh_bin}" && test ! -L "${gh_bin}"
+          test "$("${gh_bin}" version | sed -n '1p')" = "gh version ${GH_CLI_VERSION} (2026-06-17)"
+          printf '%s\n' "${RUNNER_TEMP}/gh_${GH_CLI_VERSION}_linux_amd64/bin" >> "${GITHUB_PATH}"
+      - name: Resolve the release and selected Boron run
+        id: authority
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OLIVER_GH_BIN: ${{ runner.temp }}/gh_2.95.0_linux_amd64/bin/gh
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: >-
+          python -I -B -S scripts/oliver_release_authority.py authority
+          --tag "${RELEASE_TAG}"
+          --policy "${RUNNER_TEMP}/oliver-release-repository-policy.json"
+          --output "${RUNNER_TEMP}/oliver-release-authority.json"
+          --github-output "${GITHUB_OUTPUT}"
+      - name: Download only the selected attempt-scoped Boron artifact
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ steps.authority.outputs.boron-artifact-id }}
+          github-token: ${{ github.token }}
+          repository: Seabass-up/Algo-cli
+          run-id: ${{ steps.authority.outputs.boron-run-id }}
+          path: ${{ runner.temp }}/boron-browser-boundary
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.26"
+          enable-cache: true
+      - name: Install the locked Boron evidence verifier
+        run: uv sync --frozen --no-editable --extra dev --reinstall-package algo-cli-runtime
+      - name: Reconstruct and bind the exact hosted report
+        id: report
+        run: >-
+          uv run --frozen --no-editable --extra dev python -I -B -S
+          scripts/oliver_release_authority.py report
+          --authority "${RUNNER_TEMP}/oliver-release-authority.json"
+          --report "${RUNNER_TEMP}/boron-browser-boundary/grace-boron-hosted-qualification.json"
+          --github-output "${GITHUB_OUTPUT}"
+      - name: Verify and retain the same-run repository attestation bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPORT_DIGEST: ${{ steps.report.outputs.report-digest }}
+          SOURCE_SHA: ${{ steps.authority.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          report="${RUNNER_TEMP}/boron-browser-boundary/grace-boron-hosted-qualification.json"
+          gh attestation verify "${report}" --repo Seabass-up/Algo-cli \
+            --cert-identity "https://github.com/Seabass-up/Algo-cli/.github/workflows/oliver-ci.yml@refs/heads/main" \
+            --source-digest "${SOURCE_SHA}" --source-ref refs/heads/main --signer-digest "${SOURCE_SHA}" \
+            --deny-self-hosted-runners --predicate-type https://slsa.dev/provenance/v1 --format json \
+            > "${RUNNER_TEMP}/boron-attestation-verification.json"
+          python -I -B -S scripts/oliver_release_authority.py attestation \
+            --authority "${RUNNER_TEMP}/oliver-release-authority.json" \
+            --report-digest "${REPORT_DIGEST}" \
+            --verification "${RUNNER_TEMP}/boron-attestation-verification.json" \
+            --output "${RUNNER_TEMP}/grace-boron-hosted-qualification.sigstore.jsonl"
+          gh attestation verify "${report}" \
+            --bundle "${RUNNER_TEMP}/grace-boron-hosted-qualification.sigstore.jsonl" \
+            --repo Seabass-up/Algo-cli \
+            --cert-identity "https://github.com/Seabass-up/Algo-cli/.github/workflows/oliver-ci.yml@refs/heads/main" \
+            --source-digest "${SOURCE_SHA}" --source-ref refs/heads/main --signer-digest "${SOURCE_SHA}" \
+            --deny-self-hosted-runners --predicate-type https://slsa.dev/provenance/v1 --format json \
+            > "${RUNNER_TEMP}/boron-attestation-local-bundle-verification.json"
+          python -I -B -S scripts/oliver_release_authority.py attestation \
+            --authority "${RUNNER_TEMP}/oliver-release-authority.json" \
+            --report-digest "${REPORT_DIGEST}" \
+            --verification "${RUNNER_TEMP}/boron-attestation-local-bundle-verification.json" \
+            --output "${RUNNER_TEMP}/grace-boron-hosted-qualification.local-bundle.sigstore.jsonl"
+          cmp --silent -- "${RUNNER_TEMP}/grace-boron-hosted-qualification.sigstore.jsonl" "${RUNNER_TEMP}/grace-boron-hosted-qualification.local-bundle.sigstore.jsonl"
+      - name: Upload exact stable authority evidence
+        run: |
+          set -euo pipefail
+          bundle="${RUNNER_TEMP}/release-authority-bundle"
+          install -d -m 0700 "${bundle}"
+          cp -- "${RUNNER_TEMP}/oliver-release-authority.json" "${bundle}/"
+          cp -- "${RUNNER_TEMP}/oliver-release-repository-policy.json" "${bundle}/"
+          cp -- "${RUNNER_TEMP}/boron-browser-boundary/grace-boron-hosted-qualification.json" "${bundle}/"
+          cp -- "${RUNNER_TEMP}/grace-boron-hosted-qualification.sigstore.jsonl" "${bundle}/"
+      - name: Store exact stable authority evidence
+        id: upload
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: oliver-release-authority-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-authority-bundle
+          if-no-files-found: error
+          retention-days: 90
+
+  durable-reconcile:
+    name: Reconcile an exact durable draft or published release without rebuilding
+    if: ${{ needs.release-authority.outputs.release-state == 'draft-exact' || needs.release-authority.outputs.release-state == 'published-exact' }}
+    needs: release-authority
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      attestations: read
+      contents: read
+    outputs:
+      package-artifact-id: ${{ steps.upload-package.outputs.artifact-id }}
+      assets-artifact-id: ${{ steps.upload-assets.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.release-authority.outputs.artifact-id }}
+          path: ${{ runner.temp }}/authority
+      - name: Install the immutable GitHub CLI verifier
+        env:
+          GH_CLI_ARCHIVE_SHA256: 25d1e4729e8808c9ed3d613e96ebd3f3e44446f2d368c89d878a71a36ddb3d8c
+          GH_CLI_VERSION: "2.95.0"
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/gh_${GH_CLI_VERSION}_linux_amd64.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --output "${archive}" "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "${GH_CLI_ARCHIVE_SHA256}" "${archive}" | sha256sum --check --strict
+          tar --extract --gzip --file "${archive}" --directory "${RUNNER_TEMP}"
+          gh_bin="${RUNNER_TEMP}/gh_${GH_CLI_VERSION}_linux_amd64/bin/gh"
+          test -f "${gh_bin}" && test ! -L "${gh_bin}"
+          test "$("${gh_bin}" version | sed -n '1p')" = "gh version ${GH_CLI_VERSION} (2026-06-17)"
+          printf '%s\n' "${RUNNER_TEMP}/gh_${GH_CLI_VERSION}_linux_amd64/bin" >> "${GITHUB_PATH}"
+      - name: Download the exact API-bound release assets by immutable asset ID
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.release-authority.outputs.release-id }}
+          RELEASE_STATE: ${{ needs.release-authority.outputs.release-state }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          state="${RUNNER_TEMP}/durable-state"
+          stage="${RUNNER_TEMP}/release-assets"
+          install -d -m 0700 "${state}" "${stage}"
+          gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/Seabass-up/Algo-cli/releases/${RELEASE_ID}" > "${state}/release.json"
+          python -I -B -S scripts/oliver_release_authority.py asset-plan \
+            --tag "${RELEASE_TAG}" --release-id "${RELEASE_ID}" --release-state "${RELEASE_STATE}" \
+            --release-json "${state}/release.json" --output "${state}/asset-plan.json"
+          PLAN="${state}/asset-plan.json" python -I -B -S - > "${state}/assets.tsv" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          plan = json.loads(Path(os.environ["PLAN"]).read_bytes())
+          for asset in plan["assets"]:
+              print(f"{asset['id']}\t{asset['name']}")
+          PY
+          while IFS=$'\t' read -r asset_id name; do
+            [[ "${asset_id}" =~ ^[1-9][0-9]*$ && -n "${name}" ]]
+            gh api -H "Accept: application/octet-stream" -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/Seabass-up/Algo-cli/releases/assets/${asset_id}" > "${stage}/${name}"
+          done < "${state}/assets.tsv"
+          unset GH_TOKEN
+      - name: Rebind durable bytes to authority, policy, source, and checksums
+        env:
+          RELEASE_ID: ${{ needs.release-authority.outputs.release-id }}
+          RELEASE_STATE: ${{ needs.release-authority.outputs.release-state }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_SHA: ${{ needs.release-authority.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          stage="${RUNNER_TEMP}/release-assets"
+          authority="${RUNNER_TEMP}/authority"
+          python -I -B -S scripts/oliver_release_authority.py reconcile \
+            --tag "${RELEASE_TAG}" --release-id "${RELEASE_ID}" --release-state "${RELEASE_STATE}" \
+            --source-sha "${SOURCE_SHA}" --release-json "${RUNNER_TEMP}/durable-state/release.json" \
+            --directory "${stage}" --authority "${authority}/oliver-release-authority.json" \
+            --policy "${authority}/oliver-release-repository-policy.json" \
+            --report "${authority}/grace-boron-hosted-qualification.json" \
+            --boron-bundle "${authority}/grace-boron-hosted-qualification.sigstore.jsonl"
+          bound="${RUNNER_TEMP}/durable-bound-dist"
+          install -d -m 0700 "${bound}"
+          cp -- "${stage}"/*.whl "${bound}/"
+          cp -- "${stage}"/*.tar.gz "${bound}/"
+          python -I -B -S scripts/oliver_release_source_binding.py verify-bound \
+            --archive "${stage}/oliver-release-source.tar" --expected-revision "${SOURCE_SHA}" \
+            --receipt "${stage}/oliver-release-source-receipt.json" --bound-dist "${bound}" \
+            --manifest "${stage}/oliver-release-source-binding.json"
+      - name: Cryptographically verify every retained release attestation bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.release-authority.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          stage="${RUNNER_TEMP}/release-assets"
+          bound="${RUNNER_TEMP}/durable-bound-dist"
+          verifications="${RUNNER_TEMP}/release-verifications"
+          install -d -m 0700 "${verifications}"
+          mapfile -t wheels < <(find "${bound}" -maxdepth 1 -type f -name '*.whl' -print)
+          mapfile -t sdists < <(find "${bound}" -maxdepth 1 -type f -name '*.tar.gz' -print)
+          test "${#wheels[@]}" -eq 1 && test "${#sdists[@]}" -eq 1
+          verify_bundle() {
+            local label="$1" predicate="$2" bundle="$3" kind="$4" artifact="$5"
+            gh attestation verify "${artifact}" --bundle "${stage}/${bundle}" --repo Seabass-up/Algo-cli \
+              --cert-identity "https://github.com/Seabass-up/Algo-cli/.github/workflows/oliver-release.yml@refs/heads/main" \
+              --source-digest "${SOURCE_SHA}" --source-ref refs/heads/main --signer-digest "${SOURCE_SHA}" \
+              --deny-self-hosted-runners --predicate-type "${predicate}" --format json \
+              > "${verifications}/${label}-${kind}.json"
+          }
+          for kind in wheel sdist; do
+            if [[ "${kind}" == "wheel" ]]; then artifact="${wheels[0]}"; else artifact="${sdists[0]}"; fi
+            verify_bundle provenance https://slsa.dev/provenance/v1 algo-cli-release-provenance.sigstore.jsonl "${kind}" "${artifact}"
+            verify_bundle sbom https://cyclonedx.org/bom algo-cli-release-sbom.sigstore.jsonl "${kind}" "${artifact}"
+            verify_bundle boron https://algo-cli.com/attestations/boron-hosted-qualification/v1 grace-boron-release-qualification.sigstore.jsonl "${kind}" "${artifact}"
+            verify_bundle source-binding https://algo-cli.com/attestations/release-source-binding/v1 oliver-release-source-binding.sigstore.jsonl "${kind}" "${artifact}"
+          done
+          unset GH_TOKEN
+          python -I -B -S scripts/oliver_release_authority.py release-attestations \
+            --authority "${stage}/oliver-release-authority.json" --dist "${bound}" \
+            --assets "${stage}" --verifications "${verifications}"
+      - name: Require exact PyPI bytes for an already-published release
+        if: ${{ needs.release-authority.outputs.release-state == 'published-exact' }}
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: >-
+          python -I -B -S scripts/oliver_release_authority.py pypi
+          --tag "${RELEASE_TAG}" --dist "${RUNNER_TEMP}/durable-bound-dist" --require-present
+      - name: Prepare exact recovered draft inputs without regenerating attestations
+        if: ${{ needs.release-authority.outputs.release-state == 'draft-exact' }}
+        run: |
+          set -euo pipefail
+          package="${RUNNER_TEMP}/recovered-package"
+          install -d -m 0700 "${package}" "${package}/bound-dist"
+          cp -- "${RUNNER_TEMP}"/durable-bound-dist/* "${package}/bound-dist/"
+      - name: Upload only the recovered source-bound package bytes
+        if: ${{ needs.release-authority.outputs.release-state == 'draft-exact' }}
+        id: upload-package
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: oliver-recovered-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/recovered-package
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload only the byte-verified recovered draft asset set
+        if: ${{ needs.release-authority.outputs.release-state == 'draft-exact' }}
+        id: upload-assets
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: oliver-recovered-assets-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-assets
+          if-no-files-found: error
+          retention-days: 90
+
+  source-capture:
+    name: Capture the exact release source before build or test hooks
+    if: ${{ needs.release-authority.outputs.release-state == 'draft' }}
+    needs: release-authority
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.release-authority.outputs.source-sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Capture and independently verify the immutable Git archive
+        env:
+          SOURCE_SHA: ${{ needs.release-authority.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          boundary="${RUNNER_TEMP}/source-boundary"
+          install -d -m 0700 "${boundary}"
+          GIT_NO_REPLACE_OBJECTS=1 python -I -B -S scripts/oliver_release_source_binding.py capture \
+            --repository "${GITHUB_WORKSPACE}" --revision "${SOURCE_SHA}" \
+            --archive "${boundary}/oliver-release-source.tar" \
+            --stage "${RUNNER_TEMP}/captured-source" \
+            --receipt "${boundary}/oliver-release-source-receipt.json"
+          python -I -B -S scripts/oliver_release_source_binding.py verify-stage \
+            --archive "${boundary}/oliver-release-source.tar" \
+            --expected-revision "${SOURCE_SHA}" \
+            --stage "${RUNNER_TEMP}/captured-source" \
+            --receipt "${boundary}/oliver-release-source-receipt.json"
+          cp -- "${RUNNER_TEMP}/captured-source/scripts/oliver_release_source_binding.py" "${boundary}/oliver_release_source_binding.py"
+      - name: Upload the exact source boundary
+        id: upload
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: oliver-release-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/source-boundary
+          if-no-files-found: error
+          retention-days: 90
+
+  package:
+    name: Build twice from independent immutable source materializations
+    if: ${{ needs.release-authority.outputs.release-state == 'draft' }}
+    needs: [release-authority, source-capture]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions: {}
+    env:
+      SOURCE_SHA: ${{ needs.release-authority.outputs.source-sha }}
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.26"
+          enable-cache: false
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.source-capture.outputs.artifact-id }}
+          path: ${{ runner.temp }}/source-boundary
+      - name: Materialize two independent stages and install only the locked build toolchain
+        run: |
+          set -euo pipefail
+          boundary="${RUNNER_TEMP}/source-boundary"
+          helper="${boundary}/oliver_release_source_binding.py"
+          python -I -B -S "${helper}" materialize --archive "${boundary}/oliver-release-source.tar" --expected-revision "${SOURCE_SHA}" --stage "${RUNNER_TEMP}/source-a" --receipt "${boundary}/oliver-release-source-receipt.json"
+          python -I -B -S "${helper}" materialize --archive "${boundary}/oliver-release-source.tar" --expected-revision "${SOURCE_SHA}" --stage "${RUNNER_TEMP}/source-b" --receipt "${boundary}/oliver-release-source-receipt.json"
+          export UV_PROJECT_ENVIRONMENT="${RUNNER_TEMP}/release-build-env"
+          uv sync --project "${RUNNER_TEMP}/source-a" --frozen --no-install-project --extra release
+          uv export --project "${RUNNER_TEMP}/source-a" --quiet --frozen --format requirements-txt --extra dev --extra release --extra supply-chain --extra echo-veil --no-emit-project --no-emit-package echo-veil --output-file "${boundary}/algo-cli-release-auditable-requirements.txt"
+      - name: Build two source-date-pinned distributions without isolation or live resolution
+        run: |
+          set -euo pipefail
+          boundary="${RUNNER_TEMP}/source-boundary"
+          helper="${boundary}/oliver_release_source_binding.py"
+          source_date_epoch="$(python -I -B -S - "${boundary}/oliver-release-source-receipt.json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          value = json.loads(Path(sys.argv[1]).read_bytes())["source"]["source_date_epoch"]
+          if type(value) is not int or not 1 <= value <= 9_999_999_999:
+              raise SystemExit(2)
+          print(value)
+          PY
+          )"
+          export SOURCE_DATE_EPOCH="${source_date_epoch}"
+          install -d -m 0700 "${RUNNER_TEMP}/dist-a" "${RUNNER_TEMP}/dist-b"
+          "${RUNNER_TEMP}/release-build-env/bin/python" -m build --no-isolation --outdir "${RUNNER_TEMP}/dist-a" "${RUNNER_TEMP}/source-a"
+          "${RUNNER_TEMP}/release-build-env/bin/python" -m build --no-isolation --outdir "${RUNNER_TEMP}/dist-b" "${RUNNER_TEMP}/source-b"
+          python -I -B -S "${helper}" bind \
+            --archive "${boundary}/oliver-release-source.tar" \
+            --expected-revision "${SOURCE_SHA}" \
+            --stage "${RUNNER_TEMP}/source-a" --rebuild-stage "${RUNNER_TEMP}/source-b" \
+            --receipt "${boundary}/oliver-release-source-receipt.json" \
+            --dist "${RUNNER_TEMP}/dist-a" --rebuild-dist "${RUNNER_TEMP}/dist-b" \
+            --bound-dist "${RUNNER_TEMP}/bound-dist" \
+            --tool-lock "${RUNNER_TEMP}/source-a/uv.lock" \
+            --manifest "${boundary}/oliver-release-source-binding.json"
+          python -I -B -S "${helper}" verify \
+            --archive "${boundary}/oliver-release-source.tar" \
+            --expected-revision "${SOURCE_SHA}" \
+            --stage "${RUNNER_TEMP}/source-a" --rebuild-stage "${RUNNER_TEMP}/source-b" \
+            --receipt "${boundary}/oliver-release-source-receipt.json" \
+            --dist "${RUNNER_TEMP}/dist-a" --rebuild-dist "${RUNNER_TEMP}/dist-b" \
+            --bound-dist "${RUNNER_TEMP}/bound-dist" \
+            --tool-lock "${RUNNER_TEMP}/source-a/uv.lock" \
+            --manifest "${boundary}/oliver-release-source-binding.json"
+          package="${RUNNER_TEMP}/package-output"
+          install -d -m 0700 "${package}" "${package}/bound-dist"
+          cp -- "${RUNNER_TEMP}"/bound-dist/* "${package}/bound-dist/"
+          cp -- "${boundary}/oliver-release-source.tar" "${package}/"
+          cp -- "${boundary}/oliver-release-source-receipt.json" "${package}/"
+          cp -- "${boundary}/oliver-release-source-binding.json" "${package}/"
+          cp -- "${boundary}/algo-cli-release-auditable-requirements.txt" "${package}/"
+      - name: Upload only source-bound byte-identical package outputs
+        id: upload
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: oliver-python-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/package-output
+          if-no-files-found: error
+          retention-days: 90
+
+  verify:
+    name: Verify the package, repository, dependencies, and website
+    if: ${{ needs.release-authority.outputs.release-state == 'draft' }}
+    needs: [release-authority, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      SOURCE_SHA: ${{ needs.release-authority.outputs.source-sha }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.release-authority.outputs.source-sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.26"
+          enable-cache: true
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact-id }}
+          path: ${{ runner.temp }}/package
+      - name: Rebind the downloaded publication bytes to the immutable source
+        run: |
+          set -euo pipefail
+          python -I -B -S scripts/oliver_release_source_binding.py verify-bound \
+            --archive "${RUNNER_TEMP}/package/oliver-release-source.tar" \
+            --expected-revision "${SOURCE_SHA}" \
+            --receipt "${RUNNER_TEMP}/package/oliver-release-source-receipt.json" \
+            --bound-dist "${RUNNER_TEMP}/package/bound-dist" \
+            --manifest "${RUNNER_TEMP}/package/oliver-release-source-binding.json"
+      - name: Install locked verification dependencies
+        run: uv sync --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil --reinstall-package algo-cli-runtime --link-mode copy
+      - name: Verify source, runtime, package, dependencies, and tests
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil python -I scripts/oliver_installed_source_parity.py
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil python scripts/nathan_agent_runtime_qualification.py --quiet
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil python scripts/check_release_version.py --tag "${RELEASE_TAG}"
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil python scripts/check_public_release.py
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil python scripts/check_public_history.py --allow-contributor-identities
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil ruff check algo_cli tests scripts
+          uv export --quiet --frozen --format requirements-txt --extra dev --extra release --extra supply-chain --extra echo-veil --no-emit-project --no-emit-package echo-veil --output-file "${RUNNER_TEMP}/algo-cli-verification-auditable-requirements.txt"
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain pip-audit --requirement "${RUNNER_TEMP}/algo-cli-verification-auditable-requirements.txt" --require-hashes --disable-pip --strict --progress-spinner off
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain pip-audit --requirement "${RUNNER_TEMP}/package/algo-cli-release-auditable-requirements.txt" --require-hashes --disable-pip --strict --progress-spinner off
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil --link-mode copy python -I scripts/henry_echo_veil_dependency_audit.py
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil --link-mode copy pytest tests
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python -m twine check "${RUNNER_TEMP}"/package/bound-dist/*.whl "${RUNNER_TEMP}"/package/bound-dist/*.tar.gz
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python scripts/check_public_release.py --artifacts-only --artifact "${RUNNER_TEMP}"/package/bound-dist/*.whl --artifact "${RUNNER_TEMP}"/package/bound-dist/*.tar.gz
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python scripts/oliver_smoke_wheel_install.py "${RUNNER_TEMP}/package/bound-dist"
+      - name: Verify website
+        working-directory: website
+        run: |
+          npm ci
+          npm test
+          npm run lint
+          npm audit
+
+  evidence:
+    name: Generate source-locked evidence outside the repository test boundary
+    if: ${{ needs.release-authority.outputs.release-state == 'draft' }}
+    needs: [release-authority, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      SOURCE_SHA: ${{ needs.release-authority.outputs.source-sha }}
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.release-authority.outputs.source-sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.26"
+          enable-cache: false
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact-id }}
+          path: ${{ runner.temp }}/package
+      - name: Rebind the downloaded publication bytes before evidence generation
+        run: |
+          set -euo pipefail
+          python -I -B -S scripts/oliver_release_source_binding.py verify-bound \
+            --archive "${RUNNER_TEMP}/package/oliver-release-source.tar" \
+            --expected-revision "${SOURCE_SHA}" \
+            --receipt "${RUNNER_TEMP}/package/oliver-release-source-receipt.json" \
+            --bound-dist "${RUNNER_TEMP}/package/bound-dist" \
+            --manifest "${RUNNER_TEMP}/package/oliver-release-source-binding.json"
+      - name: Generate only the source-lock-derived CycloneDX predicate
+        run: |
+          set -euo pipefail
+          evidence="${RUNNER_TEMP}/release-evidence"
+          install -d -m 0700 "${evidence}"
+          uv export --frozen --no-dev --format cyclonedx1.5 --preview-features sbom-export --output-file "${RUNNER_TEMP}/ada-runtime-sbom.raw.json"
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python scripts/ada_supply_chain_manifest.py sbom \
+            --source "${RUNNER_TEMP}/ada-runtime-sbom.raw.json" \
+            --output "${evidence}/algo-cli-runtime.lock.cdx.json"
+      - name: Upload only the source-locked SBOM predicate
+        id: upload
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: oliver-release-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-evidence
+          if-no-files-found: error
+          retention-days: 90
+
+  attest:
+    name: Attest exact distributions and durable evidence
+    if: ${{ needs.release-authority.outputs.release-state == 'draft' }}
+    needs: [release-authority, package, verify, evidence]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      attestations: write
+      id-token: write
+    outputs:
+      provenance-artifact-id: ${{ steps.upload-provenance.outputs.artifact-id }}
+      sbom-artifact-id: ${{ steps.upload-sbom.outputs.artifact-id }}
+      boron-artifact-id: ${{ steps.upload-boron.outputs.artifact-id }}
+      source-binding-artifact-id: ${{ steps.upload-source-binding.outputs.artifact-id }}
+    steps:
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact-id }}
+          path: ${{ runner.temp }}/package
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.evidence.outputs.artifact-id }}
+          path: ${{ runner.temp }}/evidence
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.release-authority.outputs.artifact-id }}
+          path: ${{ runner.temp }}/authority
+      - name: Attest release provenance
+        id: provenance
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: |
+            ${{ runner.temp }}/package/bound-dist/*.whl
+            ${{ runner.temp }}/package/bound-dist/*.tar.gz
+          create-storage-record: false
+      - name: Attest release SBOM
+        id: sbom
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: |
+            ${{ runner.temp }}/package/bound-dist/*.whl
+            ${{ runner.temp }}/package/bound-dist/*.tar.gz
+          sbom-path: ${{ runner.temp }}/evidence/algo-cli-runtime.lock.cdx.json
+          create-storage-record: false
+      - name: Bind distributions to the exact Boron hosted qualification
+        id: boron
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: |
+            ${{ runner.temp }}/package/bound-dist/*.whl
+            ${{ runner.temp }}/package/bound-dist/*.tar.gz
+          predicate-type: https://algo-cli.com/attestations/boron-hosted-qualification/v1
+          predicate-path: ${{ runner.temp }}/authority/grace-boron-hosted-qualification.json
+          create-storage-record: false
+      - name: Bind distributions to the immutable dual-build source manifest
+        id: source-binding
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: |
+            ${{ runner.temp }}/package/bound-dist/*.whl
+            ${{ runner.temp }}/package/bound-dist/*.tar.gz
+          predicate-type: https://algo-cli.com/attestations/release-source-binding/v1
+          predicate-path: ${{ runner.temp }}/package/oliver-release-source-binding.json
+          create-storage-record: false
+      - id: upload-provenance
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: oliver-release-provenance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.provenance.outputs.bundle-path }}
+          if-no-files-found: error
+          retention-days: 90
+      - id: upload-sbom
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: oliver-release-sbom-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.sbom.outputs.bundle-path }}
+          if-no-files-found: error
+          retention-days: 90
+      - id: upload-boron
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: oliver-release-boron-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.boron.outputs.bundle-path }}
+          if-no-files-found: error
+          retention-days: 90
+      - id: upload-source-binding
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: oliver-release-source-binding-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.source-binding.outputs.bundle-path }}
+          if-no-files-found: error
+          retention-days: 90
+
+  attestation-verification:
+    name: Verify exact package, evidence, and retained attestation bundles
+    if: ${{ needs.release-authority.outputs.release-state == 'draft' }}
+    needs: [release-authority, package, evidence, attest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      attestations: read
+      contents: read
+    env:
+      SOURCE_SHA: ${{ needs.release-authority.outputs.source-sha }}
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.release-authority.outputs.source-sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact-id }}
+          path: ${{ runner.temp }}/downloads/package
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.evidence.outputs.artifact-id }}
+          path: ${{ runner.temp }}/downloads/evidence
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.release-authority.outputs.artifact-id }}
+          path: ${{ runner.temp }}/downloads/authority
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.attest.outputs.provenance-artifact-id }}
+          path: ${{ runner.temp }}/downloads/provenance
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.attest.outputs.sbom-artifact-id }}
+          path: ${{ runner.temp }}/downloads/sbom
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.attest.outputs.boron-artifact-id }}
+          path: ${{ runner.temp }}/downloads/boron
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.attest.outputs.source-binding-artifact-id }}
+          path: ${{ runner.temp }}/downloads/source-binding
+      - name: Install the immutable GitHub CLI verifier
+        env:
+          GH_CLI_ARCHIVE_SHA256: 25d1e4729e8808c9ed3d613e96ebd3f3e44446f2d368c89d878a71a36ddb3d8c
+          GH_CLI_VERSION: "2.95.0"
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/gh_${GH_CLI_VERSION}_linux_amd64.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --output "${archive}" "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "${GH_CLI_ARCHIVE_SHA256}" "${archive}" | sha256sum --check --strict
+          tar --extract --gzip --file "${archive}" --directory "${RUNNER_TEMP}"
+          gh_bin="${RUNNER_TEMP}/gh_${GH_CLI_VERSION}_linux_amd64/bin/gh"
+          test -f "${gh_bin}" && test ! -L "${gh_bin}"
+          test "$("${gh_bin}" version | sed -n '1p')" = "gh version ${GH_CLI_VERSION} (2026-06-17)"
+          printf '%s\n' "${RUNNER_TEMP}/gh_${GH_CLI_VERSION}_linux_amd64/bin" >> "${GITHUB_PATH}"
+      - name: Assemble only fresh ID-bound package, evidence, authority, and bundle bytes
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          stage="${RUNNER_TEMP}/release-assets"
+          install -d -m 0700 "${stage}"
+          python -I -B -S scripts/oliver_release_source_binding.py verify-bound \
+            --archive "${RUNNER_TEMP}/downloads/package/oliver-release-source.tar" \
+            --expected-revision "${SOURCE_SHA}" \
+            --receipt "${RUNNER_TEMP}/downloads/package/oliver-release-source-receipt.json" \
+            --bound-dist "${RUNNER_TEMP}/downloads/package/bound-dist" \
+            --manifest "${RUNNER_TEMP}/downloads/package/oliver-release-source-binding.json"
+          cp -- "${RUNNER_TEMP}"/downloads/package/bound-dist/*.whl "${stage}/"
+          cp -- "${RUNNER_TEMP}"/downloads/package/bound-dist/*.tar.gz "${stage}/"
+          cp -- "${RUNNER_TEMP}/downloads/package/oliver-release-source.tar" "${stage}/"
+          cp -- "${RUNNER_TEMP}/downloads/package/oliver-release-source-receipt.json" "${stage}/"
+          cp -- "${RUNNER_TEMP}/downloads/package/oliver-release-source-binding.json" "${stage}/"
+          cp -- "${RUNNER_TEMP}/downloads/package/algo-cli-release-auditable-requirements.txt" "${stage}/"
+          cp -- "${RUNNER_TEMP}/downloads/evidence/algo-cli-runtime.lock.cdx.json" "${stage}/"
+          cp -- "${RUNNER_TEMP}/downloads/authority/oliver-release-authority.json" "${stage}/"
+          cp -- "${RUNNER_TEMP}/downloads/authority/oliver-release-repository-policy.json" "${stage}/"
+          cp -- "${RUNNER_TEMP}/downloads/authority/grace-boron-hosted-qualification.json" "${stage}/"
+          cp -- "${RUNNER_TEMP}/downloads/authority/grace-boron-hosted-qualification.sigstore.jsonl" "${stage}/"
+          mapfile -d '' provenance < <(find "${RUNNER_TEMP}/downloads/provenance" -type f -print0)
+          mapfile -d '' sbom < <(find "${RUNNER_TEMP}/downloads/sbom" -type f -print0)
+          mapfile -d '' boron < <(find "${RUNNER_TEMP}/downloads/boron" -type f -print0)
+          mapfile -d '' source_binding < <(find "${RUNNER_TEMP}/downloads/source-binding" -type f -print0)
+          test "${#provenance[@]}" -eq 1 && test "${#sbom[@]}" -eq 1 && test "${#boron[@]}" -eq 1 && test "${#source_binding[@]}" -eq 1
+          cp -- "${provenance[0]}" "${stage}/algo-cli-release-provenance.sigstore.jsonl"
+          cp -- "${sbom[0]}" "${stage}/algo-cli-release-sbom.sigstore.jsonl"
+          cp -- "${boron[0]}" "${stage}/grace-boron-release-qualification.sigstore.jsonl"
+          cp -- "${source_binding[0]}" "${stage}/oliver-release-source-binding.sigstore.jsonl"
+      - name: Cryptographically and semantically verify every retained release bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          stage="${RUNNER_TEMP}/release-assets"
+          bound="${RUNNER_TEMP}/downloads/package/bound-dist"
+          verifications="${RUNNER_TEMP}/release-verifications"
+          install -d -m 0700 "${verifications}"
+          mapfile -t wheels < <(find "${bound}" -maxdepth 1 -type f -name '*.whl' -print)
+          mapfile -t sdists < <(find "${bound}" -maxdepth 1 -type f -name '*.tar.gz' -print)
+          test "${#wheels[@]}" -eq 1 && test "${#sdists[@]}" -eq 1
+          verify_bundle() {
+            local label="$1" predicate="$2" bundle="$3" kind="$4" artifact="$5"
+            gh attestation verify "${artifact}" --bundle "${stage}/${bundle}" --repo Seabass-up/Algo-cli \
+              --cert-identity "https://github.com/Seabass-up/Algo-cli/.github/workflows/oliver-release.yml@refs/heads/main" \
+              --source-digest "${SOURCE_SHA}" --source-ref refs/heads/main --signer-digest "${SOURCE_SHA}" \
+              --deny-self-hosted-runners --predicate-type "${predicate}" --format json \
+              > "${verifications}/${label}-${kind}.json"
+          }
+          for kind in wheel sdist; do
+            if [[ "${kind}" == "wheel" ]]; then artifact="${wheels[0]}"; else artifact="${sdists[0]}"; fi
+            verify_bundle provenance https://slsa.dev/provenance/v1 algo-cli-release-provenance.sigstore.jsonl "${kind}" "${artifact}"
+            verify_bundle sbom https://cyclonedx.org/bom algo-cli-release-sbom.sigstore.jsonl "${kind}" "${artifact}"
+            verify_bundle boron https://algo-cli.com/attestations/boron-hosted-qualification/v1 grace-boron-release-qualification.sigstore.jsonl "${kind}" "${artifact}"
+            verify_bundle source-binding https://algo-cli.com/attestations/release-source-binding/v1 oliver-release-source-binding.sigstore.jsonl "${kind}" "${artifact}"
+          done
+          unset GH_TOKEN
+          python -I -B -S scripts/oliver_release_authority.py release-attestations \
+            --authority "${stage}/oliver-release-authority.json" --dist "${bound}" \
+            --assets "${stage}" --verifications "${verifications}"
+      - name: Create and validate exact inner and outer asset checksum closure
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          STAGE="${RUNNER_TEMP}/release-assets" python -I -B -S - "${RELEASE_TAG}" <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import sys
+
+          stage = Path(os.environ["STAGE"])
+          match = re.fullmatch(r"v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})", sys.argv[1])
+          if match is None:
+              raise SystemExit(2)
+          version = sys.argv[1][1:]
+          inner = {
+              f"algo_cli_runtime-{version}-py3-none-any.whl",
+              f"algo_cli_runtime-{version}.tar.gz",
+              "algo-cli-runtime.lock.cdx.json",
+          }
+          payloads = {}
+          for entry in stage.iterdir():
+              info = entry.lstat()
+              if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_nlink != 1 or info.st_size < 1:
+                  raise SystemExit(2)
+              payload = entry.read_bytes()
+              if len(payload) != info.st_size:
+                  raise SystemExit(2)
+              payloads[entry.name] = payload
+          if not inner < set(payloads) or {"SHA256SUMS", "grace-release-evidence-SHA256SUMS"} & set(payloads):
+              raise SystemExit(2)
+          inner_payload = "".join(
+              f"{hashlib.sha256(payloads[name]).hexdigest()}  {name}\n" for name in sorted(inner)
+          ).encode("ascii")
+          (stage / "SHA256SUMS").write_bytes(inner_payload)
+          payloads["SHA256SUMS"] = inner_payload
+          outer_payload = "".join(
+              f"{hashlib.sha256(payloads[name]).hexdigest()}  {name}\n" for name in sorted(payloads)
+          ).encode("ascii")
+          (stage / "grace-release-evidence-SHA256SUMS").write_bytes(outer_payload)
+          PY
+          python -I -B -S scripts/oliver_release_authority.py asset-closure \
+            --tag "${RELEASE_TAG}" --directory "${RUNNER_TEMP}/release-assets"
+      - name: Upload only the cryptographically verified release-asset boundary
+        id: upload
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: oliver-verified-release-assets-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-assets
+          if-no-files-found: error
+          retention-days: 90
+
+  attach-evidence:
+    name: Attach and byte-verify collision-free draft assets
+    if: ${{ needs.release-authority.outputs.release-state == 'draft' }}
+    needs: [release-authority, attestation-verification]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.attestation-verification.outputs.artifact-id }}
+          path: ${{ runner.temp }}/release-assets
+      - name: Revalidate exact inner and outer checksum closure before draft mutation
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          STAGE="${RUNNER_TEMP}/release-assets" python -I -B -S - "${RELEASE_TAG}" <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import sys
+
+          tag = sys.argv[1]
+          if re.fullmatch(r"v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})", tag) is None:
+              raise SystemExit(2)
+          version = tag[1:]
+          stage = Path(os.environ["STAGE"])
+          expected = {
+              f"algo_cli_runtime-{version}-py3-none-any.whl", f"algo_cli_runtime-{version}.tar.gz",
+              "algo-cli-runtime.lock.cdx.json", "SHA256SUMS",
+              "grace-boron-hosted-qualification.json", "grace-boron-hosted-qualification.sigstore.jsonl",
+              "algo-cli-release-provenance.sigstore.jsonl", "algo-cli-release-sbom.sigstore.jsonl",
+              "grace-boron-release-qualification.sigstore.jsonl", "oliver-release-source-binding.sigstore.jsonl",
+              "oliver-release-source.tar", "oliver-release-source-receipt.json", "oliver-release-source-binding.json",
+              "oliver-release-authority.json", "oliver-release-repository-policy.json",
+              "algo-cli-release-auditable-requirements.txt", "grace-release-evidence-SHA256SUMS",
+          }
+          entries = tuple(stage.iterdir())
+          if len(entries) != len(expected) or {entry.name for entry in entries} != expected:
+              raise SystemExit(2)
+          payloads = {}
+          for entry in entries:
+              info = entry.lstat()
+              if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_nlink != 1 or info.st_size < 1:
+                  raise SystemExit(2)
+              payload = entry.read_bytes()
+              if len(payload) != info.st_size:
+                  raise SystemExit(2)
+              payloads[entry.name] = payload
+          inner_names = {
+              f"algo_cli_runtime-{version}-py3-none-any.whl",
+              f"algo_cli_runtime-{version}.tar.gz",
+              "algo-cli-runtime.lock.cdx.json",
+          }
+          inner = "".join(
+              f"{hashlib.sha256(payloads[name]).hexdigest()}  {name}\n" for name in sorted(inner_names)
+          ).encode("ascii")
+          if payloads["SHA256SUMS"] != inner:
+              raise SystemExit("inner release evidence checksum mismatch")
+          outer_name = "grace-release-evidence-SHA256SUMS"
+          outer = "".join(
+              f"{hashlib.sha256(payloads[name]).hexdigest()}  {name}\n"
+              for name in sorted(expected - {outer_name})
+          ).encode("ascii")
+          if payloads[outer_name] != outer:
+              raise SystemExit("outer release evidence checksum mismatch")
+          PY
+      - name: Install the immutable GitHub CLI uploader
+        env:
+          GH_CLI_ARCHIVE_SHA256: 25d1e4729e8808c9ed3d613e96ebd3f3e44446f2d368c89d878a71a36ddb3d8c
+          GH_CLI_VERSION: "2.95.0"
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/gh_${GH_CLI_VERSION}_linux_amd64.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --output "${archive}" "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "${GH_CLI_ARCHIVE_SHA256}" "${archive}" | sha256sum --check --strict
+          tar --extract --gzip --file "${archive}" --directory "${RUNNER_TEMP}"
+          printf '%s\n' "${RUNNER_TEMP}/gh_${GH_CLI_VERSION}_linux_amd64/bin" >> "${GITHUB_PATH}"
+      - name: Upload missing draft assets or reconcile an already-published exact release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.release-authority.outputs.release-id }}
+          RELEASE_STATE: ${{ needs.release-authority.outputs.release-state }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_SHA: ${{ needs.release-authority.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          stage="${RUNNER_TEMP}/release-assets"
+          state="${RUNNER_TEMP}/release-state"
+          install -d -m 0700 "${state}" "${state}/downloaded"
+          gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/Seabass-up/Algo-cli/branches/main" > "${state}/branch.json"
+          branch_sha="$(jq -er '.commit.sha | select(test("^[0-9a-f]{40}$"))' "${state}/branch.json")"
+          if [[ "${branch_sha}" != "${SOURCE_SHA}" ]]; then
+            gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/Seabass-up/Algo-cli/compare/${SOURCE_SHA}...${branch_sha}" > "${state}/compare.json"
+          fi
+          gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/Seabass-up/Algo-cli/commits/${RELEASE_TAG}" > "${state}/tag.json"
+          gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/Seabass-up/Algo-cli/releases/${RELEASE_ID}" > "${state}/release.json"
+          STAGE="${stage}" STATE="${state}" python -I -B -S - "${RELEASE_TAG}" "${RELEASE_ID}" "${RELEASE_STATE}" "${SOURCE_SHA}" <<'PY'
+          import hashlib, json, os, sys
+          from pathlib import Path
+          stage, state = Path(os.environ["STAGE"]), Path(os.environ["STATE"])
+          tag, release_id, expected_state, source_sha = sys.argv[1:]
+          branch = json.loads((state / "branch.json").read_bytes())
+          tag_commit = json.loads((state / "tag.json").read_bytes())
+          release = json.loads((state / "release.json").read_bytes())
+          branch_sha = branch.get("commit", {}).get("sha")
+          if branch.get("protected") is not True or type(branch_sha) is not str:
+              raise SystemExit("protected release source changed")
+          if branch_sha != source_sha:
+              compare = json.loads((state / "compare.json").read_bytes())
+              if compare.get("status") != "ahead" or compare.get("behind_by") != 0 or compare.get("ahead_by", 0) < 1 or compare.get("base_commit", {}).get("sha") != source_sha or compare.get("merge_base_commit", {}).get("sha") != source_sha:
+                  raise SystemExit("protected release source changed")
+          if tag_commit.get("sha") != source_sha:
+              raise SystemExit("protected release tag changed")
+          draft_shape = release.get("draft") is True and release.get("prerelease") is False and release.get("immutable") is False and release.get("published_at") is None
+          published_shape = release.get("draft") is False and release.get("prerelease") is False and release.get("immutable") is True and type(release.get("published_at")) is str
+          if release.get("id") != int(release_id) or release.get("tag_name") != tag or not ((expected_state == "draft" and draft_shape) or (expected_state == "published-exact" and published_shape)):
+              raise SystemExit("release state changed")
+          local = {entry.name: ("sha256:" + hashlib.sha256(entry.read_bytes()).hexdigest(), entry.stat().st_size) for entry in stage.iterdir()}
+          remote = release.get("assets")
+          if type(remote) is not list:
+              raise SystemExit("release asset response malformed")
+          observed = {}
+          for asset in remote:
+              name = asset.get("name")
+              if name in observed or name not in local or asset.get("state") != "uploaded" or (asset.get("digest"), asset.get("size")) != local[name]:
+                  raise SystemExit("release asset collision")
+              observed[name] = asset.get("id")
+          missing = set(local) - set(observed)
+          if expected_state == "published-exact" and missing:
+              raise SystemExit("published release asset set mismatch")
+          (state / "missing.txt").write_text("".join(name + "\n" for name in sorted(missing)), encoding="utf-8")
+          PY
+          if [[ "${RELEASE_STATE}" == "published-exact" ]]; then
+            test ! -s "${state}/missing.txt"
+          else
+            while IFS= read -r name; do
+              test -n "${name}"
+              gh release upload "${RELEASE_TAG}" "${stage}/${name}" --repo Seabass-up/Algo-cli
+            done < "${state}/missing.txt"
+          fi
+          gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/Seabass-up/Algo-cli/releases/${RELEASE_ID}" > "${state}/final.json"
+          STAGE="${stage}" STATE="${state}" python -I -B -S - "${RELEASE_TAG}" "${RELEASE_ID}" "${RELEASE_STATE}" <<'PY'
+          import hashlib, json, os, sys
+          from pathlib import Path
+          stage, state = Path(os.environ["STAGE"]), Path(os.environ["STATE"])
+          tag, release_id, expected_state = sys.argv[1:]
+          release = json.loads((state / "final.json").read_bytes())
+          if release.get("id") != int(release_id) or release.get("tag_name") != tag:
+              raise SystemExit("release changed during upload")
+          if expected_state == "draft" and (release.get("draft") is not True or release.get("prerelease") is not False or release.get("immutable") is not False):
+              raise SystemExit("draft release changed during upload")
+          if expected_state == "published-exact" and (release.get("draft") is not False or release.get("prerelease") is not False or release.get("immutable") is not True):
+              raise SystemExit("published release changed during reconciliation")
+          local = {entry.name: ("sha256:" + hashlib.sha256(entry.read_bytes()).hexdigest(), entry.stat().st_size) for entry in stage.iterdir()}
+          remote = release.get("assets")
+          if type(remote) is not list or {asset.get("name") for asset in remote} != set(local):
+              raise SystemExit("durable release asset set mismatch")
+          rows = []
+          for asset in remote:
+              name = asset.get("name")
+              if asset.get("state") != "uploaded" or (asset.get("digest"), asset.get("size")) != local[name]:
+                  raise SystemExit("durable release asset digest mismatch")
+              rows.append(f"{asset.get('id')}\t{name}\n")
+          (state / "assets.tsv").write_text("".join(sorted(rows)), encoding="utf-8")
+          PY
+          while IFS=$'\t' read -r asset_id name; do
+            [[ "${asset_id}" =~ ^[1-9][0-9]*$ ]]
+            gh api -H "Accept: application/octet-stream" -H "X-GitHub-Api-Version: 2026-03-10" "repos/Seabass-up/Algo-cli/releases/assets/${asset_id}" > "${state}/downloaded/${name}"
+            cmp --silent -- "${stage}/${name}" "${state}/downloaded/${name}"
+          done < "${state}/assets.tsv"
+      - name: Upload the byte-verified attached asset set
+        id: upload
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: oliver-attached-assets-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-assets
+          if-no-files-found: error
+          retention-days: 90
+
+  release-assets-ready:
+    name: Select one verified draft package and release-asset boundary
+    if: ${{ always() && needs.release-authority.result == 'success' && needs.release-authority.outputs.release-state != 'published-exact' }}
+    needs: [release-authority, package, attach-evidence, durable-reconcile]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      package-artifact-id: ${{ steps.select.outputs.package-artifact-id }}
+      assets-artifact-id: ${{ steps.select.outputs.assets-artifact-id }}
+    steps:
+      - name: Fail closed unless exactly one draft path completed
+        id: select
+        env:
+          ATTACH_RESULT: ${{ needs.attach-evidence.result }}
+          BUILT_ASSETS_ID: ${{ needs.attach-evidence.outputs.artifact-id }}
+          BUILT_PACKAGE_ID: ${{ needs.package.outputs.artifact-id }}
+          DURABLE_RESULT: ${{ needs.durable-reconcile.result }}
+          RECOVERED_ASSETS_ID: ${{ needs.durable-reconcile.outputs.assets-artifact-id }}
+          RECOVERED_PACKAGE_ID: ${{ needs.durable-reconcile.outputs.package-artifact-id }}
+          RELEASE_STATE: ${{ needs.release-authority.outputs.release-state }}
+        run: |
+          set -euo pipefail
+          fail() { printf '%s\n' '{"reason_code":"release_asset_boundary","status":"blocked"}' >&2; exit 2; }
+          if [[ "${RELEASE_STATE}" == "draft" ]]; then
+            [[ "${ATTACH_RESULT}" == "success" && "${DURABLE_RESULT}" == "skipped" ]] || fail
+            package_id="${BUILT_PACKAGE_ID}"
+            assets_id="${BUILT_ASSETS_ID}"
+          elif [[ "${RELEASE_STATE}" == "draft-exact" ]]; then
+            [[ "${ATTACH_RESULT}" == "skipped" && "${DURABLE_RESULT}" == "success" ]] || fail
+            package_id="${RECOVERED_PACKAGE_ID}"
+            assets_id="${RECOVERED_ASSETS_ID}"
+          else
+            fail
+          fi
+          [[ "${package_id}" =~ ^[1-9][0-9]*$ && "${assets_id}" =~ ^[1-9][0-9]*$ ]] || fail
+          printf 'package-artifact-id=%s\nassets-artifact-id=%s\n' "${package_id}" "${assets_id}" >> "${GITHUB_OUTPUT}"
+
+  repository-policy-publish:
+    name: Revalidate unchanged release policy before PyPI publication
+    needs: [dispatch-authority, repository-policy, release-assets-ready]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: release-authority
+    permissions: {}
+    steps:
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.repository-policy.outputs.artifact-id }}
+          path: ${{ runner.temp }}/expected-policy
+      - name: Mint the repository-scoped pre-PyPI policy token
+        id: policy-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.ALGO_RELEASE_POLICY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ALGO_RELEASE_POLICY_APP_PRIVATE_KEY }}
+          owner: Seabass-up
+          repositories: Algo-cli
+          permission-administration: write
+      - name: Reject missing pre-PyPI policy authority with a fixed code
+        if: ${{ steps.policy-token.outcome != 'success' }}
+        run: |
+          printf '%s\n' '{"reason_code":"release_immutability_authority","status":"blocked"}' >&2
+          exit 2
+      - name: Repeat only fixed GET requests and require unchanged pre-PyPI policy
+        env:
+          POLICY_TOKEN: ${{ steps.policy-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          fail() { printf '%s\n' '{"reason_code":"release_immutability_authority","status":"blocked"}' >&2; exit 2; }
+          state="${RUNNER_TEMP}/current-policy"
+          install -d -m 0700 "${state}"
+          api_get() {
+            local endpoint="$1" output="$2"
+            curl --silent --fail --proto '=https' --tlsv1.2 --max-time 30 --max-filesize 8388608 \
+              -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${POLICY_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2026-03-10" "https://api.github.com/${endpoint}" > "${output}" || fail
+          }
+          api_get "repos/Seabass-up/Algo-cli/immutable-releases" "${state}/immutable.json"
+          api_get "repos/Seabass-up/Algo-cli/rulesets?per_page=100" "${state}/rulesets.json"
+          mapfile -t ids < <(jq -er 'if type == "array" and length > 0 and length < 100 and all(.[]; (.id | type) == "number" and .id > 0 and .id == (.id | floor)) then .[].id else error("shape") end' "${state}/rulesets.json") || fail
+          declare -A seen=()
+          for id in "${ids[@]}"; do
+            [[ "${id}" =~ ^[1-9][0-9]*$ && -z "${seen[$id]:-}" ]] || fail
+            seen["${id}"]=1
+            api_get "repos/Seabass-up/Algo-cli/rulesets/${id}" "${state}/ruleset-${id}.json"
+          done
+          unset POLICY_TOKEN
+          for document in "${state}"/*.json; do
+            jq --sort-keys --compact-output . "${document}" > "${document}.canonical" || fail
+            mv -- "${document}.canonical" "${document}"
+          done
+          diff --no-dereference --recursive --brief -- "${RUNNER_TEMP}/expected-policy" "${state}" >/dev/null || fail
+
+  pypi-preflight:
+    name: Classify retry-safe PyPI state
+    needs: [release-authority, release-assets-ready, repository-policy-publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      pypi-state: ${{ steps.state.outputs.pypi-state }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.release-authority.outputs.source-sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.release-assets-ready.outputs.package-artifact-id }}
+          path: ${{ runner.temp }}/package
+      - name: Revalidate protected source ancestry and the immutable tag before PyPI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_SHA: ${{ needs.release-authority.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          state="${RUNNER_TEMP}/pypi-source-authority"
+          install -d -m 0700 "${state}"
+          api_get() {
+            local endpoint="$1" output="$2"
+            curl --silent --fail --proto '=https' --tlsv1.2 --max-time 30 --max-filesize 8388608 \
+              -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2026-03-10" "https://api.github.com/${endpoint}" > "${output}"
+          }
+          api_get "repos/Seabass-up/Algo-cli/branches/main" "${state}/branch.json"
+          branch_sha="$(jq -er '.commit.sha | select(test("^[0-9a-f]{40}$"))' "${state}/branch.json")"
+          if [[ "${branch_sha}" != "${SOURCE_SHA}" ]]; then
+            api_get "repos/Seabass-up/Algo-cli/compare/${SOURCE_SHA}...${branch_sha}" "${state}/compare.json"
+          fi
+          api_get "repos/Seabass-up/Algo-cli/commits/${RELEASE_TAG}" "${state}/tag.json"
+          unset GH_TOKEN
+          STATE="${state}" SOURCE_SHA="${SOURCE_SHA}" python -I -B -S - <<'PY'
+          import json, os
+          from pathlib import Path
+          state, source_sha = Path(os.environ["STATE"]), os.environ["SOURCE_SHA"]
+          branch = json.loads((state / "branch.json").read_bytes())
+          branch_sha = branch.get("commit", {}).get("sha")
+          tag = json.loads((state / "tag.json").read_bytes())
+          if branch.get("protected") is not True or tag.get("sha") != source_sha:
+              raise SystemExit(2)
+          if branch_sha != source_sha:
+              compare = json.loads((state / "compare.json").read_bytes())
+              if compare.get("status") != "ahead" or compare.get("behind_by") != 0 or compare.get("ahead_by", 0) < 1 or compare.get("base_commit", {}).get("sha") != source_sha or compare.get("merge_base_commit", {}).get("sha") != source_sha:
+                  raise SystemExit(2)
+          PY
+      - name: Require PyPI to be absent, partial-exact, or exact
+        id: state
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: >-
+          python -I -B -S scripts/oliver_release_authority.py pypi
+          --tag "${RELEASE_TAG}" --dist "${RUNNER_TEMP}/package/bound-dist"
+          --github-output "${GITHUB_OUTPUT}"
+
+  publish:
+    name: Publish absent exact distributions to PyPI
+    if: ${{ needs.pypi-preflight.outputs.pypi-state == 'absent' || needs.pypi-preflight.outputs.pypi-state == 'partial-exact' }}
+    needs: [release-authority, repository-policy, release-assets-ready, pypi-preflight]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: release-authority
+      url: https://pypi.org/p/algo-cli-runtime
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.release-assets-ready.outputs.package-artifact-id }}
+          path: ${{ runner.temp }}/package
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.release-assets-ready.outputs.assets-artifact-id }}
+          path: ${{ runner.temp }}/verified-release-assets
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.repository-policy.outputs.artifact-id }}
+          path: ${{ runner.temp }}/expected-policy
+      - name: Mint a short-lived policy token after the protected environment wait
+        id: policy-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.ALGO_RELEASE_POLICY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ALGO_RELEASE_POLICY_APP_PRIVATE_KEY }}
+          owner: Seabass-up
+          repositories: Algo-cli
+          permission-administration: write
+      - name: Recheck and revoke policy authority immediately before PyPI
+        id: immediate-authority
+        env:
+          POLICY_TOKEN: ${{ steps.policy-token.outputs.token }}
+          SOURCE_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.release-authority.outputs.release-id }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_SHA: ${{ needs.release-authority.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          fail() { printf '%s\n' '{"reason_code":"release_pre_pypi_authority","status":"blocked"}' >&2; exit 2; }
+          [[ "${{ steps.policy-token.outcome }}" == "success" ]] || fail
+          revoke_token() {
+            local status
+            status="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 30 --output /dev/null --write-out '%{http_code}' \
+              --request DELETE -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${POLICY_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2026-03-10" "https://api.github.com/installation/token")" || return 1
+            [[ "${status}" == "204" ]]
+          }
+          trap 'revoke_token >/dev/null 2>&1 || true' EXIT
+          state="${RUNNER_TEMP}/immediate-pypi-authority"
+          install -d -m 0700 "${state}/policy"
+          policy_get() {
+            local endpoint="$1" output="$2"
+            curl --silent --fail --proto '=https' --tlsv1.2 --max-time 30 --max-filesize 8388608 \
+              -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${POLICY_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2026-03-10" "https://api.github.com/${endpoint}" > "${output}" || fail
+          }
+          source_get() {
+            local endpoint="$1" output="$2"
+            curl --silent --fail --proto '=https' --tlsv1.2 --max-time 30 --max-filesize 8388608 \
+              -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${SOURCE_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2026-03-10" "https://api.github.com/${endpoint}" > "${output}" || fail
+          }
+          policy_get "repos/Seabass-up/Algo-cli/immutable-releases" "${state}/policy/immutable.json"
+          policy_get "repos/Seabass-up/Algo-cli/rulesets?per_page=100" "${state}/policy/rulesets.json"
+          mapfile -t ids < <(jq -er 'if type == "array" and length > 0 and length < 100 and all(.[]; (.id | type) == "number" and .id > 0 and .id == (.id | floor)) then .[].id else error("shape") end' "${state}/policy/rulesets.json") || fail
+          declare -A seen=()
+          for id in "${ids[@]}"; do
+            [[ "${id}" =~ ^[1-9][0-9]*$ && -z "${seen[$id]:-}" ]] || fail
+            seen["${id}"]=1
+            policy_get "repos/Seabass-up/Algo-cli/rulesets/${id}" "${state}/policy/ruleset-${id}.json"
+          done
+          for document in "${state}/policy"/*.json; do
+            jq --sort-keys --compact-output . "${document}" > "${document}.canonical" || fail
+            mv -- "${document}.canonical" "${document}"
+          done
+          diff --no-dereference --recursive --brief -- "${RUNNER_TEMP}/expected-policy" "${state}/policy" >/dev/null || fail
+          source_get "repos/Seabass-up/Algo-cli/branches/main" "${state}/branch.json"
+          branch_sha="$(jq -er '.commit.sha | select(test("^[0-9a-f]{40}$"))' "${state}/branch.json")" || fail
+          if [[ "${branch_sha}" != "${SOURCE_SHA}" ]]; then
+            source_get "repos/Seabass-up/Algo-cli/compare/${SOURCE_SHA}...${branch_sha}" "${state}/compare.json"
+          fi
+          source_get "repos/Seabass-up/Algo-cli/commits/${RELEASE_TAG}" "${state}/tag.json"
+          source_get "repos/Seabass-up/Algo-cli/releases/${RELEASE_ID}" "${state}/release.json"
+          STATE="${state}" ASSETS="${RUNNER_TEMP}/verified-release-assets" PACKAGE="${RUNNER_TEMP}/package/bound-dist" RELEASE_ID="${RELEASE_ID}" RELEASE_TAG="${RELEASE_TAG}" SOURCE_SHA="${SOURCE_SHA}" python -I -B -S - <<'PY'
+          import hashlib, json, os, re, stat
+          from pathlib import Path
+          state, source = Path(os.environ["STATE"]), os.environ["SOURCE_SHA"]
+          branch = json.loads((state / "branch.json").read_bytes())
+          branch_sha = branch.get("commit", {}).get("sha")
+          if branch.get("protected") is not True or json.loads((state / "tag.json").read_bytes()).get("sha") != source:
+              raise SystemExit(2)
+          if branch_sha != source:
+              compare = json.loads((state / "compare.json").read_bytes())
+              if compare.get("status") != "ahead" or compare.get("behind_by") != 0 or compare.get("ahead_by", 0) < 1 or compare.get("base_commit", {}).get("sha") != source or compare.get("merge_base_commit", {}).get("sha") != source:
+                  raise SystemExit(2)
+          release = json.loads((state / "release.json").read_bytes())
+          if release.get("id") != int(os.environ["RELEASE_ID"]) or release.get("tag_name") != os.environ["RELEASE_TAG"] or release.get("draft") is not True or release.get("prerelease") is not False or release.get("immutable") is not False or release.get("published_at") is not None:
+              raise SystemExit(2)
+          tag = os.environ["RELEASE_TAG"]
+          if re.fullmatch(r"v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})", tag) is None:
+              raise SystemExit(2)
+          version = tag[1:]
+          wheel = f"algo_cli_runtime-{version}-py3-none-any.whl"
+          sdist = f"algo_cli_runtime-{version}.tar.gz"
+          expected = {
+              wheel, sdist, "algo-cli-runtime.lock.cdx.json", "SHA256SUMS",
+              "grace-boron-hosted-qualification.json", "grace-boron-hosted-qualification.sigstore.jsonl",
+              "algo-cli-release-provenance.sigstore.jsonl", "algo-cli-release-sbom.sigstore.jsonl",
+              "grace-boron-release-qualification.sigstore.jsonl", "oliver-release-source-binding.sigstore.jsonl",
+              "oliver-release-authority.json", "oliver-release-source.tar", "oliver-release-source-receipt.json",
+              "oliver-release-source-binding.json", "oliver-release-repository-policy.json",
+              "algo-cli-release-auditable-requirements.txt", "grace-release-evidence-SHA256SUMS",
+          }
+          local = {}
+          payloads = {}
+          for entry in Path(os.environ["ASSETS"]).iterdir():
+              info = entry.lstat()
+              if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_nlink != 1 or info.st_size < 1:
+                  raise SystemExit(2)
+              payload = entry.read_bytes()
+              if len(payload) != info.st_size:
+                  raise SystemExit(2)
+              local[entry.name] = ("sha256:" + hashlib.sha256(payload).hexdigest(), len(payload))
+              payloads[entry.name] = payload
+          if set(local) != expected:
+              raise SystemExit(2)
+          checksum_name = "grace-release-evidence-SHA256SUMS"
+          checksums = "".join(f"{hashlib.sha256(payloads[name]).hexdigest()}  {name}\n" for name in sorted(expected - {checksum_name})).encode("ascii")
+          if payloads[checksum_name] != checksums:
+              raise SystemExit(2)
+          package = {}
+          for entry in Path(os.environ["PACKAGE"]).iterdir():
+              info = entry.lstat()
+              if entry.name not in {wheel, sdist} or not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_nlink != 1 or info.st_size < 1:
+                  raise SystemExit(2)
+              package[entry.name] = entry.read_bytes()
+          if set(package) != {wheel, sdist} or any(package[name] != payloads[name] for name in package):
+              raise SystemExit(2)
+          assets = release.get("assets")
+          if type(assets) is not list:
+              raise SystemExit(2)
+          remote = {}
+          for asset in assets:
+              name = asset.get("name") if type(asset) is dict else None
+              if type(name) is not str or name in remote or asset.get("state") != "uploaded":
+                  raise SystemExit(2)
+              remote[name] = (asset.get("digest"), asset.get("size"))
+          if remote != local:
+              raise SystemExit(2)
+          PY
+          revoke_token || fail
+          trap - EXIT
+          unset POLICY_TOKEN SOURCE_TOKEN
+          [[ "${GITHUB_RUN_ATTEMPT}" == "1" ]] || fail
+          version="${RELEASE_TAG#v}"
+          http_status="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 30 --max-filesize 8388608 \
+            --output "${state}/pypi.json" --write-out '%{http_code}' \
+            "https://pypi.org/pypi/algo-cli-runtime/${version}/json")" || fail
+          [[ "${http_status}" == "200" || "${http_status}" == "404" ]] || fail
+          STATE="${state}" DIST="${RUNNER_TEMP}/package/bound-dist" RELEASE_TAG="${RELEASE_TAG}" HTTP_STATUS="${http_status}" python -I -B -S - >> "${GITHUB_OUTPUT}" <<'PY'
+          import hashlib, json, os, re, stat
+          from pathlib import Path
+          tag = os.environ["RELEASE_TAG"]
+          if re.fullmatch(r"v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})", tag) is None:
+              raise SystemExit(2)
+          version = tag[1:]
+          expected = {f"algo_cli_runtime-{version}-py3-none-any.whl", f"algo_cli_runtime-{version}.tar.gz"}
+          local = {}
+          for entry in Path(os.environ["DIST"]).iterdir():
+              info = entry.lstat()
+              if entry.name not in expected or not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_nlink != 1 or info.st_size < 1:
+                  raise SystemExit(2)
+              payload = entry.read_bytes()
+              local[entry.name] = (hashlib.sha256(payload).hexdigest(), len(payload))
+          if set(local) != expected:
+              raise SystemExit(2)
+          if os.environ["HTTP_STATUS"] == "404":
+              print("publish-required=true")
+              raise SystemExit(0)
+          def closed(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise ValueError("duplicate")
+                  result[key] = value
+              return result
+          root = json.loads((Path(os.environ["STATE"]) / "pypi.json").read_bytes(), object_pairs_hook=closed, parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("constant")))
+          if type(root) is not dict or root.get("info", {}).get("name") != "algo-cli-runtime" or root.get("info", {}).get("version") != version or type(root.get("urls")) is not list:
+              raise SystemExit(2)
+          observed = set()
+          for row in root["urls"]:
+              name = row.get("filename") if type(row) is dict else None
+              if name not in expected or name in observed or row.get("yanked") is not False or row.get("size") != local[name][1] or row.get("digests", {}).get("sha256") != local[name][0] or row.get("packagetype") != ("bdist_wheel" if name.endswith(".whl") else "sdist"):
+                  raise SystemExit(2)
+              observed.add(name)
+          print("publish-required=" + ("false" if observed == expected else "true"))
+          PY
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        if: ${{ steps.immediate-authority.outputs.publish-required == 'true' }}
+        with:
+          packages-dir: ${{ runner.temp }}/package/bound-dist
+          skip-existing: true
+
+  pypi-verify:
+    name: Verify the exact immutable PyPI file set
+    if: ${{ always() && needs.pypi-preflight.result == 'success' && (needs.pypi-preflight.outputs.pypi-state == 'exact' || needs.publish.result == 'success') }}
+    needs: [release-authority, release-assets-ready, pypi-preflight, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.release-authority.outputs.source-sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.release-assets-ready.outputs.package-artifact-id }}
+          path: ${{ runner.temp }}/package
+      - name: Require every PyPI file to match the source-bound bytes
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: >-
+          python -I -B -S scripts/oliver_release_authority.py pypi
+          --tag "${RELEASE_TAG}" --dist "${RUNNER_TEMP}/package/bound-dist" --require-present
+
+  repository-policy-final:
+    name: Revalidate unchanged release policy immediately before publication
+    needs: [dispatch-authority, repository-policy, pypi-verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: release-authority
+    permissions: {}
+    steps:
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.repository-policy.outputs.artifact-id }}
+          path: ${{ runner.temp }}/expected-policy
+      - name: Mint the repository-scoped policy recheck token
+        id: policy-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.ALGO_RELEASE_POLICY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ALGO_RELEASE_POLICY_APP_PRIVATE_KEY }}
+          owner: Seabass-up
+          repositories: Algo-cli
+          permission-administration: write
+      - name: Reject missing policy recheck authority with a fixed code
+        if: ${{ steps.policy-token.outcome != 'success' }}
+        run: |
+          printf '%s\n' '{"reason_code":"release_immutability_authority","status":"blocked"}' >&2
+          exit 2
+      - name: Repeat only fixed GET requests and require an unchanged policy snapshot
+        env:
+          POLICY_TOKEN: ${{ steps.policy-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          fail() { printf '%s\n' '{"reason_code":"release_immutability_authority","status":"blocked"}' >&2; exit 2; }
+          state="${RUNNER_TEMP}/current-policy"
+          install -d -m 0700 "${state}"
+          api_get() {
+            local endpoint="$1" output="$2"
+            curl --silent --fail --proto '=https' --tlsv1.2 --max-time 30 --max-filesize 8388608 \
+              -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${POLICY_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2026-03-10" "https://api.github.com/${endpoint}" > "${output}" || fail
+          }
+          api_get "repos/Seabass-up/Algo-cli/immutable-releases" "${state}/immutable.json"
+          api_get "repos/Seabass-up/Algo-cli/rulesets?per_page=100" "${state}/rulesets.json"
+          mapfile -t ids < <(jq -er 'if type == "array" and length > 0 and length < 100 and all(.[]; (.id | type) == "number" and .id > 0 and .id == (.id | floor)) then .[].id else error("shape") end' "${state}/rulesets.json") || fail
+          declare -A seen=()
+          for id in "${ids[@]}"; do
+            [[ "${id}" =~ ^[1-9][0-9]*$ && -z "${seen[$id]:-}" ]] || fail
+            seen["${id}"]=1
+            api_get "repos/Seabass-up/Algo-cli/rulesets/${id}" "${state}/ruleset-${id}.json"
+          done
+          unset POLICY_TOKEN
+          for document in "${state}"/*.json; do
+            jq --sort-keys --compact-output . "${document}" > "${document}.canonical" || fail
+            mv -- "${document}.canonical" "${document}"
+          done
+          diff --no-dereference --recursive --brief -- "${RUNNER_TEMP}/expected-policy" "${state}" >/dev/null || fail
+
+  publish-release:
+    name: Publish or reconcile the evidence-complete immutable GitHub release
+    needs: [release-authority, repository-policy, release-assets-ready, pypi-verify, repository-policy-final]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release-authority
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.release-assets-ready.outputs.assets-artifact-id }}
+          path: ${{ runner.temp }}/release-assets
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.repository-policy.outputs.artifact-id }}
+          path: ${{ runner.temp }}/expected-policy
+      - name: Install the immutable GitHub CLI publisher
+        env:
+          GH_CLI_ARCHIVE_SHA256: 25d1e4729e8808c9ed3d613e96ebd3f3e44446f2d368c89d878a71a36ddb3d8c
+          GH_CLI_VERSION: "2.95.0"
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/gh_${GH_CLI_VERSION}_linux_amd64.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --output "${archive}" "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "${GH_CLI_ARCHIVE_SHA256}" "${archive}" | sha256sum --check --strict
+          tar --extract --gzip --file "${archive}" --directory "${RUNNER_TEMP}"
+          printf '%s\n' "${RUNNER_TEMP}/gh_${GH_CLI_VERSION}_linux_amd64/bin" >> "${GITHUB_PATH}"
+      - name: Mint a short-lived policy token after the final protected environment wait
+        id: policy-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.ALGO_RELEASE_POLICY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ALGO_RELEASE_POLICY_APP_PRIVATE_KEY }}
+          owner: Seabass-up
+          repositories: Algo-cli
+          permission-administration: write
+      - name: Recheck and revoke policy authority immediately before final publication
+        env:
+          POLICY_TOKEN: ${{ steps.policy-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          fail() { printf '%s\n' '{"reason_code":"release_pre_publish_authority","status":"blocked"}' >&2; exit 2; }
+          [[ "${{ steps.policy-token.outcome }}" == "success" ]] || fail
+          revoke_token() {
+            local status
+            status="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 30 --output /dev/null --write-out '%{http_code}' \
+              --request DELETE -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${POLICY_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2026-03-10" "https://api.github.com/installation/token")" || return 1
+            [[ "${status}" == "204" ]]
+          }
+          trap 'revoke_token >/dev/null 2>&1 || true' EXIT
+          state="${RUNNER_TEMP}/immediate-publish-policy"
+          install -d -m 0700 "${state}"
+          api_get() {
+            local endpoint="$1" output="$2"
+            curl --silent --fail --proto '=https' --tlsv1.2 --max-time 30 --max-filesize 8388608 \
+              -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${POLICY_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2026-03-10" "https://api.github.com/${endpoint}" > "${output}" || fail
+          }
+          api_get "repos/Seabass-up/Algo-cli/immutable-releases" "${state}/immutable.json"
+          api_get "repos/Seabass-up/Algo-cli/rulesets?per_page=100" "${state}/rulesets.json"
+          mapfile -t ids < <(jq -er 'if type == "array" and length > 0 and length < 100 and all(.[]; (.id | type) == "number" and .id > 0 and .id == (.id | floor)) then .[].id else error("shape") end' "${state}/rulesets.json") || fail
+          declare -A seen=()
+          for id in "${ids[@]}"; do
+            [[ "${id}" =~ ^[1-9][0-9]*$ && -z "${seen[$id]:-}" ]] || fail
+            seen["${id}"]=1
+            api_get "repos/Seabass-up/Algo-cli/rulesets/${id}" "${state}/ruleset-${id}.json"
+          done
+          for document in "${state}"/*.json; do
+            jq --sort-keys --compact-output . "${document}" > "${document}.canonical" || fail
+            mv -- "${document}.canonical" "${document}"
+          done
+          diff --no-dereference --recursive --brief -- "${RUNNER_TEMP}/expected-policy" "${state}" >/dev/null || fail
+          revoke_token || fail
+          trap - EXIT
+          unset POLICY_TOKEN
+      - name: Revalidate, publish if still draft, and verify final immutable state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.release-authority.outputs.release-id }}
+          RELEASE_STATE: ${{ needs.release-authority.outputs.release-state }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_SHA: ${{ needs.release-authority.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          stage="${RUNNER_TEMP}/release-assets"
+          state="${RUNNER_TEMP}/publish-state"
+          install -d -m 0700 "${state}"
+          resolve_tag() {
+            local prefix="$1" document kind sha depth expected_tag_sha="-"
+            declare -A seen=()
+            document="${prefix}-0.json"
+            gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/Seabass-up/Algo-cli/git/ref/tags/${RELEASE_TAG}" > "${document}"
+            for depth in {0..7}; do
+              read -r kind sha < <(DOCUMENT="${document}" EXPECTED_REF="$([[ "${depth}" == 0 ]] && printf 'refs/tags/%s' "${RELEASE_TAG}" || printf '-')" EXPECTED_TAG_SHA="${expected_tag_sha}" python -I -B -S - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          row = json.loads(Path(os.environ["DOCUMENT"]).read_bytes())
+          expected = os.environ["EXPECTED_REF"]
+          if expected != "-" and row.get("ref") != expected:
+              raise SystemExit(2)
+          expected_tag_sha = os.environ["EXPECTED_TAG_SHA"]
+          if expected_tag_sha != "-" and row.get("sha") != expected_tag_sha:
+              raise SystemExit(2)
+          target = row.get("object")
+          if type(target) is not dict or target.get("type") not in {"commit", "tag"} or re.fullmatch(r"[0-9a-f]{40}", target.get("sha", "")) is None:
+              raise SystemExit(2)
+          print(target["type"], target["sha"])
+          PY
+              )
+              if [[ "${kind}" == "commit" ]]; then printf '%s\n' "${sha}" > "${prefix}.sha"; return 0; fi
+              [[ -z "${seen[$sha]:-}" ]]
+              seen["${sha}"]=1
+              expected_tag_sha="${sha}"
+              document="${prefix}-$((depth + 1)).json"
+              gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/Seabass-up/Algo-cli/git/tags/${sha}" > "${document}"
+            done
+            return 1
+          }
+          snapshot() {
+            local label="$1" branch_sha
+            gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/Seabass-up/Algo-cli/branches/main" > "${state}/${label}-branch.json"
+            branch_sha="$(jq -er '.commit.sha | select(test("^[0-9a-f]{40}$"))' "${state}/${label}-branch.json")"
+            if [[ "${branch_sha}" != "${SOURCE_SHA}" ]]; then
+              gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/Seabass-up/Algo-cli/compare/${SOURCE_SHA}...${branch_sha}" > "${state}/${label}-compare.json"
+            fi
+            gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/Seabass-up/Algo-cli/releases/${RELEASE_ID}" > "${state}/${label}-release.json"
+            resolve_tag "${state}/${label}-tag"
+          }
+          snapshot before
+          STAGE="${stage}" STATE="${state}" python -I -B -S - "${RELEASE_TAG}" "${RELEASE_ID}" "${RELEASE_STATE}" "${SOURCE_SHA}" before <<'PY'
+          import hashlib, json, os, sys
+          from pathlib import Path
+          stage, state = Path(os.environ["STAGE"]), Path(os.environ["STATE"])
+          tag, release_id, expected_state, source_sha, label = sys.argv[1:]
+          branch = json.loads((state / f"{label}-branch.json").read_bytes())
+          release = json.loads((state / f"{label}-release.json").read_bytes())
+          tag_sha = (state / f"{label}-tag.sha").read_text(encoding="ascii").strip()
+          branch_sha = branch.get("commit", {}).get("sha")
+          if branch.get("protected") is not True or tag_sha != source_sha:
+              raise SystemExit("release authority changed")
+          if branch_sha != source_sha:
+              compare = json.loads((state / f"{label}-compare.json").read_bytes())
+              if compare.get("status") != "ahead" or compare.get("behind_by") != 0 or compare.get("ahead_by", 0) < 1 or compare.get("base_commit", {}).get("sha") != source_sha or compare.get("merge_base_commit", {}).get("sha") != source_sha:
+                  raise SystemExit("release authority changed")
+          local = {entry.name: ("sha256:" + hashlib.sha256(entry.read_bytes()).hexdigest(), entry.stat().st_size) for entry in stage.iterdir()}
+          assets = release.get("assets")
+          remote = {asset.get("name"): (asset.get("digest"), asset.get("size")) for asset in assets} if type(assets) is list else {}
+          if len(remote) != len(assets or []) or remote != local or release.get("id") != int(release_id) or release.get("tag_name") != tag:
+              raise SystemExit("release asset authority changed")
+          draft = release.get("draft") is True and release.get("prerelease") is False and release.get("immutable") is False and release.get("published_at") is None
+          published = release.get("draft") is False and release.get("prerelease") is False and release.get("immutable") is True and type(release.get("published_at")) is str
+          if expected_state in {"draft", "draft-exact"} and draft:
+              action = "publish"
+          elif expected_state in {"draft", "draft-exact", "published-exact"} and published:
+              action = "reconcile"
+          else:
+              raise SystemExit("release state changed")
+          (state / "before-action.txt").write_text(action + "\n", encoding="ascii")
+          PY
+          action="$(<"${state}/before-action.txt")"
+          verify_pypi() {
+            local label="$1" version="${RELEASE_TAG#v}" http_status
+            http_status="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 30 --max-filesize 8388608 \
+              --output "${state}/pypi-${label}.json" --write-out '%{http_code}' \
+              "https://pypi.org/pypi/algo-cli-runtime/${version}/json")"
+            [[ "${http_status}" == "200" ]]
+            STAGE="${stage}" PYPI="${state}/pypi-${label}.json" RELEASE_TAG="${RELEASE_TAG}" python -I -B -S - <<'PY'
+          import hashlib, json, os, re, stat
+          from pathlib import Path
+          tag = os.environ["RELEASE_TAG"]
+          if re.fullmatch(r"v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})", tag) is None:
+              raise SystemExit(2)
+          version = tag[1:]
+          expected = {f"algo_cli_runtime-{version}-py3-none-any.whl", f"algo_cli_runtime-{version}.tar.gz"}
+          local = {}
+          for entry in Path(os.environ["STAGE"]).iterdir():
+              if entry.name not in expected:
+                  continue
+              info = entry.lstat()
+              if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_nlink != 1 or info.st_size < 1:
+                  raise SystemExit(2)
+              payload = entry.read_bytes()
+              local[entry.name] = (hashlib.sha256(payload).hexdigest(), len(payload))
+          if set(local) != expected:
+              raise SystemExit(2)
+          def closed(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise ValueError("duplicate")
+                  result[key] = value
+              return result
+          root = json.loads(Path(os.environ["PYPI"]).read_bytes(), object_pairs_hook=closed, parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("constant")))
+          if type(root) is not dict or root.get("info", {}).get("name") != "algo-cli-runtime" or root.get("info", {}).get("version") != version or type(root.get("urls")) is not list:
+              raise SystemExit(2)
+          observed = set()
+          for row in root["urls"]:
+              name = row.get("filename") if type(row) is dict else None
+              if name not in expected or name in observed or row.get("yanked") is not False or row.get("size") != local[name][1] or row.get("digests", {}).get("sha256") != local[name][0] or row.get("packagetype") != ("bdist_wheel" if name.endswith(".whl") else "sdist"):
+                  raise SystemExit(2)
+              observed.add(name)
+          if observed != expected:
+              raise SystemExit(2)
+          PY
+          }
+          verify_pypi before
+          if [[ "${action}" == "publish" ]]; then
+            [[ "${GITHUB_RUN_ATTEMPT}" == "1" ]] || { printf '%s\n' '{"reason_code":"release_retry_requires_full_dispatch","status":"blocked"}' >&2; exit 2; }
+            printf '%s\n' '{"draft":false,"prerelease":false}' > "${state}/publish.json"
+            gh api --method PATCH -H "X-GitHub-Api-Version: 2026-03-10" "repos/Seabass-up/Algo-cli/releases/${RELEASE_ID}" --input "${state}/publish.json" > "${state}/published.json"
+          else
+            test "${action}" = "reconcile"
+          fi
+          snapshot after
+          STAGE="${stage}" STATE="${state}" python -I -B -S - "${RELEASE_TAG}" "${RELEASE_ID}" "${SOURCE_SHA}" after <<'PY'
+          import hashlib, json, os, re, sys
+          from pathlib import Path
+          stage, state = Path(os.environ["STAGE"]), Path(os.environ["STATE"])
+          tag, release_id, source_sha, label = sys.argv[1:]
+          branch = json.loads((state / f"{label}-branch.json").read_bytes())
+          release = json.loads((state / f"{label}-release.json").read_bytes())
+          tag_sha = (state / f"{label}-tag.sha").read_text(encoding="ascii").strip()
+          branch_sha = branch.get("commit", {}).get("sha")
+          if branch.get("protected") is not True or tag_sha != source_sha:
+              raise SystemExit("published release authority changed")
+          if branch_sha != source_sha:
+              compare = json.loads((state / f"{label}-compare.json").read_bytes())
+              if compare.get("status") != "ahead" or compare.get("behind_by") != 0 or compare.get("ahead_by", 0) < 1 or compare.get("base_commit", {}).get("sha") != source_sha or compare.get("merge_base_commit", {}).get("sha") != source_sha:
+                  raise SystemExit("published release authority changed")
+          if release.get("id") != int(release_id) or release.get("tag_name") != tag or release.get("draft") is not False or release.get("prerelease") is not False or release.get("immutable") is not True or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", release.get("published_at", "")) is None:
+              raise SystemExit("immutable publication failed")
+          local = {entry.name: ("sha256:" + hashlib.sha256(entry.read_bytes()).hexdigest(), entry.stat().st_size) for entry in stage.iterdir()}
+          assets = release.get("assets")
+          remote = {asset.get("name"): (asset.get("digest"), asset.get("size")) for asset in assets} if type(assets) is list else {}
+          if len(remote) != len(assets or []) or remote != local:
+              raise SystemExit("published asset set mismatch")
+          PY
+          verify_pypi after
+
+  repository-policy-postcheck:
+    name: Detect repository-policy drift after immutable publication
+    needs: [repository-policy, publish-release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: release-authority
+    permissions: {}
+    steps:
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.repository-policy.outputs.artifact-id }}
+          path: ${{ runner.temp }}/expected-policy
+      - name: Mint a short-lived post-publication policy-audit token
+        id: policy-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.ALGO_RELEASE_POLICY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ALGO_RELEASE_POLICY_APP_PRIVATE_KEY }}
+          owner: Seabass-up
+          repositories: Algo-cli
+          permission-administration: write
+      - name: Recheck, compare, and revoke post-publication policy authority
+        env:
+          POLICY_TOKEN: ${{ steps.policy-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          fail() { printf '%s\n' '{"reason_code":"release_post_publish_policy","status":"blocked"}' >&2; exit 2; }
+          [[ "${{ steps.policy-token.outcome }}" == "success" ]] || fail
+          revoke_token() {
+            local status
+            status="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 30 --output /dev/null --write-out '%{http_code}' \
+              --request DELETE -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${POLICY_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2026-03-10" "https://api.github.com/installation/token")" || return 1
+            [[ "${status}" == "204" ]]
+          }
+          trap 'revoke_token >/dev/null 2>&1 || true' EXIT
+          state="${RUNNER_TEMP}/post-publish-policy"
+          install -d -m 0700 "${state}"
+          api_get() {
+            local endpoint="$1" output="$2"
+            curl --silent --fail --proto '=https' --tlsv1.2 --max-time 30 --max-filesize 8388608 \
+              -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${POLICY_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2026-03-10" "https://api.github.com/${endpoint}" > "${output}" || fail
+          }
+          api_get "repos/Seabass-up/Algo-cli/immutable-releases" "${state}/immutable.json"
+          api_get "repos/Seabass-up/Algo-cli/rulesets?per_page=100" "${state}/rulesets.json"
+          mapfile -t ids < <(jq -er 'if type == "array" and length > 0 and length < 100 and all(.[]; (.id | type) == "number" and .id > 0 and .id == (.id | floor)) then .[].id else error("shape") end' "${state}/rulesets.json") || fail
+          declare -A seen=()
+          for id in "${ids[@]}"; do
+            [[ "${id}" =~ ^[1-9][0-9]*$ && -z "${seen[$id]:-}" ]] || fail
+            seen["${id}"]=1
+            api_get "repos/Seabass-up/Algo-cli/rulesets/${id}" "${state}/ruleset-${id}.json"
+          done
+          for document in "${state}"/*.json; do
+            jq --sort-keys --compact-output . "${document}" > "${document}.canonical" || fail
+            mv -- "${document}.canonical" "${document}"
+          done
+          diff --no-dereference --recursive --brief -- "${RUNNER_TEMP}/expected-policy" "${state}" >/dev/null || fail
+          revoke_token || fail
+          trap - EXIT
+          unset POLICY_TOKEN

@@ -4,13 +4,14 @@ These tests exercise the boundaries that decide which provider receives chat,
 which credential source is required, and whether local Ollama startup is needed.
 No network calls are made: clients/auth helpers are monkeypatched.
 """
+
 from __future__ import annotations
 
 from urllib.error import URLError
 
 import pytest
 
-from algo_cli import model_info, model_routing, runtime_services
+from algo_cli import model_info, model_routing, theodore_runtime_services as runtime_services
 from algo_cli.config import Config
 
 
@@ -32,6 +33,24 @@ def test_local_ollama_client_uses_configured_host(monkeypatch):
     assert isinstance(client, _FakeOllamaClient)
     assert client.kwargs["host"] == "http://127.0.0.1:11434"
     assert "headers" not in client.kwargs
+
+
+def test_explicit_ollama_provider_keeps_local_gpt_alias_on_ollama(monkeypatch):
+    monkeypatch.setattr(runtime_services, "Client", _FakeOllamaClient)
+    _FakeOllamaClient.calls.clear()
+    cfg = Config(
+        host="http://127.0.0.1:11434",
+        cloud=False,
+        model="gpt-local:latest",
+        model_provider="ollama",
+    )
+
+    client = runtime_services.create_client(cfg)
+
+    assert isinstance(client, _FakeOllamaClient)
+    assert client.kwargs["host"] == "http://127.0.0.1:11434"
+    assert model_routing.runtime_mode_label(cfg) == "local"
+    assert model_routing.effective_runtime_host(cfg) == "http://127.0.0.1:11434"
 
 
 def test_ollama_cloud_client_requires_key_and_uses_bearer(monkeypatch):
@@ -110,11 +129,32 @@ def test_codex_alias_routes_to_chatgpt_client(monkeypatch, alias):
     assert model_routing.effective_runtime_host(cfg) == "chatgpt"
 
 
-def test_chatgpt_detection_does_not_steal_gpt_oss_ollama_models():
-    assert model_info.is_chatgpt_model("gpt-5.1") is True
-    assert model_info.is_chatgpt_model("chatgpt-4o-latest") is True
-    assert model_info.is_chatgpt_model("o3-mini") is True
-    assert model_info.is_chatgpt_model("gpt-oss:120b-cloud") is False
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-3.5-turbo",
+        "gpt-4",
+        "gpt-4.1-mini",
+        "gpt-4o-realtime-preview",
+        "gpt-5.1",
+        "chatgpt-4o-latest",
+        "o3-mini",
+    ],
+)
+def test_chatgpt_detection_accepts_known_openai_model_families(model):
+    assert model_info.is_chatgpt_model(model) is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["gpt-local:latest", "gpt-neo", "gpt-j", "gpt4all", "gpt-oss:120b-cloud"],
+)
+def test_auto_provider_does_not_steal_local_gpt_named_models(model):
+    cfg = Config(model=model, model_provider="auto")
+
+    assert model_info.is_chatgpt_model(model) is False
+    assert model_routing.resolved_model_provider(cfg) == "ollama"
+    assert model_routing.runtime_mode_label(cfg) == "local"
 
 
 def test_provider_models_do_not_start_local_ollama(monkeypatch):
@@ -141,6 +181,38 @@ def test_provider_models_do_not_start_local_ollama(monkeypatch):
 )
 def test_host_is_local_requires_an_exact_loopback_endpoint(host, expected):
     assert runtime_services.host_is_local(host) is expected
+
+
+@pytest.mark.parametrize(
+    ("url", "require_http", "expected"),
+    [
+        ("http://127.0.0.1:8765", True, "127.0.0.1:8765"),
+        ("http://[::1]:8765/", True, "[::1]:8765"),
+        ("https://localhost:11434", False, "localhost:11434"),
+        ("https://localhost:11434", True, None),
+        ("http://localhost", True, None),
+        ("http://user:secret@localhost:8765", True, None),
+        ("http://localhost:8765/path", True, None),
+        ("http://localhost.example:8765", True, None),
+        ("http://0.0.0.0:8765", True, None),
+    ],
+)
+def test_local_service_address_is_explicit_loopback_and_credential_free(
+    url,
+    require_http,
+    expected,
+):
+    assert runtime_services.local_service_address(url, require_http=require_http) == expected
+
+
+def test_gateway_ready_never_contacts_remote_or_ambiguous_endpoint(monkeypatch):
+    calls = []
+    monkeypatch.setattr(runtime_services, "urlopen", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    assert runtime_services.gateway_ready("https://example.com:8765") is False
+    assert runtime_services.gateway_ready("http://user:secret@localhost:8765") is False
+    assert runtime_services.gateway_ready("http://localhost") is False
+    assert calls == []
 
 
 def test_failed_server_probe_uses_short_negative_cache(monkeypatch):

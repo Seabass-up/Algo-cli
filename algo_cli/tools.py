@@ -1,8 +1,11 @@
-﻿"""Tools exposed to Ollama tool calling."""
+"""Tools exposed to Ollama tool calling."""
 
 from __future__ import annotations
 
+import atexit
+from dataclasses import dataclass
 import hashlib
+import hmac
 import logging
 import math
 import os
@@ -12,20 +15,33 @@ import re
 import signal
 import shlex
 import shutil
+import stat
 import subprocess
-import tempfile
 import threading
 import time
 from pathlib import Path
 import inspect
 from typing import Any
 from urllib.error import URLError
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 from . import harness
 from . import identity
 from . import index_compute_lab as _index_compute_lab
-from .config import CONFIG_DIR, Config, load_runtime_env, _atomic_write_text
+from .alice_artifact_store import (
+    ArtifactPolicy,
+    ArtifactStoreError,
+    EncryptedArtifactRef,
+    EncryptedArtifactStore,
+    RunCapability,
+)
+from .config import (
+    CONFIG_DIR,
+    Config,
+    load_runtime_env,
+    _atomic_write_text,
+)
+from .marcus_authority import CuratedToolRegistry
 from ollama import Client
 
 from .chat_protocol import get_attr
@@ -36,21 +52,58 @@ logger = logging.getLogger(__name__)
 MAX_READ_CHARS = 50_000
 MAX_PDF_PAGES = 24
 MAX_RENDER_PDF_PAGES = 6
+MAX_RENDER_PDF_SCALE = 4.0
+MAX_RENDER_PDF_PIXELS = 40_000_000
+MAX_RENDER_PDF_PAGE_BYTES = 32 * 1024 * 1024
+MAX_RENDER_PDF_TOTAL_BYTES = 96 * 1024 * 1024
+PDF_RENDER_ARTIFACT_TTL_SECONDS = 15 * 60
+MAX_PDF_RENDER_ARTIFACT_TTL_SECONDS = 60 * 60
+MAX_PDF_RENDER_ARTIFACTS = 128
+PDF_RENDER_ARTIFACT_ROOT = CONFIG_DIR / "private" / "pdf_render_artifacts"
+_PDF_RENDER_ARTIFACT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_PDF_RENDER_RECEIPT_RE = re.compile(r"^hmac-sha256:[0-9a-f]{64}$")
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+PDF_RENDER_ARTIFACT_POLICY = ArtifactPolicy(
+    max_artifact_bytes=MAX_RENDER_PDF_PAGE_BYTES,
+    max_run_bytes=MAX_RENDER_PDF_TOTAL_BYTES,
+    max_run_disk_bytes=160 * 1024 * 1024,
+    max_total_bytes=256 * 1024 * 1024,
+    max_total_disk_bytes=384 * 1024 * 1024,
+    max_artifacts_per_run=MAX_RENDER_PDF_PAGES,
+    max_runs=MAX_PDF_RENDER_ARTIFACTS,
+    default_ttl_seconds=PDF_RENDER_ARTIFACT_TTL_SECONDS,
+    max_ttl_seconds=MAX_PDF_RENDER_ARTIFACT_TTL_SECONDS,
+)
+_PDF_RENDER_CLEANUP_LOCK = threading.RLock()
+_PDF_RENDER_TIMERS: dict[str, threading.Timer] = {}
+_PDF_RENDER_ATEXIT_REGISTERED = False
+_PDF_RENDER_STORE: EncryptedArtifactStore | None = None
 MAX_TOOL_RESULT = 20_000
 WEB_FETCH_MAX_INFLIGHT = 2
 _WEB_FETCH_SLOTS = threading.BoundedSemaphore(WEB_FETCH_MAX_INFLIGHT)
 SESSION_COMMAND_OUTPUT_LIMIT = MAX_TOOL_RESULT
 SEARCH_FALLBACK_SKIP_DIRS = {
-    ".git", "node_modules", ".venv", "venv", "dist", "build",
-    "__pycache__", ".next", "target", ".mypy_cache", ".pytest_cache",
+    ".git",
+    "node_modules",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    "__pycache__",
+    ".next",
+    "target",
+    ".mypy_cache",
+    ".pytest_cache",
 }
 SEARCH_FALLBACK_MAX_FILE_BYTES = 2_000_000
 SEARCH_FALLBACK_MAX_FILES = 5_000
 DEFAULT_GATEWAY_URL = (
-    os.environ.get("ALGO_CLI_GATEWAY_URL")
-    or os.environ.get("OLLAMA_CLI_GATEWAY_URL")
-    or "http://127.0.0.1:8765"
+    os.environ.get("ALGO_CLI_GATEWAY_URL") or os.environ.get("OLLAMA_CLI_GATEWAY_URL") or "http://127.0.0.1:8765"
 )
+MAX_GATEWAY_REQUEST_BYTES = 4 * 1024 * 1024
+MAX_GATEWAY_RESPONSE_BYTES = 16 * 1024 * 1024
+MAX_GATEWAY_BATCH_ITEMS = 256
+MAX_GATEWAY_MODEL_CHARS = 256
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DENY_COMMAND_RE = re.compile(
     r"\b(rm|del|erase|rd|rmdir|format|diskpart|shutdown|restart-computer|stop-computer|"
@@ -176,9 +229,7 @@ _GIT_UNSAFE_READ_ONLY_VALUE_OPTIONS = frozenset(
         "--output",
     }
 )
-_GIT_MUTATING_WORKTREE_ACTIONS = frozenset(
-    {"add", "remove", "move", "lock", "unlock", "prune", "repair"}
-)
+_GIT_MUTATING_WORKTREE_ACTIONS = frozenset({"add", "remove", "move", "lock", "unlock", "prune", "repair"})
 _GIT_MUTATING_BRANCH_OPTIONS = frozenset(
     {
         "--delete",
@@ -251,7 +302,7 @@ def _git_global_equals_option(token: str) -> tuple[str, str] | None:
     for option in _GIT_GLOBAL_EQUALS_OPTIONS:
         prefix = f"{option}="
         if token.startswith(prefix):
-            return option, token[len(prefix):]
+            return option, token[len(prefix) :]
     return None
 
 
@@ -555,7 +606,7 @@ def read_file(
         requested_line = offset if offset is not None else start_line
         line_number = max(1, int(requested_line))
         if line_number > 1:
-            text = "".join(text.splitlines(keepends=True)[line_number - 1:])
+            text = "".join(text.splitlines(keepends=True)[line_number - 1 :])
         return text[:max_chars]
     except Exception as exc:
         return f"Error reading {p}: {exc}"
@@ -616,7 +667,8 @@ def read_pdf(
     if not combined or all(not chunk.split("\n", 1)[-1].strip() for chunk in pages):
         return (
             f"PDF extraction completed with {engine}, but no text layer was found in {p}. "
-            "This PDF may be scanned or image-only. Use render_pdf_pages next, then pass the returned PNG path(s) to vision_describe or another OCR-capable workflow."
+            "This PDF may be scanned or image-only. Use render_pdf_pages next, then "
+            "pass its artifact_id, page number, and artifact_receipt to vision_describe."
         )
     suffix = ""
     if page_count > max_pages:
@@ -625,22 +677,191 @@ def read_pdf(
     return _cap((header + combined + suffix)[:max_chars])
 
 
+@dataclass(frozen=True)
+class _PdfRenderSession:
+    store: EncryptedArtifactStore
+    capability: RunCapability
+    pages: tuple[tuple[int, EncryptedArtifactRef], ...]
+    receipt: str
+    total_bytes: int
+
+
+_PDF_RENDER_SESSIONS: dict[str, _PdfRenderSession] = {}
+
+
+def _get_pdf_render_artifact_store() -> EncryptedArtifactStore:
+    global _PDF_RENDER_STORE
+
+    selected_root = Path(os.path.abspath(os.fspath(PDF_RENDER_ARTIFACT_ROOT)))
+    with _PDF_RENDER_CLEANUP_LOCK:
+        if _PDF_RENDER_STORE is None or _PDF_RENDER_STORE.root != selected_root:
+            _PDF_RENDER_STORE = EncryptedArtifactStore(
+                selected_root,
+                policy=PDF_RENDER_ARTIFACT_POLICY,
+            )
+        return _PDF_RENDER_STORE
+
+
+def _pdf_render_receipt_payload(
+    capability: RunCapability,
+    pages: tuple[tuple[int, EncryptedArtifactRef], ...],
+) -> bytes:
+    payload = {
+        "kind": "algo_cli_pdf_render_session_v1",
+        "run_id": capability.run_id,
+        "issued_at": capability.issued_at,
+        "expires_at": capability.expires_at,
+        "pages": [
+            {
+                "page_number": page_number,
+                "uri": ref.uri,
+                "content_id": ref.content_id,
+                "bytes": ref.byte_count,
+                "expires_at": ref.expires_at,
+            }
+            for page_number, ref in pages
+        ],
+    }
+    return json.dumps(
+        payload,
+        ensure_ascii=True,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+
+
+def _pdf_render_session_receipt(
+    capability: RunCapability,
+    pages: tuple[tuple[int, EncryptedArtifactRef], ...],
+) -> str:
+    return (
+        "hmac-sha256:"
+        + hmac.new(
+            capability.token,
+            _pdf_render_receipt_payload(capability, pages),
+            hashlib.sha256,
+        ).hexdigest()
+    )
+
+
+def _revoke_pdf_render_session(artifact_id: str) -> tuple[bool, int]:
+    with _PDF_RENDER_CLEANUP_LOCK:
+        session = _PDF_RENDER_SESSIONS.get(artifact_id)
+        if session is None:
+            timer = _PDF_RENDER_TIMERS.pop(artifact_id, None)
+            if timer is not None and timer is not threading.current_thread():
+                timer.cancel()
+            return False, 0
+        result = session.store.revoke_run(session.capability)
+        session.store.cleanup()
+        if _PDF_RENDER_SESSIONS.get(artifact_id) is session:
+            _PDF_RENDER_SESSIONS.pop(artifact_id, None)
+        timer = _PDF_RENDER_TIMERS.pop(artifact_id, None)
+        if timer is not None and timer is not threading.current_thread():
+            timer.cancel()
+        return True, int(result.ciphertext_files_deleted)
+
+
+def _cleanup_pdf_render_session() -> None:
+    with _PDF_RENDER_CLEANUP_LOCK:
+        artifact_ids = tuple(_PDF_RENDER_SESSIONS)
+    for artifact_id in artifact_ids:
+        try:
+            _revoke_pdf_render_session(artifact_id)
+        except (ArtifactStoreError, OSError):
+            continue
+
+
+def _schedule_pdf_render_cleanup(artifact_id: str, expires_at: float) -> None:
+    global _PDF_RENDER_ATEXIT_REGISTERED
+
+    delay = max(0.0, float(expires_at) - time.time())
+
+    def expire() -> None:
+        try:
+            _revoke_pdf_render_session(artifact_id)
+        except (ArtifactStoreError, OSError):
+            pass
+
+    timer = threading.Timer(delay, expire)
+    timer.daemon = True
+    with _PDF_RENDER_CLEANUP_LOCK:
+        if not _PDF_RENDER_ATEXIT_REGISTERED:
+            atexit.register(_cleanup_pdf_render_session)
+            _PDF_RENDER_ATEXIT_REGISTERED = True
+        previous = _PDF_RENDER_TIMERS.get(artifact_id)
+        if previous is not None:
+            previous.cancel()
+        _PDF_RENDER_TIMERS[artifact_id] = timer
+    try:
+        timer.start()
+    except Exception:
+        with _PDF_RENDER_CLEANUP_LOCK:
+            if _PDF_RENDER_TIMERS.get(artifact_id) is timer:
+                _PDF_RENDER_TIMERS.pop(artifact_id, None)
+        timer.cancel()
+        raise
+
+
+def _resolve_pdf_render_artifact(
+    *,
+    artifact_id: str,
+    artifact_page: int,
+    artifact_receipt: str,
+) -> bytes:
+    if _PDF_RENDER_ARTIFACT_ID_RE.fullmatch(str(artifact_id)) is None:
+        raise ArtifactStoreError("PDF artifact reference is invalid")
+    if isinstance(artifact_page, bool) or not isinstance(artifact_page, int) or artifact_page < 1:
+        raise ArtifactStoreError("PDF artifact page is invalid")
+    if _PDF_RENDER_RECEIPT_RE.fullmatch(str(artifact_receipt)) is None:
+        raise ArtifactStoreError("PDF artifact receipt is invalid")
+    with _PDF_RENDER_CLEANUP_LOCK:
+        session = _PDF_RENDER_SESSIONS.get(artifact_id)
+    if session is None or not hmac.compare_digest(session.receipt, artifact_receipt):
+        raise ArtifactStoreError("PDF artifact reference is not active")
+    selected = next(
+        (ref for page_number, ref in session.pages if page_number == artifact_page),
+        None,
+    )
+    if selected is None:
+        raise ArtifactStoreError("PDF artifact page is not granted")
+    content = session.store.read(session.capability, selected)
+    if (
+        len(content) != selected.byte_count
+        or len(content) > MAX_RENDER_PDF_PAGE_BYTES
+        or not content.startswith(_PNG_SIGNATURE)
+    ):
+        raise ArtifactStoreError("PDF artifact page content is invalid")
+    return content
+
+
+def _pdf_render_response_json(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, indent=2)
+
+
 def render_pdf_pages(
     path: str,
     cwd: str | None = None,
     start_page: int = 1,
     max_pages: int = MAX_RENDER_PDF_PAGES,
     scale: float = 1.75,
+    ttl_seconds: int = PDF_RENDER_ARTIFACT_TTL_SECONDS,
 ) -> str:
-    """Render PDF pages to PNG images for downstream OCR or visual inspection.
+    """Render pages into an encrypted, capability-scoped Alice artifact run.
+
+    The returned id and receipt are typed inputs for vision_describe. No
+    decrypted page path is exposed or persisted.
 
     Args:
         path: PDF file path to render.
         cwd: Optional working directory for relative paths.
-        start_page: 1-based page number to start from.
-        max_pages: Maximum number of pages to render.
-        scale: Render scale multiplier; higher values improve OCR at larger image sizes.
+        start_page: 1-based source PDF page number to start from.
+        max_pages: Maximum pages to render, at most six.
+        scale: Finite render scale from 0.5 through 4.0.
+        ttl_seconds: Artifact lifetime from 60 seconds through one hour.
     """
+
     p = _resolve(path, cwd)
     if not p.exists():
         return f"Error: PDF not found: {p}"
@@ -648,44 +869,173 @@ def render_pdf_pages(
         return f"Error: {p} is a directory, not a PDF."
     if p.suffix.lower() != ".pdf":
         return f"Error: {p} does not look like a PDF."
-    if start_page < 1:
-        return "Error: start_page must be 1 or greater."
-    if max_pages < 1:
-        return "Error: max_pages must be 1 or greater."
+    if isinstance(start_page, bool) or not isinstance(start_page, int) or start_page < 1:
+        return "Error: start_page must be a positive integer."
+    if isinstance(max_pages, bool) or not isinstance(max_pages, int) or not 1 <= max_pages <= MAX_RENDER_PDF_PAGES:
+        return f"Error: max_pages must be between 1 and {MAX_RENDER_PDF_PAGES}."
+    if (
+        isinstance(ttl_seconds, bool)
+        or not isinstance(ttl_seconds, int)
+        or not 60 <= ttl_seconds <= MAX_PDF_RENDER_ARTIFACT_TTL_SECONDS
+    ):
+        return f"Error: ttl_seconds must be an integer between 60 and {MAX_PDF_RENDER_ARTIFACT_TTL_SECONDS}."
+    if (
+        isinstance(scale, bool)
+        or not isinstance(scale, (int, float))
+        or not math.isfinite(float(scale))
+        or not 0.5 <= float(scale) <= MAX_RENDER_PDF_SCALE
+    ):
+        return f"Error: scale must be finite and between 0.5 and {MAX_RENDER_PDF_SCALE}."
     try:
         import fitz  # type: ignore[import-not-found]
     except Exception as exc:
         return f"Error: PDF rendering requires PyMuPDF/fitz, but it could not be imported: {exc}"
 
-    output_dir = Path(tempfile.gettempdir()) / "ollama_cli_pdf_pages"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    rendered: list[str] = []
+    store: EncryptedArtifactStore | None = None
+    capability: RunCapability | None = None
+    session_registered = False
     try:
+        store = _get_pdf_render_artifact_store()
+        store.cleanup()
         with fitz.open(p) as doc:
             first_index = start_page - 1
             if first_index >= len(doc):
                 return f"Error: start_page {start_page} exceeds PDF page count {len(doc)}."
             last_index = min(len(doc), first_index + max_pages)
-            safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", p.stem).strip("_") or "pdf"
-            matrix = fitz.Matrix(max(0.5, float(scale)), max(0.5, float(scale)))
+            capability = store.create_run(ttl_seconds=ttl_seconds)
+            matrix = fitz.Matrix(float(scale), float(scale))
+            page_refs: list[tuple[int, EncryptedArtifactRef]] = []
+            total_bytes = 0
             for index in range(first_index, last_index):
                 page = doc.load_page(index)
                 pix = page.get_pixmap(matrix=matrix, alpha=False)
-                out = output_dir / f"{safe_stem}_page_{index + 1}.png"
-                pix.save(out)
-                rendered.append(str(out))
-            return json.dumps(
+                pixel_count = int(pix.width) * int(pix.height)
+                if pixel_count <= 0 or pixel_count > MAX_RENDER_PDF_PIXELS:
+                    raise ArtifactStoreError(f"rendered page {index + 1} exceeds the pixel limit")
+                png = pix.tobytes("png")
+                if (
+                    not isinstance(png, bytes)
+                    or not png.startswith(_PNG_SIGNATURE)
+                    or not 1 <= len(png) <= MAX_RENDER_PDF_PAGE_BYTES
+                ):
+                    raise ArtifactStoreError(f"rendered page {index + 1} exceeds its PNG/byte limit")
+                if total_bytes + len(png) > MAX_RENDER_PDF_TOTAL_BYTES:
+                    raise ArtifactStoreError("rendered pages exceed the total artifact byte limit")
+                ref = store.put(
+                    capability,
+                    png,
+                    media_type="image/png",
+                    ttl_seconds=ttl_seconds,
+                )
+                page_refs.append((index + 1, ref))
+                total_bytes += len(png)
+            pages = tuple(page_refs)
+            receipt = _pdf_render_session_receipt(capability, pages)
+            session = _PdfRenderSession(
+                store=store,
+                capability=capability,
+                pages=pages,
+                receipt=receipt,
+                total_bytes=total_bytes,
+            )
+            with _PDF_RENDER_CLEANUP_LOCK:
+                if capability.run_id in _PDF_RENDER_SESSIONS:
+                    raise ArtifactStoreError("PDF artifact session id collision")
+                _PDF_RENDER_SESSIONS[capability.run_id] = session
+                session_registered = True
+            try:
+                _schedule_pdf_render_cleanup(
+                    capability.run_id,
+                    capability.expires_at,
+                )
+            except Exception:
+                _revoke_pdf_render_session(capability.run_id)
+                capability = None
+                raise
+            return _pdf_render_response_json(
                 {
                     "pdf": str(p),
                     "page_count": len(doc),
-                    "rendered_pages": len(rendered),
-                    "paths": rendered,
-                    "next_step": "Pass one returned PNG path to vision_describe or an OCR workflow.",
-                },
-                indent=2,
+                    "rendered_pages": len(pages),
+                    "artifact_id": capability.run_id,
+                    "artifact_receipt": receipt,
+                    "expires_at": capability.expires_at,
+                    "pages": [
+                        {
+                            "page_number": page_number,
+                            "artifact_uri": ref.uri,
+                            "content_receipt": ref.content_id,
+                            "bytes": ref.byte_count,
+                        }
+                        for page_number, ref in pages
+                    ],
+                    "lifecycle": {
+                        "classification": "explicit_encrypted_operational_artifact",
+                        "at_rest": "alice_aes_256_gcm_ciphertext_only",
+                        "automatic_cleanup": (
+                            "best-effort expiry/process-exit revocation; expired "
+                            "ciphertext is reclaimed on the next store operation"
+                        ),
+                        "ttl_seconds": ttl_seconds,
+                        "cleanup_tool": "cleanup_pdf_render_artifact",
+                    },
+                    "next_step": (
+                        "Call vision_describe with empty image_path plus artifact_id, "
+                        "artifact_page, and artifact_receipt; then call "
+                        "cleanup_pdf_render_artifact with artifact_id and artifact_receipt."
+                    ),
+                }
             )
     except Exception as exc:
-        return f"Error rendering PDF pages from {p}: {exc}"
+        cleanup_error = ""
+        if store is not None and capability is not None:
+            try:
+                if session_registered:
+                    _revoke_pdf_render_session(capability.run_id)
+                else:
+                    store.revoke_run(capability)
+                    store.cleanup()
+            except Exception as cleanup_exc:
+                cleanup_error = f"; partial encrypted artifact cleanup failed: {cleanup_exc}"
+        return f"Error rendering PDF pages from {p}: {exc}{cleanup_error}"
+
+
+def cleanup_pdf_render_artifact(
+    artifact_id: str,
+    artifact_receipt: str,
+) -> str:
+    """Revoke and remove one encrypted PDF render session.
+
+    Args:
+        artifact_id: Exact session id returned by render_pdf_pages.
+        artifact_receipt: Exact HMAC receipt returned by render_pdf_pages.
+    """
+
+    if _PDF_RENDER_ARTIFACT_ID_RE.fullmatch(str(artifact_id)) is None:
+        return json.dumps({"status": "error", "error": "invalid artifact reference"})
+    if _PDF_RENDER_RECEIPT_RE.fullmatch(str(artifact_receipt)) is None:
+        return json.dumps({"status": "error", "error": "invalid artifact receipt"})
+    with _PDF_RENDER_CLEANUP_LOCK:
+        session = _PDF_RENDER_SESSIONS.get(artifact_id)
+    if session is None:
+        return json.dumps(
+            {"status": "already_absent", "artifact_id": artifact_id},
+            sort_keys=True,
+        )
+    if not hmac.compare_digest(session.receipt, artifact_receipt):
+        return json.dumps({"status": "error", "error": "invalid artifact receipt"})
+    try:
+        removed, file_count = _revoke_pdf_render_session(artifact_id)
+    except (ArtifactStoreError, OSError) as exc:
+        return json.dumps({"status": "error", "error": type(exc).__name__})
+    return json.dumps(
+        {
+            "status": "removed" if removed else "already_absent",
+            "artifact_id": artifact_id,
+            "ciphertext_files_removed": file_count,
+        },
+        sort_keys=True,
+    )
 
 
 def write_file(path: str, content: str, cwd: str | None = None, overwrite: bool = False) -> str:
@@ -991,10 +1341,7 @@ def batch_edit(
         return f"Error writing {p}: {exc}"
 
     delta = len(working) - len(original)
-    return (
-        f"Batch-edited {p}: applied {len(edits)} edits ({'; '.join(applied)}). "
-        f"File grew by {delta:+d} chars."
-    )
+    return f"Batch-edited {p}: applied {len(edits)} edits ({'; '.join(applied)}). File grew by {delta:+d} chars."
 
 
 def list_directory(path: str = ".", cwd: str | None = None, limit: int = 200) -> str:
@@ -1027,7 +1374,9 @@ def list_directory(path: str = ".", cwd: str | None = None, limit: int = 200) ->
     return "\n".join(entries) + more if entries else "(empty directory)"
 
 
-def search_files(pattern: str, path: str = ".", cwd: str | None = None, glob: str | None = None, limit: int = 100) -> str:
+def search_files(
+    pattern: str, path: str = ".", cwd: str | None = None, glob: str | None = None, limit: int = 100
+) -> str:
     """Search files with ripgrep when available.
 
     Args:
@@ -1268,7 +1617,9 @@ def git_diff(path: str | None = None, cwd: str | None = None, names_only: bool =
     if path:
         command.extend(["--", path])
     try:
-        proc = subprocess.run(command, cwd=workdir, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+        proc = subprocess.run(
+            command, cwd=workdir, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20
+        )
     except subprocess.TimeoutExpired:
         return "Error: git diff timed out after 20 seconds."
     except Exception as exc:
@@ -1293,12 +1644,16 @@ def web_search(query: str, max_results: int = 5) -> str:
         response = active_ollama_client(cloud=True).web_search(query, max_results=max_results)
     except Exception as exc:
         return f"Error searching web: {exc}. This usually requires ollama>=0.5 and OLLAMA_API_KEY."
-    results = response.get("results", response) if isinstance(response, dict) else getattr(response, "results", response)
+    results = (
+        response.get("results", response) if isinstance(response, dict) else getattr(response, "results", response)
+    )
     if not results:
         return "No results found."
     rendered = []
     for result in results:
-        title = result.get("title", "(untitled)") if isinstance(result, dict) else getattr(result, "title", "(untitled)")
+        title = (
+            result.get("title", "(untitled)") if isinstance(result, dict) else getattr(result, "title", "(untitled)")
+        )
         url = result.get("url", "") if isinstance(result, dict) else getattr(result, "url", "")
         content = result.get("content", "") if isinstance(result, dict) else getattr(result, "content", "")
         rendered.append(f"### {title}\n{url}\n{content}")
@@ -1357,13 +1712,17 @@ def web_fetch(url: str, timeout: float = 30) -> str:
     return f"Error fetching URL: {fetch_error}. This usually requires ollama>=0.5 and OLLAMA_API_KEY."
 
 
-def x_search(query: str, max_results: int = 10) -> str:
+def x_search(
+    query: str,
+    max_results: int = 10,
+    cfg: Config | None = None,
+) -> str:
     """Search X.com (Twitter) in real time via Grok's native Live Search.
 
     Requires a configured xAI API key (run ``algo-cli config setup xai``).
-    Results are summarized by Grok and include citation URLs, then cached as a
-    harness record so future turns can retrieve them via RAG. xAI requests may
-    consume paid API usage.
+    Results are summarized by Grok and include citation URLs. When Echo Veil
+    owns memory, query/results are current-turn only and are never cached into
+    the plaintext harness index. xAI requests may consume paid API usage.
 
     Args:
         query: What to search X.com for.
@@ -1394,6 +1753,9 @@ def x_search(query: str, max_results: int = 10) -> str:
         else []
     )
 
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    protected_memory = bool(cfg is not None and echo_veil_authority_selected(cfg))
     cache_dir = _resolve_config_dir() / "x_search_cache"
     # Use hash of full query to avoid collisions from truncation
     clean_query = " ".join(query.strip().split())[:500]
@@ -1420,12 +1782,13 @@ def x_search(query: str, max_results: int = 10) -> str:
         for url in citations:
             body_lines.append(f"- {url}")
     cached = False
-    try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        _atomic_write_text(path, "\n".join(body_lines))
-        cached = True
-    except OSError as exc:
-        logger.debug("x_search cache write failed for %s: %s", path, exc)
+    if not protected_memory:
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            _atomic_write_text(path, "\n".join(body_lines))
+            cached = True
+        except OSError as exc:
+            logger.debug("x_search cache write failed for %s: %s", path, exc)
 
     out_parts = [content]
     if citations:
@@ -1436,6 +1799,567 @@ def x_search(query: str, max_results: int = 10) -> str:
         out_parts.append("")
         out_parts.append(f"(cached to {path.name})")
     return _cap("\n".join(out_parts))
+
+
+# ---------------------------------------------------------------------------
+# Browser tools (local Camoufox service at localhost:9377)
+# ---------------------------------------------------------------------------
+
+_BROWSER_UNAVAILABLE = (
+    "Browser service is not available. Start the Camoufox service at "
+    "http://localhost:9377 or set ALGO_BROWSER_URL. Run /doctor for diagnostics."
+)
+
+
+def _browser_guard() -> str | None:
+    """Return an error string if the browser service is unreachable."""
+    from . import cobalt_browser_service
+
+    if not cobalt_browser_service.is_available():
+        return _BROWSER_UNAVAILABLE
+    return None
+
+
+def cobalt_open(url: str) -> str:
+    """Open a URL in the local Camoufox browser and return the tab ID.
+
+    The browser service runs at http://localhost:9377 by default
+    (override with ALGO_BROWSER_URL).  Use cobalt_snapshot or
+    cobalt_screenshot to inspect the page after opening.
+
+    Args:
+        url: The URL to navigate to.
+    """
+    from . import cobalt_browser_service
+
+    guard = _browser_guard()
+    if guard:
+        return guard
+    result = cobalt_browser_service.open_tab(url)
+    if "error" in result:
+        return f"Error opening browser tab: {result['error']}"
+    tab_id = result.get("tabId", "")
+    final_url = result.get("url", url)
+    return f"Opened tab {tab_id} at {final_url}. Use cobalt_snapshot or cobalt_screenshot to inspect the page."
+
+
+def cobalt_snapshot(tab_id: str) -> str:
+    """Get an accessibility-tree snapshot of a browser tab.
+
+    The snapshot lists interactive elements with ref IDs (e.g. ``e1``,
+    ``e2``) that can be used with cobalt_click and cobalt_type.
+
+    Args:
+        tab_id: The tab ID from a previous cobalt_open call.
+    """
+    from . import cobalt_browser_service
+
+    guard = _browser_guard()
+    if guard:
+        return guard
+    result = cobalt_browser_service.snapshot(tab_id)
+    if "error" in result:
+        return f"Error getting snapshot: {result['error']}"
+    snapshot_text = result.get("snapshot", "")
+    refs = result.get("refsCount", 0)
+    page_url = result.get("url", "")
+    truncated = result.get("truncated", False)
+    header = f"URL: {page_url}\nRefs: {refs}"
+    if truncated:
+        total = result.get("totalChars", 0)
+        header += f" (truncated from {total} chars)"
+    return _cap(f"{header}\n\n{snapshot_text}")
+
+
+def cobalt_screenshot(tab_id: str) -> str:
+    """Capture a screenshot of a browser tab and describe it via vision.
+
+    The screenshot is fetched from the browser service and analyzed with
+    the configured Ollama vision model.
+
+    Args:
+        tab_id: The tab ID from a previous cobalt_open call.
+    """
+    from . import cobalt_browser_service
+
+    guard = _browser_guard()
+    if guard:
+        return guard
+    result = cobalt_browser_service.screenshot(tab_id)
+    if "error" in result:
+        return f"Error getting screenshot: {result['error']}"
+    # Save to a temp file for vision_describe
+    import tempfile
+
+    data = result.get("data", b"")
+    if not data:
+        return "Error: browser service returned empty screenshot."
+    suffix = ".png"
+    fd, tmp_path = tempfile.mkstemp(suffix=suffix, prefix="cobalt_screenshot_")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        return vision_describe(tmp_path)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+def cobalt_navigate(tab_id: str, url: str) -> str:
+    """Navigate an existing browser tab to a new URL.
+
+    Args:
+        tab_id: The tab ID to navigate.
+        url: The new URL to load.
+    """
+    from . import cobalt_browser_service
+
+    guard = _browser_guard()
+    if guard:
+        return guard
+    result = cobalt_browser_service.navigate(tab_id, url)
+    if "error" in result:
+        return f"Error navigating: {result['error']}"
+    new_url = result.get("url", url)
+    refs = result.get("refsAvailable", False)
+    hint = " Call cobalt_snapshot to see the page structure." if refs else ""
+    return f"Navigated to {new_url}.{hint}"
+
+
+def cobalt_click(tab_id: str, ref: str | None = None, selector: str | None = None) -> str:
+    """Click an element in a browser tab by accessibility ref or CSS selector.
+
+    Call cobalt_snapshot first to find available refs (e.g. ``e1``, ``e2``).
+
+    Args:
+        tab_id: The tab ID from a previous cobalt_open call.
+        ref: The accessibility ref ID from the snapshot (e.g. ``e1``).
+        selector: A CSS selector as an alternative to ref.
+    """
+    from . import cobalt_browser_service
+
+    guard = _browser_guard()
+    if guard:
+        return guard
+    result = cobalt_browser_service.click(tab_id, ref=ref, selector=selector)
+    if "error" in result:
+        hint = ""
+        if result.get("retryable"):
+            hint = " Call cobalt_snapshot to see the current state and retry."
+        return f"Error clicking: {result['error']}.{hint}"
+    refs = result.get("refsAvailable", False)
+    hint = " Call cobalt_snapshot to see the new page." if refs else ""
+    return f"Clicked {ref or selector}.{hint}"
+
+
+def cobalt_type(tab_id: str, text: str, ref: str | None = None, selector: str | None = None) -> str:
+    """Type text into a fillable element in a browser tab.
+
+    The element must be identified by accessibility ref (from cobalt_snapshot)
+    or CSS selector.
+
+    Args:
+        tab_id: The tab ID from a previous cobalt_open call.
+        text: The text to type into the field.
+        ref: The accessibility ref ID from the snapshot (e.g. ``e1``).
+        selector: A CSS selector as an alternative to ref.
+    """
+    from . import cobalt_browser_service
+
+    guard = _browser_guard()
+    if guard:
+        return guard
+    result = cobalt_browser_service.type_text(tab_id, text, ref=ref, selector=selector)
+    if "error" in result:
+        hint = ""
+        if result.get("retryable"):
+            hint = " Call cobalt_snapshot to see the current state and retry."
+        return f"Error typing: {result['error']}.{hint}"
+    return f"Typed {len(text)} characters into {ref or selector}."
+
+
+def cobalt_scroll(tab_id: str, direction: str = "down", amount: int = 3) -> str:
+    """Scroll a browser tab in a direction.
+
+    Args:
+        tab_id: The tab ID from a previous cobalt_open call.
+        direction: Direction to scroll: up, down, left, or right.
+        amount: Scroll amount (1-20 ticks).
+    """
+    from . import cobalt_browser_service
+
+    guard = _browser_guard()
+    if guard:
+        return guard
+    result = cobalt_browser_service.scroll(tab_id, direction=direction, amount=amount)
+    if "error" in result:
+        return f"Error scrolling: {result['error']}"
+    return f"Scrolled {direction} by {amount}."
+
+
+def cobalt_close(tab_id: str) -> str:
+    """Close a browser tab.
+
+    Args:
+        tab_id: The tab ID to close.
+    """
+    from . import cobalt_browser_service
+
+    guard = _browser_guard()
+    if guard:
+        return guard
+    result = cobalt_browser_service.close_tab(tab_id)
+    if "error" in result:
+        return f"Error closing tab: {result['error']}"
+    return f"Closed tab {tab_id}."
+
+
+def _windows_reparse_entry_is_directory(information: os.stat_result) -> bool:
+    return stat.S_ISDIR(information.st_mode) or bool(
+        int(getattr(information, "st_file_attributes", 0)) & int(getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0x10))
+    )
+
+
+def _windows_supported_name_reparse_tag(information: os.stat_result) -> int | None:
+    """Classify only reparse tags whose name can be removed without following."""
+
+    attributes = int(getattr(information, "st_file_attributes", 0))
+    reparse = stat.S_ISLNK(information.st_mode) or bool(
+        attributes & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    )
+    if not reparse:
+        return None
+    tag = int(getattr(information, "st_reparse_tag", 0))
+    if tag not in {0xA0000003, 0xA000000C}:  # MOUNT_POINT / SYMLINK
+        raise OSError("Windows reparse tag is not safe for name-only removal")
+    return tag
+
+
+def _windows_handle_identity_matches(
+    expected: os.stat_result,
+    *,
+    legacy_volume: int,
+    legacy_file_id: int,
+    extended_volume: int | None,
+    extended_file_id: int | None,
+) -> bool:
+    """Match the Windows identity projection used by the running CPython."""
+
+    expected_pair = (int(expected.st_dev), int(expected.st_ino))
+    candidates = {(int(legacy_volume), int(legacy_file_id))}
+    if extended_volume is not None and extended_file_id is not None:
+        candidates.add((int(extended_volume), int(extended_file_id)))
+    return expected_pair in candidates
+
+
+def _windows_delete_path_by_identity(
+    path: Path,
+    expected: os.stat_result,
+    *,
+    allow_directory: bool,
+) -> None:
+    """Delete one bound Windows name through its no-delete-share handle."""
+
+    if os.name != "nt" or not path.is_absolute():
+        raise OSError("pinned Windows deletion is unavailable")
+    import ctypes
+    from ctypes import wintypes
+
+    from . import config as config_module
+
+    expected_tag = _windows_supported_name_reparse_tag(expected)
+    expected_directory = _windows_reparse_entry_is_directory(expected)
+    if expected_directory and expected_tag is None and not allow_directory:
+        raise OSError("refusing to remove an unexpected Windows directory")
+    if not expected_directory and expected_tag is None:
+        if not stat.S_ISREG(expected.st_mode) or expected.st_nlink != 1:
+            raise OSError("refusing to remove an unsafe Windows file")
+    expected_identity = (
+        config_module._portable_directory_identity(expected)
+        if expected_directory
+        else config_module._portable_state_identity(expected)
+    )
+
+    kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+    win_error = getattr(ctypes, "WinError")
+    get_last_error = getattr(ctypes, "get_last_error")
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    get_information = kernel32.GetFileInformationByHandleEx
+    get_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    )
+    get_information.restype = wintypes.BOOL
+    get_legacy_information = kernel32.GetFileInformationByHandle
+    set_information = kernel32.SetFileInformationByHandle
+    set_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    )
+    set_information.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+
+    class _FileAttributeTagInformation(ctypes.Structure):
+        _fields_ = [
+            ("file_attributes", wintypes.DWORD),
+            ("reparse_tag", wintypes.DWORD),
+        ]
+
+    class _FileIdInformation(ctypes.Structure):
+        _fields_ = [
+            ("volume_serial_number", ctypes.c_ulonglong),
+            ("file_id", ctypes.c_ubyte * 16),
+        ]
+
+    class _ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("file_attributes", wintypes.DWORD),
+            ("creation_time", wintypes.FILETIME),
+            ("last_access_time", wintypes.FILETIME),
+            ("last_write_time", wintypes.FILETIME),
+            ("volume_serial_number", wintypes.DWORD),
+            ("file_size_high", wintypes.DWORD),
+            ("file_size_low", wintypes.DWORD),
+            ("number_of_links", wintypes.DWORD),
+            ("file_index_high", wintypes.DWORD),
+            ("file_index_low", wintypes.DWORD),
+        ]
+
+    class _FileDispositionInformation(ctypes.Structure):
+        _fields_ = [("delete_file", ctypes.c_ubyte)]
+
+    get_legacy_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(_ByHandleFileInformation),
+    )
+    get_legacy_information.restype = wintypes.BOOL
+
+    opened = create_file(
+        os.fspath(path),
+        0x00010000 | 0x00000080,  # DELETE | FILE_READ_ATTRIBUTES
+        0x00000001 | 0x00000002,  # SHARE_READ | SHARE_WRITE; deliberately no SHARE_DELETE
+        None,
+        3,  # OPEN_EXISTING
+        0x02000000 | 0x00200000,  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+        None,
+    )
+    invalid_handle = ctypes.c_void_p(-1).value
+    if opened in {None, invalid_handle}:
+        raise win_error(get_last_error())
+    handle = int(opened)
+    delete_pending = False
+    try:
+        attributes = _FileAttributeTagInformation()
+        file_id = _FileIdInformation()
+        legacy = _ByHandleFileInformation()
+        if not get_information(
+            wintypes.HANDLE(handle),
+            9,  # FileAttributeTagInfo
+            ctypes.byref(attributes),
+            ctypes.sizeof(attributes),
+        ) or not get_legacy_information(
+            wintypes.HANDLE(handle),
+            ctypes.byref(legacy),
+        ):
+            raise win_error(get_last_error())
+        extended_available = bool(
+            get_information(
+                wintypes.HANDLE(handle),
+                18,  # FileIdInfo
+                ctypes.byref(file_id),
+                ctypes.sizeof(file_id),
+            )
+        )
+        actual_tag = int(attributes.reparse_tag) if int(attributes.file_attributes) & 0x00000400 else None
+        actual_directory = bool(int(attributes.file_attributes) & 0x00000010)
+        legacy_file_id = (int(legacy.file_index_high) << 32) | int(legacy.file_index_low)
+        extended_volume = int(file_id.volume_serial_number) if extended_available else None
+        extended_file_id = int.from_bytes(bytes(file_id.file_id), "little") if extended_available else None
+        rebound = path.lstat()
+        rebound_directory = _windows_reparse_entry_is_directory(rebound)
+        rebound_tag = _windows_supported_name_reparse_tag(rebound)
+        rebound_identity = (
+            config_module._portable_directory_identity(rebound)
+            if rebound_directory
+            else config_module._portable_state_identity(rebound)
+        )
+        if (
+            actual_tag != expected_tag
+            or actual_directory != expected_directory
+            or not _windows_handle_identity_matches(
+                expected,
+                legacy_volume=int(legacy.volume_serial_number),
+                legacy_file_id=legacy_file_id,
+                extended_volume=extended_volume,
+                extended_file_id=extended_file_id,
+            )
+            or rebound_tag != expected_tag
+            or rebound_directory != expected_directory
+            or rebound_identity != expected_identity
+        ):
+            raise OSError("Windows deletion target identity changed")
+        disposition = _FileDispositionInformation(1)
+        if not set_information(
+            wintypes.HANDLE(handle),
+            4,  # FileDispositionInfo
+            ctypes.byref(disposition),
+            ctypes.sizeof(disposition),
+        ):
+            raise win_error(get_last_error())
+        delete_pending = True
+    finally:
+        close_handle(wintypes.HANDLE(handle))
+    if not delete_pending:
+        raise OSError("Windows deletion target was not removed")
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return
+    raise OSError("Windows deletion target was rebound")
+
+
+def _purge_x_search_cache_windows(cache_dir: Path, *, max_entries: int) -> int:
+    """Purge a Windows cache through pinned full paths without CRT dir fds."""
+
+    from . import config as config_module
+
+    cache_dir = Path(os.path.abspath(os.fspath(cache_dir)))
+    removed = 0
+    entry_limit = max(0, int(max_entries))
+    with config_module._windows_pinned_directory_chain(cache_dir.parent) as parent_chain:
+        if not config_module._windows_safe_creation_dacl(cache_dir.parent):
+            raise OSError("x_search cache parent authorization is unsafe")
+        try:
+            root_info = cache_dir.lstat()
+        except FileNotFoundError:
+            return 0
+        if config_module._path_is_reparse_point(cache_dir, root_info):
+            _windows_supported_name_reparse_tag(root_info)
+            config_module._recheck_directory_chain(parent_chain)
+            _windows_delete_path_by_identity(cache_dir, root_info, allow_directory=False)
+            config_module._recheck_directory_chain(parent_chain)
+            return 1
+        if not stat.S_ISDIR(root_info.st_mode) or not config_module._windows_safe_creation_dacl(cache_dir):
+            raise OSError("x_search cache identity is unsafe")
+        root_identity = config_module._portable_directory_identity(root_info)
+        with config_module._windows_pinned_directory_chain(cache_dir) as cache_chain:
+            entries: list[tuple[Path, os.stat_result]] = []
+            with os.scandir(cache_dir) as scanned:
+                for entry in scanned:
+                    if len(entries) >= entry_limit:
+                        raise OSError("x_search cache entry bound exceeded")
+                    entry_path = cache_dir / entry.name
+                    information = entry_path.lstat()
+                    reparse = config_module._path_is_reparse_point(entry_path, information)
+                    directory = _windows_reparse_entry_is_directory(information)
+                    if reparse:
+                        _windows_supported_name_reparse_tag(information)
+                    if directory and not reparse:
+                        raise OSError("x_search cache contains an unexpected directory")
+                    if (
+                        not directory
+                        and not reparse
+                        and (not stat.S_ISREG(information.st_mode) or information.st_nlink != 1)
+                    ):
+                        raise OSError("x_search cache contains an unsafe entry")
+                    entries.append((entry_path, information))
+            config_module._recheck_directory_chain(cache_chain)
+            for entry_path, expected in entries:
+                _windows_delete_path_by_identity(entry_path, expected, allow_directory=False)
+                removed += 1
+                config_module._recheck_directory_chain(cache_chain)
+            rebound = cache_dir.lstat()
+            if (
+                config_module._path_is_reparse_point(cache_dir, rebound)
+                or config_module._portable_directory_identity(rebound) != root_identity
+            ):
+                raise OSError("x_search cache identity changed")
+            with os.scandir(cache_dir) as remaining:
+                if next(remaining, None) is not None:
+                    raise OSError("x_search cache changed during purge")
+            config_module._recheck_directory_chain(cache_chain)
+        # The cache handle must close before RemoveDirectoryW can remove its
+        # name. The parent ancestry remains pinned and its DACL excludes
+        # untrusted replacement throughout this final transition.
+        rebound = cache_dir.lstat()
+        if (
+            config_module._path_is_reparse_point(cache_dir, rebound)
+            or config_module._portable_directory_identity(rebound) != root_identity
+        ):
+            raise OSError("x_search cache path changed during purge")
+        config_module._recheck_directory_chain(parent_chain)
+        _windows_delete_path_by_identity(cache_dir, rebound, allow_directory=True)
+        config_module._recheck_directory_chain(parent_chain)
+    return removed
+
+
+def purge_x_search_cache(*, max_entries: int = 512) -> int:
+    """Remove legacy plaintext X-search cache entries without reading bodies."""
+
+    from .config import _resolve_config_dir
+
+    cache_dir = _resolve_config_dir() / "x_search_cache"
+    if os.name == "nt":
+        return _purge_x_search_cache_windows(cache_dir, max_entries=max_entries)
+    try:
+        root_info = cache_dir.lstat()
+    except FileNotFoundError:
+        return 0
+    if stat.S_ISLNK(root_info.st_mode):
+        cache_dir.unlink()
+        return 1
+    if not stat.S_ISDIR(root_info.st_mode) or (hasattr(os, "getuid") and root_info.st_uid != os.getuid()):
+        raise OSError("x_search cache identity is unsafe")
+    flags = (
+        os.O_RDONLY
+        | int(getattr(os, "O_DIRECTORY", 0))
+        | int(getattr(os, "O_NOFOLLOW", 0))
+        | int(getattr(os, "O_CLOEXEC", 0))
+    )
+    descriptor = os.open(cache_dir, flags)
+    removed = 0
+    try:
+        pinned = os.fstat(descriptor)
+        if (pinned.st_dev, pinned.st_ino) != (root_info.st_dev, root_info.st_ino):
+            raise OSError("x_search cache identity changed")
+        names: list[str] = []
+        with os.scandir(descriptor) as entries:
+            for entry in entries:
+                names.append(entry.name)
+                if len(names) > max(0, int(max_entries)):
+                    raise OSError("x_search cache entry bound exceeded")
+        for name in names:
+            info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if stat.S_ISDIR(info.st_mode):
+                raise OSError("x_search cache contains an unexpected directory")
+            os.unlink(name, dir_fd=descriptor)
+            removed += 1
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    rebound = cache_dir.lstat()
+    if (rebound.st_dev, rebound.st_ino) != (root_info.st_dev, root_info.st_ino):
+        raise OSError("x_search cache path changed during purge")
+    cache_dir.rmdir()
+    return removed
 
 
 def x_account_status() -> str:
@@ -1472,44 +2396,41 @@ def x_account_draft_reply(post: str, text: str) -> str:
     return x_account.draft_reply(post, text).to_json()
 
 
-def x_account_post(text: str, confirm: bool = False) -> str:
-    """Publish an X post through xurl only after explicit user confirmation.
+def x_account_post(text: str) -> str:
+    """Request an X post; only the trusted dispatcher can publish it.
 
     Args:
         text: Exact post text to publish.
-        confirm: Must be true only when the user explicitly approved this exact text.
     """
     from . import x_account
 
-    return x_account.post(text, confirm=confirm).to_json()
+    return x_account.post(text, confirm=False).to_json()
 
 
-def x_account_reply(post: str, text: str, confirm: bool = False) -> str:
-    """Publish an X reply through xurl only after explicit user confirmation.
+def x_account_reply(post: str, text: str) -> str:
+    """Request an X reply; only the trusted dispatcher can publish it.
 
     Args:
         post: X post id or x.com status URL to reply to.
         text: Exact reply text to publish.
-        confirm: Must be true only when the user explicitly approved this exact reply.
     """
     from . import x_account
 
-    return x_account.reply(post, text, confirm=confirm).to_json()
+    return x_account.reply(post, text, confirm=False).to_json()
 
 
-def x_account_post_action(action: str, post: str, confirm: bool = False) -> str:
-    """Run a confirmed X post action through xurl.
+def x_account_post_action(action: str, post: str) -> str:
+    """Request an X post action; only the trusted dispatcher can execute it.
 
     Supported actions: delete, like, unlike, repost, unrepost, bookmark, unbookmark.
 
     Args:
         action: The action to run.
         post: X post id or x.com status URL.
-        confirm: Must be true only when the user explicitly approved this exact action.
     """
     from . import x_account
 
-    return x_account.post_action(action, post, confirm=confirm).to_json()
+    return x_account.post_action(action, post, confirm=False).to_json()
 
 
 def remember(fact: str, cfg: Config | None = None) -> str:
@@ -1525,22 +2446,372 @@ def remember(fact: str, cfg: Config | None = None) -> str:
         cfg: Optional Config instance for persistence (required for actual storage).
     """
     if cfg is not None:
-        added = cfg.remember_fact(fact)
+        from . import julia_memory_runtime as memory_runtime
+        from .ada_memory_echo_veil import echo_veil_authority_selected
+
+        echo_authority = echo_veil_authority_selected(cfg)
+
+        try:
+            added = memory_runtime.remember_fact(cfg, fact)
+        except memory_runtime.MemorySystemError as exc:
+            return f"Error: {exc}"
         if added:
-            from .main import capture_intuition_block
-            capture_intuition_block(cfg, "memory", fact, source="tool:remember")
-            return f"Remembered: {fact}"
-        return f"Fact already in memory: {fact}"
+            if not echo_authority:
+                from .main import capture_intuition_block
+
+                capture_intuition_block(
+                    cfg,
+                    "memory",
+                    fact,
+                    source="tool:remember",
+                )
+            return "Protected memory saved." if echo_authority else f"Remembered: {fact}"
+        return "Protected memory already stored." if echo_authority else f"Fact already in memory: {fact}"
     return f"Remembered: {fact} (no config provided - not persisted)"
 
 
+_ECHO_MEMORY_LAYERS = frozenset({"live", "short_term", "long_term", "contextual_logic"})
+_ECHO_CREATION_LAYERS = frozenset({"live", "short_term", "contextual_logic"})
+
+
+def _require_protected_echo(cfg: Config | None) -> Config:
+    if cfg is None:
+        raise RuntimeError("Echo Veil tools require the live Algo runtime configuration")
+    from .ada_memory_echo_veil import protection_required
+
+    if not protection_required(cfg):
+        raise RuntimeError("Echo Veil tools require echo_veil_protection=required; no legacy memory fallback was used")
+    return cfg
+
+
+def _echo_layers(value: str) -> list[str] | None:
+    requested = [item.strip().casefold() for item in str(value or "").split(",") if item.strip()]
+    if not requested:
+        return None
+    if len(requested) > 4 or any(item not in _ECHO_MEMORY_LAYERS for item in requested):
+        raise ValueError("layers must be a comma-separated subset of live, short_term, long_term, contextual_logic")
+    return list(dict.fromkeys(requested))
+
+
+def _echo_tool_payload(
+    operation: str,
+    result: dict[str, Any],
+    *,
+    lifecycle_mutated: bool,
+) -> str:
+    return json.dumps(
+        {
+            "memory_authority": "echo_veil",
+            "operation": operation,
+            "plaintext_fallback": False,
+            "lifecycle_mutated": lifecycle_mutated,
+            **result,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def echo_veil_remember(
+    payload: str,
+    topic: str,
+    layer: str = "short_term",
+    expires_in_seconds: int = 3600,
+    promotion_reason: str = "",
+    logic_kind: str = "",
+    related_ids: str = "",
+    cfg: Config | None = None,
+) -> str:
+    """Store one compact, user-authorized seed crystal through Echo Veil.
+
+    This is the same governed operation exposed by Echo's MCP adapters. New
+    Long-Term records are intentionally prohibited: create Live or Short-Term
+    memory, then use echo_veil_promote with an explicit reason. Contextual Logic
+    requires a reason, one of causal_chain|contradiction_resolution|decision|
+    principle, and comma-separated related record IDs.
+
+    Args:
+        payload: Compact fact, intent, outcome, or logic statement to protect.
+        topic: Stable, non-secret classification for the memory.
+        layer: live, short_term, or contextual_logic.
+        expires_in_seconds: Live expiry from now, between 60 and 86400 seconds.
+        promotion_reason: Required rationale for Contextual Logic.
+        logic_kind: Contextual Logic kind.
+        related_ids: Comma-separated evidence record IDs for Contextual Logic.
+        cfg: Runtime-injected Algo configuration.
+    """
+
+    runtime_cfg = _require_protected_echo(cfg)
+    clean_layer = str(layer or "").strip().casefold()
+    if clean_layer not in _ECHO_CREATION_LAYERS:
+        raise ValueError("layer must be live, short_term, or contextual_logic; Long-Term requires echo_veil_promote")
+    expires_at: float | None = None
+    if clean_layer == "live":
+        if (
+            isinstance(expires_in_seconds, bool)
+            or not isinstance(expires_in_seconds, int)
+            or not 60 <= expires_in_seconds <= 86_400
+        ):
+            raise ValueError("expires_in_seconds must be an integer from 60 through 86400")
+        expires_at = time.time() + expires_in_seconds
+    relation_ids = [item.strip() for item in str(related_ids or "").split(",") if item.strip()]
+    if len(relation_ids) > 16:
+        raise ValueError("related_ids supports at most 16 record IDs")
+    from .ada_memory_echo_veil import remember_record_with_echo_veil
+
+    result = remember_record_with_echo_veil(
+        runtime_cfg,
+        payload,
+        topic=topic,
+        layer=clean_layer,
+        provenance=["algo-cli:model_tool"],
+        promotion_reason=promotion_reason or None,
+        expires_at=expires_at,
+        logic_kind=logic_kind or None,
+        related_ids=relation_ids or None,
+    )
+    return _echo_tool_payload("remember", result, lifecycle_mutated=True)
+
+
+def echo_veil_refresh_live(
+    vine_id: str,
+    payload: str,
+    expires_in_seconds: int = 3600,
+    cfg: Config | None = None,
+) -> str:
+    """Refresh protected Live memory, superseding changed content explicitly.
+
+    Args:
+        vine_id: Existing Live record ID.
+        payload: Current compact Live state.
+        expires_in_seconds: New expiry from now, between 60 and 86400 seconds.
+        cfg: Runtime-injected Algo configuration.
+    """
+
+    runtime_cfg = _require_protected_echo(cfg)
+    if (
+        isinstance(expires_in_seconds, bool)
+        or not isinstance(expires_in_seconds, int)
+        or not 60 <= expires_in_seconds <= 86_400
+    ):
+        raise ValueError("expires_in_seconds must be an integer from 60 through 86400")
+    from .ada_memory_echo_veil import refresh_live_with_echo_veil
+
+    result = refresh_live_with_echo_veil(
+        runtime_cfg,
+        vine_id,
+        payload,
+        source="model_tool",
+        expires_at=time.time() + expires_in_seconds,
+    )
+    return _echo_tool_payload("refresh_live", result, lifecycle_mutated=True)
+
+
+def echo_veil_promote(
+    vine_id: str,
+    target_layer: str,
+    reason: str,
+    cfg: Config | None = None,
+) -> str:
+    """Promote Live to Short-Term or Short-Term to Long-Term with evidence.
+
+    Args:
+        vine_id: Existing record ID.
+        target_layer: short_term or long_term.
+        reason: Explicit bounded reason for the promotion.
+        cfg: Runtime-injected Algo configuration.
+    """
+
+    runtime_cfg = _require_protected_echo(cfg)
+    clean_target = str(target_layer or "").strip().casefold()
+    if clean_target not in {"short_term", "long_term"}:
+        raise ValueError("target_layer must be short_term or long_term")
+    from .ada_memory_echo_veil import promote_with_echo_veil
+
+    result = promote_with_echo_veil(
+        runtime_cfg,
+        vine_id,
+        clean_target,
+        reason=reason,
+        source="model_tool",
+    )
+    return _echo_tool_payload("promote", result, lifecycle_mutated=True)
+
+
+def echo_veil_recall(
+    query: str,
+    top_k: int = 5,
+    layers: str = "",
+    cfg: Config | None = None,
+) -> str:
+    """Return minimal answerable protected memory with confidence and provenance.
+
+    Degraded results remain explicitly non-semantic and must never be portrayed
+    as authoritative semantic recall.
+
+    Args:
+        query: Natural-language retrieval question.
+        top_k: Maximum candidate count, from 1 through 8.
+        layers: Optional comma-separated memory-layer filter.
+        cfg: Runtime-injected Algo configuration.
+    """
+
+    runtime_cfg = _require_protected_echo(cfg)
+    if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 8:
+        raise ValueError("top_k must be an integer from 1 through 8")
+    from .ada_memory_echo_veil import recall_response_with_echo_veil
+
+    result = recall_response_with_echo_veil(
+        runtime_cfg,
+        query,
+        top_k=top_k,
+        layers=_echo_layers(layers),
+    )
+    return _echo_tool_payload(
+        "recall",
+        result,
+        lifecycle_mutated=bool(result.get("lifecycle_mutated", False)),
+    )
+
+
+def echo_veil_context(
+    query: str,
+    max_depth: int = 1,
+    max_records: int = 8,
+    cfg: Config | None = None,
+) -> str:
+    """Trace protected Contextual Logic roots to authenticated evidence.
+
+    The response performs no synthesis and does not assign query scores to
+    linked evidence.
+
+    Args:
+        query: Decision, principle, contradiction, or causal question.
+        max_depth: Maximum outgoing relationship depth, from 0 through 3.
+        max_records: Maximum returned roots and evidence, from 1 through 32.
+        cfg: Runtime-injected Algo configuration.
+    """
+
+    runtime_cfg = _require_protected_echo(cfg)
+    if isinstance(max_depth, bool) or not isinstance(max_depth, int) or not 0 <= max_depth <= 3:
+        raise ValueError("max_depth must be an integer from 0 through 3")
+    if isinstance(max_records, bool) or not isinstance(max_records, int) or not 1 <= max_records <= 32:
+        raise ValueError("max_records must be an integer from 1 through 32")
+    from .ada_memory_echo_veil import context_with_echo_veil
+
+    result = context_with_echo_veil(
+        runtime_cfg,
+        query,
+        max_depth=max_depth,
+        max_records=max_records,
+    )
+    return _echo_tool_payload(
+        "context",
+        result,
+        lifecycle_mutated=bool(result.get("lifecycle_mutated", False)),
+    )
+
+
+def echo_veil_list(
+    limit: int = 20,
+    layers: str = "",
+    topic_prefix: str = "",
+    active_only: bool = True,
+    cfg: Config | None = None,
+) -> str:
+    """List a bounded inventory; Echo may recover, migrate, or prune on open.
+
+    Args:
+        limit: Maximum records, from 1 through 100.
+        layers: Optional comma-separated memory-layer filter.
+        topic_prefix: Optional exact topic prefix filter.
+        active_only: Exclude explicitly superseded records when true.
+        cfg: Runtime-injected Algo configuration.
+    """
+
+    runtime_cfg = _require_protected_echo(cfg)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("limit must be an integer from 1 through 100")
+    if not isinstance(active_only, bool):
+        raise TypeError("active_only must be a boolean")
+    from .ada_memory_echo_veil import list_echo_veil_memories
+
+    records = list_echo_veil_memories(
+        runtime_cfg,
+        limit=limit,
+        layers=_echo_layers(layers),
+        topic_prefix=topic_prefix or None,
+        newest_first=True,
+    )
+    if active_only:
+        records = [record for record in records if record.get("superseded_by") is None]
+    return _echo_tool_payload(
+        "list",
+        {
+            "inventory_only": True,
+            "semantic_retrieval_performed": False,
+            "count": len(records),
+            "records": records,
+        },
+        lifecycle_mutated=True,
+    )
+
+
+def echo_veil_forget(
+    vine_id: str,
+    cfg: Config | None = None,
+) -> str:
+    """Irreversibly forget one protected record and dependent logic.
+
+    Args:
+        vine_id: Exact Echo Veil record ID to erase.
+        cfg: Runtime-injected Algo configuration.
+    """
+
+    runtime_cfg = _require_protected_echo(cfg)
+    from .ada_memory_echo_veil import forget_with_echo_veil
+
+    result = forget_with_echo_veil(runtime_cfg, vine_id)
+    return _echo_tool_payload("forget", result, lifecycle_mutated=True)
+
+
+def echo_veil_doctor(cfg: Config | None = None) -> str:
+    """Probe readiness; Echo may recover, migrate, or prune on open.
+
+    Args:
+        cfg: Runtime-injected Algo configuration.
+    """
+
+    runtime_cfg = _require_protected_echo(cfg)
+    from .ada_memory_echo_veil import get_echo_veil_readiness
+
+    result = get_echo_veil_readiness(runtime_cfg.__dict__, live_probe=True)
+    return _echo_tool_payload("doctor", result, lifecycle_mutated=True)
+
+
+def echo_veil_reindex(cfg: Config | None = None) -> str:
+    """Rebuild protected Echo retrieval indexes after explicit approval.
+
+    Args:
+        cfg: Runtime-injected Algo configuration.
+    """
+
+    runtime_cfg = _require_protected_echo(cfg)
+    from .ada_memory_echo_veil import reindex_with_echo_veil
+
+    result = reindex_with_echo_veil(runtime_cfg)
+    return _echo_tool_payload("reindex", result, lifecycle_mutated=True)
+
+
 def append_lesson(text: str, cfg: Config | None = None) -> str:
-    """Append a lesson to lessons-learned.md so it is available in future turns.
+    """Store an explicit lesson in the active governed memory authority.
 
     Call only when the user explicitly asks to retain a preference, correction,
-    or pattern as a lesson. The lesson is timestamped and embedded for retrieval
-    on the next turn. Do NOT use this for session notes, speculative capture, or
-    to paraphrase the last message.
+    or pattern as a lesson. With Echo Veil selected, the lesson is written to
+    protected Short-Term memory and never shadowed into plaintext lesson files.
+    Do NOT use this for session notes, speculative capture, or to paraphrase the
+    last message.
 
     Args:
         text: The lesson, written as a short paragraph. Be specific about the
@@ -1549,14 +2820,31 @@ def append_lesson(text: str, cfg: Config | None = None) -> str:
     """
     if not text or not text.strip():
         return "Error: lesson text was empty."
+    if cfg is not None:
+        from .ada_memory_echo_veil import (
+            echo_veil_authority_selected,
+            remember_with_echo_veil,
+        )
+
+        if echo_veil_authority_selected(cfg):
+            try:
+                created = remember_with_echo_veil(
+                    cfg,
+                    text.strip(),
+                    source="explicit_lesson_tool",
+                )
+            except Exception:
+                return "Error: protected lesson storage is unavailable; no plaintext lesson was written."
+            return "Protected lesson saved." if created else "Protected lesson already stored."
     path = identity.append_lesson(text)
     if cfg is not None:
         from .main import capture_intuition_block
+
         capture_intuition_block(cfg, "lesson", text.strip(), source="tool:append_lesson")
     return f"Appended lesson to {path}"
 
 
-def update_user_profile(content: str) -> str:
+def update_user_profile(content: str, cfg: Config | None = None) -> str:
     """Overwrite USER.md (the 'About the User' identity file).
 
     Use this ONLY when the user explicitly asks you to update or rewrite their
@@ -1570,29 +2858,127 @@ def update_user_profile(content: str) -> str:
         content: The full new contents of USER.md as Markdown. Include the
             existing sections (Who I am, How I work, etc.) unless the user
             asked for a different structure.
+        cfg: Runtime Config injected by Algo CLI. The model cannot set it.
     """
     if not content or not content.strip():
         return "Error: refusing to overwrite USER.md with empty content."
+    if cfg is not None:
+        from .ada_memory_echo_veil import echo_veil_authority_selected
+
+        if echo_veil_authority_selected(cfg):
+            return (
+                "Error: update_user_profile is unavailable while Echo Veil is "
+                "the exclusive memory authority; use an explicit reviewed "
+                "Echo memory action instead."
+            )
     path = identity.write_user_profile(content)
     return f"Wrote {len(content)} chars to {path}"
 
 
 def current_gateway_url(url: str | None = None) -> str:
-    return (
+    raw_candidate: object = (
         url
-        or os.environ.get("ALGO_CLI_GATEWAY_URL")
-        or os.environ.get("OLLAMA_CLI_GATEWAY_URL")
-        or DEFAULT_GATEWAY_URL
-    ).rstrip("/")
+        if url is not None
+        else os.environ.get("ALGO_CLI_GATEWAY_URL") or os.environ.get("OLLAMA_CLI_GATEWAY_URL") or DEFAULT_GATEWAY_URL
+    )
+    if type(raw_candidate) is not str:
+        raise ValueError("Gateway URL must be text.")
+    candidate = raw_candidate.strip().rstrip("/")
+    from .theodore_runtime_services import local_service_address
+
+    if local_service_address(candidate, require_http=True) is None:
+        raise ValueError("Gateway URL must be an explicit credential-free HTTP loopback endpoint.")
+    return candidate
+
+
+def _open_local_gateway(request: Request, *, timeout: float) -> Any:
+    """Open a validated loopback request without honoring proxy variables."""
+
+    return build_opener(ProxyHandler({})).open(request, timeout=timeout)
+
+
+def _gateway_payload(
+    inputs: str | list[str],
+    model: str,
+    truncate: bool,
+    dimensions: int | None,
+) -> bytes | None:
+    if type(model) is not str:
+        return None
+    clean_model = model.strip()
+    if (
+        not clean_model
+        or clean_model != model
+        or len(clean_model) > MAX_GATEWAY_MODEL_CHARS
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in clean_model)
+        or type(truncate) is not bool
+        or (dimensions is not None and (type(dimensions) is not int or not 1 <= dimensions <= 16_384))
+    ):
+        return None
+    if isinstance(inputs, list):
+        if not inputs or len(inputs) > MAX_GATEWAY_BATCH_ITEMS or any(type(text) is not str for text in inputs):
+            return None
+        normalized_inputs: str | list[str] = list(inputs)
+    elif type(inputs) is str:
+        normalized_inputs = inputs
+    else:
+        return None
+    payload: dict[str, Any] = {
+        "model": clean_model,
+        "input": normalized_inputs,
+        "truncate": truncate,
+    }
+    if dimensions is not None:
+        payload["dimensions"] = dimensions
+    try:
+        data = json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError):
+        return None
+    return data if len(data) <= MAX_GATEWAY_REQUEST_BYTES else None
+
+
+def _gateway_json_response(response: Any) -> dict[str, Any] | None:
+    try:
+        raw = response.read(MAX_GATEWAY_RESPONSE_BYTES + 1)
+    except (OSError, TypeError, ValueError):
+        return None
+    if not isinstance(raw, bytes) or len(raw) > MAX_GATEWAY_RESPONSE_BYTES:
+        return None
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate key")
+            result[key] = value
+        return result
+
+    def reject_constant(_value: str) -> None:
+        raise ValueError("non-finite value")
+
+    try:
+        loaded = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
 
 
 def gateway_ready(url: str | None = None) -> bool:
-    url = current_gateway_url(url)
     try:
-        request = Request(url + "/healthz", method="GET")
-        with urlopen(request, timeout=1.0) as response:
+        base_url = current_gateway_url(url)
+        request = Request(base_url + "/healthz", method="GET")
+        with _open_local_gateway(request, timeout=1.0) as response:
             return 200 <= response.status < 500
-    except (OSError, URLError, ValueError):
+    except (OSError, URLError, TypeError, ValueError):
         return False
 
 
@@ -1603,30 +2989,20 @@ def gateway_embed(
     dimensions: int | None,
     url: str | None = None,
 ) -> dict[str, Any] | None:
-    payload: dict[str, Any] = {
-        "model": model,
-        "input": text,
-        "truncate": truncate,
-    }
-    if dimensions is not None:
-        payload["dimensions"] = dimensions
-    data = json.dumps(payload).encode("utf-8")
-    request = Request(
-        current_gateway_url(url) + "/supplemental/embed",
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
     try:
-        with urlopen(request, timeout=60) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-    except (OSError, URLError, ValueError):
+        data = _gateway_payload(text, model, truncate, dimensions)
+        if data is None:
+            return None
+        request = Request(
+            current_gateway_url(url) + "/supplemental/embed",
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with _open_local_gateway(request, timeout=60) as response:
+            return _gateway_json_response(response)
+    except (OSError, URLError, TypeError, ValueError):
         return None
-    try:
-        loaded = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    return loaded if isinstance(loaded, dict) else None
 
 
 def gateway_embed_batch(
@@ -1636,30 +3012,21 @@ def gateway_embed_batch(
     dimensions: int | None,
     url: str | None = None,
 ) -> dict[str, Any] | None:
-    payload: dict[str, Any] = {
-        "model": model,
-        "input": list(texts),
-        "truncate": truncate,
-    }
-    if dimensions is not None:
-        payload["dimensions"] = dimensions
-    data = json.dumps(payload).encode("utf-8")
-    request = Request(
-        current_gateway_url(url) + "/supplemental/embed",
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
     try:
-        with urlopen(request, timeout=60) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-    except (OSError, URLError, ValueError):
+        data = _gateway_payload(texts, model, truncate, dimensions)
+        if data is None:
+            return None
+        request = Request(
+            current_gateway_url(url) + "/supplemental/embed",
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with _open_local_gateway(request, timeout=60) as response:
+            return _gateway_json_response(response)
+    except (OSError, URLError, TypeError, ValueError):
         return None
-    try:
-        loaded = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    return loaded if isinstance(loaded, dict) else None
+
 
 def embed_text(
     text: str,
@@ -1674,24 +3041,58 @@ def embed_text(
             response = active_ollama_client().embed(model=model, input=text, truncate=truncate, dimensions=dimensions)
     except Exception as exc:
         return f"Error generating embeddings: {exc}"
-    payload = unpack_embed_response(
-        response, model, text, truncate=truncate, dimensions=dimensions
-    )
+    payload = unpack_embed_response(response, model, text, truncate=truncate, dimensions=dimensions)
     return json.dumps(payload, indent=2)
 
 
 def vision_describe(
-    image_path: str,
+    image_path: str = "",
     prompt: str = "What is in this image? Be concise.",
     model: str = "gemma3",
+    cwd: str | None = None,
+    artifact_id: str | None = None,
+    artifact_page: int | None = None,
+    artifact_receipt: str | None = None,
 ) -> str:
-    """Describe an image through Ollama vision."""
+    """Describe either an ordinary image or one typed PDF-render artifact.
+
+    Args:
+        image_path: Ordinary image path. Leave empty when consuming an artifact.
+        prompt: Question to ask the vision model.
+        model: Ollama vision model.
+        cwd: Optional working directory for an ordinary relative image path.
+        artifact_id: PDF-render session id returned by render_pdf_pages.
+        artifact_page: Exact source PDF page number granted by the session.
+        artifact_receipt: Session receipt returned by render_pdf_pages.
+    """
+
     load_runtime_env(override=True)
-    resolved = Path(image_path).expanduser()
-    if not resolved.exists():
-        return f"Error: image not found: {resolved}"
-    if resolved.suffix.lower() == ".pdf":
-        return "Error: vision_describe expects an image file, not a PDF. Use render_pdf_pages first, then pass a returned PNG path."
+    if artifact_id is not None or artifact_page is not None or artifact_receipt is not None:
+        if image_path or cwd is not None or artifact_id is None or artifact_page is None or artifact_receipt is None:
+            return (
+                "Error: typed PDF artifacts require empty image_path, no cwd, and "
+                "artifact_id, artifact_page, and artifact_receipt together."
+            )
+        try:
+            image: str | bytes = _resolve_pdf_render_artifact(
+                artifact_id=artifact_id,
+                artifact_page=artifact_page,
+                artifact_receipt=artifact_receipt,
+            )
+        except (ArtifactStoreError, OSError, TypeError, ValueError):
+            return "Error: PDF render artifact is invalid, expired, or unavailable."
+    else:
+        if not image_path:
+            return "Error: image_path is required when no PDF artifact is provided."
+        resolved = _resolve(image_path, cwd)
+        if not resolved.exists():
+            return f"Error: image not found: {resolved}"
+        if resolved.suffix.lower() == ".pdf":
+            return (
+                "Error: vision_describe expects an image file, not a PDF. Use "
+                "render_pdf_pages first, then pass its typed artifact fields."
+            )
+        image = str(resolved)
     try:
         response = active_ollama_client().chat(
             model=model,
@@ -1699,7 +3100,7 @@ def vision_describe(
                 {
                     "role": "user",
                     "content": prompt,
-                    "images": [str(resolved)],
+                    "images": [image],
                 }
             ],
             stream=False,
@@ -1722,7 +3123,14 @@ def available_actions(topic: str | None = None) -> str:
     """
     focus = (topic or "").strip().lower()
     commands = {
-        "model": ["/model [NAME]", "/models", "/cloud [on|off|status]", "/cloudauto [on|off|status]", "/login", "/host URL"],
+        "model": [
+            "/model [NAME]",
+            "/models",
+            "/cloud [on|off|status]",
+            "/cloudauto [on|off|status]",
+            "/login",
+            "/host URL",
+        ],
         "session": [
             "/help",
             "/status",
@@ -1735,7 +3143,19 @@ def available_actions(topic: str | None = None) -> str:
             "/mode [execute|explore|publish|status]",
             "/exit",
         ],
-        "tools": ["/auto [on|off|status]", "/safe [on|off|status]", "/policy [on|off|status]", "/thinking [on|off|status|efforts|effort [MODEL] LEVEL]", "/verify [on|off|status]", "/ctx NUM", "/temp NUM", "/toolmax NUM", "/thinkevery NUM", "/cd PATH", "/route TASK"],
+        "tools": [
+            "/auto [on|off|status]",
+            "/safe [on|off|status]",
+            "/policy [on|off|status]",
+            "/thinking [on|off|status|efforts|effort [MODEL] LEVEL]",
+            "/verify [on|off|status]",
+            "/ctx NUM",
+            "/temp NUM",
+            "/toolmax NUM",
+            "/thinkevery NUM",
+            "/cd PATH",
+            "/route TASK",
+        ],
         "agent": [
             "/agent help",
             "/agent init",
@@ -1762,8 +3182,27 @@ def available_actions(topic: str | None = None) -> str:
             "/ship pr [--ready]",
             "/ship all [--ready] MESSAGE",
         ],
-        "reasoning": ["/reason status", "/reason guide", "/reason react", "/reason reflexion", "/reason tot", "/reason got", "/reason mcts", "/reason qcr", "/reason neuro_symbolic", "/reason depth N", "/reason branches N", "/reason auto-reflexion on|off", "/reason auto-verify on|off"],
-        "xai": ["algo-cli config setup xai", "algo-cli config auth xai verify", "/model-check MODEL", "/x-account status"],
+        "reasoning": [
+            "/reason status",
+            "/reason guide",
+            "/reason react",
+            "/reason reflexion",
+            "/reason tot",
+            "/reason got",
+            "/reason mcts",
+            "/reason qcr",
+            "/reason neuro_symbolic",
+            "/reason depth N",
+            "/reason branches N",
+            "/reason auto-reflexion on|off",
+            "/reason auto-verify on|off",
+        ],
+        "xai": [
+            "algo-cli config setup xai",
+            "algo-cli config auth xai verify",
+            "/model-check MODEL",
+            "/x-account status",
+        ],
         "google": [
             "algo-cli config setup google",
             "algo-cli config auth google login",
@@ -1776,13 +3215,20 @@ def available_actions(topic: str | None = None) -> str:
             "/google gmail-list [query] [--max N] [--label LABEL]",
             "/google gmail-get MESSAGE_ID",
         ],
-        "chatgpt": ["algo-cli config setup chatgpt", "algo-cli config auth chatgpt status", "algo-cli config auth chatgpt logout"],
+        "chatgpt": [
+            "algo-cli config setup chatgpt",
+            "algo-cli config auth chatgpt status",
+            "algo-cli config auth chatgpt logout",
+        ],
         "multimodal": [
             "/embed [--model MODEL] [--file PATH] TEXT",
             "/vision [--model MODEL] [--prompt TEXT] IMAGE [QUESTION]",
         ],
         "documents": ["/pdf [--pages N] [--chars N] PATH"],
         "memory": [
+            "/memory [home|search QUERY|show ID|doctor|benchmark|reindex]",
+            "/memory add [--tier curated|history] [--scope NAME] [--slot KEY] TEXT",
+            "/memory supersede ID TEXT | promote ID | demote ID | archive ID",
             "/memory-auto [on|off|status]",
             "/remember FACT",
             "/memories",
@@ -1822,6 +3268,7 @@ def available_actions(topic: str | None = None) -> str:
             "edit_file",
             "read_pdf",
             "render_pdf_pages",
+            "cleanup_pdf_render_artifact",
             "write_file",
             "list_directory",
             "search_files",
@@ -1837,6 +3284,16 @@ def available_actions(topic: str | None = None) -> str:
         ],
         "shell": ["run_shell"],
         "web": ["web_search", "web_fetch"],
+        "browser": [
+            "cobalt_open",
+            "cobalt_snapshot",
+            "cobalt_screenshot",
+            "cobalt_navigate",
+            "cobalt_click",
+            "cobalt_type",
+            "cobalt_scroll",
+            "cobalt_close",
+        ],
         "xai": ["x_search"],
         "x_account": [
             "x_account_status",
@@ -1846,7 +3303,18 @@ def available_actions(topic: str | None = None) -> str:
             "x_account_reply",
             "x_account_post_action",
         ],
-        "memory": ["remember"],
+        "memory": [
+            "remember",
+            "echo_veil_remember",
+            "echo_veil_refresh_live",
+            "echo_veil_promote",
+            "echo_veil_recall",
+            "echo_veil_context",
+            "echo_veil_list",
+            "echo_veil_forget",
+            "echo_veil_doctor",
+            "echo_veil_reindex",
+        ],
         "multimodal": ["embed_text", "vision_describe"],
         "harness": [
             "available_actions",
@@ -1865,8 +3333,8 @@ def available_actions(topic: str | None = None) -> str:
     slash_guidance = [
         "Slash commands are session controls. Writing '/command' in a final answer does not execute it.",
         "Use session_slash for /read, /ls, /cd, and /cwd when you need deterministic cwd-relative file navigation.",
-        "Use session_command for non-file slash commands only when the user asks for that action or session state must change/check before continuing; read-only/status commands such as /kernel list, /code-rag status, /harness status, /agent threads, /harness score, or /harness compare run without approval; state-changing commands such as /code-rag on, /code-rag off, /harness refresh, or /harness embed and agent execution require approval.",
-        "Prefer direct tools for actual work: write_file for edits, run_shell for tests/builds, read_pdf/render_pdf_pages for PDFs, web_search/web_fetch for web.",
+        "Use session_command for non-file slash commands only when the user asks for that action or session state must change/check before continuing; read-only/status commands such as /kernel list, /code-rag status, /harness status, or /agent threads run without approval. /harness score may live-probe Echo Veil and therefore requires approval, as do state-changing commands such as /code-rag on, /code-rag off, /harness refresh, /harness embed, and agent execution.",
+        "Prefer direct tools for actual work: write_file for edits, run_shell for tests/builds, read_pdf/render_pdf_pages for PDFs, cleanup_pdf_render_artifact after vision inspection, and web_search/web_fetch for web.",
         "Prefer explicit on/off/status forms for toggles (/auto on, /safe off, /memory-auto status, /code-rag status, /thinking status, /verify on, /cloud off) so you do not accidentally flip state.",
         "For /reason, check /reason status or /reason guide first; only change reasoning mode for genuinely complex, failed, ambiguous, or verification-heavy work.",
         "For independent complex work, the parent runtime may invoke /agent team through session_command. Use 2-4 clear roles; specialists are read-only and one integration pipeline owns mutations and verification.",
@@ -1890,7 +3358,9 @@ def available_actions(topic: str | None = None) -> str:
     ]
     verification_layer = [
         "Use harness_search before broad filesystem scans for skills, prompts, memory, wiki, and workflows.",
-        "Use read_pdf for PDF text extraction. If it reports a scanned/image-only PDF, use render_pdf_pages next and then vision_describe on the returned PNG paths.",
+        "Use read_pdf for PDF text extraction. If it reports a scanned/image-only PDF, "
+        "use render_pdf_pages next and pass its typed artifact id, page number, and "
+        "receipt to vision_describe.",
         "Prefer edit_file (find/replace) over write_file for modifying existing files — it is faster, uses fewer tokens, and is less error-prone. Use write_file only for new files or full rewrites.",
         "When using edit_file, first call read_file to confirm the exact text, then include 2-5 lines of surrounding context so the match is unique. If the tool reports an ambiguous match, tighten old_string or pass replace_all=True when the rewrite is genuinely global.",
         "If edit_file fails with 'old_string not found' or 'matched N locations', call find_unique_anchor with the same needle to get a unique snippet with line numbers and context — then retry edit_file with that context.",
@@ -1922,8 +3392,18 @@ def available_actions(topic: str | None = None) -> str:
         slash_focus = focus in {"slash", "slashes", "command", "commands", "session-command", "session_command"}
         reason_focus = focus in {"reason", "reasoning", "reason-engine", "reasoning-engine"}
         matching: dict[str, Any] = {
-            "commands": commands if slash_focus else {key: value for key, value in commands.items() if reason_focus and key == "reasoning" or focus in key or any(focus in item.lower() for item in value)},
-            "model_callable_tools": {key: value for key, value in tool_groups.items() if slash_focus and key == "session" or focus in key or any(focus in item.lower() for item in value)},
+            "commands": commands
+            if slash_focus
+            else {
+                key: value
+                for key, value in commands.items()
+                if reason_focus and key == "reasoning" or focus in key or any(focus in item.lower() for item in value)
+            },
+            "model_callable_tools": {
+                key: value
+                for key, value in tool_groups.items()
+                if slash_focus and key == "session" or focus in key or any(focus in item.lower() for item in value)
+            },
         }
         if slash_focus:
             matching["when_to_use"] = slash_guidance
@@ -1945,87 +3425,97 @@ def session_slash(command: str) -> str:
     return "Error: session_slash must be invoked by the algo CLI runtime (not called directly)."
 
 
-_SESSION_OUTPUT_COMMANDS = frozenset({
-    "/actions",
-    "/changes",
-    "/chatgpt-status",
-    "/credentials",
-    "/dashboard",
-    "/diff",
-    "/doctor",
-    "/google-status",
-    "/help",
-    "/hread",
-    "/hsearch",
-    "/identity",
-    "/info",
-    "/memories",
-    "/model-check",
-    "/perf",
-    "/route",
-    "/selfcheck",
-    "/status",
-    "/ship",
-    "/url-scheme",
-    "/worktree",
-    "/xai-status",
-})
-_SESSION_STATUS_COMMANDS = frozenset({
-    "/auto",
-    "/cloud",
-    "/cloudauto",
-    "/code-rag",
-    "/context",
-    "/icl",
-    "/intel",
-    "/intelagence",
-    "/intelligence",
-    "/intuition",
-    "/lessons",
-    "/memory-auto",
-    "/mode",
-    "/policy",
-    "/reason",
-    "/reflex",
-    "/safe",
-    "/skills",
-    "/thinking",
-    "/verify",
-})
+_SESSION_OUTPUT_COMMANDS = frozenset(
+    {
+        "/actions",
+        "/changes",
+        "/chatgpt-status",
+        "/credentials",
+        "/dashboard",
+        "/diff",
+        "/doctor",
+        "/google-status",
+        "/help",
+        "/hread",
+        "/hsearch",
+        "/identity",
+        "/info",
+        "/memories",
+        "/model-check",
+        "/perf",
+        "/route",
+        "/selfcheck",
+        "/status",
+        "/ship",
+        "/url-scheme",
+        "/worktree",
+        "/xai-status",
+    }
+)
+_SESSION_STATUS_COMMANDS = frozenset(
+    {
+        "/auto",
+        "/cloud",
+        "/cloudauto",
+        "/code-rag",
+        "/context",
+        "/icl",
+        "/intel",
+        "/intelagence",
+        "/intelligence",
+        "/intuition",
+        "/lessons",
+        "/memory-auto",
+        "/mode",
+        "/policy",
+        "/reason",
+        "/reflex",
+        "/safe",
+        "/skills",
+        "/thinking",
+        "/verify",
+    }
+)
 _SESSION_STATUS_ARGS = frozenset({"", "?", "guide", "help", "show", "status"})
-_SESSION_EMPTY_ARG_TOGGLES = frozenset({
-    "/auto",
-    "/cloud",
-    "/cloudauto",
-    "/safe",
-    "/thinking",
-    "/verify",
-})
-_READ_ONLY_GOOGLE_SUBCOMMANDS = frozenset({
-    "calendar-list",
-    "docs-get",
-    "drive-get",
-    "drive-list",
-    "drive-search",
-    "gmail-get",
-    "gmail-list",
-    "help",
-    "sheets-values",
-})
-_READ_ONLY_HARNESS_SUBCOMMANDS = frozenset({
-    "",
-    "?",
-    "grade",
-    "help",
-    "quality",
-    "rating",
-    "score",
-    "scorecard",
-    "compare",
-    "competitive",
-    "stats",
-    "status",
-})
+_SESSION_EMPTY_ARG_TOGGLES = frozenset(
+    {
+        "/auto",
+        "/cloud",
+        "/cloudauto",
+        "/safe",
+        "/thinking",
+        "/verify",
+    }
+)
+_READ_ONLY_GOOGLE_SUBCOMMANDS = frozenset(
+    {
+        "calendar-list",
+        "docs-get",
+        "drive-get",
+        "drive-list",
+        "drive-search",
+        "gmail-get",
+        "gmail-list",
+        "help",
+        "sheets-values",
+    }
+)
+_READ_ONLY_HARNESS_SUBCOMMANDS = frozenset(
+    {
+        "",
+        "?",
+        "grade",
+        "help",
+        "quality",
+        "rating",
+        "score",
+        "scorecard",
+        "compare",
+        "competitive",
+        "stats",
+        "status",
+    }
+)
 _SESSION_SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)(\b(?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|"
     r"client[_-]?secret|password)\b[\"']?\s*[:=]\s*)"
@@ -2058,6 +3548,9 @@ def _session_command_captures_output(command_line: str) -> bool:
             return False
         if normalized_arg in _SESSION_STATUS_ARGS:
             return True
+    if root == "/memory":
+        subcommand = normalized_arg.split(maxsplit=1)[0] if normalized_arg else "home"
+        return subcommand in {"?", "benchmark", "doctor", "help", "home", "search", "show", "show-home", "status"}
     if root == "/harness":
         subcommand = normalized_arg.split(maxsplit=1)[0] if normalized_arg else ""
         return subcommand in _READ_ONLY_HARNESS_SUBCOMMANDS
@@ -2122,7 +3615,11 @@ def _captured_session_result(output: str, normalized: str, *, workspace: str = "
     return rendered
 
 
-def _direct_read_only_session_result(command_line: str) -> str | None:
+def _direct_read_only_session_result(
+    command_line: str,
+    *,
+    cfg: Any = None,
+) -> str | None:
     """Return source payloads for read-only routes that already expose strings.
 
     Sending JSON through ``Rich Console.print`` can insert display-width line
@@ -2138,7 +3635,7 @@ def _direct_read_only_session_result(command_line: str) -> str | None:
     if root == "/actions":
         return available_actions(arg or None)
     if root == "/hread":
-        return harness_read(arg) if arg else "Error: Usage: /hread <record-id>"
+        return harness_read(arg, cfg=cfg) if arg else "Error: Usage: /hread <record-id>"
     if root != "/harness":
         return None
     harness_parts = arg.split(maxsplit=1)
@@ -2148,9 +3645,9 @@ def _direct_read_only_session_result(command_line: str) -> str | None:
     if subcommand in {"", "status", "stats", "quality"}:
         return harness_stats()
     if subcommand in {"score", "scorecard", "grade", "rating"}:
-        return harness_scorecard()
+        return harness_scorecard(cfg=cfg)
     if subcommand in {"compare", "competitive"}:
-        return harness_competitive_rating()
+        return harness_competitive_rating(cfg=cfg)
     return None
 
 
@@ -2180,6 +3677,8 @@ def session_command(command: str, cfg: Any = None) -> str:
     - /code-rag on|off|status — opt in/out of cwd source indexing and prompt retrieval
     - /harness status, /harness refresh, /harness embed, /harness score, /harness compare, /hsearch QUERY, /hread ID — harness index
     - /intelligence status|query TERM|reindex or /intel ... — repository intelligence project graph
+    - /memory home|search QUERY|show ID|doctor|benchmark — governed memory review, recall, and measured qualification
+    - /memory add|supersede|promote|demote|archive|reindex — governed memory mutations
     - /remember FACT, /memories, /forget ID, /lesson TEXT, /lessons reindex
     - /context status|rebuild|clear — context management
     - /save NAME, /load NAME — conversation persistence
@@ -2195,21 +3694,22 @@ def session_command(command: str, cfg: Any = None) -> str:
     if cfg is None:
         return "Error: session_command must be invoked by the algo CLI runtime (not called directly)."
     normalized = command.strip()
-    from .slash_dispatch import handle_command, unknown_command_message
-    from .runtime_services import create_client
+    from .oliver_slash_dispatch import handle_command, unknown_command_message
+    from .theodore_runtime_services import create_client
+
     if normalized.lower() == "/agent" or normalized.lower().startswith("/agent "):
         from .agent_pipeline import agent_execution_active, execute_agent_command
 
         if agent_execution_active():
             return "Error: recursive /agent delegation is blocked while an Agent Blocks run is active."
         client = create_client(cfg)
-        arg = normalized[len("/agent"):].strip()
+        arg = normalized[len("/agent") :].strip()
         return _captured_session_result(
             execute_agent_command(arg, cfg, client),
             normalized,
             workspace=cfg.cwd,
         )
-    direct_result = _direct_read_only_session_result(normalized)
+    direct_result = _direct_read_only_session_result(normalized, cfg=cfg)
     if direct_result is not None:
         return _captured_session_result(direct_result, normalized, workspace=cfg.cwd)
     client = create_client(cfg)
@@ -2316,11 +3816,7 @@ def _collect_harness_index_integrity() -> dict[str, Any]:
             if raw_embedding is None:
                 continue
             embedding_model = str(record.get("embedding_model") or "").strip()
-            if (
-                not isinstance(raw_embedding, list)
-                or not raw_embedding
-                or not embedding_model
-            ):
+            if not isinstance(raw_embedding, list) or not raw_embedding or not embedding_model:
                 malformed_embeddings += 1
                 continue
             try:
@@ -2368,8 +3864,7 @@ def _collect_harness_index_integrity() -> dict[str, Any]:
             "declared_count": declared_count,
             "fingerprint": fingerprint,
             "embedding_dimensions": {
-                model: sorted(dimensions)
-                for model, dimensions in sorted(embedding_dimensions.items())
+                model: sorted(dimensions) for model, dimensions in sorted(embedding_dimensions.items())
             },
             "malformed_embeddings": malformed_embeddings,
             "checks": checks,
@@ -2385,7 +3880,7 @@ def _collect_harness_index_integrity() -> dict[str, Any]:
         }
 
 
-def harness_scorecard() -> str:
+def harness_scorecard(cfg: Config | None = None) -> str:
     """Run the evidence-backed v2 harness scorecard and return structured JSON.
 
     Ten scored gates are worth one point each. A 10/10 therefore requires
@@ -2393,6 +3888,11 @@ def harness_scorecard() -> str:
     benchmark, and proof that every required production algorithm actually ran.
     Optional cloud/Web and Google availability remain visible but unscored so a
     healthy local-first runtime is not penalized for intentionally absent creds.
+
+    When Echo Veil is enabled, this diagnostic performs its lifecycle-aware
+    doctor probe. Echo construction may recover, migrate, or prune state, so the
+    runtime authority registry classifies this scorecard as an approved local
+    memory operation. ``harness.stats()`` remains lifecycle-neutral.
     """
     from . import action_registry
     from .evals.algorithm_effectiveness import (
@@ -2441,12 +3941,23 @@ def harness_scorecard() -> str:
         stats_error = type(exc).__name__
     quality_value = stats.get("quality")
     embeddings_value = stats.get("embeddings")
-    echo_value = stats.get("echo_veil")
     runtime_store_value = stats.get("runtime_event_store")
     quality = quality_value if isinstance(quality_value, dict) else {}
     embeddings = embeddings_value if isinstance(embeddings_value, dict) else {}
-    echo_readiness = echo_value if isinstance(echo_value, dict) else {}
     runtime_store = runtime_store_value if isinstance(runtime_store_value, dict) else {}
+
+    echo_probe_error = ""
+    try:
+        from .ada_memory_echo_veil import get_echo_veil_readiness
+
+        echo_config = cfg.__dict__ if cfg is not None else None
+        probed_echo = get_echo_veil_readiness(echo_config, live_probe=True)
+        if not isinstance(probed_echo, dict):
+            raise TypeError("Echo Veil readiness payload must be a mapping")
+        echo_readiness = probed_echo
+    except Exception as exc:
+        echo_readiness = {}
+        echo_probe_error = type(exc).__name__
 
     embedding_fields = (
         stats.get("record_count"),
@@ -2520,12 +4031,11 @@ def harness_scorecard() -> str:
         "retrieval": bool(echo_readiness.get("retrieval_wired")),
         "persistence": bool(echo_readiness.get("persistence_wired")),
     }
-    echo_safe = (
-        not echo_enabled
-        or (
-            bool(echo_readiness.get("installed"))
-            and all(echo_stages.values())
-        )
+    echo_initialization_error = str(echo_readiness.get("import_error") or "")
+    echo_safe = not echo_enabled or (
+        bool(echo_readiness.get("installed"))
+        and echo_readiness.get("live_probe_performed") is True
+        and all(echo_stages.values())
     )
     runtime_store_fields_ready = all(
         key in runtime_store
@@ -2543,10 +4053,7 @@ def harness_scorecard() -> str:
         and runtime_store.get("status") in {"ready", "empty"}
         and runtime_store.get("directory_private") is True
         and runtime_store.get("lock_private") is True
-        and (
-            runtime_store.get("initialized") is not True
-            or runtime_store.get("file_private") is True
-        )
+        and (runtime_store.get("initialized") is not True or runtime_store.get("file_private") is True)
         and runtime_store.get("compaction_needed") is False
     )
     if (
@@ -2596,12 +4103,15 @@ def harness_scorecard() -> str:
                 f"categories={len(covered_categories)}/{len(required_categories)} "
                 f"missing={missing_categories} wiki={wiki_records} "
                 f"echo_enabled={echo_enabled} echo_stages={echo_stages} "
+                f"echo_live_probe={echo_readiness.get('live_probe_performed') is True} "
+                f"echo_error={echo_initialization_error or '-'} "
                 f"private_store={runtime_store.get('status') or 'unknown'}"
             ),
             (
                 "Cover every required product-memory category with a curated contract, "
-                "retain at least five curated wiki records, and disable Echo Veil until "
-                "its write/retrieval/persistence stages are all operational. Keep the runtime "
+                "retain at least five curated wiki records, and reconcile the qualified Echo Veil "
+                "dependency with its live profile before requiring write/retrieval/persistence. "
+                "Do not downgrade or rewrite a newer protected profile. Keep the runtime "
                 "event store private, bounded, and compact; then refresh."
                 if status != "pass"
                 else ""
@@ -2619,6 +4129,9 @@ def harness_scorecard() -> str:
                 "echo_stages": echo_stages,
                 "echo_readiness_source": echo_readiness.get("readiness_source"),
                 "echo_runtime": echo_readiness.get("runtime"),
+                "echo_live_probe_performed": echo_readiness.get("live_probe_performed") is True,
+                "echo_probe_error": echo_probe_error,
+                "echo_initialization_error": echo_initialization_error,
                 "runtime_event_store": runtime_store,
             },
         )
@@ -2669,18 +4182,24 @@ def harness_scorecard() -> str:
         )
     )
 
-    try:
-        kg_text = str(query_knowledge_graph("rate your harness"))
-        canonical_match = re.search(r"(?<![\w-])project:algo-cli(?![\w-])", kg_text) is not None
-        if canonical_match:
-            status = "pass"
-        elif "No matching canonicals" in kg_text:
-            status = "fail"
-        else:
-            status = "warn"
-    except Exception as exc:
-        kg_text = type(exc).__name__
-        status = "error"
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    if cfg is not None and echo_veil_authority_selected(cfg):
+        kg_text = "Legacy knowledge graph disabled under Echo Veil authority."
+        status = "unavailable"
+    else:
+        try:
+            kg_text = str(query_knowledge_graph("rate your harness", cfg=cfg))
+            canonical_match = re.search(r"(?<![\w-])project:algo-cli(?![\w-])", kg_text) is not None
+            if canonical_match:
+                status = "pass"
+            elif "No matching canonicals" in kg_text:
+                status = "fail"
+            else:
+                status = "warn"
+        except Exception as exc:
+            kg_text = type(exc).__name__
+            status = "error"
     checks.append(
         _scorecard_check(
             "knowledge graph",
@@ -2722,8 +4241,7 @@ def harness_scorecard() -> str:
         status_payload = json.loads(direct_status or "")
         payload_contract = isinstance(status_payload, dict) and isinstance(status_payload.get("embeddings"), dict)
         capture_contract = all(
-            _session_command_captures_output(command)
-            for command in ("/harness score", "/harness compare")
+            _session_command_captures_output(command) for command in ("/harness score", "/harness compare")
         )
         status = "pass" if not missing_harness_commands and payload_contract and capture_contract else "fail"
     except Exception as exc:
@@ -2789,7 +4307,9 @@ def harness_scorecard() -> str:
             "retrieval benchmark",
             status,
             json.dumps(benchmark, sort_keys=True, default=str)[:1000],
-            "Repair retrieval correctness or investigate the measured reusable-index regression." if status != "pass" else "",
+            "Repair retrieval correctness or investigate the measured reusable-index regression."
+            if status != "pass"
+            else "",
             critical=True,
             metrics=benchmark,
         )
@@ -2857,11 +4377,17 @@ def harness_scorecard() -> str:
         google_actions = json.loads(available_actions("google"))
         google_commands = set(google_actions.get("commands", {}).get("google", []))
         required_google_fragments = (
-            "algo-cli config setup google", "algo-cli config auth google login", "/google drive-list",
-            "/google gmail-list", "/google docs-get", "/google sheets-values", "/google calendar-list",
+            "algo-cli config setup google",
+            "algo-cli config auth google login",
+            "/google drive-list",
+            "/google gmail-list",
+            "/google docs-get",
+            "/google sheets-values",
+            "/google calendar-list",
         )
         missing_google = [
-            fragment for fragment in required_google_fragments
+            fragment
+            for fragment in required_google_fragments
             if not any(command.startswith(fragment) for command in google_commands)
         ]
         capability_status = "pass" if not missing_google else "warn"
@@ -2880,7 +4406,7 @@ def harness_scorecard() -> str:
     return json.dumps(finalize_scorecard(checks, capabilities=capabilities), indent=2)
 
 
-def harness_competitive_rating() -> str:
+def harness_competitive_rating(cfg: Config | None = None) -> str:
     """Run local evidence probes and grade the attached cross-harness comparison.
 
     The report deliberately cannot declare Algo CLI the leader without
@@ -2923,9 +4449,7 @@ def harness_competitive_rating() -> str:
     checks = raw_checks if isinstance(raw_checks, dict) else {}
     receipts = {
         name: "sha256:"
-        + hashlib.sha256(
-            json.dumps(checks.get(name, {}), sort_keys=True, default=str).encode("utf-8")
-        ).hexdigest()
+        + hashlib.sha256(json.dumps(checks.get(name, {}), sort_keys=True, default=str).encode("utf-8")).hexdigest()
         for name in required
     }
     summary = algorithms.get("summary") if isinstance(algorithms, dict) else {}
@@ -2934,9 +4458,9 @@ def harness_competitive_rating() -> str:
 
     snapshot = git_evidence.capture_git_snapshot()
     clean = git_evidence.snapshot_is_clean(snapshot) if snapshot.available else None
-    local_verification_digest = "sha256:" + hashlib.sha256(
-        f"{benchmark_json}\n{algorithm_json}".encode("utf-8")
-    ).hexdigest()
+    local_verification_digest = (
+        "sha256:" + hashlib.sha256(f"{benchmark_json}\n{algorithm_json}".encode("utf-8")).hexdigest()
+    )
     local_evidence: dict[str, Any] = {
         "benchmark": {
             "status": str(benchmark.get("status") or "error"),
@@ -2957,9 +4481,7 @@ def harness_competitive_rating() -> str:
         "release": {
             "status": (
                 "pass"
-                if clean is True
-                and benchmark.get("status") == "pass"
-                and algorithms.get("status") == "pass"
+                if clean is True and benchmark.get("status") == "pass" and algorithms.get("status") == "pass"
                 else "fail"
             ),
             "commit": snapshot.head or "",
@@ -2982,7 +4504,13 @@ def harness_competitive_rating() -> str:
     return json.dumps(report, indent=2, sort_keys=True)
 
 
-def harness_search(query: str, harness_name: str | None = None, kind: str | None = None, limit: int = 10) -> str:
+def harness_search(
+    query: str,
+    harness_name: str | None = None,
+    kind: str | None = None,
+    limit: int = 10,
+    cfg: Any = None,
+) -> str:
     """Search local harness assets.
 
     Args:
@@ -2991,7 +4519,25 @@ def harness_search(query: str, harness_name: str | None = None, kind: str | None
         kind: Optional kind filter: skill, tool, prompt, memory, wiki, workflow, extension.
         limit: Maximum records.
     """
-    results = harness.search_index(query, harness_name, kind, limit)
+    echo_memory_authority = False
+    if cfg is not None:
+        from .ada_memory_echo_veil import echo_veil_authority_selected
+
+        echo_memory_authority = echo_veil_authority_selected(cfg)
+    if echo_memory_authority and str(kind or "").casefold() == "memory":
+        return (
+            "Protected memory search is available only through Echo Veil; "
+            "legacy harness memory records were not consulted."
+        )
+    results = harness.search_index(
+        query,
+        harness_name,
+        kind,
+        limit,
+        excluded_kinds={"memory"} if echo_memory_authority else None,
+    )
+    if echo_memory_authority:
+        results = [record for record in results if str(record.get("kind") or "").casefold() != "memory"]
     if not results:
         return "No harness matches."
     lines = []
@@ -3005,14 +4551,33 @@ def harness_search(query: str, harness_name: str | None = None, kind: str | None
     return "\n".join(lines)
 
 
-def harness_read(record_id: str, max_chars: int = 20_000) -> str:
+def harness_read(
+    record_id: str,
+    max_chars: int = 20_000,
+    cfg: Any = None,
+) -> str:
     """Read one indexed harness asset by id from harness_search.
 
     Args:
         record_id: Exact record id returned by harness_search.
         max_chars: Maximum characters to return.
     """
-    return harness.read_record(record_id, _bounded_int(max_chars, 20_000, 1, 50_000))
+    if cfg is not None:
+        from .ada_memory_echo_veil import echo_veil_authority_selected
+
+        record = harness.get_record(record_id)
+        if (
+            echo_veil_authority_selected(cfg)
+            and isinstance(record, dict)
+            and str(record.get("kind") or "").casefold() == "memory"
+        ):
+            return (
+                "Protected memory records are available only through Echo Veil; the legacy harness record was not read."
+            )
+    return harness.read_record(
+        record_id,
+        _bounded_int(max_chars, 20_000, 1, 50_000),
+    )
 
 
 _KG_HARNESS_META_TERMS = {
@@ -3031,17 +4596,17 @@ _KG_HARNESS_META_TERMS = {
 
 
 def _knowledge_graph_query_expansion(question: str) -> str | None:
-    terms = {
-        term.lower()
-        for term in re.findall(r"[\w.-]+", question or "")
-        if len(term) > 1
-    }
+    terms = {term.lower() for term in re.findall(r"[\w.-]+", question or "") if len(term) > 1}
     if "harness" in terms and terms & _KG_HARNESS_META_TERMS:
         return "Algo CLI harness self-evaluation capability audit"
     return None
 
 
-def query_knowledge_graph(question: str, limit: int = 10) -> str:
+def query_knowledge_graph(
+    question: str,
+    limit: int = 10,
+    cfg: Config | None = None,
+) -> str:
     """Query the local index-compute-lab ranked association graph.
 
     Returns co-occurring entities and relationship counts (not prose bios).
@@ -3052,6 +4617,11 @@ def query_knowledge_graph(question: str, limit: int = 10) -> str:
         question: Natural-language question about entities, projects, or relationships.
         limit: Maximum ranked neighbors or results to return, between 1 and 20.
     """
+    if cfg is not None:
+        from .ada_memory_echo_veil import echo_veil_authority_selected
+
+        if echo_veil_authority_selected(cfg):
+            return "Error: legacy knowledge-graph access is disabled while Echo Veil is the exclusive memory authority."
     text = (question or "").strip()
     if not text:
         return "Error: knowledge graph question was empty."
@@ -3068,6 +4638,7 @@ def query_knowledge_graph(question: str, limit: int = 10) -> str:
 def reindex_knowledge_graph(
     include_removable_seed: bool = False,
     removable_scope: str | None = None,
+    cfg: Config | None = None,
 ) -> str:
     """Rebuild index-compute-lab ranked graph (association → normalize → rank).
 
@@ -3080,6 +4651,14 @@ def reindex_knowledge_graph(
         include_removable_seed: When true, re-seed removable-drive atoms before the pipeline.
         removable_scope: Optional single --scope path for removable_drive_atoms.py.
     """
+    if cfg is not None:
+        from .ada_memory_echo_veil import echo_veil_authority_selected
+
+        if echo_veil_authority_selected(cfg):
+            return (
+                "Error: legacy knowledge-graph reindexing is disabled while Echo Veil "
+                "is the exclusive memory authority."
+            )
     scopes = [removable_scope.strip()] if removable_scope and removable_scope.strip() else None
     output = _index_compute_lab.run_pipeline(
         include_removable_seed=include_removable_seed,
@@ -3088,16 +4667,41 @@ def reindex_knowledge_graph(
     return _cap(output)
 
 
-def write_knowledge_graph_note(title: str, body: str) -> str:
-    """Write a markdown note under index-compute-lab/atoms/agent-notes/ for harness RAG.
+def write_knowledge_graph_note(
+    title: str,
+    body: str,
+    cfg: Config | None = None,
+) -> str:
+    """Persist an explicit retrievable note in the active memory authority.
 
-    Use when the user states a fact that should be retrievable before the next full reindex
-    (contacts, project aliases, corrections). Follow with harness_refresh.
+    When Echo Veil owns memory, this routes to protected Short-Term memory and
+    never creates an index-compute-lab Markdown atom or plaintext index shadow.
+    Without Echo authority, the legacy graph-note behavior remains available.
 
     Args:
         title: Short note title (used as filename slug).
         body: Markdown body (one or more paragraphs).
+        cfg: Runtime configuration injected by Algo CLI.
     """
+    if cfg is not None:
+        from .ada_memory_echo_veil import (
+            echo_veil_authority_selected,
+            remember_with_echo_veil,
+        )
+
+        if echo_veil_authority_selected(cfg):
+            note = f"{str(title or '').strip()}\n\n{str(body or '').strip()}".strip()
+            if not note:
+                return "Error: protected knowledge note was empty."
+            try:
+                created = remember_with_echo_veil(
+                    cfg,
+                    note,
+                    source="explicit_knowledge_graph_note",
+                )
+            except Exception:
+                return "Error: protected knowledge-note storage is unavailable; no plaintext graph note was written."
+            return "Protected knowledge note saved." if created else "Protected knowledge note already stored."
     return _index_compute_lab.write_graph_note(title, body)
 
 
@@ -3111,7 +4715,9 @@ def model_pull(name: str) -> str:
     try:
         last_status = ""
         for progress in client.pull(name, stream=True):
-            status = getattr(progress, "status", None) or (progress.get("status") if isinstance(progress, dict) else None)
+            status = getattr(progress, "status", None) or (
+                progress.get("status") if isinstance(progress, dict) else None
+            )
             if status:
                 last_status = str(status)
         return f"Pulled {name}: {last_status or 'complete'}"
@@ -3158,14 +4764,10 @@ def _parse_modelfile(modelfile: str) -> dict[str, Any]:
                     trailing = segments[-1][closing + 3 :].strip()
                     segments[-1] = segments[-1][:closing]
                     if trailing and not trailing.startswith("#"):
-                        raise ValueError(
-                            f"unexpected text after multiline value on line {index}"
-                        )
+                        raise ValueError(f"unexpected text after multiline value on line {index}")
                     break
                 if index >= len(lines):
-                    raise ValueError(
-                        f"unterminated multiline {instruction} starting on line {line_number}"
-                    )
+                    raise ValueError(f"unterminated multiline {instruction} starting on line {line_number}")
                 segments.append(lines[index])
                 index += 1
             value = "\n".join(segments)
@@ -3186,9 +4788,7 @@ def _parse_modelfile(modelfile: str) -> dict[str, Any]:
         elif instruction in {"SYSTEM", "TEMPLATE"}:
             key = instruction.lower()
             if key in create_args:
-                raise ValueError(
-                    f"duplicate {instruction} instruction on line {line_number}"
-                )
+                raise ValueError(f"duplicate {instruction} instruction on line {line_number}")
             create_args[key] = value
         elif instruction == "PARAMETER":
             parts = value.split(maxsplit=1)
@@ -3215,9 +4815,7 @@ def _parse_modelfile(modelfile: str) -> dict[str, Any]:
         elif instruction == "LICENSE":
             licenses.append(value)
         else:
-            raise ValueError(
-                f"unsupported Modelfile instruction {instruction!r} on line {line_number}"
-            )
+            raise ValueError(f"unsupported Modelfile instruction {instruction!r} on line {line_number}")
 
     if not create_args.get("from_"):
         raise ValueError("Modelfile requires a FROM instruction")
@@ -3303,8 +4901,12 @@ def model_show(name: str) -> str:
             ctx_length = val
             break
     family = getattr(details, "family", None) or (details.get("family") if isinstance(details, dict) else None)
-    param_size = getattr(details, "parameter_size", None) or (details.get("parameter_size") if isinstance(details, dict) else None)
-    quant = getattr(details, "quantization_level", None) or (details.get("quantization_level") if isinstance(details, dict) else None)
+    param_size = getattr(details, "parameter_size", None) or (
+        details.get("parameter_size") if isinstance(details, dict) else None
+    )
+    quant = getattr(details, "quantization_level", None) or (
+        details.get("quantization_level") if isinstance(details, dict) else None
+    )
     fmt = getattr(details, "format", None) or (details.get("format") if isinstance(details, dict) else None)
     payload = {
         "name": name,
@@ -3317,19 +4919,18 @@ def model_show(name: str) -> str:
     return json.dumps(payload, indent=2)
 
 
-
-def _hide_cfg_param(fn):
-    """Remove the ``cfg`` parameter from the Ollama tool-call schema.
-
-    ``remember`` and ``append_lesson`` accept a runtime-injected ``cfg``
-    (Config instance) that the model should never pass.  Without this
-    wrapper the Ollama SDK tries to build a Pydantic model from
-    ``Config | None`` and crashes with "not fully defined".
-    """
+def _hide_runtime_params(fn, *names: str):
+    """Remove runtime-injected parameters from the model tool-call schema."""
+    hidden = frozenset(names)
     original_sig = inspect.signature(fn)
-    params = [p for name, p in original_sig.parameters.items() if name != "cfg"]
+    params = [p for name, p in original_sig.parameters.items() if name not in hidden]
     fn.__signature__ = original_sig.replace(parameters=params)
     return fn
+
+
+def _hide_cfg_param(fn):
+    """Remove the runtime-injected ``cfg`` parameter from the tool schema."""
+    return _hide_runtime_params(fn, "cfg")
 
 
 # ---------------------------------------------------------------------------
@@ -3342,23 +4943,42 @@ def _hide_cfg_param(fn):
 
 def plugins_discover() -> str:
     """Discover plugins from ~/.algo_cli/plugins/ and return a JSON summary."""
-    from .plugins import discover_plugins
+    from .william_plugins import discover_plugins
+
     return json.dumps([manifest.as_dict() for manifest in discover_plugins()], indent=2, sort_keys=True)
 
 
 def plugins_load(plugin_name: str) -> str:
-    """Explicitly import a discovered plugin and return its module load status.
+    """Return the blocked status for a manifest-only local plugin.
 
-    Dynamic action/tool registration is not yet part of the stable runtime API.
+    In-process Python plugin imports and callable contributions are disabled.
+    No local plugin execution route is enabled during hardening.
     """
-    from .plugins import discover_plugins, load_plugin
+    from .william_plugins import discover_plugins, load_plugin
 
+    requested = str(plugin_name or "").strip().casefold()
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", requested):
+        return json.dumps(
+            {
+                "loaded": False,
+                "error_code": "invalid_plugin_name",
+                "error": "Plugin name is invalid.",
+            },
+            sort_keys=True,
+        )
     manifest = next(
-        (item for item in discover_plugins() if item.name.lower() == plugin_name.strip().lower()),
+        (item for item in discover_plugins() if item.name == requested),
         None,
     )
     if manifest is None:
-        return json.dumps({"loaded": False, "error": f"Plugin not found: {plugin_name}"})
+        return json.dumps(
+            {
+                "loaded": False,
+                "error_code": "plugin_not_found",
+                "error": "Plugin was not found.",
+            },
+            sort_keys=True,
+        )
     result = load_plugin(manifest)
     return json.dumps(result.as_dict(), indent=2, sort_keys=True)
 
@@ -3366,20 +4986,23 @@ def plugins_load(plugin_name: str) -> str:
 def version_manifest_build() -> str:
     """Build a version manifest with CLI, Python, platform, harness, and plugin versions."""
     from .version_manifest import build_manifest
+
     m = build_manifest()
     return json.dumps(m.as_dict(), indent=2, sort_keys=True)
 
 
 def extensions_manifest_build() -> str:
     """Build an extension manifest with plugin/helper binary versions and status."""
-    from .extensions_manifest import build_extensions_manifest
+    from .argon_extensions_manifest import build_extensions_manifest
+
     m = build_extensions_manifest()
     return m.to_json()
 
 
 def runtime_qos_hint(tool_name: str, args_json: str = "{}") -> str:
     """Classify a tool call's runtime QoS and named log destination."""
-    from .runtime_qos import classify_tool_runtime
+    from .theodore_runtime_qos import classify_tool_runtime
+
     try:
         args = json.loads(args_json or "{}")
         if not isinstance(args, dict):
@@ -3392,14 +5015,18 @@ def runtime_qos_hint(tool_name: str, args_json: str = "{}") -> str:
 def screenshot_description_verify(description: str, expected_terms: str = "", forbidden_terms: str = "") -> str:
     """Verify a screenshot description against expected and forbidden comma-separated terms."""
     from .vision_screenshot_verify import verify_screenshot_description
+
     expected = [term.strip() for term in (expected_terms or "").split(",") if term.strip()]
     forbidden = [term.strip() for term in (forbidden_terms or "").split(",") if term.strip()]
-    return json.dumps(verify_screenshot_description(description, expected, forbidden).to_dict(), indent=2, sort_keys=True)
+    return json.dumps(
+        verify_screenshot_description(description, expected, forbidden).to_dict(), indent=2, sort_keys=True
+    )
 
 
 def capability_mask_describe(tier: str = "", capabilities: str = "") -> str:
     """Describe a stable capability bit mask from a tier and/or comma-separated capability names."""
-    from .capability_mask import CapabilityMask, mask_from_names, tier_mask
+    from .marcus_authority import CapabilityMask, mask_from_names, tier_mask
+
     names = [name.strip() for name in (capabilities or "").split(",") if name.strip()]
     mask = CapabilityMask(tier_mask(tier) | mask_from_names(names).value)
     return json.dumps(mask.to_dict(), indent=2, sort_keys=True)
@@ -3408,12 +5035,14 @@ def capability_mask_describe(tier: str = "", capabilities: str = "") -> str:
 def small_context_ledger_preview(model: str, runtime_cap: int, blocks_json: str = "[]") -> str:
     """Preview whether the small-context ledger path would activate for a model/window."""
     from .small_context import preview_small_context_ledger
+
     return preview_small_context_ledger(model, runtime_cap, blocks_json)
 
 
 def credential_helpers_get(helper: str, key: str) -> str:
     """Check a named helper for a credential without returning its plaintext value."""
     from .credential_helpers import get_credential
+
     val = get_credential(helper, key)
     return json.dumps(
         {
@@ -3428,6 +5057,7 @@ def credential_helpers_get(helper: str, key: str) -> str:
 def credential_helpers_store(helper: str, key: str, value: str) -> str:
     """Store a credential value by key via a named credential helper."""
     from .credential_helpers import store_credential
+
     stored = store_credential(helper, key, value)
     return json.dumps({"helper": helper, "key": key, "stored": stored})
 
@@ -3507,10 +5137,15 @@ def action_program(plan: dict, cfg: Any = None) -> str:
     ``kind: action``, ``action``, and ``args``. A transform step has ``id``,
     ``kind: transform``, ``op``, ``input``, and optional ``args``. References
     use ``{"$ref": "earlier_step", "path": ["optional", "keys"]}``.
-    Supported deterministic transforms are returned by validation errors.
-    Large intermediates become content-addressed artifacts; every nested action
-    retains its normal policy, approval, guardrail, attempt-ledger, and telemetry
-    path. Session/meta calls and recursive programs are forbidden.
+    Action arguments are static in version 1: observations may feed deterministic
+    transforms and outputs, but may not become arguments to another action. All
+    action schemas, exact effects, targets, and transform contracts are frozen
+    before step one. At most one state-changing/code/external action is allowed;
+    it must be final and directly returned. Large or protected intermediates use
+    encrypted run-scoped artifacts. Every nested action retains its normal policy,
+    approval, guardrail, deadline, cancellation, attempt-ledger, and telemetry
+    path. Session/meta calls and recursive programs are forbidden. Receipts are
+    local hash-linked, tamper-evident records; they are not immutable or signed.
 
     Args:
         plan: Typed version-1 plan object with bounded ordered steps and outputs.
@@ -3518,7 +5153,7 @@ def action_program(plan: dict, cfg: Any = None) -> str:
 
     if cfg is None:
         return json.dumps({"status": "error", "error": "runtime config was not injected"})
-    from .program_runtime import ProgramAuthorization, execute_program
+    from .nathan_program_runtime import ProgramAuthorization, execute_program
 
     authorization = getattr(cfg, "_algo_program_authorization", None)
     if not isinstance(authorization, ProgramAuthorization):
@@ -3543,17 +5178,26 @@ ALL_TOOLS = [
     edit_file,
     read_pdf,
     render_pdf_pages,
+    cleanup_pdf_render_artifact,
     write_file,
     list_directory,
     search_files,
     find_unique_anchor,
     batch_edit,
-    run_shell,
+    _hide_runtime_params(run_shell, "cwd", "safe_mode"),
     git_status,
     git_diff,
     web_search,
     web_fetch,
-    x_search,
+    _hide_cfg_param(x_search),
+    cobalt_open,
+    cobalt_snapshot,
+    cobalt_screenshot,
+    cobalt_navigate,
+    cobalt_click,
+    cobalt_type,
+    cobalt_scroll,
+    cobalt_close,
     x_account_status,
     x_account_draft_post,
     x_account_draft_reply,
@@ -3561,8 +5205,17 @@ ALL_TOOLS = [
     x_account_reply,
     x_account_post_action,
     _hide_cfg_param(remember),
+    _hide_cfg_param(echo_veil_remember),
+    _hide_cfg_param(echo_veil_refresh_live),
+    _hide_cfg_param(echo_veil_promote),
+    _hide_cfg_param(echo_veil_recall),
+    _hide_cfg_param(echo_veil_context),
+    _hide_cfg_param(echo_veil_list),
+    _hide_cfg_param(echo_veil_forget),
+    _hide_cfg_param(echo_veil_doctor),
+    _hide_cfg_param(echo_veil_reindex),
     _hide_cfg_param(append_lesson),
-    update_user_profile,
+    _hide_cfg_param(update_user_profile),
     embed_text,
     vision_describe,
     action_search,
@@ -3572,13 +5225,13 @@ ALL_TOOLS = [
     _hide_cfg_param(session_command),
     harness_refresh,
     harness_stats,
-    harness_scorecard,
-    harness_competitive_rating,
-    harness_search,
-    harness_read,
-    query_knowledge_graph,
-    reindex_knowledge_graph,
-    write_knowledge_graph_note,
+    _hide_cfg_param(harness_scorecard),
+    _hide_cfg_param(harness_competitive_rating),
+    _hide_cfg_param(harness_search),
+    _hide_cfg_param(harness_read),
+    _hide_cfg_param(query_knowledge_graph),
+    _hide_cfg_param(reindex_knowledge_graph),
+    _hide_cfg_param(write_knowledge_graph_note),
     model_pull,
     model_delete,
     model_create,
@@ -3596,4 +5249,4 @@ ALL_TOOLS = [
     credential_helpers_store,
     url_scheme_parse,
 ]
-TOOL_MAP = {fn.__name__: fn for fn in ALL_TOOLS}
+TOOL_MAP = CuratedToolRegistry({fn.__name__: fn for fn in ALL_TOOLS})

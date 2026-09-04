@@ -10,9 +10,11 @@ import os
 import platform
 import re
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -25,6 +27,8 @@ REPO_ROOT = HERE.parents[1]
 TASK_ROOT = HERE / "tasks"
 DEFAULT_MODEL = "qwen3.6:35b-mlx"
 DEFAULT_TIMEOUT = 360
+DEFAULT_CHECKER_TIMEOUT = 30
+PROCESS_CLEANUP_TIMEOUT = 5
 SCHEMA_VERSION = 1
 PROTOCOL = "algo-cli-cross-harness-v3-draft"
 
@@ -94,19 +98,15 @@ PRODUCTS = {
     ),
     "codex_cli": ProductSpec("codex_cli", "Codex CLI", "terminal", ("codex",), True),
     "claude_code": ProductSpec("claude_code", "Claude Code", "terminal", ("claude",), True),
-    "opencode": ProductSpec(
-        "opencode", "OpenCode", "terminal", ("opencode", "~/.opencode/bin/opencode"), True
-    ),
+    "opencode": ProductSpec("opencode", "OpenCode", "terminal", ("opencode", "~/.opencode/bin/opencode"), True),
     "pi": ProductSpec("pi", "Pi", "terminal", ("pi",), True),
     "copilot_cli": ProductSpec("copilot_cli", "Copilot CLI", "terminal", ("copilot",), True),
     "droid": ProductSpec("droid", "Droid", "terminal", ("droid",), True),
     "goose": ProductSpec("goose", "Goose", "terminal", ("goose",), True),
-    "oh_my_pi": ProductSpec(
-        "oh_my_pi", "Oh My Pi", "terminal", ("omp", "~/.bun/bin/omp"), True
-    ),
+    "oh_my_pi": ProductSpec("oh_my_pi", "Oh My Pi", "terminal", ("omp", "~/.bun/bin/omp"), True),
     "hermes_agent": ProductSpec("hermes_agent", "Hermes Agent", "terminal", ("hermes",), True),
     "openclaw": ProductSpec("openclaw", "OpenClaw", "terminal", ("openclaw",), True),
-    "grok_build": ProductSpec("grok_build", "Grok Build", "terminal", ("grok",)),
+    "grok_build": ProductSpec("grok_build", "Grok Build", "terminal", ("grok",), True),
     "cline_cli": ProductSpec("cline_cli", "Cline CLI", "terminal", ("cline",)),
     "pool": ProductSpec(
         "pool",
@@ -175,11 +175,7 @@ def sha256_file(path: Path) -> str:
 
 def is_generated(relative: str) -> bool:
     parts = Path(relative).parts
-    return (
-        ".pytest_cache" in parts
-        or "__pycache__" in parts
-        or relative.endswith((".pyc", ".pyo", ".DS_Store"))
-    )
+    return ".pytest_cache" in parts or "__pycache__" in parts or relative.endswith((".pyc", ".pyo", ".DS_Store"))
 
 
 def tree_snapshot(path: Path) -> dict[str, str]:
@@ -202,13 +198,8 @@ def tree_digest(path: Path) -> str:
 def task_suite_digest(task_ids: Iterable[str]) -> str:
     """Hash the frozen prompts and fixtures selected for a benchmark run."""
 
-    payload = {
-        task_id: tree_digest(TASK_ROOT / task_id)
-        for task_id in sorted(set(task_ids))
-    }
-    return sha256_bytes(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    )
+    payload = {task_id: tree_digest(TASK_ROOT / task_id) for task_id in sorted(set(task_ids))}
+    return sha256_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
 
 
 def changed_paths(before: dict[str, str], after: dict[str, str]) -> list[str]:
@@ -244,9 +235,7 @@ def version_receipt(product_id: str, executable: str) -> str | None:
         "pool": [executable, "--version"],
     }
     try:
-        completed = subprocess.run(
-            commands[product_id], text=True, capture_output=True, timeout=10, check=False
-        )
+        completed = subprocess.run(commands[product_id], text=True, capture_output=True, timeout=10, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return None
     text = (completed.stdout or completed.stderr).strip()
@@ -276,21 +265,6 @@ def product_availability(product_id: str) -> dict[str, Any]:
             "executable": None,
             "version": None,
         }
-    if product_id == "grok_build":
-        completed = subprocess.run(
-            [executable, "models"], text=True, capture_output=True, timeout=20, check=False
-        )
-        combined = (completed.stdout + completed.stderr).lower()
-        if "not authenticated" in combined or "no auth credentials" in combined:
-            return {
-                "product": product_id,
-                "label": spec.label,
-                "lane": spec.lane,
-                "status": "blocked",
-                "reason": "installed but not authenticated",
-                "executable": executable,
-                "version": version_receipt(product_id, executable),
-            }
     if product_id == "cline_cli":
         env = os.environ.copy()
         node24 = Path("/opt/homebrew/opt/node@24/bin")
@@ -303,11 +277,7 @@ def product_availability(product_id: str) -> dict[str, Any]:
             )
         except subprocess.TimeoutExpired:
             cline_completed = None
-        if (
-            cline_completed is None
-            or cline_completed.returncode != 0
-            or not cline_completed.stdout.strip()
-        ):
+        if cline_completed is None or cline_completed.returncode != 0 or not cline_completed.stdout.strip():
             return {
                 "product": product_id,
                 "label": spec.label,
@@ -384,8 +354,7 @@ def warm_model(output_root: Path, model: str, timeout: int, keepalive: str) -> d
     write_json(output_root / "warmup_receipt.json", receipt)
     if not receipt["success"]:
         raise RuntimeError(
-            f"model warm-up failed (exit={return_code}, timed_out={timed_out}); "
-            f"see {output_root / 'warmup_stderr.txt'}"
+            f"model warm-up failed (exit={return_code}, timed_out={timed_out}); see {output_root / 'warmup_stderr.txt'}"
         )
     return receipt
 
@@ -405,11 +374,7 @@ def base_environment(state: Path) -> dict[str, str]:
         "TMPDIR",
         "WINDIR",
     }
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if key in inherited or key.startswith("LC_")
-    }
+    env = {key: value for key, value in os.environ.items() if key in inherited or key.startswith("LC_")}
     home = state / "home"
     home.mkdir(parents=True, exist_ok=True)
     env.update(
@@ -613,6 +578,51 @@ def command_for(
             str(result),
             prompt,
         ], env
+    if harness == "grok_build":
+        grok_home = state / "grok-home"
+        grok_home.mkdir(parents=True, exist_ok=True)
+        model_literal = json.dumps(model)
+        (grok_home / "config.toml").write_text(
+            "[cli]\n"
+            "auto_update = false\n"
+            "use_leader = false\n"
+            "\n"
+            "[models]\n"
+            'default = "wikiskill-local"\n'
+            "\n"
+            "[model.wikiskill-local]\n"
+            f"model = {model_literal}\n"
+            'base_url = "http://127.0.0.1:11434/v1"\n'
+            'name = "WikiSkill local benchmark"\n'
+            'env_key = "GROK_BENCHMARK_API_KEY"\n'
+            'api_backend = "chat_completions"\n'
+            "context_window = 262144\n"
+            "max_completion_tokens = 32768\n"
+            "supports_backend_search = false\n",
+            encoding="utf-8",
+        )
+        env.update(
+            {
+                "GROK_HOME": str(grok_home),
+                "GROK_BENCHMARK_API_KEY": "ollama",
+            }
+        )
+        return [
+            executable,
+            "--cwd",
+            str(result),
+            "--model",
+            "wikiskill-local",
+            "--single",
+            prompt,
+            "--output-format",
+            "streaming-json",
+            "--always-approve",
+            "--no-subagents",
+            "--no-memory",
+            "--no-plan",
+            "--disable-web-search",
+        ], env
     if harness == "oh_my_pi":
         agent_dir = state / "omp-agent"
         agent_dir.mkdir(parents=True, exist_ok=True)
@@ -788,28 +798,46 @@ def command_for(
     raise KeyError(f"no adapter for {harness}")
 
 
-def run_process(command: list[str], *, cwd: Path, env: dict[str, str], timeout: int) -> dict[str, Any]:
-    started = time.perf_counter()
+def _stop_process(process: subprocess.Popen[str]) -> None:
     try:
-        completed = subprocess.run(
-            command,
-            cwd=cwd,
-            env=env,
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+    except ProcessLookupError:
+        pass
+
+
+def run_process(command: list[str], *, cwd: Path, env: dict[str, str], timeout: float) -> dict[str, Any]:
+    started = time.perf_counter()
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=os.name == "posix",
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
         return {
-            "return_code": completed.returncode,
-            "stdout": completed.stdout,
-            "stderr": completed.stderr,
+            "return_code": process.returncode,
+            "stdout": stdout,
+            "stderr": stderr,
             "timed_out": False,
             "duration_seconds": round(time.perf_counter() - started, 6),
         }
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", "replace")
-        stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode("utf-8", "replace")
+    except subprocess.TimeoutExpired:
+        _stop_process(process)
+        try:
+            stdout, stderr = process.communicate(timeout=PROCESS_CLEANUP_TIMEOUT)
+        except subprocess.TimeoutExpired as error:
+            # A detached descendant can retain the pipes after the process group exits.
+            stdout = error.stdout if isinstance(error.stdout, str) else (error.stdout or b"").decode("utf-8", "replace")
+            stderr = error.stderr if isinstance(error.stderr, str) else (error.stderr or b"").decode("utf-8", "replace")
         return {
             "return_code": 124,
             "stdout": stdout,
@@ -817,13 +845,35 @@ def run_process(command: list[str], *, cwd: Path, env: dict[str, str], timeout: 
             "timed_out": True,
             "duration_seconds": round(time.perf_counter() - started, 6),
         }
+    finally:
+        try:
+            if process.poll() is None:
+                _stop_process(process)
+                process.wait(timeout=PROCESS_CLEANUP_TIMEOUT)
+        finally:
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
 
 
-def run_task_checker(task_id: str, workspace: Path, artifacts: Path) -> tuple[bool, str]:
+def run_task_checker(
+    task_id: str, workspace: Path, artifacts: Path, *, timeout: float = DEFAULT_CHECKER_TIMEOUT
+) -> tuple[bool, str]:
     fixture = TASK_ROOT / task_id / "fixtures"
     errors: list[str] = []
     output = ""
     spec = TASKS[task_id]
+
+    def check_command(command: list[str], label: str) -> str:
+        # Checkers import agent-edited code, so they need the same isolated environment.
+        with tempfile.TemporaryDirectory(prefix="algo-benchmark-checker-") as state:
+            completed = run_process(command, cwd=workspace, env=base_environment(Path(state)), timeout=timeout)
+        if completed["timed_out"]:
+            errors.append(f"{label} timed out after {timeout:g}s")
+        elif completed["return_code"]:
+            errors.append(f"{label} exited {completed['return_code']}")
+        return completed["stdout"] + completed["stderr"]
+
     for relative in spec.protected_workspace_paths:
         candidate = workspace / relative
         source = fixture / relative
@@ -832,12 +882,7 @@ def run_task_checker(task_id: str, workspace: Path, artifacts: Path) -> tuple[bo
         elif candidate.read_bytes() != source.read_bytes():
             errors.append(f"protected file changed: {relative}")
     if task_id == "code_repair_small_repo":
-        completed = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q"], cwd=workspace, text=True, capture_output=True, check=False
-        )
-        output = completed.stdout + completed.stderr
-        if completed.returncode:
-            errors.append(f"pytest exited {completed.returncode}")
+        output = check_command([sys.executable, "-m", "pytest", "-q"], "pytest")
     elif task_id == "tool_trap_misleading_state":
         try:
             settings_text = (workspace / "app/settings.py").read_text(encoding="utf-8")
@@ -846,12 +891,7 @@ def run_task_checker(task_id: str, workspace: Path, artifacts: Path) -> tuple[bo
             errors.append(f"live settings file is unavailable: {type(exc).__name__}")
         if 'STATUS_ENDPOINT = "/status"' not in settings_text:
             errors.append("live settings endpoint is not /status")
-        completed = subprocess.run(
-            [sys.executable, "healthcheck.py"], cwd=workspace, text=True, capture_output=True, check=False
-        )
-        output = completed.stdout + completed.stderr
-        if completed.returncode:
-            errors.append(f"healthcheck exited {completed.returncode}")
+        output = check_command([sys.executable, "healthcheck.py"], "healthcheck")
     elif task_id == "memory_rag_conflict_live_files":
         settings_data: dict[str, Any]
         try:
@@ -919,26 +959,17 @@ def run_task_checker(task_id: str, workspace: Path, artifacts: Path) -> tuple[bo
         }
         for relative, wanted in service_expectations.items():
             try:
-                value = json.loads((workspace / relative).read_text(encoding="utf-8"))
+                service_settings = json.loads((workspace / relative).read_text(encoding="utf-8"))
             except Exception as exc:
                 errors.append(f"{relative} is invalid JSON: {type(exc).__name__}")
                 continue
-            if not isinstance(value, dict):
+            if not isinstance(service_settings, dict):
                 errors.append(f"{relative} must contain an object")
                 continue
             for key, expected_value in wanted.items():
-                if value.get(key) != expected_value:
+                if service_settings.get(key) != expected_value:
                     errors.append(f"{relative} has incorrect {key}")
-        completed = subprocess.run(
-            [sys.executable, "verify_rollout.py"],
-            cwd=workspace,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        output = completed.stdout + completed.stderr
-        if completed.returncode:
-            errors.append(f"verify_rollout.py exited {completed.returncode}")
+        output = check_command([sys.executable, "verify_rollout.py"], "verify_rollout.py")
         receipt_path = artifacts / "rollout_receipt.md"
         if not receipt_path.is_file():
             errors.append("missing artifacts/rollout_receipt.md")
@@ -956,9 +987,7 @@ def run_task_checker(task_id: str, workspace: Path, artifacts: Path) -> tuple[bo
                 if value not in receipt_text:
                     errors.append(f"rollout receipt missing {value}")
             lowered = receipt_text.casefold()
-            if "stale" not in lowered or not any(
-                word in lowered for word in ("ignored", "overridden", "rejected")
-            ):
+            if "stale" not in lowered or not any(word in lowered for word in ("ignored", "overridden", "rejected")):
                 errors.append("rollout receipt does not explain stale-source rejection")
     receipt = output.rstrip()
     if errors:
@@ -1003,7 +1032,7 @@ def event_metrics(harness: str, events: list[dict[str, Any]], state: Path) -> di
         if event_type == "model_round":
             round_receipts.append(event)
         if event_type == "tool_call":
-            tool_ids.add(str(event.get("id") or event.get("call_id") or len(tool_ids)))
+            tool_ids.add(str(event.get("toolCallId") or event.get("id") or event.get("call_id") or len(tool_ids)))
         if event_type == "tool_execution_start":
             tool_ids.add(str(event.get("toolCallId") or len(tool_ids)))
         if event_type == "tool_use":
@@ -1037,9 +1066,7 @@ def event_metrics(harness: str, events: list[dict[str, Any]], state: Path) -> di
                 if isinstance(requests, list):
                     for request in requests:
                         if isinstance(request, dict):
-                            tool_ids.add(
-                                str(request.get("toolCallId") or request.get("id") or len(tool_ids))
-                            )
+                            tool_ids.add(str(request.get("toolCallId") or request.get("id") or len(tool_ids)))
                 if data.get("content"):
                     final_text = str(data["content"])
                 if isinstance(data.get("outputTokens"), int):
@@ -1056,15 +1083,43 @@ def event_metrics(harness: str, events: list[dict[str, Any]], state: Path) -> di
                         final_text = str(item.get("text") or final_text)
         if harness in {"pi", "oh_my_pi"} and event_type == "message_end" and isinstance(message, dict):
             if message.get("role") == "assistant" and isinstance(message.get("content"), list):
-                final_text = "".join(
-                    str(item.get("text", ""))
-                    for item in message["content"]
-                    if isinstance(item, dict) and item.get("type") == "text"
-                ) or final_text
+                final_text = (
+                    "".join(
+                        str(item.get("text", ""))
+                        for item in message["content"]
+                        if isinstance(item, dict) and item.get("type") == "text"
+                    )
+                    or final_text
+                )
         if harness == "opencode" and event_type == "text":
             part = event.get("part")
             if isinstance(part, dict):
                 final_text += str(part.get("text") or "")
+        if harness == "grok_build" and event.get("method") in {
+            "session/update",
+            "_x.ai/session/update",
+        }:
+            params = event.get("params")
+            update = params.get("update") if isinstance(params, dict) else None
+            if isinstance(update, dict):
+                update_type = update.get("sessionUpdate")
+                if update_type == "tool_call":
+                    tool_ids.add(str(update.get("toolCallId") or update.get("tool_call_id") or len(tool_ids)))
+                if update_type == "agent_message_chunk":
+                    content = update.get("content")
+                    if isinstance(content, str):
+                        final_text += content
+                    elif isinstance(content, dict):
+                        final_text += str(content.get("text") or "")
+                    elif isinstance(content, list):
+                        final_text += "".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
+                update_usage = update.get("usage")
+                if isinstance(update_usage, dict):
+                    total = update_usage.get("total_tokens", update_usage.get("totalTokens"))
+                    if isinstance(total, int):
+                        token_total = total
+        if harness == "grok_build" and event_type == "text":
+            final_text += str(event.get("data") or event.get("text") or "")
         if harness == "droid" and event_type == "completion":
             final_text = str(event.get("text") or event.get("message") or final_text)
         usage = event.get("usage")
@@ -1092,13 +1147,9 @@ def event_metrics(harness: str, events: list[dict[str, Any]], state: Path) -> di
                     token_total = usage["total"]
             payloads = events[-1].get("payloads")
             if isinstance(payloads, list):
-                final_text = "\n".join(
-                    str(item.get("text", "")) for item in payloads if isinstance(item, dict)
-                )
+                final_text = "\n".join(str(item.get("text", "")) for item in payloads if isinstance(item, dict))
     prompt_counts = [
-        int(item["prompt_tokens"])
-        for item in round_receipts
-        if isinstance(item.get("prompt_tokens"), int)
+        int(item["prompt_tokens"]) for item in round_receipts if isinstance(item.get("prompt_tokens"), int)
     ]
     return {
         "tool_calls": len(tool_ids),
@@ -1107,15 +1158,15 @@ def event_metrics(harness: str, events: list[dict[str, Any]], state: Path) -> di
         "model_rounds": len(round_receipts) if round_receipts else None,
         "cumulative_prompt_tokens": sum(prompt_counts) if prompt_counts else None,
         "max_prompt_tokens": max(prompt_counts) if prompt_counts else None,
-        "prompt_eval_ms": round(
-            sum(float(item.get("prompt_eval_ms") or 0.0) for item in round_receipts), 2
-        ) if round_receipts else None,
-        "generation_ms": round(
-            sum(float(item.get("generation_ms") or 0.0) for item in round_receipts), 2
-        ) if round_receipts else None,
-        "context_build_ms": round(
-            sum(float(item.get("context_build_ms") or 0.0) for item in round_receipts), 2
-        ) if round_receipts else None,
+        "prompt_eval_ms": round(sum(float(item.get("prompt_eval_ms") or 0.0) for item in round_receipts), 2)
+        if round_receipts
+        else None,
+        "generation_ms": round(sum(float(item.get("generation_ms") or 0.0) for item in round_receipts), 2)
+        if round_receipts
+        else None,
+        "context_build_ms": round(sum(float(item.get("context_build_ms") or 0.0) for item in round_receipts), 2)
+        if round_receipts
+        else None,
     }
 
 
@@ -1182,29 +1233,26 @@ def execute_run(
     context_digest = sha256_file(result / "run_context.json")
     prompt_digest = sha256_file(result / "run_prompt.md")
     baseline_pass, baseline_receipt = run_task_checker(task_id, workspace, artifacts)
-    command, env = command_for(
-        harness, executable, result, state, prepared["prompt"], model, timeout
-    )
+    command, env = command_for(harness, executable, result, state, prepared["prompt"], model, timeout)
     process = run_process(command, cwd=result, env=env, timeout=timeout)
     checker_pass, checker_receipt = run_task_checker(task_id, workspace, artifacts)
     after = tree_snapshot(workspace)
     changes = changed_paths(before, after)
     unexpected_changes = sorted(set(changes) - TASKS[task_id].allowed_workspace_changes)
-    protected_unchanged = all(
-        after.get(path) == before.get(path) for path in TASKS[task_id].protected_workspace_paths
-    )
-    protected_inputs_unchanged = (
-        definition_digest == tree_digest(prepared["definition"])
-        and context_digest == sha256_file(result / "run_context.json")
-        and prompt_digest == sha256_file(result / "run_prompt.md")
-    )
+    protected_unchanged = all(after.get(path) == before.get(path) for path in TASKS[task_id].protected_workspace_paths)
+    try:
+        protected_inputs_unchanged = (
+            definition_digest == tree_digest(prepared["definition"])
+            and context_digest == sha256_file(result / "run_context.json")
+            and prompt_digest == sha256_file(result / "run_prompt.md")
+        )
+    except OSError:
+        protected_inputs_unchanged = False
     events, invalid_lines = parse_json_lines(process["stdout"])
     parsed = event_metrics(harness, events, state)
     structured_expected = harness not in {"hermes_agent"}
     allowed_preamble = harness == "goose" and len(invalid_lines) <= 3
-    structured_valid = (
-        bool(events) and (not invalid_lines or allowed_preamble) if structured_expected else True
-    )
+    structured_valid = bool(events) and (not invalid_lines or allowed_preamble) if structured_expected else True
     workspace_scope_pass = protected_unchanged and not unexpected_changes
     clean_process = bool(
         process["return_code"] == 0
@@ -1275,9 +1323,7 @@ def aggregate(runs: list[dict[str, Any]], harnesses: list[str], task_ids: list[s
             if isinstance(run.get("cumulative_prompt_tokens"), int)
         ]
         max_prompt_values = [
-            int(run["max_prompt_tokens"])
-            for run in selected
-            if isinstance(run.get("max_prompt_tokens"), int)
+            int(run["max_prompt_tokens"]) for run in selected if isinstance(run.get("max_prompt_tokens"), int)
         ]
         per_task = {}
         for task_id in task_ids:
@@ -1286,9 +1332,7 @@ def aggregate(runs: list[dict[str, Any]], harnesses: list[str], task_ids: list[s
                 "runs": len(cell),
                 "checker_passes": sum(bool(run["checker_pass"]) for run in cell),
                 "clean_processes": sum(bool(run["clean_process"]) for run in cell),
-                "median_duration_seconds": round(
-                    statistics.median(float(run["duration_seconds"]) for run in cell), 6
-                ),
+                "median_duration_seconds": round(statistics.median(float(run["duration_seconds"]) for run in cell), 6),
             }
         checker_passes = sum(bool(run["checker_pass"]) for run in selected)
         clean_processes = sum(bool(run["clean_process"]) for run in selected)
@@ -1308,12 +1352,9 @@ def aggregate(runs: list[dict[str, Any]], harnesses: list[str], task_ids: list[s
                 "median_reported_tokens": statistics.median(token_values) if token_values else None,
                 "median_model_rounds": statistics.median(round_values) if round_values else None,
                 "median_cumulative_prompt_tokens": (
-                    statistics.median(cumulative_prompt_values)
-                    if cumulative_prompt_values else None
+                    statistics.median(cumulative_prompt_values) if cumulative_prompt_values else None
                 ),
-                "median_max_prompt_tokens": (
-                    statistics.median(max_prompt_values) if max_prompt_values else None
-                ),
+                "median_max_prompt_tokens": (statistics.median(max_prompt_values) if max_prompt_values else None),
                 "per_task": per_task,
             }
         )
@@ -1361,9 +1402,7 @@ def render_report(summary: dict[str, Any]) -> str:
             f"{row['median_duration_seconds']:.3f} | {row['mean_duration_seconds']:.3f} | "
             f"{row['p95_duration_seconds']:.3f} | {row['median_tool_calls']} | {tokens} |"
         )
-    diagnostic_rows = [
-        row for row in summary["aggregate"] if row.get("median_model_rounds") is not None
-    ]
+    diagnostic_rows = [row for row in summary["aggregate"] if row.get("median_model_rounds") is not None]
     if diagnostic_rows:
         lines.extend(
             [
@@ -1442,7 +1481,9 @@ def main(argv: list[str] | None = None) -> int:
     if blocked:
         reasons = "; ".join(f"{item}: {by_product[item]['reason']}" for item in blocked)
         raise SystemExit(f"selected harnesses are blocked: {reasons}")
-    output_root = (args.output or (REPO_ROOT / "benchmark-results" / f"{utc_stamp()}-{args.model.replace('/', '-')}")).resolve()
+    output_root = (
+        args.output or (REPO_ROOT / "benchmark-results" / f"{utc_stamp()}-{args.model.replace('/', '-')}")
+    ).resolve()
     output_root.mkdir(parents=True, exist_ok=False)
     warmup_receipt: dict[str, Any] | None = None
     if args.warmup_model:
@@ -1454,8 +1495,7 @@ def main(argv: list[str] | None = None) -> int:
             args.warmup_keepalive,
         )
         print(
-            f"WARMUP_RESULT success={warmup_receipt['success']} "
-            f"seconds={warmup_receipt['duration_seconds']}",
+            f"WARMUP_RESULT success={warmup_receipt['success']} seconds={warmup_receipt['duration_seconds']}",
             flush=True,
         )
     order = rotating_order(harnesses, task_ids, args.repetitions)
@@ -1502,7 +1542,8 @@ def main(argv: list[str] | None = None) -> int:
             "task_suite_sha256": task_suite_digest(task_ids),
             "timeout_seconds": args.timeout,
             "order_policy": "deterministic cyclic rotation",
-            "model_warmup": warmup_receipt or {
+            "model_warmup": warmup_receipt
+            or {
                 "performed": False,
                 "included_in_scored_duration": False,
             },

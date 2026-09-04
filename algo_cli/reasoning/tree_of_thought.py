@@ -226,7 +226,10 @@ def run_tot(
     Returns:
         The TreeOfThought with best_leaf set to the highest-scoring path.
     """
-    strat = SearchStrategy(strategy.lower())
+    try:
+        strat = SearchStrategy(strategy.lower())
+    except ValueError as exc:
+        raise ValueError("run_tot strategy must be either 'bfs' or 'dfs'") from exc
     tot = TreeOfThought(
         strategy=strat,
         max_depth=max_depth,

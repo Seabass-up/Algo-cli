@@ -89,6 +89,24 @@ def test_explicit_harness_search_intent_passes_specialist_gate() -> None:
     assert {"harness_search", "harness_stats"} <= names
 
 
+def test_echo_tools_require_explicit_memory_operation_intent() -> None:
+    general = _names(
+        select_tools_for_prompt(
+            "What is the current Echo integration priority? Answer briefly.",
+            tools.ALL_TOOLS,
+        )
+    )
+    explicit = _names(
+        select_tools_for_prompt(
+            "Run the Echo memory doctor and list its protected inventory.",
+            tools.ALL_TOOLS,
+        )
+    )
+
+    assert not any(name.startswith("echo_veil_") for name in general)
+    assert {"echo_veil_doctor", "echo_veil_list"} <= explicit
+
+
 def test_deferred_runtime_tools_are_always_visible_when_installed() -> None:
     def action_search(query: str) -> str:
         return query
@@ -106,10 +124,7 @@ def test_deferred_runtime_tools_are_always_visible_when_installed() -> None:
 
 
 def test_reconciliation_guidance_is_task_local_and_schema_aware() -> None:
-    prompt = (
-        "Retrieved context may be stale. Treat the live manifest as authoritative, "
-        "then update the JSON settings."
-    )
+    prompt = "Retrieved context may be stale. Treat the live manifest as authoritative, then update the JSON settings."
     guidance = reconciliation.guidance_for_prompt(prompt)
     assert guidance is not None
     assert "Preserve the target schema" in guidance
@@ -125,13 +140,17 @@ def test_deliberation_is_adaptive_for_deep_one_shot_tasks() -> None:
     assert deliberation.needs_deliberation("Fix the failing test and verify it") is False
 
 
+def test_exact_response_classifier_rejects_tasks_with_hidden_work() -> None:
+    assert deliberation.is_exact_response_task("Reply with exactly: ALGO_QOS_OK") is True
+    assert deliberation.is_exact_response_task("Read the repository, then reply with exactly: OK") is False
+    assert deliberation.is_exact_response_task("Reply with exactly: OK\nthen run tests") is False
+
+
 def test_reconciliation_infers_cross_schema_lineage_from_values() -> None:
     messages = [
         {
             "role": "assistant",
-            "tool_calls": [
-                {"function": {"name": "read_file", "arguments": {"path": "live.json"}}}
-            ],
+            "tool_calls": [{"function": {"name": "read_file", "arguments": {"path": "live.json"}}}],
         },
         {
             "role": "tool",
@@ -140,9 +159,7 @@ def test_reconciliation_infers_cross_schema_lineage_from_values() -> None:
         },
         {
             "role": "assistant",
-            "tool_calls": [
-                {"function": {"name": "read_file", "arguments": {"path": "settings.json"}}}
-            ],
+            "tool_calls": [{"function": {"name": "read_file", "arguments": {"path": "settings.json"}}}],
         },
         {
             "role": "tool",
@@ -162,9 +179,7 @@ def test_reconciliation_infers_cross_schema_lineage_from_values() -> None:
     constraint_messages = messages + [
         {
             "role": "assistant",
-            "tool_calls": [
-                {"function": {"name": "read_file", "arguments": {"path": "stale.md"}}}
-            ],
+            "tool_calls": [{"function": {"name": "read_file", "arguments": {"path": "stale.md"}}}],
         },
         {"role": "tool", "name": "read_file", "content": stale},
     ]

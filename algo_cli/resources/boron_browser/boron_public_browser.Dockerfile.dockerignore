@@ -1,0 +1,9 @@
+**
+!algo_cli/
+!algo_cli/__init__.py
+!algo_cli/boron_browser_entry.py
+!algo_cli/boron_browser_wrapper.py
+!algo_cli/resources/
+!algo_cli/resources/boron_browser/
+!algo_cli/resources/boron_browser/boron_browser_wrapper.sh
+!algo_cli/resources/boron_browser/boron_managed_policy.json

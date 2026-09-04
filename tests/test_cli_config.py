@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from algo_cli import cli_config, config, main, slash_dispatch
+from algo_cli import cli_config, config, main, oliver_slash_dispatch as slash_dispatch
 from algo_cli.config import Config
 
 

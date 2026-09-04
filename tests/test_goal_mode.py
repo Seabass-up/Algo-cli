@@ -1,7 +1,10 @@
 """Tests for the /goal command loop (main.run_goal_loop)."""
 
+import pytest
+
 from algo_cli import main
 from algo_cli.config import Config
+from algo_cli.grace_memory_receipts import ElsieReceiptError
 
 
 def test_parse_goal_args_defaults():
@@ -55,7 +58,7 @@ def test_goal_requires_task(monkeypatch):
 
 
 def test_goal_persists_to_ledger(monkeypatch):
-    from algo_cli import task_ledger
+    from algo_cli import ada_task_ledger as task_ledger
 
     _run_goal(monkeypatch, [f"done {main.GOAL_COMPLETE_MARKER}"], arg="ship it")
     record = task_ledger.load_goal()
@@ -66,7 +69,7 @@ def test_goal_persists_to_ledger(monkeypatch):
 
 
 def test_goal_blocked_recorded(monkeypatch):
-    from algo_cli import task_ledger
+    from algo_cli import ada_task_ledger as task_ledger
 
     _run_goal(monkeypatch, [f"{main.GOAL_BLOCKED_MARKER} need a key"], arg="do it")
     record = task_ledger.load_goal()
@@ -75,7 +78,7 @@ def test_goal_blocked_recorded(monkeypatch):
 
 
 def test_goal_resume_continues_from_saved(monkeypatch):
-    from algo_cli import task_ledger
+    from algo_cli import ada_task_ledger as task_ledger
     from algo_cli.config import Config
 
     # First run stops at the round cap (model never marks complete).
@@ -101,10 +104,91 @@ def test_goal_resume_continues_from_saved(monkeypatch):
 
 
 def test_goal_clear(monkeypatch):
-    from algo_cli import task_ledger
+    from algo_cli import ada_task_ledger as task_ledger
     from algo_cli.config import Config
 
     _run_goal(monkeypatch, [f"done {main.GOAL_COMPLETE_MARKER}"], arg="x task")
     assert task_ledger.load_goal() is not None
     main.run_goal_loop(client=None, cfg=Config(), arg="clear")
     assert task_ledger.load_goal() is None
+
+
+@pytest.mark.parametrize(
+    ("command", "method", "message"),
+    [
+        (
+            "status",
+            "load_goal",
+            "Protected goal state could not be authenticated; status was withheld.",
+        ),
+        (
+            "resume",
+            "load_goal",
+            "Protected goal state could not be authenticated; resume was refused.",
+        ),
+        (
+            "clear",
+            "clear_goal",
+            "Protected goal state could not be authenticated; clear was refused.",
+        ),
+    ],
+)
+def test_protected_goal_commands_refuse_untrusted_store_without_crashing(
+    monkeypatch,
+    command,
+    method,
+    message,
+):
+    from algo_cli import elsie_echo_preflight
+
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    errors: list[str] = []
+    canary = f"RAW_{command.upper()}_LEDGER_CANARY"
+    monkeypatch.setattr(
+        main.task_ledger,
+        method,
+        lambda **_kwargs: (_ for _ in ()).throw(ElsieReceiptError(canary)),
+    )
+    monkeypatch.setattr(
+        elsie_echo_preflight,
+        "prepare_echo_auxiliary_state",
+        lambda *_args, **_kwargs: {"protected": True},
+    )
+    monkeypatch.setattr(main, "show_error", errors.append)
+
+    main.run_goal_loop(client=None, cfg=cfg, arg=command)
+
+    assert errors == [message]
+    assert canary not in errors[0]
+
+
+@pytest.mark.parametrize("direct_status", [False, True])
+def test_direct_goal_boundaries_fail_before_ledger_access_when_preflight_refuses(
+    monkeypatch,
+    direct_status: bool,
+) -> None:
+    from algo_cli import elsie_echo_preflight
+
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    errors: list[str] = []
+    monkeypatch.setattr(
+        elsie_echo_preflight,
+        "prepare_echo_auxiliary_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            elsie_echo_preflight.EchoAuxiliaryPreflightError("PRIVATE_GOAL_PREFLIGHT_CANARY")
+        ),
+    )
+    monkeypatch.setattr(
+        main.task_ledger,
+        "load_goal",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("goal ledger accessed after preflight refusal")),
+    )
+    monkeypatch.setattr(main, "show_error", errors.append)
+
+    if direct_status:
+        main.show_goal_status(cfg)
+    else:
+        main.run_goal_loop(client=None, cfg=cfg, arg="status")
+
+    assert errors == ["Echo-protected auxiliary state is unavailable; goal command was refused."]
+    assert "PRIVATE_GOAL_PREFLIGHT_CANARY" not in errors[0]

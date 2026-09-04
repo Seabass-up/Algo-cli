@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "freeze_id": "algo-cli-hardening-2026-07-18",
+  "captured_at": "2026-07-19T00:39:26Z",
+  "baseline": {
+    "commit": "20bb879",
+    "tag": "v0.18.0",
+    "tree": "9b94d003e5fdc58b9f28b05f121a9240e5ff37e0",
+    "branch_under_hardening": "hardening/foundation-freeze"
+  },
+  "checks": [
+    {
+      "name": "full_python_suite",
+      "command": ".venv/bin/pytest tests --cov=algo_cli --cov-branch --cov-report=term-missing:skip-covered --cov-fail-under=57",
+      "result": "pass",
+      "evidence": "1946 passed in 38.27s; total coverage 61.85 percent",
+      "limitations": "Aggregate coverage does not prove high-authority paths are adequately covered."
+    },
+    {
+      "name": "ruff",
+      "command": ".venv/bin/ruff check algo_cli tests scripts",
+      "result": "pass",
+      "evidence": "All checks passed",
+      "limitations": "Configured Ruff rules cover blocking correctness, not a complete security analysis."
+    },
+    {
+      "name": "mypy_contract",
+      "command": ".venv/bin/mypy algo_cli/main.py algo_cli/tool_runtime.py algo_cli/tools.py algo_cli/harness.py algo_cli/agent_pipeline.py algo_cli/execution_guardrails.py algo_cli/private_event_store.py algo_cli/perf_telemetry.py algo_cli/skills.py algo_cli/evals/competitive_harness_rating.py --ignore-missing-imports --no-strict-optional --follow-imports=skip --show-error-codes --cache-dir /tmp/algo-cli-mypy-cache",
+      "result": "pass",
+      "evidence": "Success: no issues found in 10 source files",
+      "limitations": "This is the existing scoped contract, not strict whole-repository typing."
+    },
+    {
+      "name": "public_source_scan",
+      "command": ".venv/bin/python scripts/check_public_release.py",
+      "result": "pass",
+      "evidence": "Public-release scan passed",
+      "limitations": "Pattern scans cannot prove absence of every private datum."
+    },
+    {
+      "name": "reachable_history_scan",
+      "command": ".venv/bin/python scripts/check_public_history.py --allow-contributor-identities",
+      "result": "pass",
+      "evidence": "Public-history content and metadata scan passed",
+      "limitations": "Contributor identities are intentionally allowed."
+    },
+    {
+      "name": "python_dependency_audit",
+      "command": "uv tool run pip-audit --local --skip-editable",
+      "result": "pass",
+      "evidence": "No known vulnerabilities found",
+      "limitations": "The advisory database and currently installed environment are time-dependent."
+    },
+    {
+      "name": "rust_indexer",
+      "command": "cargo test --manifest-path harness-indexer/Cargo.toml --locked",
+      "result": "weak_pass",
+      "evidence": "Compilation passed; zero tests discovered",
+      "limitations": "No behavior or security assertions exist."
+    },
+    {
+      "name": "go_gateway",
+      "command": "go test ./...",
+      "result": "weak_pass",
+      "evidence": "Compilation passed; no test files",
+      "limitations": "No behavior or security assertions exist."
+    },
+    {
+      "name": "website",
+      "command": "npm test; npm run lint; npm audit",
+      "result": "pass",
+      "evidence": "4 rendered-route tests passed; lint passed; zero known vulnerabilities",
+      "limitations": "Build emitted a vinext route-classification warning and a Node module.register deprecation warning."
+    },
+    {
+      "name": "package_build",
+      "command": ".venv/bin/python -m build; .venv/bin/python -m twine check",
+      "result": "pass",
+      "evidence": "wheel and sdist built; metadata checks passed",
+      "artifacts": [
+        {"path": "dist/algo_cli_runtime-0.18.0-py3-none-any.whl", "sha256": "027903f9e383635fa09dde9e6b4bc991758d798b5375e72d8a35e0c2fc934ac0"},
+        {"path": "dist/algo_cli_runtime-0.18.0.tar.gz", "sha256": "5aaa49af188f7021b286d3484f5a238c6550b5a5978160d66f27cf14ff782a4d"}
+      ],
+      "limitations": "Artifacts are unsigned Python distributions and are not a release authorization."
+    },
+    {
+      "name": "wheel_smoke_reused_dist",
+      "command": ".venv/bin/python scripts/smoke_wheel_install.py dist",
+      "result": "fail",
+      "evidence": "Expected one wheel but found current v0.18.0 and stale v0.15.1 wheels",
+      "limitations": "CI normally starts from a clean checkout, but the local release check is not deterministic in a reused directory."
+    },
+    {
+      "name": "wheel_smoke_clean_dist_uv_python",
+      "command": ".venv/bin/python scripts/smoke_wheel_install.py /tmp/algo-cli-wheel-smoke.0YVKwo",
+      "result": "fail",
+      "evidence": "uv-managed Python 3.10 venv ensurepip failed before wheel installation",
+      "limitations": "This failure depends on the local Python distribution."
+    },
+    {
+      "name": "wheel_smoke_clean_dist_homebrew_python",
+      "command": "/opt/homebrew/bin/python3 scripts/smoke_wheel_install.py /tmp/algo-cli-wheel-smoke.0YVKwo",
+      "result": "pass",
+      "evidence": "Installed wheel, version/help/module/doctor/corpus checks passed under Python 3.14.6",
+      "limitations": "A networked install resolved current dependency versions and does not cover every supported Python/OS cell."
+    },
+    {
+      "name": "wheel_smoke_hardened_reused_dist_uv_python",
+      "command": ".venv/bin/python scripts/oliver_smoke_wheel_install.py dist",
+      "result": "pass",
+      "evidence": "Selected the source-version v0.18.0 wheel despite stale v0.15.1 artifacts, recovered from ensurepip failure with an isolated uv-seeded venv, and passed all installed checks under Python 3.10.20",
+      "limitations": "Network dependency resolution remains time-dependent and cross-platform cells remain CI evidence."
+    },
+    {
+      "name": "published_benchmark_snapshot",
+      "command": "sha256 benchmark summary and warmup receipt",
+      "result": "recorded",
+      "artifacts": [
+        {"path": "benchmark-results/20260715-v0170-v3-3rep/summary.json", "sha256": "38ccee74416c7477b4b23eef6a9000af98a6526138c16d355a0279bd22c6876e"},
+        {"path": "benchmark-results/20260715-v0170-v3-3rep/warmup_receipt.json", "sha256": "46d1748d979d9df17119cd6e7833cecc1a4705eaedca83c6b4cc0baec2a7d42b"}
+      ],
+      "limitations": "This is a frozen pre-hardening snapshot, not evidence for the hardened runtime."
+    }
+  ],
+  "baseline_conclusion": "The v0.18.0 unit, quality, source, dependency, website, and package baselines are generally green. The release smoke's stale-artifact and uv-Python failures were reproduced, fixed, and verified. Rust and Go helpers still have no behavioral tests and remain an open hardening requirement."
+}

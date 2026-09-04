@@ -132,7 +132,7 @@ def handle_deep_link(url: str) -> dict[str, Any]:
     if parsed is None:
         return {
             "valid": False,
-            "error": f"URL does not start with {URL_SCHEME}://",
+            "error": f"URL does not start with {URL_SCHEME}:// or {URL_SCHEME}:",
             "raw_url": url,
         }
 

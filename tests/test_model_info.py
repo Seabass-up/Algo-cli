@@ -9,6 +9,31 @@ import pytest
 from algo_cli import model_info
 
 
+@pytest.fixture(autouse=True)
+def no_live_ollama_cli(monkeypatch):
+    monkeypatch.setattr(model_info.shutil, "which", lambda _name: None)
+
+
+@pytest.mark.parametrize("model", ["astra", "gpt-6-astra"])
+def test_astra_metadata_and_provider_detection(model):
+    assert model_info.is_chatgpt_model(model)
+    info = model_info.synthesize_chatgpt_info(model)
+    assert info["context_length"] == 272_000
+    assert info["supports_vision"] is True
+    assert info["supports_tools"] is True
+
+
+def test_discovered_metadata_overrides_static_capabilities(monkeypatch):
+    from algo_cli import chatgpt_client
+
+    monkeypatch.setattr(chatgpt_client, "_CODEX_MODEL_METADATA", {
+        "gpt-6-astra": {"context_window": 320_000, "supports_vision": False},
+    })
+    info = model_info.synthesize_chatgpt_info("astra")
+    assert info["context_length"] == 320_000
+    assert info["supports_vision"] is False
+
+
 class _FakeDetails:
     def __init__(self, family="qwen3", params="8.2B", quant="Q4_K_M", families=None):
         self.family = family
@@ -220,6 +245,21 @@ def test_resolve_model_info_cloud_without_client():
 
     info = model_info.resolve_model_info(_Cfg(), None)
     assert info["context_length"] == 524_288
+
+
+def test_resolve_model_info_prefers_cli_metadata_over_fallback(monkeypatch):
+    class _Cfg:
+        model = "minimax-m3:cloud"
+        cloud = True
+
+    monkeypatch.setattr(
+        model_info,
+        "fetch_model_info_from_cli",
+        lambda model, **kwargs: {"name": model, "context_length": 131_072, "source": "ollama-show"},
+    )
+    info = model_info.resolve_model_info(_Cfg(), None)
+    assert info["context_length"] == 131_072
+    assert info["source"] == "ollama-show"
 
 
 def test_parse_ollama_show_output_minimax():

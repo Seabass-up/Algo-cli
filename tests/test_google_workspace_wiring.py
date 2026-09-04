@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlparse
 from algo_cli import google_workspace_auth
 from algo_cli import main
 from algo_cli import session_commands
-from algo_cli import slash_dispatch
+from algo_cli import oliver_slash_dispatch as slash_dispatch
 from algo_cli import tools
 
 
@@ -181,9 +181,7 @@ def test_google_safe_error_explains_desktop_redirect_mismatch(monkeypatch):
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", client_id)
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", secret)
 
-    rendered = google_workspace_auth.safe_error_message(
-        f"redirect_uri_mismatch client={client_id} secret={secret}"
-    )
+    rendered = google_workspace_auth.safe_error_message(f"redirect_uri_mismatch client={client_id} secret={secret}")
 
     assert "Desktop app" in rendered
     assert client_id not in rendered
@@ -201,9 +199,7 @@ def test_google_safe_error_redacts_oauth_code_but_preserves_http_status_code():
 
 def test_google_auth_state_handles_malformed_timestamps(monkeypatch):
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "desktop.apps.googleusercontent.com")
-    google_workspace_auth.save_tokens(
-        {"access_token": "old-token", "expires_at": "not-a-timestamp"}
-    )
+    google_workspace_auth.save_tokens({"access_token": "old-token", "expires_at": "not-a-timestamp"})
 
     status = google_workspace_auth.auth_status()
 
@@ -243,8 +239,42 @@ def test_google_pending_login_rejects_malformed_created_at():
         '{"state":"s","code_verifier":"v","redirect_uri":"http://localhost/callback","created_at":"bad"}',
         encoding="utf-8",
     )
+    google_workspace_auth.PENDING_AUTH_FILE.chmod(0o600)
 
     assert google_workspace_auth.load_pending_login() is None
+
+
+def test_google_logout_clears_pending_pkce_state_without_active_tokens(monkeypatch):
+    infos, errors, _console = _patch_google_runtime(monkeypatch)
+    google_workspace_auth.save_pending_login(
+        {
+            "state": "state-canary",
+            "code_verifier": "verifier-canary",
+            "redirect_uri": "http://127.0.0.1:56251/callback",
+        }
+    )
+
+    assert main.run_google_logout() is True
+
+    assert not errors
+    assert infos == ["Google Workspace authentication state cleared."]
+    assert not google_workspace_auth.PENDING_AUTH_FILE.exists()
+    assert google_workspace_auth.stored_auth_state_present() is False
+
+
+def test_google_logout_reports_unsafe_pending_state_without_following(monkeypatch, tmp_path):
+    infos, errors, _console = _patch_google_runtime(monkeypatch)
+    outside = tmp_path / "outside-pending.json"
+    outside.write_text('{"code_verifier":"PKCE_RETAINED_CANARY"}', encoding="utf-8")
+    google_workspace_auth.PENDING_AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+    google_workspace_auth.PENDING_AUTH_FILE.symlink_to(outside)
+
+    assert main.run_google_logout() is False
+
+    assert infos == []
+    assert errors == ["Could not clear all stored Google Workspace authentication state."]
+    assert google_workspace_auth.PENDING_AUTH_FILE.is_symlink()
+    assert "PKCE_RETAINED_CANARY" in outside.read_text(encoding="utf-8")
 
 
 def test_google_missing_access_token_error_does_not_echo_secrets():
@@ -262,9 +292,7 @@ def test_google_callback_clipboard_completes_pending_login(monkeypatch):
     infos, errors, _console = _patch_google_runtime(monkeypatch)
     completed: list[tuple[str, str, dict[str, str]]] = []
     long_callback = (
-        "27.0.0.1:56251/callback?state=state-1&iss=https://accounts.google.com"
-        "&code=code-1&scope="
-        + "x" * 5000
+        "27.0.0.1:56251/callback?state=state-1&iss=https://accounts.google.com&code=code-1&scope=" + "x" * 5000
     )
 
     monkeypatch.setattr(
@@ -310,11 +338,7 @@ def test_google_drive_list_uses_client_payload_and_formatter(monkeypatch):
     class _FakeGoogleClient:
         def drive_list(self, *, query=None, page_size=20):
             calls.append(("drive_list", query, page_size))
-            return {
-                "files": [
-                    {"id": "file-1", "name": "Algo Spec", "mimeType": "application/pdf", "size": "42"}
-                ]
-            }
+            return {"files": [{"id": "file-1", "name": "Algo Spec", "mimeType": "application/pdf", "size": "42"}]}
 
     monkeypatch.setattr(main.google_workspace, "GoogleWorkspaceClient", _FakeGoogleClient)
 

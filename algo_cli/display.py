@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Iterator
+
+from .grace_memory_receipts import (
+    ElsieReceiptAuthority,
+    ElsieReceiptError,
+    ReceiptNamespace,
+)
 
 from rich.align import Align
 from rich.console import Capture, Console
@@ -45,9 +52,7 @@ except Exception:
 
 
 DEFAULT_THEME_NAME = (
-    os.environ.get("ALGO_CLI_THEME")
-    or os.environ.get("OLLAMA_CLI_THEME")
-    or "tokyo-night"
+    os.environ.get("ALGO_CLI_THEME") or os.environ.get("OLLAMA_CLI_THEME") or "tokyo-night"
 ).strip().lower() or "tokyo-night"
 
 
@@ -298,13 +303,15 @@ _BANNER_CAPABILITIES: tuple[tuple[str, str], ...] = (
 
 def _banner_flow_line() -> Text:
     line = Text()
-    for index, (label, style) in enumerate((
-        ("understand", "secondary"),
-        ("route", "primary"),
-        ("act", "accent"),
-        ("verify", "success"),
-        ("remember", "secondary"),
-    )):
+    for index, (label, style) in enumerate(
+        (
+            ("understand", "secondary"),
+            ("route", "primary"),
+            ("act", "accent"),
+            ("verify", "success"),
+            ("remember", "secondary"),
+        )
+    ):
         if index:
             line.append("  →  ", style="muted")
         line.append(label, style=f"bold {style}")
@@ -328,11 +335,15 @@ def _banner_body_layout() -> Group:
 
 def _print_algo_logo() -> None:
     if console.width < 70:
-        console.print(Align.center(Text.assemble(
-            ("ALGO", "bold primary"),
-            (" / ", "muted"),
-            ("CLI", "bold secondary"),
-        )))
+        console.print(
+            Align.center(
+                Text.assemble(
+                    ("ALGO", "bold primary"),
+                    (" / ", "muted"),
+                    ("CLI", "bold secondary"),
+                )
+            )
+        )
         return
     for line in _ALGO_CLI_LOGO:
         console.print(Align.center(Text(line.rstrip(), style="bold primary")))
@@ -340,10 +351,7 @@ def _print_algo_logo() -> None:
 
 def render_opening_banner(*, version: str | None = None) -> Panel:
     version_line = version or _CLI_VERSION
-    panel_title = (
-        f"[bold primary]Algo CLI[/] [muted]v{version_line}[/] "
-        f"[muted]·[/] [accent]agent runtime[/]"
-    )
+    panel_title = f"[bold primary]Algo CLI[/] [muted]v{version_line}[/] [muted]·[/] [accent]agent runtime[/]"
     return Panel(
         _banner_body_layout(),
         title=panel_title,
@@ -509,26 +517,45 @@ def _render_inspector_panel(
             ("Current model", f"[bold primary]{cfg.model}[/]"),
             ("Mode", f"[text]{'cloud' if cfg.cloud else 'local'}[/]"),
             ("System prompt", f"[text]{(cfg.system.splitlines()[0] if cfg.system else '').strip() or 'default'}[/]"),
-            ("Parameters", f"[text]temp {cfg.temperature}, ctx {cfg.num_ctx}, reflect {max(1, int(cfg.tool_think_every))}[/]"),
+            (
+                "Parameters",
+                f"[text]temp {cfg.temperature}, ctx {cfg.num_ctx}, reflect {max(1, int(cfg.tool_think_every))}[/]",
+            ),
             ("cwd", f"[muted]{compact_path(cfg.cwd, 34)}[/]"),
         ]
     )
     sections.append(Panel(session_box, title="Session", border_style="border", box=box.ROUNDED))
 
     model_body = _render_model_rows(installed_models)
-    sections.append(Panel(model_body, title=f"Model  {len(installed_models)} installed", border_style="border_accent", box=box.ROUNDED))
+    sections.append(
+        Panel(
+            model_body, title=f"Model  {len(installed_models)} installed", border_style="border_accent", box=box.ROUNDED
+        )
+    )
 
     runtime_body = Table.grid(padding=(0, 1), expand=True)
     runtime_body.add_column(style="text", ratio=2, overflow="ellipsis")
     runtime_body.add_column(style="text", justify="right", no_wrap=True)
     runtime_body.add_column(style="text", justify="right", no_wrap=True)
     runtime_body.add_row("[bold]Server[/]", f"[info]{cfg.host}[/]", f"[text]{'cloud' if cfg.cloud else 'local'}[/]")
-    runtime_body.add_row("[bold]Context[/]", f"[text]{cfg.num_ctx}[/]", f"[text]{'summary' if cfg.session_summary.strip() else 'live'}[/]")
-    runtime_body.add_row("[bold]Running[/]", f"[text]{len(running_models)}[/]", f"[text]{'ready' if running_models else 'idle'}[/]")
+    runtime_body.add_row(
+        "[bold]Context[/]",
+        f"[text]{cfg.num_ctx}[/]",
+        f"[text]{'summary' if cfg.session_summary.strip() else 'live'}[/]",
+    )
+    runtime_body.add_row(
+        "[bold]Running[/]", f"[text]{len(running_models)}[/]", f"[text]{'ready' if running_models else 'idle'}[/]"
+    )
     if running_models:
         runtime_body.add_row("", "", "")
-        runtime_body.add_row("[muted]Active[/]", f"[text]{running_models[0].get('name', '?')}[/]", f"[text]{running_models[0].get('size_vram', running_models[0].get('size', '?'))}[/]")
-    sections.append(Panel(runtime_body, title=f"Runtime  {len(running_models)} running", border_style="border", box=box.ROUNDED))
+        runtime_body.add_row(
+            "[muted]Active[/]",
+            f"[text]{running_models[0].get('name', '?')}[/]",
+            f"[text]{running_models[0].get('size_vram', running_models[0].get('size', '?'))}[/]",
+        )
+    sections.append(
+        Panel(runtime_body, title=f"Runtime  {len(running_models)} running", border_style="border", box=box.ROUNDED)
+    )
 
     actions_body = Text(
         "/status          Runtime summary\n"
@@ -577,7 +604,11 @@ def show_session_overview(
 ) -> None:
     used = min(max(used_tokens, 0), total_tokens) if total_tokens > 0 else used_tokens
     remaining = max(total_tokens - used, 0) if total_tokens > 0 else 0
-    context_line = f"{used}/{total_tokens} ({int(round((remaining / total_tokens) * 100))}% left)" if total_tokens > 0 else "unknown"
+    context_line = (
+        f"{used}/{total_tokens} ({int(round((remaining / total_tokens) * 100))}% left)"
+        if total_tokens > 0
+        else "unknown"
+    )
     mode_label = provider_mode or ("cloud" if cloud else "local")
     execution_label = "Ollama Cloud API" if mode_label == "cloud" else host
     installed_models = installed_models or []
@@ -591,7 +622,10 @@ def show_session_overview(
                 ("Model", f"[bold primary]{model}[/]"),
                 ("Mode", f"[info]{mode_label}[/]"),
                 ("Context", f"[text]{context_line}[/]"),
-                ("Safety", f"[text]{'safe' if safe_mode else 'safe off'} · {'manual approval' if not auto_mode else 'auto approval'}[/]"),
+                (
+                    "Safety",
+                    f"[text]{'safe' if safe_mode else 'safe off'} · {'manual approval' if not auto_mode else 'auto approval'}[/]",
+                ),
                 ("Memory", f"[text]{memory_count} saved · {'summary active' if summary_active else 'live context'}[/]"),
                 ("Theme", f"[secondary]{theme_name}[/]"),
             ]
@@ -676,7 +710,8 @@ def show_session_overview(
         inspector_cfg,
         installed_models=installed_models,
         running_models=running_models,
-        event_lines=event_lines or [
+        event_lines=event_lines
+        or [
             f"mode {mode_label}",
             f"context {context_line}",
             f"tool max {max_tool_iterations}",
@@ -718,15 +753,14 @@ def _short_value(value: Any, limit: int = 80) -> str:
 
 
 def redact_tool_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
-    """Remove secret-bearing values before display, JSON events, or audit previews."""
+    """Return the recursive confirmation-safe view used by display bridges."""
 
-    sensitive_keys = {"api_key", "access_token", "refresh_token", "password", "secret", "token"}
-    if name == "credential_helpers_store":
-        sensitive_keys.add("value")
-    return {
-        key: "<redacted>" if key.lower() in sensitive_keys else value
-        for key, value in args.items()
-    }
+    from .irene_privacy_views import PrivacyProjectionError, PrivacyView, project_action_args
+
+    try:
+        return project_action_args(name, args, PrivacyView.CONFIRMATION)
+    except (PrivacyProjectionError, TypeError, ValueError):
+        return {"privacy_error": "arguments unavailable"}
 
 
 def show_tool_call(name: str, args: dict, *, call_id: str | None = None) -> None:
@@ -899,22 +933,82 @@ def _parse_block_output_sections(text: str) -> dict[str, list[str]]:
     return sections
 
 
-def _write_agent_block_dump(role: str, output: str) -> Path | None:
+def _secure_agent_dump_dir(*, create: bool) -> bool:
+    try:
+        if create:
+            CONFIG_DIR.mkdir(parents=True, mode=0o700, exist_ok=True)
+        if not CONFIG_DIR.exists():
+            return False
+        descriptor = CONFIG_DIR.lstat()
+        if stat.S_ISLNK(descriptor.st_mode) or not stat.S_ISDIR(descriptor.st_mode):
+            return False
+        if hasattr(os, "getuid") and descriptor.st_uid != os.getuid():
+            return False
+        if os.name == "posix":
+            os.chmod(CONFIG_DIR, 0o700)
+        return True
+    except OSError:
+        return False
+
+
+def purge_legacy_agent_block_dumps() -> int:
+    """Remove only exact legacy last-block files without following links."""
+
+    if not _secure_agent_dump_dir(create=False):
+        return 0
+    removed = 0
+    try:
+        candidates = tuple(CONFIG_DIR.iterdir())
+    except OSError:
+        return 0
+    for path in candidates:
+        if re.fullmatch(r"last-block-[A-Za-z0-9_-]+\.md", path.name) is None:
+            continue
+        try:
+            descriptor = path.lstat()
+            if not (stat.S_ISREG(descriptor.st_mode) or stat.S_ISLNK(descriptor.st_mode)):
+                continue
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _write_agent_block_dump(
+    role: str,
+    output: str,
+    *,
+    protected: bool = False,
+    receipt_authority: ElsieReceiptAuthority | None = None,
+) -> tuple[Path | None, str]:
     text = (output or "").strip()
     if not text:
-        return None
+        return None, ""
+    if protected:
+        authority = receipt_authority or ElsieReceiptAuthority.from_existing_key_store()
+        receipt = authority.receipt(ReceiptNamespace.AGENT_BLOCK_OUTPUT, text)
+        purge_legacy_agent_block_dumps()
+        return None, receipt
     safe_role = re.sub(r"[^a-zA-Z0-9_-]+", "-", (role or "block").strip()) or "block"
     try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        if not _secure_agent_dump_dir(create=True):
+            return None, ""
         path = CONFIG_DIR / f"last-block-{safe_role}.md"
+        if path.exists() or path.is_symlink():
+            descriptor = path.lstat()
+            if stat.S_ISLNK(descriptor.st_mode) or not stat.S_ISREG(descriptor.st_mode):
+                return None, ""
         text_with_eol = text + ("\n" if not text.endswith("\n") else "")
         if _atomic_write_text is not None:
             _atomic_write_text(path, text_with_eol)
         else:
             path.write_text(text_with_eol, encoding="utf-8")
-        return path
+        if os.name == "posix":
+            os.chmod(path, 0o600)
+        return path, ""
     except OSError:
-        return None
+        return None, ""
 
 
 def _agent_block_title(
@@ -956,9 +1050,20 @@ def _render_agent_block_body(
     output: str,
     *,
     preview_limit: int | None,
-) -> tuple[Any, Path | None]:
+    protected: bool = False,
+    receipt_authority: ElsieReceiptAuthority | None = None,
+    suppress_dump: bool = False,
+) -> tuple[Any, Path | None, str]:
     text = (output or "").strip() or "(no output produced)"
-    dump_path = _write_agent_block_dump(role, text if text != "(no output produced)" else "")
+    if suppress_dump:
+        dump_path, dump_receipt = None, ""
+    else:
+        dump_path, dump_receipt = _write_agent_block_dump(
+            role,
+            text if text != "(no output produced)" else "",
+            protected=protected,
+            receipt_authority=receipt_authority,
+        )
 
     sections = _parse_block_output_sections(text)
     use_structured = role == "plan" or len(sections) >= 2
@@ -974,12 +1079,12 @@ def _render_agent_block_body(
                     style="muted",
                 ),
             )
-        return body, dump_path
+        return body, dump_path, dump_receipt
 
     if preview_limit is None:
-        return Markdown(text), dump_path
+        return Markdown(text), dump_path, dump_receipt
     if len(text) <= preview_limit:
-        return Markdown(text), dump_path
+        return Markdown(text), dump_path, dump_receipt
     preview = _short_value(text, preview_limit)
     return (
         Group(
@@ -990,6 +1095,7 @@ def _render_agent_block_body(
             ),
         ),
         dump_path,
+        dump_receipt,
     )
 
 
@@ -1030,13 +1136,35 @@ def show_agent_block_complete(
     model: str = "",
     policy_summary: str = "",
     successful_writes: list[str] | None = None,
+    protected: bool = False,
+    receipt_authority: ElsieReceiptAuthority | None = None,
 ) -> None:
     if _json_sink is not None:
+        if protected:
+            purge_legacy_agent_block_dumps()
         return
     preview_limit = _agent_preview_char_limit()
-    body_renderable, dump_path = _render_agent_block_body(
-        role, output, preview_limit=preview_limit
-    )
+    try:
+        body_renderable, dump_path, dump_receipt = _render_agent_block_body(
+            role,
+            output,
+            preview_limit=preview_limit,
+            protected=protected,
+            receipt_authority=receipt_authority,
+        )
+    except ElsieReceiptError:
+        # The terminal may still show the already-authorized block output, but
+        # a missing persistent receipt authority must never fall back to disk.
+        purge_legacy_agent_block_dumps()
+        body_renderable, _unused_path, _unused_receipt = _render_agent_block_body(
+            role,
+            output,
+            preview_limit=preview_limit,
+            protected=False,
+            suppress_dump=True,
+        )
+        dump_path = None
+        dump_receipt = "unavailable"
     writes = successful_writes or []
     write_count = len(writes)
 
@@ -1048,9 +1176,7 @@ def show_agent_block_complete(
     if status_reason:
         header_lines.append(f"[text]{_short_value(status_reason, 220)}[/]")
     if verification_warning and not status_reason:
-        header_lines.append(
-            f"[warning]Verification warning:[/] {_short_value(verification_warning, 200)}"
-        )
+        header_lines.append(f"[warning]Verification warning:[/] {_short_value(verification_warning, 200)}")
 
     footer_parts = [
         f"[muted]{tool_calls} tool call{'s' if tool_calls != 1 else ''}[/]",
@@ -1060,12 +1186,13 @@ def show_agent_block_complete(
         footer_parts.append(f"[muted]{_short_value(policy_summary, 120)}[/]")
     if dump_path is not None:
         footer_parts.append(f"[info]Full output:[/] [accent]{dump_path}[/]")
+    elif protected:
+        safe_receipt = dump_receipt if dump_receipt else "empty"
+        footer_parts.append(f"[muted]Protected dump omitted · receipt {safe_receipt}[/]")
     if write_count:
         footer_parts.append(f"[success]writes: {write_count}[/]")
 
-    header_renderable = (
-        Text.from_markup("\n".join(header_lines)) if header_lines else Text("")
-    )
+    header_renderable = Text.from_markup("\n".join(header_lines)) if header_lines else Text("")
     footer_renderable = Text.from_markup("  ·  ".join(footer_parts)) if footer_parts else Text("")
     panel_body = Group(
         header_renderable,
@@ -1078,9 +1205,7 @@ def show_agent_block_complete(
         panel_body = Group(
             panel_body,
             Text(""),
-            Text.from_markup(
-                f"[warning]Verification:[/] {_short_value(verification_warning, 200)}"
-            ),
+            Text.from_markup(f"[warning]Verification:[/] {_short_value(verification_warning, 200)}"),
         )
 
     console.print(
@@ -1219,9 +1344,7 @@ def start_streaming_response() -> None:
     finish_streaming_response()
     # Answering transition: a left-anchored eye+chevron rule separates the
     # response from tool chatter, so the state flip reads instantly.
-    rule_title = Text.assemble(
-        glyph(AIState.IDLE), (" ", ""), glyph(AIState.ANSWERING), (" answering", "primary")
-    )
+    rule_title = Text.assemble(glyph(AIState.IDLE), (" ", ""), glyph(AIState.ANSWERING), (" answering", "primary"))
     console.rule(rule_title, style="border", align="left")
     _stream_buffer = ""
     _stream_pending = ""
@@ -1325,7 +1448,7 @@ def show_help() -> None:
     table.add_column(style="primary", no_wrap=True)
     table.add_column(style="text")
 
-    from . import slash_dispatch
+    from . import oliver_slash_dispatch as slash_dispatch
 
     def _group(command: str) -> str:
         if command in {

@@ -78,7 +78,7 @@ def test_make_embed_fn_uses_local_model_for_cloud_fallback(monkeypatch):
 
 
 def test_log_embed_perf_includes_backend_field(monkeypatch, tmp_path):
-    from algo_cli import perf_telemetry
+    from algo_cli import dorothy_perf_telemetry as perf_telemetry
 
     perf_path = tmp_path / "perf_history.jsonl"
     monkeypatch.setattr(perf_telemetry, "PERF_HISTORY_FILE", perf_path)

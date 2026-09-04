@@ -116,7 +116,7 @@ def precompute_codebook(
         for i in range(1, k):
             new_boundaries[i] = (levels[i - 1] + levels[i]) / 2
 
-        shift = np.max(np.abs(new_boundaries - boundaries))
+        shift: float = float(np.max(np.abs(new_boundaries - boundaries)))
         boundaries = new_boundaries
         if shift < tol:
             break

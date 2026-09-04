@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+import warnings
 
 import pytest
 
@@ -80,6 +81,30 @@ def test_build_identity_block_with_retrieved_lessons():
     assert "lesson one" in block
     # full inline lessons section should not appear when retrieval is used
     assert "## Lessons Learned" not in block
+
+
+def test_protected_identity_uses_only_repo_shipped_text_without_local_access(
+    monkeypatch,
+):
+    class ForbiddenIdentityDirectory:
+        def mkdir(self, *_args, **_kwargs):
+            raise AssertionError("protected identity must not scaffold local files")
+
+    monkeypatch.setattr(identity, "IDENTITY_DIR", ForbiddenIdentityDirectory())
+    monkeypatch.setattr(
+        identity,
+        "read_cached",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("protected identity must not read local files")),
+    )
+
+    block = identity.build_identity_block(protected=True)
+
+    assert "Repo-shipped Product Identity" in block
+    assert "Repo-shipped Product Soul" in block
+    assert "About the User" not in block
+    assert identity.scaffold_if_needed(protected=True) == []
+    assert identity.detect_changes(protected=True) == []
+    assert identity.identity_mtime_key(protected=True) == ()
 
 
 def test_append_lesson_and_cache_invalidation():
@@ -180,11 +205,36 @@ def test_retrieve_rejects_query_vector_dimension_mismatch_without_matmul_error()
     )
     identity.rebuild_lessons_index(lambda _texts: [[1.0, 0.0]], "model-a")
 
-    assert identity.retrieve_lessons(
-        "safety",
-        lambda _texts: [[1.0, 0.0, 0.0]],
+    assert (
+        identity.retrieve_lessons(
+            "safety",
+            lambda _texts: [[1.0, 0.0, 0.0]],
+            "model-a",
+        )
+        == []
+    )
+
+
+def test_retrieve_handles_large_finite_vectors_without_runtime_warning():
+    identity.scaffold_if_needed()
+    identity.LESSONS_PATH.write_text(
+        "# Lessons Learned\n\n## L1\nA sufficiently long large-vector numerical safety lesson.\n",
+        encoding="utf-8",
+    )
+    identity.rebuild_lessons_index(
+        lambda _texts: [[1.0e300, -1.0e300]],
         "model-a",
-    ) == []
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        hits = identity.retrieve_lessons(
+            "numerical safety",
+            lambda _texts: [[1.0e300, -1.0e300]],
+            "model-a",
+        )
+
+    assert hits == ["## L1\nA sufficiently long large-vector numerical safety lesson."]
 
 
 def test_rebuild_rejects_mixed_vector_dimensions_without_writing_invalid_index():

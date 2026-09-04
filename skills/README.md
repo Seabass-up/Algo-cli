@@ -9,6 +9,7 @@ This directory contains the public, packaged skills that Algo CLI can retrieve t
 | `harness-search-first.md` | Choosing indexed retrieval before broad scans. |
 | `memory-recall-ritual.md` | Capability-aware memory and retrieval checks. |
 | `qol-algorithms.md` | Small algorithms used on CLI hot paths. |
+| `sleeper-agent-model-review.md` | Bounded review protocol for suspicious model behavior using planned Track N patterns. |
 | `smart-error-recovery.md` | Classify failures before choosing a retry. |
 | `tool-selection-cheatsheet.md` | Pick the narrowest suitable runtime tool. |
 

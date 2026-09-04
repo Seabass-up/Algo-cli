@@ -10,6 +10,7 @@ import ast
 import os
 import re
 import shlex
+import subprocess
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -602,15 +603,67 @@ def _inline_python_verification(
     return VerificationCommand(False, None, "inline Python lacks fail-on-error assertions")
 
 
+def _verifier_chain(command: str) -> VerificationCommand | None:
+    """Classify a chain of verifiers joined by ``&&``.
+
+    ``&&`` short-circuits, so the compound's exit status is the AND of every
+    segment: it fails if any segment fails. A chain therefore preserves the
+    fail-on-error guarantee as long as every segment is itself a recognized
+    verifier. This lets models express ``go vet ./... && go test ./...`` as a
+    single verification step instead of being rejected as compound.
+    """
+
+    candidate = command.strip()
+    if "&&" not in candidate:
+        return None
+    segments = [segment.strip() for segment in candidate.split("&&")]
+    if len(segments) < 2 or any(not segment for segment in segments):
+        return None
+    # A leading ``cd PATH`` segment is a working-directory wrapper, not a
+    # verifier; drop it so the remaining segments are all verifiers.
+    if segments:
+        try:
+            prefix = _shell_split(segments[0])
+        except ValueError:
+            prefix = []
+        if (
+            len(prefix) == 2
+            and _executable_name(prefix[0]) == "cd"
+            and prefix[1]
+        ) or (
+            len(prefix) == 3
+            and _executable_name(prefix[0]) == "cd"
+            and prefix[1] == "--"
+            and prefix[2]
+        ):
+            segments = segments[1:]
+    if len(segments) < 2:
+        return None
+    kinds: list[str] = []
+    for segment in segments:
+        decision = classify_verification_command(segment)
+        if not decision.qualifies or not decision.kind:
+            return None
+        kinds.append(decision.kind)
+    # A chain of verifiers is itself a test; preserve the most specific kind
+    # when all segments agree, otherwise report the compound as a test.
+    kind = kinds[0] if len(set(kinds)) == 1 else "test"
+    return VerificationCommand(True, kind, "command executes a chain of verifiers")
+
+
 def classify_verification_command(command: str) -> VerificationCommand:
     """Classify one shell command without retaining its text.
 
     Compound/piped commands and discovery-only flags are rejected because a
     zero shell status would not reliably prove the verifier itself passed. A
     single working-directory wrapper and stderr-to-stdout redirect are allowed
-    because they preserve the verifier's exit status.
+    because they preserve the verifier's exit status. A chain of verifiers
+    joined by ``&&`` is accepted when every segment is itself a verifier.
     """
 
+    chain = _verifier_chain(command)
+    if chain is not None:
+        return chain
     unwrapped = _unwrap_verification_shell(command)
     inline_python = _inline_python_verification(unwrapped)
     if inline_python is not None:
@@ -669,6 +722,8 @@ def classify_verification_command(command: str) -> VerificationCommand:
     if executable in {"pytest", "py.test", "unittest", "tox", "nox"}:
         return VerificationCommand(True, "test", "command executes a test runner")
     if executable in {"go", "cargo", "dotnet"}:
+        if executable == "go" and len(lowered) >= 2 and lowered[1] == "vet":
+            return VerificationCommand(True, "lint", "go vet is a static-analysis check")
         if executable == "go" and (len(lowered) < 2 or lowered[1] != "test"):
             return VerificationCommand(False, None, "go command is not a test")
         if executable == "cargo" and len(lowered) >= 2 and lowered[1] == "clippy":
@@ -804,3 +859,53 @@ def completion_decision(events: Iterable[EvidenceEvent] | None = None) -> Comple
     if ledger is None or ledger.closed:
         return CompletionDecision(False, "no active execution scope")
     return evaluate_completion(tuple(ledger.events))
+
+
+def auto_verify_working_tree(root: str | Path | None = None) -> CompletionDecision:
+    """Second-stop fallback: run git diff --check HEAD as a structural verifier.
+
+    Restores the pre-hardening behavior: when the model stops twice without a
+    recognized post-mutation verifier, run git diff --check directly. A pass
+    records git_diff verification and allows completion; a missing git binary
+    or a non-git workspace allows completion with a manual-review warning; a
+    failing structural check keeps completion blocked.
+    """
+    ledger = _ACTIVE_LEDGER.get()
+    if ledger is None or ledger.closed:
+        return CompletionDecision(False, "no active execution scope")
+    try:
+        workspace = ledger.workspace if root is None else Path(root).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return CompletionDecision(False, "verification workspace cannot be resolved")
+    if workspace != ledger.workspace:
+        return CompletionDecision(False, "verification workspace does not match the active execution scope")
+    try:
+        completed = subprocess.run(
+            ["git", "diff", "--check", "HEAD"],
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except FileNotFoundError:
+        return CompletionDecision(
+            True,
+            "git is unavailable; review the last workspace change manually",
+        )
+    except subprocess.TimeoutExpired:
+        return CompletionDecision(False, "git diff --check timed out; verification is incomplete")
+    except (OSError, subprocess.SubprocessError):
+        return CompletionDecision(False, "git diff --check could not complete")
+    if completed.returncode != 0:
+        if "not a git repository" in (completed.stderr or "").lower():
+            return CompletionDecision(
+                True,
+                "workspace is not a git repository; review the last change manually",
+            )
+        return CompletionDecision(
+            False,
+            "git diff --check reported structural problems",
+        )
+    record_verification("git_diff", success=True)
+    return completion_decision()

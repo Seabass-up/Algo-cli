@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from io import StringIO
+import inspect
 import json
 import os
+from pathlib import Path
 import subprocess
+import stat
 import threading
 import time
 from types import SimpleNamespace
@@ -13,9 +16,9 @@ from types import SimpleNamespace
 import pytest
 from rich.console import Console
 
-from algo_cli import tool_runtime, tools
+from algo_cli import nathan_runtime as tool_runtime, tools
 from algo_cli.config import Config
-from algo_cli.runtime_services import scoped_tool_runtime_env
+from algo_cli.theodore_runtime_services import scoped_tool_runtime_env
 
 
 def test_resolve_absolute_and_relative(tmp_path):
@@ -31,6 +34,195 @@ def test_cap_truncates():
     long = tools._cap("x" * 50, limit=10)
     assert long.startswith("x" * 10)
     assert "truncated" in long
+
+
+def test_append_lesson_routes_to_echo_without_plaintext_shadow(monkeypatch):
+    from algo_cli import ada_memory_echo_veil, identity
+
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(
+        ada_memory_echo_veil,
+        "remember_with_echo_veil",
+        lambda _cfg, fact, *, source: captured.update({"fact": fact, "source": source}) or True,
+    )
+    monkeypatch.setattr(
+        identity,
+        "append_lesson",
+        lambda _text: (_ for _ in ()).throw(AssertionError("plaintext lesson must not be written")),
+    )
+
+    assert tools.append_lesson("  explicit lesson  ", cfg=cfg) == "Protected lesson saved."
+    assert captured == {
+        "fact": "explicit lesson",
+        "source": "explicit_lesson_tool",
+    }
+
+
+def test_append_lesson_fails_closed_when_echo_write_is_unavailable(monkeypatch):
+    from algo_cli import ada_memory_echo_veil, identity
+
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    monkeypatch.setattr(
+        ada_memory_echo_veil,
+        "remember_with_echo_veil",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("secret-canary")),
+    )
+    monkeypatch.setattr(
+        identity,
+        "append_lesson",
+        lambda _text: (_ for _ in ()).throw(AssertionError("plaintext fallback must not run")),
+    )
+
+    result = tools.append_lesson("secret-canary", cfg=cfg)
+    assert result == ("Error: protected lesson storage is unavailable; no plaintext lesson was written.")
+    assert "secret-canary" not in result
+
+
+def test_update_user_profile_refuses_echo_without_plaintext_write(monkeypatch):
+    from algo_cli import identity
+
+    canary = "PROTECTED_USER_PROFILE_CANARY"
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    monkeypatch.setattr(
+        identity,
+        "write_user_profile",
+        lambda _content: (_ for _ in ()).throw(AssertionError("protected profile must not reach plaintext identity")),
+    )
+
+    result = tools.update_user_profile(canary, cfg=cfg)
+
+    assert result == (
+        "Error: update_user_profile is unavailable while Echo Veil is the "
+        "exclusive memory authority; use an explicit reviewed Echo memory "
+        "action instead."
+    )
+    assert canary not in result
+
+
+def test_update_user_profile_runtime_refuses_before_dispatch(monkeypatch):
+    canary = "RUNTIME_PROTECTED_USER_PROFILE_CANARY"
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    invoked: list[bool] = []
+    monkeypatch.setitem(
+        tool_runtime.TOOL_MAP,
+        "update_user_profile",
+        lambda **_kwargs: invoked.append(True) or "unsafe",
+    )
+
+    result = tool_runtime.run_tool(
+        "update_user_profile",
+        {"content": canary},
+        cfg,
+    )
+
+    assert "update_user_profile is unavailable" in result
+    assert canary not in result
+    assert invoked == []
+
+
+def test_update_user_profile_preserves_echo_disabled_compatibility(monkeypatch):
+    from algo_cli import identity
+
+    writes: list[str] = []
+    monkeypatch.setattr(
+        identity,
+        "write_user_profile",
+        lambda content: writes.append(content) or "/private/USER.md",
+    )
+    cfg = Config(echo_veil_enabled=False, echo_veil_protection="optional")
+
+    result = tool_runtime.run_tool(
+        "update_user_profile",
+        {"content": "# About the User\n\nCompatibility"},
+        cfg,
+    )
+
+    assert result == "Wrote 31 chars to /private/USER.md"
+    assert writes == ["# About the User\n\nCompatibility"]
+
+
+def test_knowledge_graph_note_routes_to_echo_without_plaintext_shadow(monkeypatch):
+    from algo_cli import ada_memory_echo_veil
+
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(
+        ada_memory_echo_veil,
+        "remember_with_echo_veil",
+        lambda _cfg, fact, *, source: captured.update({"fact": fact, "source": source}) or True,
+    )
+    monkeypatch.setattr(
+        tools._index_compute_lab,
+        "write_graph_note",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("plaintext graph note must not be written")),
+    )
+
+    result = tool_runtime.run_tool(
+        "write_knowledge_graph_note",
+        {"title": "Alias", "body": "Use the protected name."},
+        cfg,
+    )
+
+    assert result == "Protected knowledge note saved."
+    assert captured == {
+        "fact": "Alias\n\nUse the protected name.",
+        "source": "explicit_knowledge_graph_note",
+    }
+
+
+def test_knowledge_graph_note_fails_closed_without_plaintext_fallback(monkeypatch):
+    from algo_cli import ada_memory_echo_veil
+
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    monkeypatch.setattr(
+        ada_memory_echo_veil,
+        "remember_with_echo_veil",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("private")),
+    )
+    monkeypatch.setattr(
+        tools._index_compute_lab,
+        "write_graph_note",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("plaintext fallback must not run")),
+    )
+
+    result = tools.write_knowledge_graph_note("private", "canary", cfg=cfg)
+
+    assert result == ("Error: protected knowledge-note storage is unavailable; no plaintext graph note was written.")
+    assert "canary" not in result
+
+
+def test_x_search_under_echo_is_current_turn_only_and_never_cached(
+    monkeypatch,
+) -> None:
+    from algo_cli import xai_auth, xai_client
+
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    monkeypatch.setattr(xai_auth, "get_valid_token", lambda: "configured")
+    monkeypatch.setattr(
+        xai_client,
+        "active_xai_client",
+        lambda: SimpleNamespace(
+            search=lambda **_kwargs: {
+                "content": "CURRENT_TURN_X_RESULT_CANARY",
+                "citations": ["https://x.com/example/status/1"],
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        tools,
+        "_atomic_write_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("protected X search must not persist a cache")),
+    )
+
+    result = tool_runtime.run_tool(
+        "x_search",
+        {"query": "CURRENT_TURN_X_QUERY_CANARY", "max_results": 3},
+        cfg,
+    )
+
+    assert "CURRENT_TURN_X_RESULT_CANARY" in result
+    assert "cached to" not in result
 
 
 def test_deny_command_re():
@@ -217,8 +409,8 @@ def test_run_shell_safe_mode_blocks_destructive():
     "command",
     [
         "python -c \"import shutil; shutil.rmtree('build')\"",
-        "powershell -Command \"ri -Recurse -Force build\"",
-        "cmd /c \"del output.txt\"",
+        'powershell -Command "ri -Recurse -Force build"',
+        'cmd /c "del output.txt"',
         "robocopy source target /MIR",
         "git -C repo push origin feature/runtime",
     ],
@@ -325,18 +517,23 @@ def test_web_fetch_timeout_returns_without_waiting_for_worker(monkeypatch):
 
 def test_web_fetch_honors_fractional_timeout(monkeypatch):
     monkeypatch.setenv("OLLAMA_API_KEY", "token")
+    release = threading.Event()
 
     class SlowClient:
         def web_fetch(self, _url):
-            time.sleep(0.2)
+            release.wait(1)
             return {"content": "late"}
 
     monkeypatch.setattr(tools, "active_ollama_client", lambda cloud=False: SlowClient())
     started = time.perf_counter()
 
-    out = tools.web_fetch("https://example.test", timeout=0.02)
+    try:
+        out = tools.web_fetch("https://example.test", timeout=0.02)
+        elapsed = time.perf_counter() - started
+    finally:
+        release.set()
 
-    assert time.perf_counter() - started < 0.15
+    assert 0.01 <= elapsed < 0.5
     assert "timed out after 0.02 seconds" in out
 
 
@@ -414,12 +611,16 @@ def test_web_fetch_worker_releases_the_limiter_it_acquired(monkeypatch):
 def test_failed_attempt_skip_is_not_self_perpetuating():
     cfg = Config()
     signature = tool_runtime.tool_attempt_signature("read_file", {"path": "missing.txt"})
-    cfg.attempt_ledger.append({"signature": signature, "status": "failed", "timestamp": time.time(), "summary": "missing"})
+    cfg.attempt_ledger.append(
+        {"signature": signature, "status": "failed", "timestamp": time.time(), "summary": "missing"}
+    )
 
     first = tool_runtime.find_failed_attempt(cfg, signature)
     assert first is not None
 
-    cfg.attempt_ledger.append({"signature": signature, "status": "skipped", "timestamp": time.time(), "summary": "skipped"})
+    cfg.attempt_ledger.append(
+        {"signature": signature, "status": "skipped", "timestamp": time.time(), "summary": "skipped"}
+    )
 
     assert tool_runtime.find_failed_attempt(cfg, signature) is None
 
@@ -427,7 +628,9 @@ def test_failed_attempt_skip_is_not_self_perpetuating():
 def test_denied_attempt_does_not_block_retry():
     cfg = Config()
     signature = tool_runtime.tool_attempt_signature("run_shell", {"command": "pytest"})
-    cfg.attempt_ledger.append({"signature": signature, "status": "denied", "timestamp": time.time(), "summary": "denied"})
+    cfg.attempt_ledger.append(
+        {"signature": signature, "status": "denied", "timestamp": time.time(), "summary": "denied"}
+    )
 
     assert tool_runtime.find_failed_attempt(cfg, signature) is None
 
@@ -455,12 +658,49 @@ def test_classify_tool_status_marks_tool_errors_failed():
     assert tool_runtime.classify_tool_status("Tool error for read_file: boom") == "failed"
     assert tool_runtime.classify_tool_status("tests failed\n[exit code: 1]") == "failed"
     assert tool_runtime.classify_tool_status("tests passed\n[exit code: 0]") == "worked"
+    assert tool_runtime.classify_tool_status('{"ok": false, "message": "denied"}') == "failed"
+    assert tool_runtime.classify_tool_status('{"error": {"code": "boom"}}') == "failed"
+    assert tool_runtime.classify_tool_status('{"status": "timed_out"}') == "failed"
+    assert (
+        tool_runtime.classify_tool_status(
+            '{"error": "this is file content"}',
+            name="read_file",
+        )
+        == "worked"
+    )
 
 
 @pytest.mark.parametrize("command", ["shutdown -h now", "format C:", "diskpart /s wipe.txt"])
 def test_safe_mode_blocks_host_destructive_commands(command):
     assert tools.shell_is_dangerous(command)
     assert tools.run_shell(command, safe_mode=True).startswith("Blocked by safe mode")
+
+
+def test_run_shell_model_schema_hides_runtime_owned_parameters():
+    signature = inspect.signature(tools.TOOL_MAP["run_shell"])
+
+    assert tuple(signature.parameters) == ("command", "timeout")
+
+
+@pytest.mark.parametrize(
+    ("session_safe_mode", "stale_model_value", "expected"),
+    ((False, True, False), (True, False, True)),
+)
+def test_run_shell_safe_mode_comes_only_from_live_session(
+    session_safe_mode,
+    stale_model_value,
+    expected,
+):
+    cfg = Config()
+    cfg.safe_mode = session_safe_mode
+
+    args = tool_runtime.tool_runtime_args(
+        "run_shell",
+        {"command": "python3 healthcheck.py", "safe_mode": stale_model_value},
+        cfg,
+    )
+
+    assert args["safe_mode"] is expected
 
 
 def test_session_command_requires_approval(monkeypatch):
@@ -480,7 +720,7 @@ def test_session_command_requires_approval(monkeypatch):
     assert prompted["called"] is True
 
 
-def test_approve_all_this_session_does_not_persist(monkeypatch, config_dir):
+def test_action_time_approval_cannot_be_promoted_to_session(monkeypatch, config_dir):
     from algo_cli.config import CONFIG_FILE
 
     cfg = Config()
@@ -491,10 +731,10 @@ def test_approve_all_this_session_does_not_persist(monkeypatch, config_dir):
 
     approved = tool_runtime.ask_approval("run_shell", {"command": "echo hi"}, cfg)
 
-    assert approved is True
+    assert approved is False
     assert cfg.auto_mode is False
-    assert cfg.session_auto_approve is True
-    assert cfg.auto_approve_active is True
+    assert cfg.session_auto_approve is False
+    assert cfg.auto_approve_active is False
 
     # agent_loop saves cfg at the end of every turn; the flag must survive that.
     cfg.save()
@@ -508,17 +748,36 @@ def test_approve_all_this_session_does_not_persist(monkeypatch, config_dir):
     assert reloaded.session_auto_approve is False
 
 
-def test_approve_all_skips_prompt_for_rest_of_session(monkeypatch):
+def test_action_time_tools_require_a_fresh_confirmation(monkeypatch):
     cfg = Config()
-    answers = iter(["a"])
+    answers = iter(["y", "y"])
+    prompts: list[str] = []
 
-    def fake_input(_prompt):
+    def fake_input(prompt):
+        prompts.append(prompt)
         return next(answers)  # raises StopIteration if prompted again
 
     monkeypatch.setattr("builtins.input", fake_input)
 
     assert tool_runtime.ask_approval("run_shell", {"command": "echo hi"}, cfg) is True
-    assert tool_runtime.ask_approval("write_file", {"path": "x", "content": "y"}, cfg) is True
+    assert tool_runtime.ask_approval("run_shell", {"command": "echo again"}, cfg) is True
+    assert len(prompts) == 2
+
+
+def test_session_preapproval_is_scoped_to_action_and_target(monkeypatch):
+    cfg = Config()
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt: prompts.append(prompt) or "a",
+    )
+
+    args = {"query": "bounded authority"}
+    assert tool_runtime.ask_approval("web_search", args, cfg) is True
+    assert tool_runtime.ask_approval("web_search", args, cfg) is True
+    assert len(prompts) == 1
+    assert tool_runtime.ask_approval("web_fetch", {"url": "https://example.com"}, cfg) is True
+    assert len(prompts) == 2
 
 
 def test_repeated_failed_tool_call_is_skipped_after_runtime_defaults(tmp_path, monkeypatch):
@@ -561,6 +820,7 @@ def test_attempt_signature_excludes_config_and_conversation(monkeypatch, config_
     monkeypatch.setattr(tool_runtime, "show_tool_call", lambda *a, **k: None)
     monkeypatch.setattr(tool_runtime, "show_tool_result", lambda *a, **k: None)
     monkeypatch.setattr(tool_runtime, "record_perf_event", lambda *a, **k: None)
+    monkeypatch.setattr(tool_runtime, "ask_approval", lambda *a, **k: True)
 
     runtime_args = tool_runtime.tool_runtime_args("remember", {"fact": "user likes tea"}, cfg)
     assert "cfg" not in runtime_args
@@ -680,7 +940,9 @@ def test_available_actions_exposes_harness_maintenance_loop():
     assert "/hsearch QUERY" in commands
     assert "/hread RECORD_ID" in commands
     assert any("/harness status" in item and "/harness embed" in item for item in payload["slash_command_guidance"])
-    assert any("/harness status" in item and "/harness embed" in item for item in payload["model_callable_tools"]["session"])
+    assert any(
+        "/harness status" in item and "/harness embed" in item for item in payload["model_callable_tools"]["session"]
+    )
     assert any("harness_stats" in item and "harness_refresh" in item for item in payload["verification_layer"])
 
 
@@ -695,7 +957,7 @@ def test_available_actions_exposes_runtime_agent_threads():
 
 
 def test_plugin_tool_wrappers_serialize_and_load_discovered_manifests(monkeypatch, tmp_path):
-    from algo_cli import plugins
+    from algo_cli import william_plugins as plugins
 
     root = tmp_path / "plugins"
     plugin_dir = root / "demo"
@@ -703,10 +965,12 @@ def test_plugin_tool_wrappers_serialize_and_load_discovered_manifests(monkeypatc
     (plugin_dir / "plugin.json").write_text(
         json.dumps(
             {
+                "schema_version": 1,
                 "name": "demo",
                 "version": "1.2.3",
                 "description": "Demo plugin",
                 "enabled": True,
+                "entry_points": [],
             }
         ),
         encoding="utf-8",
@@ -719,10 +983,28 @@ def test_plugin_tool_wrappers_serialize_and_load_discovered_manifests(monkeypatc
 
     assert discovered[0]["name"] == "demo"
     assert discovered[0]["version"] == "1.2.3"
-    assert loaded["loaded"] is True
+    assert loaded["loaded"] is False
     assert loaded["name"] == "demo"
     assert loaded["path"] == "plugins/demo"
+    assert loaded["error_code"] == "code_loading_disabled"
+    assert loaded["code_loading"] is False
+    assert loaded["security_boundary"] is False
     assert str(tmp_path) not in json.dumps(loaded)
+
+
+def test_plugin_load_rejects_invalid_names_without_echoing_them() -> None:
+    hostile = "../../private-token-value\x1b[31m"
+
+    result = json.loads(tools.plugins_load(hostile))
+    serialized = json.dumps(result)
+
+    assert result == {
+        "loaded": False,
+        "error_code": "invalid_plugin_name",
+        "error": "Plugin name is invalid.",
+    }
+    assert "private-token-value" not in serialized
+    assert ".." not in serialized
 
 
 def test_version_manifest_tool_uses_manifest_as_dict(monkeypatch):
@@ -808,7 +1090,7 @@ def test_sensitive_tool_args_are_redacted_from_attempt_metadata():
 
     assert "super-secret" not in signature
     assert "super-secret" not in preview
-    assert "redacted" in signature
+    assert signature.startswith("hmac-sha256:")
 
 
 def test_plugin_load_and_credential_store_require_approval(monkeypatch, capsys):
@@ -817,17 +1099,22 @@ def test_plugin_load_and_credential_store_require_approval(monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "n")
 
     assert tool_runtime.ask_approval("plugins_load", {"plugin_name": "demo"}, cfg) is False
-    assert tool_runtime.ask_approval(
-        "credential_helpers_store",
-        {"helper": "env", "key": "TOKEN", "value": "super-secret"},
-        cfg,
-    ) is False
-    assert len(prompts) == 2
-    assert "super-secret" not in capsys.readouterr().out
+    assert (
+        tool_runtime.ask_approval(
+            "credential_helpers_store",
+            {"helper": "env", "key": "TOKEN", "value": "super-secret"},
+            cfg,
+        )
+        is False
+    )
+    assert len(prompts) == 1
+    output = capsys.readouterr().out
+    assert "trusted user handoff" in output
+    assert "super-secret" not in output
 
 
 def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
-    from algo_cli import action_registry
+    from algo_cli import action_registry, memory_echo_veil
     from algo_cli.evals import algorithm_effectiveness, harness_retrieval_benchmark
 
     monkeypatch.setattr(
@@ -879,7 +1166,7 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
             "write_wired": False,
             "retrieval_wired": False,
             "persistence_wired": False,
-            "readiness_source": "algo_cli.memory_echo_veil.get_echo_veil_readiness",
+            "readiness_source": "algo_cli.ada_memory_echo_veil.get_echo_veil_readiness",
             "runtime": "cpython-test",
         },
         "runtime_event_store": {
@@ -892,6 +1179,17 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
         },
     }
     monkeypatch.setattr(tools.harness, "stats", lambda: stats_payload)
+    echo_probe = {
+        **stats_payload["echo_veil"],
+        "live_probe_performed": False,
+    }
+    echo_probe_calls: list[tuple[object | None, bool]] = []
+
+    def probe_echo(config=None, *, live_probe=False):
+        echo_probe_calls.append((config, live_probe))
+        return dict(echo_probe)
+
+    monkeypatch.setattr(memory_echo_veil, "get_echo_veil_readiness", probe_echo)
     monkeypatch.setattr(
         tools.harness,
         "search_index",
@@ -900,7 +1198,11 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
             {"id": "algo-cli:skill:harness-search-first.md", "harness": "algo-cli", "kind": "skill"},
         ],
     )
-    monkeypatch.setattr(tools, "query_knowledge_graph", lambda _query: "project:algo-cli  (187 edges)")
+    monkeypatch.setattr(
+        tools,
+        "query_knowledge_graph",
+        lambda _query, cfg=None: "project:algo-cli  (187 edges)",
+    )
     monkeypatch.setattr(
         harness_retrieval_benchmark,
         "run_harness_retrieval_benchmark",
@@ -932,14 +1234,27 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
             "status": "pass",
             "reason": "",
             "required_checks": [
-                "bm25_lexical", "exact_vector", "rrf_fusion", "stable_top_k",
-                "window_tinylfu", "embedding_priority", "memory_admission",
+                "bm25_lexical",
+                "exact_vector",
+                "rrf_fusion",
+                "stable_top_k",
+                "window_tinylfu",
+                "embedding_priority",
+                "memory_admission",
             ],
             "summary": {"required": 7, "passed": 7, "failed": 0},
-            "checks": {name: {"status": "pass", "required": True} for name in (
-                "bm25_lexical", "exact_vector", "rrf_fusion", "stable_top_k",
-                "window_tinylfu", "embedding_priority", "memory_admission",
-            )},
+            "checks": {
+                name: {"status": "pass", "required": True}
+                for name in (
+                    "bm25_lexical",
+                    "exact_vector",
+                    "rrf_fusion",
+                    "stable_top_k",
+                    "window_tinylfu",
+                    "embedding_priority",
+                    "memory_admission",
+                )
+            },
         },
     )
 
@@ -981,16 +1296,56 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     assert capabilities["web tools"]["status"] == "pass"
     assert capabilities["google workspace wiring"]["status"] == "pass"
     assert all(item["scored"] is False for item in capabilities.values())
+    assert echo_probe_calls
+    assert all(live_probe is True for _config, live_probe in echo_probe_calls)
 
-    stats_payload["echo_veil"]["enabled"] = True
+    echo_probe.update(installed=True, enabled=True, live_probe_performed=True)
     enabled_but_unwired = json.loads(tools.harness_scorecard())
-    enabled_statuses = {
-        check["name"]: check["status"] for check in enabled_but_unwired["checks"]
-    }
+    enabled_statuses = {check["name"]: check["status"] for check in enabled_but_unwired["checks"]}
     assert enabled_but_unwired["score"] == 9.0
     assert enabled_but_unwired["overall_status"] == "blocked"
     assert enabled_statuses["project memory/wiki coverage"] == "fail"
-    stats_payload["echo_veil"]["enabled"] = False
+
+    echo_probe.update(
+        write_wired=True,
+        retrieval_wired=True,
+        persistence_wired=True,
+    )
+    enabled_and_wired = json.loads(tools.harness_scorecard())
+    wired_check = next(
+        check for check in enabled_and_wired["checks"] if check["name"] == "project memory/wiki coverage"
+    )
+    assert enabled_and_wired["score"] == 10
+    assert enabled_and_wired["overall_status"] == "ready"
+    assert wired_check["status"] == "pass"
+    assert wired_check["metrics"]["echo_live_probe_performed"] is True
+    assert wired_check["metrics"]["echo_probe_error"] == ""
+    assert wired_check["metrics"]["echo_initialization_error"] == ""
+
+    def unavailable_echo_probe(_config=None, *, live_probe=False):
+        assert live_probe is True
+        raise RuntimeError("synthetic probe failure")
+
+    monkeypatch.setattr(
+        memory_echo_veil,
+        "get_echo_veil_readiness",
+        unavailable_echo_probe,
+    )
+    unavailable_echo = json.loads(tools.harness_scorecard())
+    unavailable_check = next(
+        check for check in unavailable_echo["checks"] if check["name"] == "project memory/wiki coverage"
+    )
+    assert unavailable_check["status"] == "unavailable"
+    assert unavailable_check["metrics"]["echo_probe_error"] == "RuntimeError"
+    monkeypatch.setattr(memory_echo_veil, "get_echo_veil_readiness", probe_echo)
+
+    echo_probe.update(
+        enabled=False,
+        live_probe_performed=False,
+        write_wired=False,
+        retrieval_wired=False,
+        persistence_wired=False,
+    )
 
     stats_payload["runtime_event_store"]["file_private"] = False
     unsafe_store = json.loads(tools.harness_scorecard())
@@ -1032,13 +1387,80 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
 
     counterfeit_pass = json.loads(tools.harness_scorecard())
 
-    counterfeit_statuses = {
-        check["name"]: check["status"] for check in counterfeit_pass["checks"]
-    }
+    counterfeit_statuses = {check["name"]: check["status"] for check in counterfeit_pass["checks"]}
     assert counterfeit_pass["score"] == 8.0
     assert counterfeit_pass["overall_status"] == "blocked"
     assert counterfeit_statuses["retrieval benchmark"] == "fail"
     assert counterfeit_statuses["algorithm effectiveness"] == "fail"
+
+
+def test_protected_harness_scorecard_never_reads_legacy_knowledge_graph(monkeypatch):
+    from algo_cli import memory_echo_veil
+
+    calls: list[str] = []
+
+    def forbidden_query(*_args, **_kwargs):
+        calls.append("legacy-graph")
+        raise AssertionError("legacy graph must not be read under Echo authority")
+
+    monkeypatch.setattr(tools, "query_knowledge_graph", forbidden_query)
+    monkeypatch.setattr(
+        memory_echo_veil,
+        "get_echo_veil_readiness",
+        lambda _config=None, *, live_probe=False: {
+            "installed": True,
+            "enabled": True,
+            "write_wired": True,
+            "retrieval_wired": True,
+            "persistence_wired": True,
+            "readiness_source": "test-live-probe",
+            "runtime": "cpython-test",
+            "live_probe_performed": live_probe,
+        },
+    )
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+
+    payload = json.loads(tools.harness_scorecard(cfg=cfg))
+
+    graph_check = next(check for check in payload["checks"] if check["name"] == "knowledge graph")
+    assert graph_check["status"] == "unavailable"
+    assert "disabled under Echo Veil" in graph_check["evidence"]
+    assert calls == []
+
+
+@pytest.mark.parametrize("tool_name", ["harness_scorecard", "harness_competitive_rating"])
+def test_scorecard_family_cfg_is_runtime_injected_and_hidden_from_schema(monkeypatch, tool_name):
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    seen: list[Config | None] = []
+    registered = tools.TOOL_MAP[tool_name]
+    monkeypatch.setitem(
+        tools.TOOL_MAP,
+        tool_name,
+        lambda cfg=None: seen.append(cfg) or '{"status":"ok"}',
+    )
+
+    assert tool_runtime.run_tool(tool_name, {}, cfg) == '{"status":"ok"}'
+    assert seen == [cfg]
+    assert "cfg" not in inspect.signature(registered).parameters
+
+
+def test_direct_harness_scorecard_aliases_forward_runtime_cfg(monkeypatch):
+    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    seen: list[tuple[str, Config | None]] = []
+    monkeypatch.setattr(
+        tools,
+        "harness_scorecard",
+        lambda cfg=None: seen.append(("score", cfg)) or "score",
+    )
+    monkeypatch.setattr(
+        tools,
+        "harness_competitive_rating",
+        lambda cfg=None: seen.append(("compare", cfg)) or "compare",
+    )
+
+    assert tools._direct_read_only_session_result("/harness score", cfg=cfg) == "score"
+    assert tools._direct_read_only_session_result("/harness compare", cfg=cfg) == "compare"
+    assert seen == [("score", cfg), ("compare", cfg)]
 
 
 def test_harness_index_integrity_rejects_duplicate_ids_and_nonfinite_vectors(monkeypatch):
@@ -1118,7 +1540,7 @@ def test_harness_index_integrity_allows_dimensions_to_differ_by_model(monkeypatc
 
 def test_show_help_contains_current_slash_commands(monkeypatch):
     from algo_cli import display
-    from algo_cli import slash_dispatch
+    from algo_cli import oliver_slash_dispatch as slash_dispatch
 
     output = StringIO()
     theme_name = getattr(display, "_active_theme_name", "tokyo-night")
@@ -1170,18 +1592,14 @@ def test_run_shell_allows_benign():
 
 
 def test_isolated_process_group_kwargs_are_portable(monkeypatch):
-    assert tools._isolated_process_group_kwargs("posix") == {
-        "start_new_session": True
-    }
+    assert tools._isolated_process_group_kwargs("posix") == {"start_new_session": True}
 
     monkeypatch.delattr(
         tools.subprocess,
         "CREATE_NEW_PROCESS_GROUP",
         raising=False,
     )
-    assert tools._isolated_process_group_kwargs("nt") == {
-        "creationflags": 0x00000200
-    }
+    assert tools._isolated_process_group_kwargs("nt") == {"creationflags": 0x00000200}
 
 
 def test_run_shell_timeout_terminates_isolated_process_tree(tmp_path, monkeypatch):
@@ -1304,6 +1722,129 @@ def test_embed_text_accepts_object_response_from_current_ollama_client(monkeypat
     assert payload["preview"] == [0.25, 0.75]
 
 
+@pytest.mark.parametrize(
+    "url",
+    (
+        "https://example.com:8765",
+        "http://localhost",
+        "http://user:secret@localhost:8765",
+        "http://localhost:8765/unexpected-path",
+        "file:///tmp/algo-gateway",
+    ),
+)
+def test_gateway_functions_never_open_remote_or_ambiguous_endpoints(monkeypatch, url):
+    opened: list[str] = []
+
+    def fail_open(request, *, timeout):
+        opened.append(request.full_url)
+        raise AssertionError(f"unexpected request with timeout {timeout}")
+
+    monkeypatch.setattr(tools, "_open_local_gateway", fail_open)
+
+    assert tools.gateway_ready(url) is False
+    assert tools.gateway_embed("hello", "embeddinggemma", True, None, url) is None
+    assert tools.gateway_embed_batch(["hello"], "embeddinggemma", True, None, url) is None
+    assert opened == []
+
+
+def test_gateway_embed_is_bounded_strict_and_uses_validated_loopback(monkeypatch):
+    opened: list[tuple[str, float, dict]] = []
+
+    class Response:
+        status = 200
+
+        def __init__(self, raw: bytes):
+            self.raw = raw
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, limit: int) -> bytes:
+            return self.raw[:limit]
+
+    def open_gateway(request, *, timeout):
+        opened.append((request.full_url, timeout, json.loads(request.data)))
+        return Response(b'{"model":"m1","embeddings":[[1.0,0.0]]}')
+
+    monkeypatch.setattr(tools, "_open_local_gateway", open_gateway)
+
+    result = tools.gateway_embed(
+        "hello",
+        "m1",
+        True,
+        2,
+        "http://127.0.0.1:8765",
+    )
+
+    assert result == {"model": "m1", "embeddings": [[1.0, 0.0]]}
+    assert opened == [
+        (
+            "http://127.0.0.1:8765/supplemental/embed",
+            60,
+            {"model": "m1", "input": "hello", "truncate": True, "dimensions": 2},
+        )
+    ]
+
+    monkeypatch.setattr(
+        tools,
+        "_open_local_gateway",
+        lambda *_args, **_kwargs: Response(b'{"model":"first","model":"second"}'),
+    )
+    assert tools.gateway_embed("hello", "m1", True, None) is None
+
+    oversized = b"{" + b"x" * tools.MAX_GATEWAY_RESPONSE_BYTES + b"}"
+    monkeypatch.setattr(
+        tools,
+        "_open_local_gateway",
+        lambda *_args, **_kwargs: Response(oversized),
+    )
+    assert tools.gateway_embed("hello", "m1", True, None) is None
+
+
+def test_gateway_payload_limits_fail_closed_before_open(monkeypatch):
+    monkeypatch.setattr(
+        tools,
+        "_open_local_gateway",
+        lambda *_args, **_kwargs: pytest.fail("invalid payload reached transport"),
+    )
+
+    assert (
+        tools.gateway_embed_batch(
+            ["x"] * (tools.MAX_GATEWAY_BATCH_ITEMS + 1),
+            "m1",
+            True,
+            None,
+        )
+        is None
+    )
+    assert tools.gateway_embed("x", " m1 ", True, None) is None
+    assert tools.gateway_embed("x", "m1", True, 0) is None
+    assert tools.gateway_embed("x" * tools.MAX_GATEWAY_REQUEST_BYTES, "m1", True, None) is None
+
+
+def test_local_gateway_transport_ignores_proxy_environment(monkeypatch):
+    captured: list[object] = []
+    sentinel = object()
+
+    class Opener:
+        def open(self, request, *, timeout):
+            captured.extend((request, timeout))
+            return sentinel
+
+    def build(handler):
+        assert handler.proxies == {}
+        return Opener()
+
+    monkeypatch.setattr(tools, "build_opener", build)
+    request = tools.Request("http://127.0.0.1:8765/healthz")
+
+    assert tools._open_local_gateway(request, timeout=1.0) is sentinel
+    assert captured == [request, 1.0]
+
+
 def test_model_create_translates_modelfile_to_current_ollama_api(monkeypatch):
     calls: list[dict[str, object]] = []
 
@@ -1405,8 +1946,8 @@ def test_search_files_fallback_caps(tmp_path, monkeypatch):
 
     out = tools.search_files("needle", path=str(tmp_path))
     assert "app.py" in out
-    assert "node_modules" not in out          # heavy dir pruned
-    assert "big.log" not in out               # over the size cap
+    assert "node_modules" not in out  # heavy dir pruned
+    assert "big.log" not in out  # over the size cap
 
 
 def test_search_files_supports_single_file_target(tmp_path):
@@ -1434,12 +1975,12 @@ def test_search_files_reports_rg_error_as_error(tmp_path, monkeypatch):
 
 
 def test_session_command_allows_runtime_agent_delegation(monkeypatch):
-    from algo_cli import agent_pipeline, runtime_services
+    from algo_cli import agent_pipeline, theodore_runtime_services
 
     cfg = Config()
     calls: list[tuple[str, object, object]] = []
     client = object()
-    monkeypatch.setattr(runtime_services, "create_client", lambda _cfg: client)
+    monkeypatch.setattr(theodore_runtime_services, "create_client", lambda _cfg: client)
     monkeypatch.setattr(
         agent_pipeline,
         "execute_agent_command",
@@ -1453,10 +1994,10 @@ def test_session_command_allows_runtime_agent_delegation(monkeypatch):
 
 
 def test_model_invoked_agent_output_redacts_workspace_path(monkeypatch, tmp_path):
-    from algo_cli import agent_pipeline, runtime_services
+    from algo_cli import agent_pipeline, theodore_runtime_services
 
     cfg = Config(cwd=str(tmp_path))
-    monkeypatch.setattr(runtime_services, "create_client", lambda _cfg: object())
+    monkeypatch.setattr(theodore_runtime_services, "create_client", lambda _cfg: object())
     monkeypatch.setattr(
         agent_pipeline,
         "execute_agent_command",
@@ -1611,6 +2152,37 @@ def test_query_knowledge_graph_expands_harness_meta_query_when_no_canonicals(mon
     assert calls == ["rate your harness", "Algo CLI harness self-evaluation capability audit"]
 
 
+@pytest.mark.parametrize(
+    "tool_name",
+    ["query_knowledge_graph", "reindex_knowledge_graph"],
+)
+def test_echo_authority_refuses_legacy_knowledge_graph_before_access(
+    monkeypatch,
+    tool_name: str,
+) -> None:
+    cfg = Config(
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+    )
+    monkeypatch.setattr(
+        tools._index_compute_lab,
+        "run_ask",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("protected graph query reached legacy storage")),
+    )
+    monkeypatch.setattr(
+        tools._index_compute_lab,
+        "run_pipeline",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("protected graph reindex reached legacy storage")
+        ),
+    )
+
+    args = {"question": "private graph"} if tool_name == "query_knowledge_graph" else {}
+    result = tool_runtime.run_tool(tool_name, args, cfg)
+
+    assert "disabled while Echo Veil" in result
+
+
 def test_x_search_requires_auth(monkeypatch):
     from algo_cli import xai_auth
 
@@ -1699,6 +2271,277 @@ def test_x_search_cache_failure_does_not_discard_result(monkeypatch, config_dir)
     assert "cached to" not in output
 
 
+def test_purge_x_search_cache_removes_bounded_flat_store(config_dir: Path) -> None:
+    cache_dir = config_dir / "x_search_cache"
+    cache_dir.mkdir()
+    (cache_dir / "one.md").write_text("one", encoding="utf-8")
+    (cache_dir / "two.md").write_text("two", encoding="utf-8")
+
+    assert tools.purge_x_search_cache(max_entries=2) == 2
+    assert not cache_dir.exists()
+
+
+def test_purge_x_search_cache_checks_entry_bound_before_deletion(config_dir: Path) -> None:
+    cache_dir = config_dir / "x_search_cache"
+    cache_dir.mkdir()
+    first = cache_dir / "one.md"
+    second = cache_dir / "two.md"
+    first.write_text("one", encoding="utf-8")
+    second.write_text("two", encoding="utf-8")
+
+    with pytest.raises(OSError, match="entry bound exceeded"):
+        tools.purge_x_search_cache(max_entries=1)
+
+    assert first.read_text(encoding="utf-8") == "one"
+    assert second.read_text(encoding="utf-8") == "two"
+
+
+def test_windows_full_path_purge_core_preserves_bounded_identity_checks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from algo_cli import config as config_module
+
+    cache_dir = tmp_path / "x_search_cache"
+    cache_dir.mkdir()
+    (cache_dir / "one.md").write_text("one", encoding="utf-8")
+    (cache_dir / "two.md").write_text("two", encoding="utf-8")
+    # Windows directory identities intentionally omit projected ctime. Mirror
+    # that contract while exercising the full-path branch on POSIX CI.
+    monkeypatch.setattr(
+        config_module,
+        "_portable_directory_identity",
+        lambda information: (
+            int(information.st_dev),
+            int(information.st_ino),
+            int(stat.S_IFMT(information.st_mode)),
+        ),
+    )
+    deleted_paths: list[Path] = []
+
+    def delete_for_portable_test(
+        path: Path,
+        _expected: os.stat_result,
+        *,
+        allow_directory: bool,
+    ) -> None:
+        assert path.is_absolute()
+        deleted_paths.append(path)
+        if allow_directory:
+            path.rmdir()
+        else:
+            path.unlink()
+
+    monkeypatch.setattr(tools, "_windows_delete_path_by_identity", delete_for_portable_test)
+
+    assert tools._purge_x_search_cache_windows(cache_dir, max_entries=2) == 2
+    assert not cache_dir.exists()
+    assert len(deleted_paths) == 3
+    assert set(deleted_paths[:-1]) == {cache_dir / "one.md", cache_dir / "two.md"}
+    assert deleted_paths[-1] == cache_dir
+
+
+def test_windows_full_path_purge_pins_authorized_parent_before_missing_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from algo_cli import config as config_module
+
+    monkeypatch.setattr(config_module, "_windows_safe_creation_dacl", lambda _path: False)
+
+    with pytest.raises(OSError, match="parent authorization is unsafe"):
+        tools._purge_x_search_cache_windows(tmp_path / "missing", max_entries=1)
+
+
+def test_windows_full_path_purge_absolutizes_every_destructive_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from algo_cli import config as config_module
+
+    cache_dir = tmp_path / "x_search_cache"
+    cache_dir.mkdir()
+    (cache_dir / "cached.md").write_text("legacy", encoding="utf-8")
+    alternate = tmp_path / "alternate"
+    alternate.mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        config_module,
+        "_portable_directory_identity",
+        lambda information: (
+            int(information.st_dev),
+            int(information.st_ino),
+            int(stat.S_IFMT(information.st_mode)),
+        ),
+    )
+    deleted_paths: list[Path] = []
+
+    def delete_and_move_cwd(
+        path: Path,
+        _expected: os.stat_result,
+        *,
+        allow_directory: bool,
+    ) -> None:
+        assert path.is_absolute()
+        deleted_paths.append(path)
+        monkeypatch.chdir(alternate)
+        if allow_directory:
+            path.rmdir()
+        else:
+            path.unlink()
+
+    monkeypatch.setattr(tools, "_windows_delete_path_by_identity", delete_and_move_cwd)
+
+    assert tools._purge_x_search_cache_windows(Path("x_search_cache"), max_entries=1) == 1
+    assert deleted_paths == [cache_dir / "cached.md", cache_dir]
+    assert not cache_dir.exists()
+
+
+def test_windows_reparse_classifier_rejects_unknown_name_semantics() -> None:
+    unknown = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o600,
+        st_file_attributes=0x00000400,
+        st_reparse_tag=0x8000001A,
+    )
+
+    with pytest.raises(OSError, match="reparse tag is not safe"):
+        tools._windows_supported_name_reparse_tag(unknown)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("tag", [0xA0000003, 0xA000000C])
+def test_windows_reparse_classifier_accepts_name_only_tags(tag: int) -> None:
+    supported = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o600,
+        st_file_attributes=0x00000400,
+        st_reparse_tag=tag,
+    )
+
+    assert tools._windows_supported_name_reparse_tag(supported) == tag  # type: ignore[arg-type]
+
+
+def test_windows_handle_identity_accepts_complete_legacy_or_extended_projection() -> None:
+    legacy = SimpleNamespace(st_dev=7, st_ino=11)
+    extended = SimpleNamespace(st_dev=70, st_ino=(1 << 96) | 12)
+
+    assert tools._windows_handle_identity_matches(
+        legacy,  # type: ignore[arg-type]
+        legacy_volume=7,
+        legacy_file_id=11,
+        extended_volume=70,
+        extended_file_id=(1 << 96) | 12,
+    )
+    assert tools._windows_handle_identity_matches(
+        extended,  # type: ignore[arg-type]
+        legacy_volume=7,
+        legacy_file_id=11,
+        extended_volume=70,
+        extended_file_id=(1 << 96) | 12,
+    )
+    assert not tools._windows_handle_identity_matches(
+        SimpleNamespace(st_dev=7, st_ino=(1 << 96) | 12),  # type: ignore[arg-type]
+        legacy_volume=7,
+        legacy_file_id=11,
+        extended_volume=70,
+        extended_file_id=(1 << 96) | 12,
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows full-path cache purge contract")
+def test_windows_purge_x_search_cache_does_not_use_crt_directory_open(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_dir = config_dir / "x_search_cache"
+    cache_dir.mkdir()
+    (cache_dir / "cached.md").write_text("legacy", encoding="utf-8")
+    monkeypatch.setattr(
+        tools.os,
+        "open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Windows CRT open must not run")),
+    )
+
+    assert tools.purge_x_search_cache() == 1
+    assert not cache_dir.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cache DACL contract")
+def test_windows_purge_x_search_cache_rejects_untrusted_namespace_mutation(
+    config_dir: Path,
+) -> None:
+    cache_dir = config_dir / "x_search_cache"
+    cache_dir.mkdir()
+    retained = cache_dir / "cached.md"
+    retained.write_text("legacy", encoding="utf-8")
+    system_root = Path(os.environ["SystemRoot"])
+    icacls = system_root / "System32" / "icacls.exe"
+    granted = subprocess.run(
+        [str(icacls), str(cache_dir), "/grant", "*S-1-1-0:(OI)(CI)M"],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert granted.returncode == 0, granted.stderr.decode(errors="replace")
+
+    with pytest.raises(OSError, match="cache identity is unsafe"):
+        tools.purge_x_search_cache()
+
+    assert retained.read_text(encoding="utf-8") == "legacy"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction purge contract")
+def test_windows_purge_x_search_cache_removes_leaf_junction_without_following(
+    config_dir: Path,
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    retained = outside / "retain.md"
+    retained.write_text("retain", encoding="utf-8")
+    cache_dir = config_dir / "x_search_cache"
+    cache_dir.mkdir()
+    junction = cache_dir / "linked"
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(outside)],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+
+    assert tools.purge_x_search_cache() == 1
+    assert retained.read_text(encoding="utf-8") == "retain"
+    assert not cache_dir.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction purge contract")
+def test_windows_purge_x_search_cache_removes_root_junction_without_following(
+    config_dir: Path,
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside-root"
+    outside.mkdir()
+    retained = outside / "retain.md"
+    retained.write_text("retain", encoding="utf-8")
+    cache_dir = config_dir / "x_search_cache"
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(cache_dir), str(outside)],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+
+    assert tools.purge_x_search_cache() == 1
+    assert retained.read_text(encoding="utf-8") == "retain"
+    assert not cache_dir.exists()
+
+
 def test_x_search_clamps_max_results(monkeypatch, config_dir):
     from algo_cli import xai_auth, xai_client
 
@@ -1728,7 +2571,7 @@ def test_x_account_post_tool_blocks_without_confirm(monkeypatch):
     from ollama_cli import x_account
 
     monkeypatch.setattr(x_account, "_run_xurl", lambda *args, **kwargs: pytest.fail("should not run xurl"))
-    out = tools.x_account_post("hello", confirm=False)
+    out = tools.x_account_post("hello")
     assert "Blocked write" in out
 
 
@@ -1736,5 +2579,5 @@ def test_x_account_post_action_tool_blocks_without_confirm(monkeypatch):
     from ollama_cli import x_account
 
     monkeypatch.setattr(x_account, "_run_xurl", lambda *args, **kwargs: pytest.fail("should not run xurl"))
-    out = tools.x_account_post_action("like", "123", confirm=False)
+    out = tools.x_account_post_action("like", "123")
     assert "Blocked write" in out

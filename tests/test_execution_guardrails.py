@@ -4,6 +4,7 @@ from contextvars import Context, copy_context
 from dataclasses import asdict
 import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -243,6 +244,39 @@ def test_verification_command_classification_accepts_real_verifiers(command: str
     assert decision.qualifies is True
     assert decision.kind == kind
     assert "command" not in asdict(decision)
+
+
+@pytest.mark.parametrize(
+    ("command", "kind"),
+    [
+        ("go vet ./... && go test ./...", "test"),
+        ("go test ./... && go vet ./...", "test"),
+        ("ruff check algo_cli && mypy algo_cli", "lint"),
+        ("pytest -q && ruff check algo_cli", "test"),
+        ("cd /tmp/workspace && go vet ./... && go test ./...", "test"),
+    ],
+)
+def test_verification_command_classification_accepts_verifier_chains(
+    command: str, kind: str
+) -> None:
+    decision = guardrails.classify_verification_command(command)
+    assert decision.qualifies is True
+    assert decision.kind == kind
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "go vet ./... && echo done",
+        "go test ./... && go build ./...",
+        "pytest -q && npm install",
+        "go test ./... &&",
+        "&& go test ./...",
+    ],
+)
+def test_verification_command_classification_rejects_non_verifier_chains(command: str) -> None:
+    decision = guardrails.classify_verification_command(command)
+    assert decision.qualifies is False
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX environment-prefix syntax")
@@ -487,3 +521,130 @@ def test_model_cd_requires_approval_even_for_auto_approve_session(monkeypatch, t
         )
         is False
     )
+
+
+def _init_git_repo(root: Path) -> None:
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Test",
+        "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.com",
+    }
+    (root / "seed.txt").write_text("seed\n", encoding="utf-8")
+    for command in (
+        ["git", "init", "-q"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-q", "-m", "seed"],
+    ):
+        subprocess.run(command, cwd=root, env=env, check=True, capture_output=True)
+
+
+def test_auto_verify_working_tree_requires_active_scope(tmp_path: Path) -> None:
+    decision = guardrails.auto_verify_working_tree(tmp_path)
+    assert decision.allowed is False
+    assert decision.reason == "no active execution scope"
+
+
+def test_auto_verify_working_tree_records_git_diff_on_clean_tree(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    scope = guardrails.begin_execution_scope(tmp_path)
+    guardrails.record_mutation("module.py", success=True, operation="write_file")
+
+    decision = guardrails.auto_verify_working_tree(tmp_path)
+
+    assert decision.allowed is True
+    assert decision.verifier_kind == "git_diff"
+    guardrails.end_execution_scope(scope)
+
+
+def test_auto_verify_working_tree_blocks_on_structural_problems(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    (tmp_path / "module.py").write_text("value = 1   \n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "module.py"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    scope = guardrails.begin_execution_scope(tmp_path)
+    guardrails.record_mutation("module.py", success=True, operation="write_file")
+
+    decision = guardrails.auto_verify_working_tree(tmp_path)
+
+    assert decision.allowed is False
+    assert decision.reason == "git diff --check reported structural problems"
+    guardrails.end_execution_scope(scope)
+
+
+def test_auto_verify_working_tree_allows_outside_git_repository(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
+    scope = guardrails.begin_execution_scope(tmp_path)
+    guardrails.record_mutation("module.py", success=True, operation="write_file")
+
+    decision = guardrails.auto_verify_working_tree(tmp_path)
+
+    assert decision.allowed is True
+    assert "not a git repository" in decision.reason
+    guardrails.end_execution_scope(scope)
+
+
+def test_auto_verify_working_tree_allows_when_git_is_missing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    scope = guardrails.begin_execution_scope(tmp_path)
+    guardrails.record_mutation("module.py", success=True, operation="write_file")
+
+    def _raise(*args: object, **kwargs: object) -> object:
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(guardrails.subprocess, "run", _raise)
+
+    decision = guardrails.auto_verify_working_tree(tmp_path)
+
+    assert decision.allowed is True
+    assert "unavailable" in decision.reason
+    guardrails.end_execution_scope(scope)
+
+
+@pytest.mark.parametrize("error", [subprocess.TimeoutExpired("git", 30), PermissionError("git")])
+def test_auto_verify_working_tree_does_not_complete_after_verifier_error(tmp_path: Path, monkeypatch, error) -> None:
+    scope = guardrails.begin_execution_scope(tmp_path)
+    try:
+        guardrails.record_mutation("module.py", success=True, operation="write_file")
+
+        def fail(*args, **kwargs):
+            raise error
+
+        monkeypatch.setattr(guardrails.subprocess, "run", fail)
+        assert guardrails.auto_verify_working_tree(tmp_path).allowed is False
+        assert not any(event.kind == "verification" for event in guardrails.evidence_snapshot())
+    finally:
+        guardrails.end_execution_scope(scope)
+
+
+@pytest.mark.parametrize("explicit_other_root", [False, True])
+def test_auto_verify_working_tree_cannot_verify_an_unrelated_checkout(
+    tmp_path: Path, monkeypatch, explicit_other_root: bool
+) -> None:
+    workspace = tmp_path / "workspace"
+    unrelated = tmp_path / "unrelated"
+    workspace.mkdir()
+    unrelated.mkdir()
+    _init_git_repo(workspace)
+    _init_git_repo(unrelated)
+    (workspace / "module.py").write_text("value = 1   \n", encoding="utf-8")
+    subprocess.run(["git", "add", "module.py"], cwd=workspace, check=True, capture_output=True)
+    monkeypatch.chdir(unrelated)
+    scope = guardrails.begin_execution_scope(workspace)
+    try:
+        guardrails.record_mutation("module.py", success=True, operation="write_file")
+        decision = guardrails.auto_verify_working_tree(unrelated if explicit_other_root else None)
+        assert decision.allowed is False
+        assert not any(event.kind == "verification" for event in guardrails.evidence_snapshot())
+    finally:
+        guardrails.end_execution_scope(scope)

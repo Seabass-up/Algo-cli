@@ -168,7 +168,7 @@ def _stats_dict(stats: Any) -> dict[str, Any]:
 
 
 def _run_supersession_benchmark() -> dict[str, Any]:
-    from ..context_supersession import supersede_tool_results
+    from ..evelyn_context_supersession import supersede_tool_results
 
     messages = _synthetic_repeated_reads()
     protocol_before = _protocol_fingerprint(messages)
@@ -207,7 +207,8 @@ def _run_typed_program_benchmark(repeats: int) -> dict[str, Any]:
     """Measure how much raw intermediate data a typed program keeps out of context."""
 
     from ..config import Config
-    from ..program_runtime import (
+    from ..grace_key_store import StaticKeyStore
+    from ..nathan_program_runtime import (
         ProgramArtifactStore,
         authorization_for_actions,
         execute_program,
@@ -252,7 +253,21 @@ def _run_typed_program_benchmark(repeats: int) -> dict[str, Any]:
                     plan,
                     Config(cwd=str(root)),
                     authorization=authorization_for_actions(("read_file",)),
-                    store=ProgramArtifactStore(root / "program-store"),
+                    # The fixture is synthetic and ephemeral.  Explicit test
+                    # key injection keeps the benchmark deterministic and
+                    # avoids touching a user's OS credential store.
+                    store=ProgramArtifactStore(
+                        root / "program-store",
+                        key_store=StaticKeyStore(
+                            {
+                                "alice-artifact-master-v1": (
+                                    hashlib.sha256(
+                                        b"algo-cli/synthetic-eval-artifact-key/v1"
+                                    ).digest()
+                                )
+                            }
+                        ),
+                    ),
                 )
             compact = json.dumps(
                 result.to_dict(compact=True),

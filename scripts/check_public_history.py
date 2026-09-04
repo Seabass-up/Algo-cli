@@ -4,15 +4,22 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 from pathlib import Path
 import subprocess
 import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-
-from scripts import check_public_release  # noqa: E402
+_RELEASE_SCAN_PATH = ROOT / "scripts" / "check_public_release.py"
+_RELEASE_SCAN_SPEC = importlib.util.spec_from_file_location(
+    "algo_cli_public_release_scan",
+    _RELEASE_SCAN_PATH,
+)
+if _RELEASE_SCAN_SPEC is None or _RELEASE_SCAN_SPEC.loader is None:
+    raise RuntimeError("public_release_scanner_unavailable")
+check_public_release = importlib.util.module_from_spec(_RELEASE_SCAN_SPEC)
+_RELEASE_SCAN_SPEC.loader.exec_module(check_public_release)
 
 
 def _git_bytes(root: Path, *args: str) -> bytes:
@@ -161,11 +168,11 @@ def _scan_refs_and_tags(
         fields = row.split(b"\0")
         if len(fields) != 5:
             continue
-        ref, object_type, object_id, peeled_type, peeled_id = fields
+        ref, object_type, raw_object_id, peeled_type, peeled_id = fields
         ref_text = ref.decode("utf-8", errors="surrogateescape")
         findings.update(_scan_text(f"ref:{_display_path(ref_text)}", ref_text, scan_emails=False))
         target_type = peeled_type or object_type
-        target_id = peeled_id or object_id
+        target_id = peeled_id or raw_object_id
         decoded_id = target_id.decode("ascii", errors="ignore")
         if target_type == b"tree" and decoded_id:
             root_trees.add(decoded_id)
@@ -182,14 +189,14 @@ def _scan_refs_and_tags(
         object_type, separator, raw_object_id = row.partition(b"\0")
         if not separator or object_type != b"tag":
             continue
-        object_id = raw_object_id.decode("ascii", errors="ignore")
-        if not object_id:
+        tag_object_id = raw_object_id.decode("ascii", errors="ignore")
+        if not tag_object_id:
             continue
-        raw_tag = _git_bytes(root, "cat-file", "tag", object_id)
+        raw_tag = _git_bytes(root, "cat-file", "tag", tag_object_id)
         text = _object_message(raw_tag, (b"tagger ",))
         findings.update(
             _scan_text(
-                f"tag:{object_id[:12]}",
+                f"tag:{tag_object_id[:12]}",
                 text,
                 scan_private_terms=not allow_contributor_identities,
                 scan_emails=not allow_contributor_identities,

@@ -4,6 +4,7 @@ Loads metadata via ``ollama show MODEL`` (preferred when the model is installed)
 and/or ``client.show()``, persists to CONFIG_DIR/model_info/, and writes a
 markdown harness record to CONFIG_DIR/models/ for harness RAG.
 """
+
 from __future__ import annotations
 
 import json
@@ -30,9 +31,12 @@ _GEMINI_NAME_RE = re.compile(r"^gemini[-_]", re.IGNORECASE)
 # Grok models route through xAI's documented API-key auth and the
 # OpenAI-compatible chat surface — see xai_client.py.
 _GROK_NAME_RE = re.compile(r"^grok[-_]", re.IGNORECASE)
-# ChatGPT/OpenAI models routed through ChatGPT OAuth. Do not catch gpt-oss,
-# which is an Ollama/Ollama Cloud model family.
-_CHATGPT_NAME_RE = re.compile(r"^(?:chatgpt[-_]|gpt-(?!oss)|o[134](?:[-_]|$))", re.IGNORECASE)
+# ChatGPT/OpenAI models routed through ChatGPT OAuth. Restrict gpt-* matching to
+# recognizable OpenAI families so local names such as gpt-neo remain on Ollama.
+_CHATGPT_NAME_RE = re.compile(
+    r"^(?:chatgpt[-_]|gpt-6-astra$|gpt-(?:3\.5|4o?|5)(?:[-_.]|$)|o[134](?:[-_]|$))",
+    re.IGNORECASE,
+)
 
 _CACHE: dict[str, dict[str, Any]] = {}
 
@@ -365,9 +369,10 @@ def resolve_model_info(cfg: Any, client: Any | None) -> dict[str, Any]:
     model = str(getattr(cfg, "model", "") or "")
     if not model:
         return {}
-    if is_xai_model(model):
+    explicit_provider = str(getattr(cfg, "model_provider", "auto") or "auto").strip().casefold()
+    if explicit_provider == "xai" or (explicit_provider == "auto" and is_xai_model(model)):
         return synthesize_xai_info(model)
-    if is_chatgpt_model(model):
+    if explicit_provider == "chatgpt" or (explicit_provider == "auto" and is_chatgpt_model(model)):
         return synthesize_chatgpt_info(model)
 
     cloud = bool(getattr(cfg, "cloud", False))
@@ -500,8 +505,8 @@ def is_xai_model(model: str) -> bool:
 def is_chatgpt_model(model: str) -> bool:
     """Detect ChatGPT/OpenAI models routed through ChatGPT OAuth.
 
-    This intentionally excludes gpt-oss so Ollama Cloud/open-weight models are
-    not stolen by the OpenAI provider route.
+    This intentionally limits generic gpt-* matching to known OpenAI model
+    families so Ollama and Ollama Cloud model names are not stolen.
     """
     if not model or not isinstance(model, str):
         return False
@@ -510,6 +515,7 @@ def is_chatgpt_model(model: str) -> bool:
 
 
 _CHATGPT_CONTEXT_LENGTHS: dict[str, int] = {
+    "gpt-6-astra": 272_000,
     # The ChatGPT/Codex subscription catalog currently exposes a 272K runtime
     # window for these models. Public API model pages advertise a wider window,
     # but Algo routes this family through the subscription backend.
@@ -525,16 +531,19 @@ _CHATGPT_CONTEXT_LENGTHS: dict[str, int] = {
 
 def synthesize_chatgpt_info(model: str) -> dict[str, Any]:
     """Build a model_info dict for ChatGPT/OpenAI models (no client.show())."""
+    from .chatgpt_client import codex_model_metadata
+
     bare = _bare_model_name(model)
+    metadata = codex_model_metadata(model)
     return {
         "name": model,
         "family": "chatgpt",
         "families": ["chatgpt", "openai"],
         "parameter_size": "",
         "quantization": "",
-        "context_length": _CHATGPT_CONTEXT_LENGTHS.get(bare, 128_000),
+        "context_length": metadata.get("context_window", _CHATGPT_CONTEXT_LENGTHS.get(bare, 128_000)),
         "supports_thinking": True,
-        "supports_vision": bare.startswith("gpt-5.6"),
+        "supports_vision": metadata.get("supports_vision", bare.startswith("gpt-5.6") or bare == "gpt-6-astra"),
         "supports_tools": True,
         "provider": "chatgpt",
     }
