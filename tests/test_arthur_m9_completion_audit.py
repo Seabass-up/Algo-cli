@@ -252,6 +252,44 @@ def test_invalid_schema_status_and_calendar_timestamp_reject() -> None:
         SCRIPT.audit_ledger(invalid_time)
 
 
+@pytest.mark.parametrize("value", [[], {}, True, 1, None])
+@pytest.mark.parametrize(
+    ("field", "reason"),
+    [
+        ("kind", "m9_audit_evidence_schema"),
+        ("requirement_status", "m9_audit_requirement_schema"),
+        ("ledger_status", "m9_audit_ledger_status"),
+    ],
+)
+def test_malformed_enum_fields_reject_without_type_errors(value, field: str, reason: str) -> None:
+    ledger = _ledger()
+    requirement = _requirement(ledger, "HARD-001")
+    if field == "kind":
+        requirement["evidence"][0]["kind"] = value
+    elif field == "requirement_status":
+        requirement["status"] = value
+    else:
+        ledger["status"] = value
+
+    with pytest.raises(SCRIPT.M9CompletionAuditRejected, match=reason):
+        SCRIPT.audit_ledger(ledger)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ['{"status":"failed","status":"passed"}', '{"evidence":{"kind":"runtime","kind":"test"}}'],
+)
+def test_evidence_reader_rejects_duplicate_json_keys(tmp_path: Path, monkeypatch, payload: str) -> None:
+    hardening = tmp_path / "hardening"
+    hardening.mkdir()
+    document = hardening / "ambiguous.json"
+    document.write_text(payload, encoding="utf-8")
+    monkeypatch.setattr(SCRIPT, "ROOT", tmp_path)
+
+    with pytest.raises(SCRIPT.M9CompletionAuditRejected, match="m9_audit_json"):
+        SCRIPT._safe_document(document)
+
+
 def test_ready_for_lift_requires_every_pre_lift_condition() -> None:
     report = SCRIPT.audit_ledger(_completion_ledger(lifted=False))
 

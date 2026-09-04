@@ -333,6 +333,22 @@ def _tool_names(path: Path) -> set[str]:
         ):
             names.add(entry.args[0].id)
             continue
+        if (
+            isinstance(entry, ast.Call)
+            and isinstance(entry.func, ast.Name)
+            and entry.func.id == "_hide_runtime_params"
+            and len(entry.args) >= 2
+            and not entry.keywords
+            and isinstance(entry.args[0], ast.Name)
+            and all(
+                isinstance(argument, ast.Constant)
+                and isinstance(argument.value, str)
+                and argument.value.isidentifier()
+                for argument in entry.args[1:]
+            )
+        ):
+            names.add(entry.args[0].id)
+            continue
         raise GateError("ALL_TOOLS contains a non-static or unrecognized entry")
     if not names:
         raise GateError("ALL_TOOLS must not be empty")

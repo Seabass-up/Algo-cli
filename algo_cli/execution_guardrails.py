@@ -874,19 +874,29 @@ def auto_verify_working_tree(root: str | Path | None = None) -> CompletionDecisi
     if ledger is None or ledger.closed:
         return CompletionDecision(False, "no active execution scope")
     try:
+        workspace = ledger.workspace if root is None else Path(root).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return CompletionDecision(False, "verification workspace cannot be resolved")
+    if workspace != ledger.workspace:
+        return CompletionDecision(False, "verification workspace does not match the active execution scope")
+    try:
         completed = subprocess.run(
             ["git", "diff", "--check", "HEAD"],
-            cwd=str(root) if root is not None else None,
+            cwd=str(workspace),
             capture_output=True,
             text=True,
             timeout=30,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except FileNotFoundError:
         return CompletionDecision(
             True,
             "git is unavailable; review the last workspace change manually",
         )
+    except subprocess.TimeoutExpired:
+        return CompletionDecision(False, "git diff --check timed out; verification is incomplete")
+    except (OSError, subprocess.SubprocessError):
+        return CompletionDecision(False, "git diff --check could not complete")
     if completed.returncode != 0:
         if "not a git repository" in (completed.stderr or "").lower():
             return CompletionDecision(

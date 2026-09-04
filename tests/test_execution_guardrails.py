@@ -609,3 +609,42 @@ def test_auto_verify_working_tree_allows_when_git_is_missing(
     assert decision.allowed is True
     assert "unavailable" in decision.reason
     guardrails.end_execution_scope(scope)
+
+
+@pytest.mark.parametrize("error", [subprocess.TimeoutExpired("git", 30), PermissionError("git")])
+def test_auto_verify_working_tree_does_not_complete_after_verifier_error(tmp_path: Path, monkeypatch, error) -> None:
+    scope = guardrails.begin_execution_scope(tmp_path)
+    try:
+        guardrails.record_mutation("module.py", success=True, operation="write_file")
+
+        def fail(*args, **kwargs):
+            raise error
+
+        monkeypatch.setattr(guardrails.subprocess, "run", fail)
+        assert guardrails.auto_verify_working_tree(tmp_path).allowed is False
+        assert not any(event.kind == "verification" for event in guardrails.evidence_snapshot())
+    finally:
+        guardrails.end_execution_scope(scope)
+
+
+@pytest.mark.parametrize("explicit_other_root", [False, True])
+def test_auto_verify_working_tree_cannot_verify_an_unrelated_checkout(
+    tmp_path: Path, monkeypatch, explicit_other_root: bool
+) -> None:
+    workspace = tmp_path / "workspace"
+    unrelated = tmp_path / "unrelated"
+    workspace.mkdir()
+    unrelated.mkdir()
+    _init_git_repo(workspace)
+    _init_git_repo(unrelated)
+    (workspace / "module.py").write_text("value = 1   \n", encoding="utf-8")
+    subprocess.run(["git", "add", "module.py"], cwd=workspace, check=True, capture_output=True)
+    monkeypatch.chdir(unrelated)
+    scope = guardrails.begin_execution_scope(workspace)
+    try:
+        guardrails.record_mutation("module.py", success=True, operation="write_file")
+        decision = guardrails.auto_verify_working_tree(unrelated if explicit_other_root else None)
+        assert decision.allowed is False
+        assert not any(event.kind == "verification" for event in guardrails.evidence_snapshot())
+    finally:
+        guardrails.end_execution_scope(scope)

@@ -192,6 +192,15 @@ def _validate_ledger_envelope(ledger: Mapping[str, Any]) -> None:
         _reject("m9_audit_ledger_schema")
 
 
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            _reject("m9_audit_json")
+        value[key] = item
+    return value
+
+
 def _safe_document_with_digest(path: Path) -> tuple[dict[str, Any], str]:
     candidate = path if path.is_absolute() else ROOT / path
     try:
@@ -251,8 +260,12 @@ def _safe_document_with_digest(path: Path) -> tuple[dict[str, Any], str]:
         if descriptor is not None:
             os.close(descriptor)
     try:
-        value = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+        value = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=_unique_json_object,
+            parse_constant=lambda _value: _reject("m9_audit_json"),
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         _reject("m9_audit_json")
     if type(value) is not dict:
         _reject("m9_audit_json")
@@ -315,7 +328,8 @@ def _evidence_rows(value: object) -> list[Mapping[str, Any]]:
         timestamp = item.get("timestamp")
         digest = item.get("digest")
         if (
-            kind not in _EVIDENCE_KINDS
+            type(kind) is not str
+            or kind not in _EVIDENCE_KINDS
             or not _canonical_timestamp(timestamp)
             or type(digest) is not str
             or (digest and _DIGEST_RE.fullmatch(digest) is None)
@@ -401,6 +415,7 @@ def audit_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
         row = requirements_by_id[requirement_id]
         if (
             row.get("milestone") != milestone
+            or type(row.get("status")) is not str
             or row.get("status") not in _ITEM_STATUSES
             or not _plain_text(row.get("summary"), maximum=1024)
         ):
@@ -439,7 +454,7 @@ def audit_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
         status: sum(row["audit_status"] == status for row in audit_rows) for status in ("blocked", "failed", "verified")
     }
     ledger_status = ledger.get("status")
-    if ledger_status not in {"active", "lifted"}:
+    if type(ledger_status) is not str or ledger_status not in {"active", "lifted"}:
         _reject("m9_audit_ledger_status")
     for milestone_id, milestone_status in milestone_statuses.items():
         requirement_statuses = {row["ledger_status"] for row in audit_rows if row["milestone"] == milestone_id}

@@ -101,10 +101,33 @@ def test_registry_parser_accepts_utf8_bom_and_rejects_dynamic_entries(
 ) -> None:
     gate = _load_gate()
     registry = tmp_path / "david_tools.py"
-    registry.write_bytes(b"\xef\xbb\xbfALL_TOOLS = [read_file]\n")
-    assert gate._tool_names(registry) == {"read_file"}
+    registry.write_bytes(
+        b"\xef\xbb\xbfALL_TOOLS = [read_file, "
+        b'_hide_cfg_param(x_search), _hide_runtime_params(run_shell, "cwd", "safe_mode")]\n'
+    )
+    assert gate._tool_names(registry) == {"read_file", "run_shell", "x_search"}
 
     registry.write_text("ALL_TOOLS = [*dynamic_tools]\n", encoding="utf-8")
+    with pytest.raises(gate.GateError, match="non-static or unrecognized"):
+        gate._tool_names(registry)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "_hide_runtime_params(run_shell)",
+        "_hide_runtime_params(run_shell, hidden_name)",
+        "_hide_runtime_params(run_shell, 'not an identifier')",
+        "_hide_runtime_params(run_shell, *dynamic_names)",
+        "_hide_runtime_params(fn=run_shell, names=('cwd',))",
+    ],
+)
+def test_registry_parser_rejects_dynamic_runtime_parameter_wrappers(
+    tmp_path: Path, entry: str
+) -> None:
+    gate = _load_gate()
+    registry = tmp_path / "david_tools.py"
+    registry.write_text(f"ALL_TOOLS = [{entry}]\n", encoding="utf-8")
     with pytest.raises(gate.GateError, match="non-static or unrecognized"):
         gate._tool_names(registry)
 

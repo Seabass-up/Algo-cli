@@ -3220,6 +3220,24 @@
           "timestamp": "2026-08-28T23:07:21Z",
           "scope": "source digest sha256:ec88b80f21ada7d9aa0db410ac304954cdd089c8f710c783a021cfd172e793af and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind the current M8 corpus after the focused-test import cleanup; five model-free efficiency repetitions and the focused adversarial suite remain stable",
           "limitations": "finite local model-free evidence does not prove production browser completion, live provider/model quality, authenticated host attestation, signed XPC/TCC, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked and public_claim_eligible is false, HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "uv run python scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json after static runtime-parameter wrapper gate repair",
+          "digest": "sha256:9923093c580fadcb50a415fedb3361dc49152fa947ebc786de2f6fb554b6bc75",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-08-31T20:26:37Z",
+          "scope": "source digest sha256:7b4f31dd9e48c8b6d5c1635a0a6d2abcd31e9061d728477a292041f736076337 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind 38 privileged policy classes, 10000 stale-target races at p50/p95 5.252/6.399 ms, 1000 fresh postconditions at p50/p95 6.765/9.348 ms, 83.969 percent median schema reduction, 96.644 percent typed-program reduction, and the focused adversarial suite",
+          "limitations": "finite local model-free evidence does not prove production browser completion, selected-Chrome behavior, semantic-route or screenshot efficiency, current registry-backed browser freshness, live provider/model quality, authenticated host attestation, signed XPC/TCC, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, public_claim_eligible is false, and HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": ".venv/bin/python scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json after execution-verification and evidence-parser repairs",
+          "digest": "sha256:7e47b121d6cbf9a66544af1a6bdb10198cf294ffa1b31626e54e746e6917ae4d",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-09-04T19:30:06Z",
+          "scope": "source digest sha256:4b206e939586f6f1a9071d67f31eda518a7d2e013e00bcf8c4117866438a9654 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind the current M8 corpus, including execution guardrails and their regressions, strict evidence JSON parsing, and isolated model-metadata tests; the focused adversarial suite passes",
+          "limitations": "finite local model-free evidence does not prove production browser completion, selected-Chrome behavior, hosted runtime execution, signed XPC/TCC, or cross-harness superiority; five production-browser metrics remain blocked, HARD-080 remains in progress, and public_claim_eligible is false"
         }
       ]
     },
@@ -3966,6 +3984,33 @@
           "timestamp": "2026-08-28T23:07:21Z",
           "scope": "source digest sha256:ec88b80f21ada7d9aa0db410ac304954cdd089c8f710c783a021cfd172e793af and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind the current M8 corpus after the focused-test import cleanup; five model-free efficiency repetitions and the focused adversarial suite remain stable",
           "limitations": "finite local model-free evidence does not prove production browser completion, live provider/model quality, authenticated host attestation, signed XPC/TCC, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked and public_claim_eligible is false, HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json verified by scripts/henry_m8_qualification.py after static runtime-parameter wrapper gate repair",
+          "digest": "sha256:9923093c580fadcb50a415fedb3361dc49152fa947ebc786de2f6fb554b6bc75",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-08-31T20:26:37Z",
+          "scope": "source digest sha256:7b4f31dd9e48c8b6d5c1635a0a6d2abcd31e9061d728477a292041f736076337 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind the current M8 corpus; five model-free repetitions measure 83.969 percent median tool-schema reduction and 96.644 percent typed-program reduction; stale-target p50/p95 are 5.252/6.399 ms and fresh-postcondition p50/p95 are 6.765/9.348 ms; the focused adversarial suite passes",
+          "limitations": "finite local model-free evidence does not prove production browser completion, live provider/model quality, authenticated host attestation, signed XPC/TCC, power-loss recovery, or cross-harness superiority; five production-browser metrics remain blocked, public_claim_eligible is false, and HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": ".venv/bin/python scripts/nathan_agent_runtime_qualification.py --refresh; hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:ef7fef7beac67c10367fe12d337590df0f85f993e0d7e78653d71fee8693a3bb",
+          "result": "status pass: 17 of 17 correctness probes and 31 of 31 workloads pass with zero policy escapes, unverified completions, or duplicate mutations, and public_claim_eligible is false",
+          "timestamp": "2026-09-04T19:28:54Z",
+          "scope": "source digest sha256:3d078f1af822d4ad6510033606db6d1991787db93d077ffef5ad05424c33d826 and report digest sha256:5faa486ff3deca6cdd92823f7f45c95a9dd515df8582f727d8892b249c6e69ed bind the runtime benchmark after model-metadata unit tests were isolated from the installed Ollama CLI; all local correctness and latency gates pass",
+          "limitations": "deterministic local fixtures do not prove model intelligence, live provider latency, production Keychain or power-loss behavior, hosted execution, or cross-harness superiority; HARD-081 remains in progress and public_claim_eligible is false"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json verified by scripts/henry_m8_qualification.py after execution-verification and evidence-parser repairs",
+          "digest": "sha256:7e47b121d6cbf9a66544af1a6bdb10198cf294ffa1b31626e54e746e6917ae4d",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 production-browser metrics remain blocked, 0 fail or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-09-04T19:30:06Z",
+          "scope": "source digest sha256:4b206e939586f6f1a9071d67f31eda518a7d2e013e00bcf8c4117866438a9654 and fixture digest sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659 bind five model-free repetitions measuring 83.969 percent median schema reduction and 96.644 percent typed-program reduction; the focused adversarial suite passes",
+          "limitations": "synthetic local measurements do not prove live task completion, semantic-route or screenshot efficiency, hosted execution, signed XPC/TCC, or cross-harness superiority; five production-browser metrics remain blocked, HARD-081 remains in progress, and public_claim_eligible is false"
         }
       ]
     },

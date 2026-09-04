@@ -9,6 +9,11 @@ import pytest
 from algo_cli import model_info
 
 
+@pytest.fixture(autouse=True)
+def no_live_ollama_cli(monkeypatch):
+    monkeypatch.setattr(model_info.shutil, "which", lambda _name: None)
+
+
 class _FakeDetails:
     def __init__(self, family="qwen3", params="8.2B", quant="Q4_K_M", families=None):
         self.family = family
@@ -220,6 +225,21 @@ def test_resolve_model_info_cloud_without_client():
 
     info = model_info.resolve_model_info(_Cfg(), None)
     assert info["context_length"] == 524_288
+
+
+def test_resolve_model_info_prefers_cli_metadata_over_fallback(monkeypatch):
+    class _Cfg:
+        model = "minimax-m3:cloud"
+        cloud = True
+
+    monkeypatch.setattr(
+        model_info,
+        "fetch_model_info_from_cli",
+        lambda model, **kwargs: {"name": model, "context_length": 131_072, "source": "ollama-show"},
+    )
+    info = model_info.resolve_model_info(_Cfg(), None)
+    assert info["context_length"] == 131_072
+    assert info["source"] == "ollama-show"
 
 
 def test_parse_ollama_show_output_minimax():
