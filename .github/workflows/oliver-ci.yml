@@ -140,7 +140,7 @@ jobs:
           --cov-report=term-missing:skip-covered
           --cov-report=xml:coverage.xml
           --cov-fail-under=57
-          -vv --durations=25 -o faulthandler_timeout=120
+          -vv --durations=25 -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true
       - name: Upload coverage evidence
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
@@ -181,7 +181,7 @@ jobs:
       - name: Run full suite
         run: >-
           uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy pytest tests
-          -vv --durations=25 -o faulthandler_timeout=120
+          -vv --durations=25 -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true
 
   native:
     name: Native helper checks

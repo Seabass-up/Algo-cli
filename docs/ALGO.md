@@ -15197,3 +15197,23 @@ checks establish read-boundary consistency, not representative answer quality.
 **Evidence:** `algo_cli/harness.py`, `tests/test_harness_read_paths.py`,
 `tests/test_harness_public_runbooks.py`,
 `tests/test_harness_operational_retrieval.py`.
+
+## Bounded Test Watchdogs
+
+A diagnostic timer that prints stacks but leaves a blocked test running does
+not establish a bounded failure. The locked CI pytest runtime must terminate
+with a nonzero status after the existing 120-second per-test deadline, while
+the outer job keeps its separate deadline. Cover fixture setup, the test body,
+and fixture teardown; retain ordinary success and assertion-failure behavior.
+Keep matrix fail-fast disabled so one platform failure cannot hide the others.
+
+Validate this contract with genuinely stalled disposable subprocesses and a
+shorter test-only timer, not just a string check of workflow configuration.
+The watchdog makes a stalled test observable; it does not diagnose the stall,
+cover collection or session-shutdown hangs, or prove descendant cleanup. A
+cancelled run or missing log is not a passing test, and stack dumping must never
+justify relaxing a coverage floor, skipping a test, or extending a benchmark.
+Preserve the failed run and qualify a changed diagnostic on a separate run.
+
+**Evidence:** `.github/workflows/oliver-ci.yml`,
+`tests/test_ci_timeout_diagnostics.py`.

@@ -1797,3 +1797,73 @@ evaluation/recovery suite passes 53 cases.
   recalibrate the 6/8 answer evaluation, or complete the broad Class A goal.
   Fresh hosted results must qualify this follow-up separately from the failed
   initial run. No release tag or merge is authorized by these local results.
+
+### Bounded Hosted Watchdog Diagnostics
+
+- Hosted run `34246814890` reached a terminal cancelled state. The quality
+  job exceeded its 15-minute limit; Linux, macOS, and Windows matrix cells
+  each exceeded their 25-minute limit. GitHub supplied those annotations but
+  no detailed log archive. The empty `--log-failed` result was not evidence of
+  success: the jobs were cancelled, and direct job-log retrieval failed.
+- Reproduced a diagnostic gap independently of the unknown hosted stall.
+  The existing pytest timer printed thread stacks but did not stop a blocked
+  worker. Four pre-repair checks failed, including two actual subprocesses
+  that required their separate 20-second parent limit. This is not proof
+  that the hosted stalls occurred inside a test rather than collection,
+  session shutdown, or descendant cleanup.
+- Both CI test commands now enable the locked pytest runtime's
+  `faulthandler_exit_on_timeout` setting. The 120-second test timer, outer job
+  deadlines, matrix cells, disabled matrix fail-fast, coverage floor, and
+  blocking failure policy are unchanged. Twelve checks cover both job
+  contracts, actual stalls in setup/call/teardown, normal completion, and
+  ordinary assertion failure. The expanded workflow set passed 120 tests.
+  `ALGO.md` now documents this bounded-watchdog contract and its limits.
+- Full local delivery with the stricter watchdog passed 5,165 tests with
+  32 skips and 69.06% branch-aware coverage. Go race/vet, Ruff, default and
+  CI typing, compilation, public source/history/artifact scans, locked
+  dependency auditing, wheel-from-sdist build, and Twine passed. The new
+  test module passes scoped formatting; no repository-wide formatting claim
+  is made.
+- Source-bound O4/O5/O6/O7/O8 checks remain 17/218/13/239/142, with 160 paired
+  samples and six current reports installed. M8 remains nine local passes
+  and five external blocks; M9 remains 29 verified and 13 blocked, with no
+  failed requirements. The M8 snapshot binds the changed workflow; the new
+  watchdog tests have separate full-suite evidence, not an invented M8 binding.
+- Installed parity verified 322 files and 282 Python modules at
+  `sha256:c31971bbb70eaf589480a5b5971de00ffc3ba5c5c599f2e6efae0ee21f09dc21`.
+  All twelve installed smokes passed, including required-Echo Astra stream
+  recovery in 11.44 seconds. The exact Echo `cbee525` pin and its 46 qualified
+  Python sources remain unchanged and audited.
+- Retained evidence is under `/tmp/algo-cli-ci-deadlock.ZgODrn/`. The initial
+  new-test collection error and missing disposable gateway in the first smoke
+  attempt are retained as fixture-setup failures, not successful runtime
+  checks. After correcting the fixture setup, the complete installed smoke
+  sequence passed in `smoke-qualified/delivery-final/`.
+- These are local diagnostic results. A separate hosted run must verify the
+  changed workflow and expose any remaining stall. No timeout cause, hosted
+  pass, browser qualification, release, or universal harness ranking is claimed.
+
+### Installed Context Preparation Profile
+
+- Before the watchdog-only follow-up, measured the installed `2a90269` runtime
+  using the unchanged v2 Spanish privacy prompt and fresh required-Echo reads.
+  One unprofiled build took 8.05 seconds. Two profiled builds took 8.24 and
+  8.35 seconds; retrieval-query embedding consumed about 93% of each, dominated
+  by waiting for the local service response. Memory-layer initialization was
+  about 0.38 seconds, including about 0.10 seconds for its security doctor.
+- A separately frozen service-timing probe took 14.29 seconds overall. Its
+  single batched embedding request took 8.68 seconds, with 3.07 seconds of
+  service-reported load time. The remaining build time was not profiled in
+  that sample and remains unattributed. Do not treat this separate sample as
+  a controlled regression comparison or sum overlapping cumulative timings.
+- The runners retained only numeric measurements and sanitized public code
+  symbols. They checked source and saved-setting stability, made no model-
+  generation call, and introduced no protected-result cache or persistent
+  profile lease. Artifacts remain in `/tmp/algo-cli-context-profile.7KD91N/`
+  and `/tmp/algo-cli-embedding-timing.JO16O2/`.
+- Investigate repeated identical query work within the Echo-owned boundary.
+  Preserve fresh protected recall, semantic availability, and integrity checks;
+  do not move private query vectors into public harness caches or silently
+  change saved embedding/compute settings. A performance change still needs
+  negative controls and same-protocol before/after qualification. The strict
+  eight-task answer score remains 6/8; this profile does not rescore it.
