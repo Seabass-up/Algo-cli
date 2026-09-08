@@ -50,7 +50,7 @@ supply-chain = [
 requires-dist = [
     { name = "build", marker = "extra == 'release'", specifier = "==1.5.0" },
     { name = "cryptography", specifier = ">=44.0" },
-    { name = "echo-veil", marker = "extra == 'echo-veil'", git = "https://github.com/Seabass-up/echo-veil.git?rev=271ebaa959aabd7a83cf338d30cd0fa1c7338488" },
+    { name = "echo-veil", marker = "extra == 'echo-veil'", git = "https://github.com/Seabass-up/echo-veil.git?rev=cbee525687ac03c830d4b6632ff1d044b4b838fc" },
     { name = "hatchling", marker = "extra == 'release'", specifier = "==1.31.0" },
     { name = "keyring", specifier = ">=25.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0" },
@@ -596,7 +596,7 @@ wheels = [
 [[package]]
 name = "echo-veil"
 version = "0.8.0"
-source = { git = "https://github.com/Seabass-up/echo-veil.git?rev=271ebaa959aabd7a83cf338d30cd0fa1c7338488#271ebaa959aabd7a83cf338d30cd0fa1c7338488" }
+source = { git = "https://github.com/Seabass-up/echo-veil.git?rev=cbee525687ac03c830d4b6632ff1d044b4b838fc#cbee525687ac03c830d4b6632ff1d044b4b838fc" }
 dependencies = [
     { name = "cryptography" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },

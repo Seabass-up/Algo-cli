@@ -8,6 +8,7 @@ from typing import Any
 _GENERIC_REASON = "echo_auxiliary_unavailable"
 _SAFE_REASON_CODES = frozenset(
     {
+        "memory_anchor_provisioning_required",
         "credential_registry_migration_required",
         "credential_registry_native_enumeration_required",
         "credential_registry_unavailable",

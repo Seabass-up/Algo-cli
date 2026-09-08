@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from algo_cli.marcus_authority import (
     Capability,
     ConfirmationMode,
@@ -38,12 +40,34 @@ def test_unknown_action_is_denied_even_with_unclassified_capability() -> None:
 def test_read_requires_a_real_target_scoped_runtime_grant(tmp_path) -> None:
     action = resolve_action("read_file", {"path": "README.md"}, cwd=str(tmp_path))
     assert evaluate_action(action, grant=None, confirmation=None, now=1.0).disposition is PolicyDisposition.DENY
-    assert evaluate_action(
-        action,
-        grant=_grant(action),
-        confirmation=None,
-        now=1.0,
-    ).disposition is PolicyDisposition.ALLOW
+    assert (
+        evaluate_action(
+            action,
+            grant=_grant(action),
+            confirmation=None,
+            now=1.0,
+        ).disposition
+        is PolicyDisposition.ALLOW
+    )
+
+
+@pytest.mark.parametrize("path", [None, ".", "src", "tests", "../outside"])
+def test_directory_listing_binds_the_requested_path(tmp_path, path) -> None:
+    args = {} if path is None else {"path": path}
+    action = resolve_action("list_directory", args, cwd=str(tmp_path))
+    assert action.target == f"workspace:{(tmp_path / (path or '.')).resolve()}"
+
+
+@pytest.mark.parametrize("name", ["list_directory", "read_file", "write_file", "search_files"])
+@pytest.mark.parametrize("path", ["~/outside", " spaced "])
+def test_file_policy_resolves_the_same_path_as_execution(monkeypatch, tmp_path, name, path) -> None:
+    from algo_cli.tools import _resolve
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    workspace = tmp_path / "workspace"
+    action = resolve_action(name, {"path": path}, cwd=str(workspace))
+    assert action.target == f"workspace:{_resolve(path, str(workspace))}"
 
 
 def test_grant_cannot_cross_target_action_capability_or_expiry(tmp_path) -> None:
@@ -67,25 +91,34 @@ def test_action_time_confirmation_binds_exact_digest_and_expiry(tmp_path) -> Non
         confirmed_at=9.0,
         expires_at=11.0,
     )
-    assert evaluate_action(
-        action,
-        grant=grant,
-        confirmation=receipt,
-        now=10.0,
-    ).disposition is PolicyDisposition.ALLOW
+    assert (
+        evaluate_action(
+            action,
+            grant=grant,
+            confirmation=receipt,
+            now=10.0,
+        ).disposition
+        is PolicyDisposition.ALLOW
+    )
     changed = resolve_action("write_file", {"path": "one.txt", "content": "changed"}, cwd=str(tmp_path))
-    assert evaluate_action(
-        changed,
-        grant=_grant(changed),
-        confirmation=receipt,
-        now=10.0,
-    ).disposition is PolicyDisposition.CONFIRM
-    assert evaluate_action(
-        action,
-        grant=grant,
-        confirmation=receipt,
-        now=11.0,
-    ).disposition is PolicyDisposition.CONFIRM
+    assert (
+        evaluate_action(
+            changed,
+            grant=_grant(changed),
+            confirmation=receipt,
+            now=10.0,
+        ).disposition
+        is PolicyDisposition.CONFIRM
+    )
+    assert (
+        evaluate_action(
+            action,
+            grant=grant,
+            confirmation=receipt,
+            now=11.0,
+        ).disposition
+        is PolicyDisposition.CONFIRM
+    )
 
 
 def test_auto_approve_cannot_bypass_action_time_confirmation(tmp_path) -> None:

@@ -35,6 +35,7 @@ public enum AustinAdaCredentialMigration {
         "browser-pairing-hmac-v1",
         "control-signing-ed25519-v1",
         "irene-privacy-hmac-v1",
+        "elsie-memory-anchors-v1",
     ]
 
     public static func designatedRequirement(identity: AustinNativeCodeIdentity) throws -> String {

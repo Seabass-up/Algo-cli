@@ -131,6 +131,8 @@ def test_json_event_sink_summarizes_long_results():
 def test_json_event_sink_status_classification():
     assert oneshot._tool_status_from_result("ok contents") == "ok"
     assert oneshot._tool_status_from_result("User denied this operation.") == "denied"
+    assert oneshot._tool_status_from_result("Approval is unavailable in this noninteractive run.") == "denied"
+    assert oneshot._tool_status_from_result("This operation was not approved and was not executed.") == "denied"
     assert oneshot._tool_status_from_result("Skipped repeated failed attempt.") == "skipped"
     assert oneshot._tool_status_from_result("Error: not found") == "failed"
     assert oneshot._tool_status_from_result("Tool error for read_file: x") == "failed"

@@ -60,9 +60,10 @@ from .display import (
 )
 from .dorothy_perf_telemetry import flush_perf_records, record_chat_metrics
 from .theodore_runtime_services import client_for_model, create_client
-from .james_dispatch import batch_policy_ceiling_codes
+from .james_dispatch import DispatchCancellation, DispatchInterrupted, batch_policy_ceiling_codes
 from .marcus_authority import EffectClass
 from .nathan_runtime import (
+    PipelineToolResult,
     approval_mode_for_config,
     classify_tool_status,
     execute_tool_call_for_pipeline,
@@ -882,6 +883,8 @@ def run_agent_block(
                     )
                     block.output = f"## Block Output\n\nTool outcome checkpoint failed after dispatch: {exc}"
 
+            batch_cancellation = DispatchCancellation()
+            dispatch_interruption: DispatchInterrupted | None = None
             for index, ((name, args), tool_call_id) in enumerate(batch):
                 if journal_result_failed:
                     record_protocol_dispatch(
@@ -947,18 +950,24 @@ def run_agent_block(
                     args,
                     tool_call_id,
                 )
-                execution = execute_tool_call_for_pipeline(
-                    name,
-                    args,
-                    cfg,
-                    tool_call_id=tool_call_id,
-                    force_approval=tool_policy.requires_explicit_approval(
+                try:
+                    execution = execute_tool_call_for_pipeline(
                         name,
-                        block_policy=policy,
-                        shell_decision=shell_decision,
-                        policy_enforced=policy_enforced,
-                    ),
-                )
+                        args,
+                        cfg,
+                        tool_call_id=tool_call_id,
+                        force_approval=tool_policy.requires_explicit_approval(
+                            name,
+                            block_policy=policy,
+                            shell_decision=shell_decision,
+                            policy_enforced=policy_enforced,
+                        ),
+                        cancellation=batch_cancellation,
+                    )
+                except DispatchInterrupted as exc:
+                    dispatch_interruption = exc
+                    batch_cancellation.cancel("keyboard_interrupt")
+                    execution = PipelineToolResult(exc.result.message, exc.result.result, exc.result.outcome)
                 tool_message, _result = execution
                 append_journal_result(index, execution, _result)
                 outcome_status = _pipeline_outcome_status(execution, _result)
@@ -989,10 +998,18 @@ def run_agent_block(
                 messages.append(tool_message)
                 loop_state.record_tool_result(tool_call_id)
             loop_state.finish_tool_batch()
+            if dispatch_interruption is not None:
+                loop_state.cancel("Agent Block tool dispatch interrupted")
+                raise dispatch_interruption
             if block.status == "failed" or journal_result_failed:
                 break
         else:
             finish_with_partial_output()
+    except KeyboardInterrupt:
+        block.status = "cancelled"
+        block.status_code = "interrupted"
+        block.status_reason = "Agent Block was interrupted; unfinished actions were not retried."
+        raise
     finally:
         completion_error = ""
         try:

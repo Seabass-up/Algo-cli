@@ -23,7 +23,7 @@ TASKS = {
     "code_repair_small_repo": {
         "label": "Code repair",
         "short_label": "Code repair",
-        "description": "Repair a failing parser in a small Python repository and pass its external checker.",
+        "description": "Repair an average calculation in a small Python repository and pass its external checker.",
     },
     "tool_trap_misleading_state": {
         "label": "Misleading-state safety trap",
@@ -72,9 +72,7 @@ def _recomputed_aggregates(
                 "runs": len(cell),
                 "checker_passes": sum(bool(run.get("checker_pass")) for run in cell),
                 "clean_processes": sum(bool(run.get("clean_process")) for run in cell),
-                "median_duration_seconds": round(
-                    statistics.median(float(run["duration_seconds"]) for run in cell), 6
-                ),
+                "median_duration_seconds": round(statistics.median(float(run["duration_seconds"]) for run in cell), 6),
             }
         checker_passes = sum(bool(run.get("checker_pass")) for run in selected)
         clean_processes = sum(bool(run.get("clean_process")) for run in selected)
@@ -120,8 +118,21 @@ def _validate(raw: dict[str, Any], source_revision: str) -> None:
 
     if raw.get("schema_version") != 1:
         failures.append("unsupported raw schema version")
-    if protocol.get("id") != "algo-cli-cross-harness-v3-draft":
-        failures.append("release publication requires the v3 draft protocol")
+    if protocol.get("id") != "algo-cli-cross-harness-v4-draft":
+        failures.append("release publication requires the v4 completion-checked draft protocol")
+    if (
+        protocol.get("operator_action_review", False) is not False
+        or raw.get("status") == "draft_supervised_algo_qualification"
+        or any(
+            "approval_review" in run
+            and (
+                not isinstance(run["approval_review"], dict)
+                or run["approval_review"].get("mode") != "unattended_adapter_defaults"
+            )
+            for run in runs
+        )
+    ):
+        failures.append("operator-supervised runs cannot be published as unattended comparisons")
     if repetitions < 3:
         failures.append("release publication requires at least three repetitions")
     if len(harnesses) != 11 or len(task_ids) != 4:
@@ -144,6 +155,8 @@ def _validate(raw: dict[str, Any], source_revision: str) -> None:
         failures.append("warmup must be excluded from scored duration")
     if not re.fullmatch(r"[0-9a-f]{64}", str(protocol.get("task_suite_sha256") or "")):
         failures.append("task-suite digest is missing")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(protocol.get("checker_source_sha256") or "")):
+        failures.append("checker source digest is missing")
 
     cells = Counter((run.get("harness"), run.get("task")) for run in runs)
     run_ids = [run.get("run_id") for run in runs]
@@ -160,15 +173,33 @@ def _validate(raw: dict[str, Any], source_revision: str) -> None:
             failures.append(f"model mismatch: {run.get('run_id')}")
         if run.get("baseline_checker_failed_as_expected") is not True:
             failures.append(f"baseline checker invariant failed: {run.get('run_id')}")
+        if run.get("baseline_checker_completed") is not True:
+            failures.append(f"baseline checker completion missing: {run.get('run_id')}")
+        if type(run.get("checker_completed")) is not bool:
+            failures.append(f"checker completion receipt missing: {run.get('run_id')}")
+        if (run.get("checker_pass") or run.get("clean_process")) and run.get("checker_completed") is not True:
+            failures.append(f"incomplete checker claimed success: {run.get('run_id')}")
+        if (
+            run.get("checker_source_sha256") != protocol.get("checker_source_sha256")
+            or run.get("checker_sources_unchanged") is not True
+        ):
+            failures.append(f"checker source binding mismatch: {run.get('run_id')}")
         if not isinstance(run.get("protected_inputs_unchanged"), bool):
             failures.append(f"protected-input receipt missing: {run.get('run_id')}")
 
     recomputed = _recomputed_aggregates(runs, harnesses, task_ids) if runs else []
     reported_by_harness = {row.get("harness"): row for row in aggregates}
     comparison_fields = (
-        "runs", "checker_passes", "checker_pass_rate", "clean_processes",
-        "clean_process_rate", "scope_pass_rate", "median_duration_seconds",
-        "p95_duration_seconds", "objective_rank", "per_task",
+        "runs",
+        "checker_passes",
+        "checker_pass_rate",
+        "clean_processes",
+        "clean_process_rate",
+        "scope_pass_rate",
+        "median_duration_seconds",
+        "p95_duration_seconds",
+        "objective_rank",
+        "per_task",
     )
     for expected_row in recomputed:
         reported = reported_by_harness.get(expected_row["harness"])
@@ -195,9 +226,7 @@ def _curate(
     repetitions = int(protocol["repetitions"])
     runs = raw["runs"]
     labels = {
-        item["product"]: item["label"]
-        for item in raw["product_matrix"]
-        if item.get("product") and item.get("label")
+        item["product"]: item["label"] for item in raw["product_matrix"] if item.get("product") and item.get("label")
     }
     results: list[dict[str, Any]] = []
     for aggregate in raw["aggregate"]:
@@ -211,10 +240,7 @@ def _curate(
             and bool(run.get("protected_inputs_unchanged"))
             for run in harness_runs
         )
-        task_passes = {
-            task_id: int(aggregate["per_task"][task_id]["checker_passes"])
-            for task_id in protocol["tasks"]
-        }
+        task_passes = {task_id: int(aggregate["per_task"][task_id]["checker_passes"]) for task_id in protocol["tasks"]}
         results.append(
             {
                 "rank": int(aggregate["objective_rank"]),
@@ -253,11 +279,9 @@ def _curate(
         },
         "protocol": {
             "id": protocol["id"],
-            "tasks": [
-                {"id": task_id, **TASKS[task_id]}
-                for task_id in protocol["tasks"]
-            ],
+            "tasks": [{"id": task_id, **TASKS[task_id]} for task_id in protocol["tasks"]],
             "task_suite_sha256": protocol["task_suite_sha256"],
+            "checker_source_sha256": protocol["checker_source_sha256"],
             "repetitions_per_cell": repetitions,
             "runs_per_harness": int(protocol["runs_per_harness"]),
             "measured_harnesses": len(protocol["harnesses"]),
@@ -279,7 +303,8 @@ def _curate(
         ),
         "result_provenance": (
             "Generated from a complete warmed runner receipt after validating every task/harness cell, "
-            "baseline checker failure, protected-input receipts, and the frozen task-suite digest."
+            "completed baseline failures, checker completion, protected inputs, and frozen task/checker digests. "
+            "These local receipts are not hostile-code isolation or independent execution attestation."
         ),
         "limitations": (
             f"Four draft tasks, one local model, one machine, and {repetitions} repetitions per cell do not "
@@ -294,8 +319,16 @@ def _curate(
 def _write_csv(path: Path, summary: dict[str, Any]) -> None:
     tasks = summary["protocol"]["tasks"]
     fields = [
-        "rank", "harness", "version", "checker_passes", "verified_runs", "scope_passes",
-        "runs", "median_seconds", "p95_seconds", *[f"{task['id']}_passes" for task in tasks],
+        "rank",
+        "harness",
+        "version",
+        "checker_passes",
+        "verified_runs",
+        "scope_passes",
+        "runs",
+        "median_seconds",
+        "p95_seconds",
+        *[f"{task['id']}_passes" for task in tasks],
     ]
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
@@ -312,10 +345,7 @@ def _write_csv(path: Path, summary: dict[str, Any]) -> None:
                     "runs": row["runs"],
                     "median_seconds": f"{row['median_seconds']:.6f}",
                     "p95_seconds": f"{row['p95_seconds']:.6f}",
-                    **{
-                        f"{task['id']}_passes": row["task_passes"][task["id"]]
-                        for task in tasks
-                    },
+                    **{f"{task['id']}_passes": row["task_passes"][task["id"]] for task in tasks},
                 }
             )
 

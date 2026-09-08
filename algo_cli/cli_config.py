@@ -49,6 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     env = subparsers.add_parser("env", help="Inspect the selected local runtime-env file.")
     env.add_argument("action", nargs="?", default="path", choices=("path",))
+    memory = subparsers.add_parser("memory", help="Provision or inspect OS-protected CLI memory receipts.")
+    memory.add_argument("action", choices=("status", "provision"))
     return parser
 
 
@@ -357,6 +359,35 @@ def _run_auth(provider: str, action: str, provider_args: Sequence[str], *, input
     return 2
 
 
+def _run_memory(action: str) -> int:
+    from .elsie_keyring_anchors import ElsieKeyringAnchorStore
+    from .grace_key_store import KeyringKeyStore
+    from .irene_privacy_views import PRIVACY_KEY_LABEL
+
+    try:
+        store = KeyringKeyStore()
+        anchors = ElsieKeyringAnchorStore(store)
+        status = anchors.status()
+        if action == "provision":
+            # Validate existing state before creating a key. Missing authority
+            # for an existing bundle must never become an implicit key reset.
+            store.get_or_create(PRIVACY_KEY_LABEL, length=32)
+            anchors.provision()
+            status = anchors.status()
+        ready = status["provisioned"]
+        console.print(
+            "CLI memory receipts: " + ("OS-protected and provisioned." if ready else "not provisioned.")
+        )
+        console.print("Native browser authority is unchanged; its signed installation gates still apply.")
+        return 0 if ready else 1
+    except Exception:
+        console.print(
+            "[red]CLI memory credential preparation failed safely. "
+            "Existing keys and invalid credentials are not reset; no plaintext fallback was enabled.[/]"
+        )
+        return 1
+
+
 def run(
     argv: Sequence[str] | None = None,
     *,
@@ -398,5 +429,7 @@ def run(
     if namespace.command == "env":
         console.print(str(runtime_env_path()))
         return 0
+    if namespace.command == "memory":
+        return _run_memory(namespace.action)
     parser.error(f"Unsupported config command: {namespace.command}")
     return 2

@@ -225,12 +225,12 @@ class ElsieReceiptAuthority:
         # Local imports keep the legacy inventory usable while config.py itself
         # is importing this module during pre-load migration.
         from .grace_key_store import (
-            GraceReceiptAnchorStore,
             KeyringKeyStore,
             KeyStoreError,
             get_key_material,
         )
         from .irene_privacy_views import PRIVACY_KEY_LABEL
+        from .elsie_keyring_anchors import ElsieKeyringAnchorStore
 
         selected = store if store is not None else KeyringKeyStore()
         try:
@@ -243,7 +243,7 @@ class ElsieReceiptAuthority:
         except KeyStoreError as exc:
             raise ElsieReceiptError("persistent elsie key material is unavailable") from exc
         anchor_store = (
-            GraceReceiptAnchorStore(selected)
+            ElsieKeyringAnchorStore(selected)
             if type(selected) is KeyringKeyStore
             else selected
             if all(callable(getattr(selected, name, None)) for name in ("load", "compare_and_set"))
@@ -259,7 +259,8 @@ class ElsieReceiptAuthority:
     ) -> ElsieReceiptAuthority:
         """Load an existing key without mutating credentials on a read path."""
 
-        from .grace_key_store import GraceReceiptAnchorStore, KeyStoreError, KeyringKeyStore
+        from .grace_key_store import KeyStoreError, KeyringKeyStore
+        from .elsie_keyring_anchors import ElsieKeyringAnchorStore
         from .irene_privacy_views import PRIVACY_KEY_LABEL
 
         selected = store if store is not None else KeyringKeyStore()
@@ -273,7 +274,7 @@ class ElsieReceiptAuthority:
         except Exception as exc:
             raise ElsieReceiptError("existing persistent elsie key lookup failed") from exc
         anchor_store = (
-            GraceReceiptAnchorStore(selected)
+            ElsieKeyringAnchorStore(selected)
             if type(selected) is KeyringKeyStore
             else selected
             if all(callable(getattr(selected, name, None)) for name in ("load", "compare_and_set"))
@@ -289,7 +290,8 @@ class ElsieReceiptAuthority:
     ) -> ElsieReceiptAuthority | None:
         """Load an existing key, returning None only for a proven absence."""
 
-        from .grace_key_store import GraceReceiptAnchorStore, KeyStoreError, KeyringKeyStore
+        from .grace_key_store import KeyStoreError, KeyringKeyStore
+        from .elsie_keyring_anchors import ElsieKeyringAnchorStore
         from .irene_privacy_views import PRIVACY_KEY_LABEL
 
         selected = store if store is not None else KeyringKeyStore()
@@ -305,7 +307,7 @@ class ElsieReceiptAuthority:
         except Exception as exc:
             raise ElsieReceiptError("existing persistent elsie key lookup failed") from exc
         anchor_store = (
-            GraceReceiptAnchorStore(selected)
+            ElsieKeyringAnchorStore(selected)
             if type(selected) is KeyringKeyStore
             else selected
             if all(callable(getattr(selected, name, None)) for name in ("load", "compare_and_set"))

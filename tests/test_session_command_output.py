@@ -47,7 +47,8 @@ def test_session_command_returns_harness_payload(
     monkeypatch: pytest.MonkeyPatch,
     session_cfg: Config,
 ) -> None:
-    monkeypatch.setattr(tools, "harness_stats", lambda: "HARNESS STATUS\nrecords=624")
+    observed = []
+    monkeypatch.setattr(tools, "harness_stats", lambda cfg=None: observed.append(cfg) or "HARNESS STATUS\nrecords=624")
     monkeypatch.setattr(tools, "harness_scorecard", lambda cfg=None: "HARNESS SCORE\nscore=9")
     monkeypatch.setattr(tools, "harness_competitive_rating", lambda cfg=None: "HARNESS COMPARE\nrank=2")
 
@@ -63,6 +64,8 @@ def test_session_command_returns_harness_payload(
     assert expected in result
     assert "records=624" in result or "score=9" in result or "rank=2" in result
     assert not result.startswith("Executed:")
+    if command.endswith("status"):
+        assert observed == [session_cfg]
 
 
 def test_session_command_preserves_machine_parseable_harness_json(

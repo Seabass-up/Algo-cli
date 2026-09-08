@@ -20,6 +20,7 @@ Event schema (one JSON object per line, no embedded raw newlines):
     {"type":"tool_denied","call_id":...,"name":...,"reason":...}
     {"type":"error","class":"timeout|policy|tool|model|internal","message":...}
     {"type":"done","status":"complete|partial|failed","status_reason":...,
+                   "completion_scope":"model_turn","task_verification":"not_evaluated",
                    "tool_calls":...,"duration_ms":...}
 
 Invariants:
@@ -109,7 +110,10 @@ def _tool_status_from_result(result: str) -> str:
         return "timed_out"
     if "cancelled outcome:" in lowered:
         return "cancelled"
-    if lowered.startswith(("blocked by runtime authority", "blocked by runtime policy chain", "user denied")):
+    if lowered.startswith((
+        "blocked by runtime authority", "blocked by runtime policy chain", "user denied",
+        "approval is unavailable", "this operation was not approved",
+    )):
         return "denied"
     if lowered.startswith("skipped repeated"):
         return "skipped"
@@ -167,6 +171,8 @@ class JsonEventSink:
                 "type": "done",
                 "status": status,
                 "status_reason": status_reason,
+                "completion_scope": "model_turn",
+                "task_verification": "not_evaluated",
                 "tool_calls": self._tool_calls_done,
                 "duration_ms": round(duration_ms, 2),
                 "usage": {
@@ -322,6 +328,7 @@ def run_oneshot(
     *,
     prompt: str,
     approval_mode: str = "never",
+    approval_fd: int | None = None,
     cfg_overrides: dict[str, Any] | None = None,
     stream=None,
 ) -> int:
@@ -330,6 +337,8 @@ def run_oneshot(
     - approval_mode="never" (default): protected tools are denied; emits tool_denied.
     - approval_mode="auto": session-preapproval actions are granted for this run only;
       action-time and handoff-required actions remain denied.
+    - approval_mode="interactive": requires an explicitly inherited approval_fd;
+      a local supervisor must confirm each exact protected action over that socket.
     - cfg_overrides: applied to the loaded Config before the run (e.g., {"model": "qwen3"}).
     """
     # Imports deferred to avoid cycle with display + to keep import cost off the
@@ -341,6 +350,12 @@ def run_oneshot(
         prepare_echo_auxiliary_state,
     )
     from .model_routing import effective_runtime_host
+    from .nathan_approval_channel import ApprovalChannel
+
+    if approval_mode not in {"never", "auto", "interactive"}:
+        raise ValueError("approval_mode must be 'never', 'auto', or 'interactive'")
+    if (approval_mode == "interactive") != (approval_fd is not None):
+        raise ValueError("interactive one-shot approval requires approval_fd; other modes cannot use it")
 
     cfg = Config.load()
     persistent_values: dict[str, Any] = {
@@ -355,8 +370,6 @@ def run_oneshot(
             if value is not None and hasattr(cfg, key):
                 persistent_values.setdefault(key, getattr(cfg, key))
                 setattr(cfg, key, value)
-    if approval_mode not in {"never", "auto"}:
-        raise ValueError("approval_mode must be 'never' or 'auto'")
     cfg.auto_mode = approval_mode == "auto"
     setattr(cfg, "_nathan_approval_mode", approval_mode)
     cfg.skill_crystallize_enabled = False  # subprocess invocation must not mutate skill store
@@ -382,7 +395,11 @@ def run_oneshot(
     status = "complete"
     status_reason = ""
     preflight_succeeded = False
+    approval_channel = None
     try:
+        if approval_fd is not None:
+            approval_channel = ApprovalChannel.from_fd(approval_fd)
+            setattr(cfg, "_nathan_approval_channel", approval_channel)
         prepare_echo_auxiliary_state(cfg)
         preflight_succeeded = True
         harness.configure_context_sources(
@@ -407,6 +424,10 @@ def run_oneshot(
         status_reason = f"{type(exc).__name__}: {exc}"
         sink.error(error_class="internal", message=status_reason)
     finally:
+        if approval_channel is not None:
+            approval_channel.close()
+        if hasattr(cfg, "_nathan_approval_channel"):
+            delattr(cfg, "_nathan_approval_channel")
         display.uninstall_json_sink()
         if preflight_succeeded:
             skills.ensure_dirs()  # restore any deferred dir state

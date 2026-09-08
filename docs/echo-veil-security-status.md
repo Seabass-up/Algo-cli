@@ -30,14 +30,26 @@ installed distribution metadata match in `>=0.6.0,<0.9.0`; editable and
 unpinned direct-URL or local-directory installs are rejected. Required mode is
 stricter: PEP 610 metadata must bind version `0.8.0`, the canonical upstream
 repository, requested revision, and resolved commit to
-`271ebaa959aabd7a83cf338d30cd0fa1c7338488`. A same-version registry wheel,
+`cbee525687ac03c830d4b6632ff1d044b4b838fc`. A same-version registry wheel,
 archive, different repository, or different commit does not satisfy required
 protection.
 
 The development/runtime candidate is pinned to Echo Veil 0.8.0 commit
-`271ebaa959aabd7a83cf338d30cd0fa1c7338488` through the
+`cbee525687ac03c830d4b6632ff1d044b4b838fc` through the
 `algo-cli-runtime[echo-veil]` extra. This source pin is qualification evidence,
 not a public Echo Veil release or a production-readiness claim.
+
+This local-only revision retains the POSIX SQLite lock-safety repair and reuses
+eligible vector comparisons within each MMR ranking call. It passed 807 tests
+with ten skips on each of Python 3.10-3.14, including writer-exclusion controls
+and 43 exact-order and comparison-count regressions. Ranking state is not cached
+across calls; confidence, conflict, lifecycle, and protection gates are unchanged.
+The changed wheel is not qualified by OpenClaw's older deployment lock, and no
+other host is promoted by Algo's qualification. It has not been pushed or tagged.
+Local qualification resolves
+the exact commit through a command-scoped mirror of the same repository;
+commit, source-byte, and installed RECORD checks remain mandatory. This does
+not make the revision available from the public upstream repository.
 
 The persisted Algo configuration contains profile, scope, state-directory, and
 policy settings only. It does not contain Echo encryption keys. Echo's
@@ -197,7 +209,7 @@ checkout instead of a stale installed package. The source pin is
 mechanically visible in both dependency files with:
 
 ```bash
-rg -n "271ebaa959aabd7a83cf338d30cd0fa1c7338488" pyproject.toml uv.lock
+rg -n "cbee525687ac03c830d4b6632ff1d044b4b838fc" pyproject.toml uv.lock
 .venv/bin/python scripts/henry_echo_veil_dependency_audit.py
 ```
 

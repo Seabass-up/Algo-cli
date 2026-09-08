@@ -136,7 +136,7 @@ def test_static_echo_config_loader_rejects_fifo_without_blocking(
 
 def test_echo_dependency_is_commit_pinned_and_exercised_in_ci() -> None:
     root = Path(__file__).resolve().parents[1]
-    pin = "271ebaa959aabd7a83cf338d30cd0fa1c7338488"
+    pin = "cbee525687ac03c830d4b6632ff1d044b4b838fc"
     project = (root / "pyproject.toml").read_text(encoding="utf-8")
     lock = (root / "uv.lock").read_text(encoding="utf-8")
     workflow = (root / ".github/workflows/oliver-ci.yml").read_text(encoding="utf-8")
@@ -2188,6 +2188,7 @@ def test_attempt_ledger_persists_only_content_free_echo_result_receipt(
 
 def test_required_harness_tools_filter_legacy_memory_records(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     from algo_cli import tools
     from algo_cli.config import Config
@@ -2196,23 +2197,25 @@ def test_required_harness_tools_filter_legacy_memory_records(
         echo_veil_enabled=True,
         echo_veil_protection="required",
     )
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    skill = skills / "safe-skill.md"
+    skill.write_text("# Safe skill\n\nSearch public memory documentation.\n")
+    monkeypatch.setattr(tools.harness, "_algo_cli_repo_skills_dir", lambda: skills)
+    monkeypatch.setattr(tools.harness, "_PROTECTED_MEMORY_AUTHORITY", True)
+    root = tools.harness.SourceRoot("algo-cli", "skill", skills, ("*.md",), 1)
     monkeypatch.setattr(
         tools.harness,
-        "search_index",
-        lambda *_args, **_kwargs: [
+        "load_index",
+        lambda: {"records": [
             {
                 "id": "legacy-memory",
                 "kind": "memory",
                 "title": "Legacy memory",
                 "path": "memory.md",
             },
-            {
-                "id": "safe-skill",
-                "kind": "skill",
-                "title": "Safe skill",
-                "path": "SKILL.md",
-            },
-        ],
+            tools.harness.make_record(root, skill),
+        ]},
     )
 
     rendered = tools.harness_search("memory", cfg=cfg)

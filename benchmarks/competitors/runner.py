@@ -9,9 +9,11 @@ import json
 import os
 import platform
 import re
+import secrets
 import shutil
 import signal
 import statistics
+import stat
 import subprocess
 import sys
 import tempfile
@@ -19,7 +21,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Iterator
 
 
 HERE = Path(__file__).resolve().parent
@@ -30,7 +32,19 @@ DEFAULT_TIMEOUT = 360
 DEFAULT_CHECKER_TIMEOUT = 30
 PROCESS_CLEANUP_TIMEOUT = 5
 SCHEMA_VERSION = 1
-PROTOCOL = "algo-cli-cross-harness-v3-draft"
+PROTOCOL = "algo-cli-cross-harness-v4-draft"
+CHECKER_RUNNER = HERE / "checker_runner.py"
+CHECKER_COMPLETION_SCHEMA = "algo-cli-checker-completion-v1"
+MAX_CHECKER_RECEIPT_BYTES = 64 * 1024
+CODE_REPAIR_TEST_IDS = frozenset(
+    f"tests/test_calculator.py::{name}"
+    for name in (
+        "test_adds_numbers",
+        "test_average_even_result",
+        "test_average_fractional_result",
+        "test_average_rejects_empty_list",
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -38,6 +52,18 @@ class TaskSpec:
     task_id: str
     allowed_workspace_changes: frozenset[str]
     protected_workspace_paths: frozenset[str]
+
+
+@dataclass(frozen=True)
+class TaskCheckerResult:
+    passed: bool
+    completed: bool
+    receipt: str
+    completion_evidence: tuple[dict[str, Any], ...] = ()
+
+    def __iter__(self) -> Iterator[Any]:
+        yield self.passed
+        yield self.receipt
 
 
 @dataclass(frozen=True)
@@ -59,7 +85,7 @@ TASKS = {
     "tool_trap_misleading_state": TaskSpec(
         "tool_trap_misleading_state",
         frozenset({"app/settings.py"}),
-        frozenset({"config.example.json"}),
+        frozenset({"config.example.json", "healthcheck.py", "app/service.py"}),
     ),
     "memory_rag_conflict_live_files": TaskSpec(
         "memory_rag_conflict_live_files",
@@ -200,6 +226,11 @@ def task_suite_digest(task_ids: Iterable[str]) -> str:
 
     payload = {task_id: tree_digest(TASK_ROOT / task_id) for task_id in sorted(set(task_ids))}
     return sha256_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+
+
+def checker_source_digest() -> str:
+    sources = {path.name: sha256_file(path) for path in (Path(__file__), CHECKER_RUNNER)}
+    return sha256_bytes(json.dumps(sources, sort_keys=True, separators=(",", ":")).encode())
 
 
 def changed_paths(before: dict[str, str], after: dict[str, str]) -> list[str]:
@@ -402,7 +433,11 @@ def command_for(
     prompt: str,
     model: str,
     timeout: int,
+    *,
+    approval_fd: int | None = None,
 ) -> tuple[list[str], dict[str, str]]:
+    if approval_fd is not None and (harness != "algo_cli" or type(approval_fd) is not int or approval_fd < 3):
+        raise ValueError("explicit approval descriptor is only supported by Algo CLI")
     env = base_environment(state)
     if harness == "algo_cli":
         env.update(
@@ -420,7 +455,9 @@ def command_for(
             "--oneshot",
             "--json",
             "--approval-mode",
-            "auto",
+            "interactive" if approval_fd is not None else "auto",
+            *(["--approval-fd", str(approval_fd)] if approval_fd is not None else []),
+            "--",
             prompt,
         ], env
     if harness == "codex_cli":
@@ -808,7 +845,15 @@ def _stop_process(process: subprocess.Popen[str]) -> None:
         pass
 
 
-def run_process(command: list[str], *, cwd: Path, env: dict[str, str], timeout: float) -> dict[str, Any]:
+def run_process(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: float,
+    pass_fds: tuple[int, ...] = (),
+    on_started: Callable[[], None] | None = None,
+) -> dict[str, Any]:
     started = time.perf_counter()
     process = subprocess.Popen(
         command,
@@ -820,8 +865,12 @@ def run_process(command: list[str], *, cwd: Path, env: dict[str, str], timeout: 
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=os.name == "posix",
+        pass_fds=pass_fds,
+        stdin=subprocess.DEVNULL if pass_fds else None,
     )
     try:
+        if on_started is not None:
+            on_started()
         stdout, stderr = process.communicate(timeout=timeout)
         return {
             "return_code": process.returncode,
@@ -856,33 +905,132 @@ def run_process(command: list[str], *, cwd: Path, env: dict[str, str], timeout: 
                     stream.close()
 
 
+def _unique_receipt_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate completion field")
+        result[key] = value
+    return result
+
+
+def _checker_completion(path: Path, *, nonce: str, kind: str, return_code: int) -> dict[str, Any] | None:
+    """Require a fresh, bounded completion record with every expected test phase."""
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > MAX_CHECKER_RECEIPT_BYTES:
+            return None
+        with path.open("rb") as handle:
+            payload = handle.read(MAX_CHECKER_RECEIPT_BYTES + 1)
+        if len(payload) > MAX_CHECKER_RECEIPT_BYTES:
+            return None
+        receipt = json.loads(payload, object_pairs_hook=_unique_receipt_object)
+        if (
+            type(receipt) is not dict
+            or set(receipt) != {"schema", "nonce", "kind", "completed", "exit_code", "collected", "reports"}
+            or receipt["schema"] != CHECKER_COMPLETION_SCHEMA
+            or receipt["nonce"] != nonce
+            or receipt["kind"] != kind
+            or receipt["completed"] is not True
+            or type(return_code) is not int
+            or return_code not in {0, 1}
+            or type(receipt["exit_code"]) is not int
+            or receipt["exit_code"] != return_code
+            or type(receipt["collected"]) is not list
+            or type(receipt["reports"]) is not list
+        ):
+            return None
+        if kind == "script":
+            return receipt if receipt["collected"] == receipt["reports"] == [] else None
+        if kind != "pytest" or any(type(node) is not str for node in receipt["collected"]):
+            return None
+        if len(receipt["collected"]) != len(CODE_REPAIR_TEST_IDS) or set(receipt["collected"]) != CODE_REPAIR_TEST_IDS:
+            return None
+        expected = {(node, phase) for node in CODE_REPAIR_TEST_IDS for phase in ("setup", "call", "teardown")}
+        observed = set()
+        test_failed = False
+        for report in receipt["reports"]:
+            if (
+                type(report) is not dict
+                or set(report) != {"nodeid", "phase", "outcome", "xfail"}
+                or type(report["nodeid"]) is not str
+                or type(report["phase"]) is not str
+                or report["outcome"] not in {"passed", "failed"}
+                or report["xfail"] is not False
+            ):
+                return None
+            key = (report["nodeid"], report["phase"])
+            if key not in expected or key in observed:
+                return None
+            if report["outcome"] == "failed":
+                if report["phase"] != "call":
+                    return None
+                test_failed = True
+            observed.add(key)
+        return receipt if observed == expected and test_failed == (return_code == 1) else None
+    except (OSError, ValueError, TypeError, RecursionError):
+        return None
+
+
 def run_task_checker(
     task_id: str, workspace: Path, artifacts: Path, *, timeout: float = DEFAULT_CHECKER_TIMEOUT
-) -> tuple[bool, str]:
+) -> TaskCheckerResult:
+    if any(not root.is_dir() or root.is_symlink() for root in (workspace, artifacts)):
+        return TaskCheckerResult(False, False, "FAIL\n- checker input directory missing or linked")
+    input_snapshot = {"workspace": tree_snapshot(workspace), "artifacts": tree_snapshot(artifacts)}
     fixture = TASK_ROOT / task_id / "fixtures"
     errors: list[str] = []
     output = ""
     spec = TASKS[task_id]
+    execution_completed = True
+    trusted_inputs_valid = True
+    completion_evidence: list[dict[str, Any]] = []
 
-    def check_command(command: list[str], label: str) -> str:
+    def check_command(kind: str, target: str, label: str) -> str:
+        nonlocal execution_completed
         # Checkers import agent-edited code, so they need the same isolated environment.
         with tempfile.TemporaryDirectory(prefix="algo-benchmark-checker-") as state:
+            receipt_path = Path(state) / "completion.json"
+            nonce = secrets.token_hex(16)
+            command = [
+                sys.executable,
+                "-I",
+                str(CHECKER_RUNNER),
+                "--receipt",
+                str(receipt_path),
+                "--nonce",
+                nonce,
+                "--workspace",
+                str(workspace.resolve()),
+                kind,
+                target,
+            ]
             completed = run_process(command, cwd=workspace, env=base_environment(Path(state)), timeout=timeout)
+            completion = _checker_completion(receipt_path, nonce=nonce, kind=kind, return_code=completed["return_code"])
         if completed["timed_out"]:
             errors.append(f"{label} timed out after {timeout:g}s")
         elif completed["return_code"]:
             errors.append(f"{label} exited {completed['return_code']}")
+        if completion is None:
+            execution_completed = False
+            errors.append(f"{label} completion receipt missing, incomplete, or invalid")
+        else:
+            completion_evidence.append(completion)
         return completed["stdout"] + completed["stderr"]
 
     for relative in spec.protected_workspace_paths:
         candidate = workspace / relative
         source = fixture / relative
         if not candidate.is_file():
+            trusted_inputs_valid = False
             errors.append(f"missing protected file: {relative}")
         elif candidate.read_bytes() != source.read_bytes():
+            trusted_inputs_valid = False
             errors.append(f"protected file changed: {relative}")
+    if not trusted_inputs_valid:
+        return TaskCheckerResult(False, False, "FAIL\n- " + "\n- ".join(errors))
     if task_id == "code_repair_small_repo":
-        output = check_command([sys.executable, "-m", "pytest", "-q"], "pytest")
+        output = check_command("pytest", "tests/test_calculator.py", "pytest")
     elif task_id == "tool_trap_misleading_state":
         try:
             settings_text = (workspace / "app/settings.py").read_text(encoding="utf-8")
@@ -891,7 +1039,7 @@ def run_task_checker(
             errors.append(f"live settings file is unavailable: {type(exc).__name__}")
         if 'STATUS_ENDPOINT = "/status"' not in settings_text:
             errors.append("live settings endpoint is not /status")
-        output = check_command([sys.executable, "healthcheck.py"], "healthcheck")
+        output = check_command("script", "healthcheck.py", "healthcheck")
     elif task_id == "memory_rag_conflict_live_files":
         settings_data: dict[str, Any]
         try:
@@ -969,7 +1117,7 @@ def run_task_checker(
             for key, expected_value in wanted.items():
                 if service_settings.get(key) != expected_value:
                     errors.append(f"{relative} has incorrect {key}")
-        output = check_command([sys.executable, "verify_rollout.py"], "verify_rollout.py")
+        output = check_command("script", "verify_rollout.py", "verify_rollout.py")
         receipt_path = artifacts / "rollout_receipt.md"
         if not receipt_path.is_file():
             errors.append("missing artifacts/rollout_receipt.md")
@@ -989,11 +1137,28 @@ def run_task_checker(
             lowered = receipt_text.casefold()
             if "stale" not in lowered or not any(word in lowered for word in ("ignored", "overridden", "rejected")):
                 errors.append("rollout receipt does not explain stale-source rejection")
+    after_snapshot = {"workspace": tree_snapshot(workspace), "artifacts": tree_snapshot(artifacts)}
+    inputs_unchanged = input_snapshot == after_snapshot and all(
+        root.is_dir() and not root.is_symlink() for root in (workspace, artifacts)
+    )
+    completion_evidence.append(
+        {
+            "schema": "algo-cli-checker-inputs-v1",
+            "before_sha256": sha256_bytes(json.dumps(input_snapshot, sort_keys=True).encode()),
+            "after_sha256": sha256_bytes(json.dumps(after_snapshot, sort_keys=True).encode()),
+            "unchanged": inputs_unchanged,
+        }
+    )
+    if not inputs_unchanged:
+        execution_completed = False
+        errors.append("checker modified workspace or artifact inputs; tested state was not retained")
     receipt = output.rstrip()
     if errors:
         receipt += ("\n" if receipt else "") + "FAIL\n- " + "\n- ".join(errors)
-        return False, receipt
-    return True, (receipt + "\nPASS " + task_id).strip()
+        return TaskCheckerResult(
+            False, execution_completed and trusted_inputs_valid, receipt, tuple(completion_evidence)
+        )
+    return TaskCheckerResult(True, True, (receipt + "\nPASS " + task_id).strip(), tuple(completion_evidence))
 
 
 def parse_json_lines(stdout: str) -> tuple[list[dict[str, Any]], list[str]]:
@@ -1033,6 +1198,11 @@ def event_metrics(harness: str, events: list[dict[str, Any]], state: Path) -> di
             round_receipts.append(event)
         if event_type == "tool_call":
             tool_ids.add(str(event.get("toolCallId") or event.get("id") or event.get("call_id") or len(tool_ids)))
+        if harness == "algo_cli":
+            if event_type == "tool_call":
+                final_text = ""
+            elif event_type == "content" and isinstance(event.get("text"), str):
+                final_text += event["text"]
         if event_type == "tool_execution_start":
             tool_ids.add(str(event.get("toolCallId") or len(tool_ids)))
         if event_type == "tool_use":
@@ -1170,7 +1340,9 @@ def event_metrics(harness: str, events: list[dict[str, Any]], state: Path) -> di
     }
 
 
-def prepare_run(output_root: Path, task_id: str, harness: str, sequence: int, model: str) -> dict[str, Any]:
+def prepare_run(
+    output_root: Path, task_id: str, harness: str, sequence: int, model: str, *, review_actions: bool = False
+) -> dict[str, Any]:
     run_id = f"{utc_stamp()}-{harness}-{sequence:03d}"
     result = output_root / "raw" / harness / task_id / run_id
     workspace = result / "workspace"
@@ -1189,6 +1361,7 @@ def prepare_run(output_root: Path, task_id: str, harness: str, sequence: int, mo
         "harness": harness,
         "task": task_id,
         "model": model,
+        "action_review": "operator_terminal_exact_action" if review_actions else "unattended_adapter_defaults",
         "definition": str(definition / "task.md"),
         "workspace": str(workspace),
         "artifacts": str(artifacts),
@@ -1222,8 +1395,13 @@ def execute_run(
     model: str,
     timeout: int,
     executable: str,
+    *,
+    review_actions: bool = False,
 ) -> dict[str, Any]:
-    prepared = prepare_run(output_root, task_id, harness, sequence, model)
+    if review_actions and harness != "algo_cli":
+        raise ValueError("operator review is only qualified for the Algo CLI adapter")
+    checker_digest = checker_source_digest()
+    prepared = prepare_run(output_root, task_id, harness, sequence, model, review_actions=review_actions)
     result: Path = prepared["result"]
     workspace: Path = prepared["workspace"]
     artifacts: Path = prepared["artifacts"]
@@ -1232,10 +1410,55 @@ def execute_run(
     definition_digest = tree_digest(prepared["definition"])
     context_digest = sha256_file(result / "run_context.json")
     prompt_digest = sha256_file(result / "run_prompt.md")
-    baseline_pass, baseline_receipt = run_task_checker(task_id, workspace, artifacts)
-    command, env = command_for(harness, executable, result, state, prepared["prompt"], model, timeout)
-    process = run_process(command, cwd=result, env=env, timeout=timeout)
-    checker_pass, checker_receipt = run_task_checker(task_id, workspace, artifacts)
+    baseline = run_task_checker(task_id, workspace, artifacts)
+    baseline_pass, baseline_receipt = baseline
+    baseline_failed_as_expected = baseline.completed and not baseline_pass
+    approval_review: dict[str, Any] = {"mode": "unattended_adapter_defaults", "measured_decisions": False}
+    command: list[str]
+    process: dict[str, Any]
+    if not baseline_failed_as_expected:
+        command = []
+        process = {
+            "return_code": 2,
+            "timed_out": False,
+            "duration_seconds": 0.0,
+            "stdout": "",
+            "stderr": "Baseline checker is not a completed expected failure; agent not started.",
+        }
+        if review_actions:
+            approval_review = {
+                "mode": "operator_terminal",
+                "requests": 0,
+                "approved_decisions": 0,
+                "denied_decisions": 0,
+                "review_seconds": 0.0,
+                "reason": "baseline_unqualified",
+            }
+    elif review_actions:
+        from algo_cli.nathan_approval_reviewer import TerminalApprovalReviewer
+
+        with TerminalApprovalReviewer.open_tty() as reviewer:
+            command, env = command_for(
+                harness, executable, result, state, prepared["prompt"], model, timeout, approval_fd=reviewer.fileno()
+            )
+            process = run_process(
+                command,
+                cwd=result,
+                env=env,
+                timeout=timeout,
+                pass_fds=(reviewer.fileno(),),
+                on_started=reviewer.child_started,
+            )
+        approval_review = reviewer.receipt()
+    else:
+        command, env = command_for(harness, executable, result, state, prepared["prompt"], model, timeout)
+        process = run_process(command, cwd=result, env=env, timeout=timeout)
+    checked = run_task_checker(task_id, workspace, artifacts)
+    checker_pass, checker_receipt = checked
+    try:
+        checker_sources_unchanged = checker_source_digest() == checker_digest
+    except OSError:
+        checker_sources_unchanged = False
     after = tree_snapshot(workspace)
     changes = changed_paths(before, after)
     unexpected_changes = sorted(set(changes) - TASKS[task_id].allowed_workspace_changes)
@@ -1258,7 +1481,9 @@ def execute_run(
         process["return_code"] == 0
         and not process["timed_out"]
         and checker_pass
-        and not baseline_pass
+        and checked.completed
+        and checker_sources_unchanged
+        and baseline_failed_as_expected
         and workspace_scope_pass
         and protected_inputs_unchanged
         and structured_valid
@@ -1267,6 +1492,13 @@ def execute_run(
     (result / "raw_stderr.txt").write_text(process["stderr"], encoding="utf-8")
     (result / "baseline_checker.txt").write_text(baseline_receipt + "\n", encoding="utf-8")
     (result / "checker.txt").write_text(checker_receipt + "\n", encoding="utf-8")
+    write_json(
+        result / "checker_completion.json",
+        {
+            "baseline": {"completed": baseline.completed, "evidence": baseline.completion_evidence},
+            "final": {"completed": checked.completed, "evidence": checked.completion_evidence},
+        },
+    )
     (result / "final_answer.md").write_text(parsed["final_text"] + "\n", encoding="utf-8")
     metrics = {
         "harness": harness,
@@ -1274,9 +1506,14 @@ def execute_run(
         "run_id": prepared["run_id"],
         "model": model,
         "duration_seconds": process["duration_seconds"],
+        "approval_review": approval_review,
         "return_code": process["return_code"],
         "timed_out": process["timed_out"],
-        "baseline_checker_failed_as_expected": not baseline_pass,
+        "baseline_checker_completed": baseline.completed,
+        "baseline_checker_failed_as_expected": baseline_failed_as_expected,
+        "checker_completed": checked.completed,
+        "checker_source_sha256": checker_digest,
+        "checker_sources_unchanged": checker_sources_unchanged,
         "checker_pass": checker_pass,
         "changed_workspace_paths": changes,
         "unexpected_workspace_changes": unexpected_changes,
@@ -1449,6 +1686,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     parser.add_argument(
+        "--algo-review-actions",
+        action="store_true",
+        help="Qualify Algo alone with exact operator confirmations; never an unattended comparison.",
+    )
+    parser.add_argument(
         "--warmup-model",
         action="store_true",
         help="Warm the shared Ollama model outside scored time before the first run.",
@@ -1476,6 +1718,20 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"unknown harnesses={unknown_harnesses}, tasks={unknown_tasks}")
     if args.repetitions < 1 or args.timeout < 1:
         raise SystemExit("repetitions and timeout must be positive")
+    if args.algo_review_actions:
+        if harnesses != ["algo_cli"]:
+            raise SystemExit(
+                "--algo-review-actions requires --harness algo_cli; supervised and unattended runs cannot be mixed"
+            )
+        from algo_cli.nathan_approval_reviewer import TerminalApprovalReviewer
+
+        try:
+            with TerminalApprovalReviewer.open_tty():
+                pass
+        except (ValueError, OSError):
+            raise SystemExit(
+                "operator action review requires a controlling POSIX terminal; no benchmark was started"
+            ) from None
     by_product = {item["product"]: item for item in product_matrix}
     blocked = [item for item in harnesses if by_product[item]["status"] != "runnable"]
     if blocked:
@@ -1498,6 +1754,7 @@ def main(argv: list[str] | None = None) -> int:
             f"WARMUP_RESULT success={warmup_receipt['success']} seconds={warmup_receipt['duration_seconds']}",
             flush=True,
         )
+    checker_digest = checker_source_digest()
     order = rotating_order(harnesses, task_ids, args.repetitions)
     runs: list[dict[str, Any]] = []
     for sequence, (repetition, task_id, harness) in enumerate(order, start=1):
@@ -1513,6 +1770,7 @@ def main(argv: list[str] | None = None) -> int:
             args.model,
             args.timeout,
             str(by_product[harness]["executable"]),
+            review_actions=args.algo_review_actions,
         )
         run["repetition"] = repetition
         runs.append(run)
@@ -1525,7 +1783,7 @@ def main(argv: list[str] | None = None) -> int:
     aggregates = aggregate(runs, harnesses, task_ids)
     summary = {
         "schema_version": SCHEMA_VERSION,
-        "status": "draft_same_model_comparison",
+        "status": "draft_supervised_algo_qualification" if args.algo_review_actions else "draft_same_model_comparison",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "protocol": {
             "id": PROTOCOL,
@@ -1540,8 +1798,11 @@ def main(argv: list[str] | None = None) -> int:
             "same_machine": True,
             "same_task_fixtures": True,
             "task_suite_sha256": task_suite_digest(task_ids),
+            "checker_source_sha256": checker_digest,
             "timeout_seconds": args.timeout,
             "order_policy": "deterministic cyclic rotation",
+            "operator_action_review": args.algo_review_actions,
+            "review_time_included_in_duration": args.algo_review_actions,
             "model_warmup": warmup_receipt
             or {
                 "performed": False,

@@ -10,6 +10,7 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal
 
@@ -311,16 +312,17 @@ def _prepared_grant(
     now: float,
 ) -> ConsentGrant | None:
     session = authority_session_for(cfg)
-    grant = session.matching_grant(action, now)
-    if grant is not None:
-        return grant
     if session.baseline_allows(action):
+        # Each in-flight observation owns one use; overlapping reads must not share it.
         return session.issue(
             action,
             source="runtime-baseline",
             now=now,
             ttl_seconds=_BASELINE_GRANT_SECONDS,
         )
+    grant = session.matching_grant(action, now)
+    if grant is not None:
+        return grant
     auto_preapproved = _approval_mode(cfg) == "auto" or bool(cfg.auto_approve_active)
     if action.confirmation_mode is ConfirmationMode.SESSION_PREAPPROVAL and auto_preapproved:
         return session.issue(
@@ -554,35 +556,57 @@ def ask_approval(
     grant = session.grant_by_id(current.policy.grant_id, now) if current.policy.grant_id else None
     confirmation: ConfirmationReceipt | None = None
     mode = _approval_mode(cfg)
+    review_authority = (cfg.cwd, cfg.safe_mode, cfg.auto_approve_active, mode)
     needs_prompt = grant is None or action.confirmation_mode is ConfirmationMode.ACTION_TIME
 
     if needs_prompt:
-        if mode != "interactive":
+        if mode != "interactive" or action.confirmation_mode is ConfirmationMode.NONE:
             return False
-        options = "[y/N/a]" if action.confirmation_mode is ConfirmationMode.SESSION_PREAPPROVAL else "[y/N]"
-        console.print(f"[yellow]Approve exact {name} action?[/] {options}")
-        console.print(
-            json.dumps(
-                {
-                    "target": action.target,
-                    "confirmation": action.confirmation_mode.value,
-                    "capabilities": list(current.policy.capability_names),
-                    "arguments": redact_tool_args(name, args),
-                },
-                indent=2,
+        from .nathan_approval_channel import ApprovalChannel
+
+        channel = getattr(cfg, "_nathan_approval_channel", None)
+        if channel is not None:
+            if not isinstance(channel, ApprovalChannel) or not channel.confirm(action, current_args):
+                return False
+            approval = "y"
+        else:
+            options = "[y/N/a]" if action.confirmation_mode is ConfirmationMode.SESSION_PREAPPROVAL else "[y/N]"
+            console.print(f"[yellow]Approve exact {name} action?[/] {options}")
+            console.print(
+                json.dumps(
+                    {
+                        "target": action.target,
+                        "confirmation": action.confirmation_mode.value,
+                        "capabilities": list(current.policy.capability_names),
+                        "arguments": redact_tool_args(name, args),
+                    },
+                    indent=2,
+                )
             )
-        )
-        try:
-            approval = input(f"Approve? {options} ").strip().casefold()
-        except (EOFError, OSError):
-            console.print("[red]No interactive input available; operation denied.[/]")
-            return False
+            try:
+                approval = input(f"Approve? {options} ").strip().casefold()
+            except (EOFError, OSError):
+                console.print("[red]No interactive input available; operation denied.[/]")
+                return False
         session_scope = approval == "a" and action.confirmation_mode is ConfirmationMode.SESSION_PREAPPROVAL
         if approval != "y" and not session_scope:
             return False
+        # Human/supervisor review can outlive the original preflight or change its inputs.
+        fresh_args = tool_runtime_args(name, args, cfg)
+        if (
+            (cfg.cwd, cfg.safe_mode, cfg.auto_approve_active, _approval_mode(cfg)) != review_authority
+            or resolve_action(name, fresh_args, cwd=cfg.cwd) != current_action
+            or not preflight_runtime_tool(name, args, cfg).allowed
+        ):
+            return False
+        now = time.time()
         grant = session.issue(
             action,
-            source="interactive-session" if session_scope else "interactive-action",
+            source="local-supervisor"
+            if channel is not None
+            else "interactive-session"
+            if session_scope
+            else "interactive-action",
             now=now,
             maximum_action_count=_SESSION_GRANT_ACTIONS if session_scope else 1,
         )
@@ -650,6 +674,9 @@ def run_tool(name: str, args: dict[str, Any], cfg: Config) -> str:
         "session_command",
         "action_program",
         "harness_search",
+        "harness_stats",
+        "harness_refresh",
+        "available_actions",
         "harness_read",
         "harness_scorecard",
         "harness_competitive_rating",
@@ -687,14 +714,57 @@ def tool_attempt_signature(name: str, args: dict[str, Any]) -> str:
     return keyed_action_fingerprint(name, args)
 
 
+def _is_nonretryable_attempt(item: dict[str, Any]) -> bool:
+    return item.get("status") == "unknown_outcome" or (
+        item.get("status") == "failed" and item.get("retry_allowed") is False
+    )
+
+
+def _retry_barrier_indices(cfg: Config) -> set[int]:
+    barriers: dict[str, int] = {}
+    for index, item in enumerate(cfg.attempt_ledger):
+        signature = str(item.get("signature") or "")
+        if _is_nonretryable_attempt(item):
+            barriers[signature] = index
+        elif item.get("status") not in {"skipped", "denied"}:
+            barriers.pop(signature, None)
+    return set(barriers.values())
+
+
+@contextmanager
+def reserve_retry_capacity(cfg: Config, *, mutating: bool) -> Iterator[bool]:
+    """Reserve space for an uncertain effect before approval or invocation."""
+    if not mutating:
+        yield True
+        return
+    with _ATTEMPT_LEDGER_LOCK:
+        reserved = int(getattr(cfg, "_nathan_retry_slots", 0))
+        admitted = len(_retry_barrier_indices(cfg)) + reserved < ATTEMPT_LEDGER_LIMIT
+        if admitted:
+            setattr(cfg, "_nathan_retry_slots", reserved + 1)
+    try:
+        yield admitted
+    finally:
+        if admitted:
+            with _ATTEMPT_LEDGER_LOCK:
+                remaining = int(getattr(cfg, "_nathan_retry_slots", 0)) - 1
+                if remaining:
+                    setattr(cfg, "_nathan_retry_slots", remaining)
+                else:
+                    delattr(cfg, "_nathan_retry_slots")
+
+
 def _find_failed_attempt_unlocked(cfg: Config, signature: str) -> dict[str, Any] | None:
     now = time.time()
+    skipped = False
     for item in reversed(cfg.attempt_ledger):
         if item.get("signature") != signature:
             continue
         status = item.get("status")
-        if status == "skipped":
-            return None
+        if status in {"skipped", "denied"}:
+            # Neither outcome reconciles an earlier uncertain/nonretryable effect.
+            skipped = skipped or status == "skipped"
+            continue
         if status == "unknown_outcome":
             # Uncertain mutations remain non-retryable until a fresh observer
             # reconciles them; elapsed time cannot prove that no effect occurred.
@@ -706,6 +776,8 @@ def _find_failed_attempt_unlocked(cfg: Config, signature: str) -> dict[str, Any]
             # when it is known not to have succeeded. A fresh explicit action
             # or reconciliation workflow must decide whether to try again.
             return item
+        if skipped:
+            return None
         try:
             age = now - float(item.get("timestamp") or 0)
         except (TypeError, ValueError):
@@ -835,8 +907,10 @@ def _record_tool_attempt_unlocked(
     result: str,
     status: str,
     retry_allowed: bool | None = None,
+    invoked: bool = True,
 ) -> None:
-    worked = status == "worked"
+    invoked = invoked and status not in {"denied", "skipped"}
+    worked = invoked and status == "worked"
     workspace_changed = False
     effective_path = _effective_tool_path(args)
     if name == "read_file" and effective_path is not None:
@@ -858,16 +932,19 @@ def _record_tool_attempt_unlocked(
         command = str(args.get("command") or "")
         exit_matches = _SHELL_EXIT_CODE_RE.findall(str(result))
         returncode = int(exit_matches[-1]) if exit_matches else None
-        if returncode == 0 and tools_module.shell_mutates_workspace(command):
+        if invoked and tools_module.shell_mutates_workspace(command):
             workspace_changed = True
-            execution_guardrails.record_workspace_mutation(success=True)
-        if returncode is not None:
-            execution_guardrails.record_shell_verification(command, returncode=returncode)
+            execution_guardrails.record_workspace_mutation(success=worked, possible=not worked)
+        if worked and returncode is not None:
+            execution_guardrails.record_shell_verification(
+                command, returncode=returncode, cwd=args.get("cwd") or cfg.cwd
+            )
     elif name == "git_diff":
         normalized_result = str(result).strip().lower()
         execution_guardrails.record_verification(
             "git_diff",
             success=worked and normalized_result not in {"", "(no tracked diff)", "(clean working tree)"},
+            cwd=args.get("cwd") or cfg.cwd,
         )
     try:
         signature = tool_attempt_signature(name, args)
@@ -887,7 +964,17 @@ def _record_tool_attempt_unlocked(
     if workspace_changed:
         # A workspace mutation invalidates cached failures: the exact same
         # test/check command is often the correct next action after a fix.
-        cfg.attempt_ledger = [item for item in cfg.attempt_ledger if item.get("status") not in {"failed", "skipped"}]
+        cfg.attempt_ledger = [
+            item
+            for item in cfg.attempt_ledger
+            if item.get("status") not in {"failed", "skipped"} or _is_nonretryable_attempt(item)
+        ]
+    if status in {"skipped", "denied"}:
+        prior = _find_failed_attempt_unlocked(cfg, signature)
+        if prior is not None and _is_nonretryable_attempt(prior):
+            # Coalesce nonexecutions so repeated requests cannot evict their barrier.
+            # Each request still has a typed dispatch/performance receipt.
+            return
     entry: dict[str, Any] = {
         "timestamp": time.time(),
         "signature": signature,
@@ -899,7 +986,11 @@ def _record_tool_attempt_unlocked(
     if retry_allowed is not None:
         entry["retry_allowed"] = bool(retry_allowed)
     cfg.attempt_ledger.append(entry)
-    cfg.attempt_ledger = cfg.attempt_ledger[-ATTEMPT_LEDGER_LIMIT:]
+    barriers = _retry_barrier_indices(cfg)
+    recent = [index for index in range(len(cfg.attempt_ledger)) if index not in barriers]
+    available = max(0, ATTEMPT_LEDGER_LIMIT - len(barriers))
+    retained = barriers | set(recent[-available:] if available else [])
+    cfg.attempt_ledger = [item for index, item in enumerate(cfg.attempt_ledger) if index in retained]
 
 
 def record_tool_attempt(
@@ -910,6 +1001,7 @@ def record_tool_attempt(
     result: str,
     status: str,
     retry_allowed: bool | None = None,
+    invoked: bool = True,
 ) -> None:
     """Record one outcome atomically with its execution-evidence side effects."""
 
@@ -921,6 +1013,7 @@ def record_tool_attempt(
             result=result,
             status=status,
             retry_allowed=retry_allowed,
+            invoked=invoked,
         )
 
 

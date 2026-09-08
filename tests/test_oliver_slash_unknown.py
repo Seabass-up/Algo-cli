@@ -228,8 +228,9 @@ def test_selfcheck_surfaces_action_registry_runtime_audit(monkeypatch):
             printed.append(str(value))
 
     monkeypatch.setattr(main_module, "console", _Console())
-    monkeypatch.setattr(tools, "harness_stats", lambda: "{}")
-    monkeypatch.setattr(tools, "available_actions", lambda _topic=None: "{}")
+    observed = []
+    monkeypatch.setattr(tools, "harness_stats", lambda cfg=None: observed.append(cfg) or "{}")
+    monkeypatch.setattr(tools, "available_actions", lambda _topic=None, cfg=None: observed.append(cfg) or "{}")
     monkeypatch.setattr(tools, "harness_search", lambda **_kwargs: "No harness matches.")
 
     handled, _client = main_module.handle_command("/selfcheck", cfg, None)
@@ -242,6 +243,7 @@ def test_selfcheck_surfaces_action_registry_runtime_audit(monkeypatch):
     assert "Runtime quality diagnostics" in joined
     assert "reasoning quality: not_collected" in joined
     assert "READY" in joined
+    assert observed == [cfg, cfg]
 
 
 def test_harness_status_alias_prints_harness_stats(monkeypatch):
@@ -253,12 +255,16 @@ def test_harness_status_alias_prints_harness_stats(monkeypatch):
             printed.append(str(value))
 
     monkeypatch.setattr(main_module, "console", _Console())
-    monkeypatch.setattr(tools, "harness_stats", lambda: '{"quality": {"status": "ready"}}')
+    observed = []
+    monkeypatch.setattr(
+        tools, "harness_stats", lambda cfg=None: observed.append(cfg) or '{"quality": {"status": "ready"}}'
+    )
 
     handled, _client = main_module.handle_command("/harness status", cfg, None)
 
     assert handled is True
     assert printed == ['{"quality": {"status": "ready"}}']
+    assert observed == [cfg]
 
 
 def test_harness_score_prints_harness_scorecard(monkeypatch):

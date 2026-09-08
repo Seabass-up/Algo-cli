@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 import hashlib
 import json
@@ -107,8 +108,21 @@ class _DispatchControl:
     deadline_monotonic: float | None
     cancellation: DispatchCancellation | None
     last_monotonic: float | None = None
+    interruption: KeyboardInterrupt | None = None
+
+    def interrupt(self, exc: KeyboardInterrupt) -> None:
+        self.interruption = exc
+        if self.cancellation is not None:
+            self.cancellation.cancel("keyboard_interrupt")
+
+    def finish(self, result: DispatchResult) -> DispatchResult:
+        if self.interruption is not None:
+            raise DispatchInterrupted(result) from self.interruption
+        return result
 
     def signal(self) -> tuple[str, str] | None:
+        if self.interruption is not None:
+            return "cancelled", "keyboard_interrupt"
         if self.cancellation is not None and self.cancellation.cancelled:
             return "cancelled", self.cancellation.reason_code
         deadline = self.deadline_monotonic
@@ -151,6 +165,14 @@ class DispatchResult:
         """Return the bounded legacy status used by run summaries and telemetry."""
 
         return _attempt_status(self.outcome)
+
+
+class DispatchInterrupted(KeyboardInterrupt):
+    """Stop the caller after its interrupted action has a finalized receipt."""
+
+    def __init__(self, result: DispatchResult) -> None:
+        super().__init__("action interrupted")
+        self.result = result
 
 
 def _default_effect_root() -> Path:
@@ -287,6 +309,7 @@ def _finalize(
         result=result,
         status=status,
         retry_allowed=outcome.retry_allowed,
+        invoked=outcome.invoked,
     )
     runtime.record_perf_event(
         "tool",
@@ -646,8 +669,10 @@ def _run_external_effect(
     started = time.perf_counter()
     try:
         with scoped_tool_runtime_env(cfg):
-            raw_result = str(dependencies.invoke(name, dict(args), cfg))
+            raw_result = str(dependencies.invoke(name, deepcopy(args), cfg))
     except BaseException as exc:
+        if isinstance(exc, KeyboardInterrupt):
+            control.interrupt(exc)
         raw_result = f"Tool error for {name}: {type(exc).__name__}"
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
     fence_error_code = ""
@@ -706,11 +731,14 @@ def _run_external_effect(
         verifier = dependencies.effect_verifiers.get(name)
         observed: bool | None = None
         verifier_name = ""
-        if verifier is not None:
+        if verifier is not None and control.interruption is None:
             raw_verifier_name = str(getattr(verifier, "__name__", ""))
             verifier_name = raw_verifier_name if _SAFE_VERIFIER_ID.fullmatch(raw_verifier_name) else "effect_verifier"
             try:
                 observed = verifier(action, raw_result)
+            except KeyboardInterrupt as exc:
+                control.interrupt(exc)
+                post_termination = control.signal()
             except Exception:
                 observed = None
         if observed is True:
@@ -843,6 +871,8 @@ def dispatch_action(
 ) -> DispatchResult:
     """Authorize, fence, invoke, normalize, record, and render one action."""
 
+    # Review and audit one private snapshot, unaffected by a caller's nested mutations.
+    args = deepcopy(args)
     deps = dependencies or default_dispatch_dependencies()
     control = _DispatchControl(
         dependencies=deps,
@@ -968,142 +998,184 @@ def dispatch_action(
             render=render,
         )
 
-    approve = deps.approve or runtime.ask_approval
-    if not approve(
-        name,
-        args,
-        cfg,
-        force=force_approval,
-        preflight=preflight,
-    ):
-        outcome = _preinvoke_outcome(
-            action,
-            "User denied this operation.",
-            status="denied",
-            error_code="approval_denied",
-        )
-        return _finalize(
-            name=name,
-            args=args,
-            cfg=cfg,
-            tool_call_id=tool_call_id,
-            preflight=preflight,
-            outcome=outcome,
-            duration_ms=0.0,
-            render=render,
-        )
+    with runtime.reserve_retry_capacity(cfg, mutating=action.effect_class is not EffectClass.OBSERVE) as admitted:
+        if not admitted:
+            outcome = _preinvoke_outcome(
+                action,
+                "Unresolved action capacity is full. Reconcile prior uncertain effects before new mutations. "
+                "Read-only observations remain available.",
+                status="denied",
+                error_code="unresolved_action_capacity",
+            )
+            return _finalize(
+                name=name,
+                args=args,
+                cfg=cfg,
+                tool_call_id=tool_call_id,
+                preflight=preflight,
+                outcome=outcome,
+                duration_ms=0.0,
+                render=render,
+            )
 
-    lease: TargetLease | None = None
-    release_error: Exception | None = None
-    try:
-        termination = control.signal()
-        if termination is not None:
-            outcome = _termination_outcome(action, termination, invoked=False)
-            duration_ms = 0.0
-        else:
-            if action.effect_class is not EffectClass.OBSERVE:
-                lease = deps.lease_manager.acquire(action.target)
-                if not lease.validate():
-                    raise EffectLeaseError("fresh effect lease failed validation")
+        approve = deps.approve or runtime.ask_approval
+        try:
+            approved = approve(name, args, cfg, force=force_approval, preflight=preflight)
+        except KeyboardInterrupt as exc:
+            control.interrupt(exc)
+            return control.finish(
+                _finalize(
+                    name=name,
+                    args=args,
+                    cfg=cfg,
+                    tool_call_id=tool_call_id,
+                    preflight=preflight,
+                    outcome=_termination_outcome(action, ("cancelled", "keyboard_interrupt"), invoked=False),
+                    duration_ms=0.0,
+                    render=render,
+                )
+            )
+        if not approved:
+            noninteractive = runtime.approval_mode_for_config(cfg) != "interactive"
+            outcome = _preinvoke_outcome(
+                action,
+                (
+                    "Approval is unavailable in this noninteractive run. This action was not executed. "
+                    "Use a permitted alternative or obtain exact action-time approval in an interactive session; "
+                    "auto mode does not grant action-time or handoff authority."
+                    if noninteractive
+                    else "This operation was not approved and was not executed."
+                ),
+                status="denied",
+                error_code="approval_unavailable" if noninteractive else "approval_denied",
+            )
+            return _finalize(
+                name=name,
+                args=args,
+                cfg=cfg,
+                tool_call_id=tool_call_id,
+                preflight=preflight,
+                outcome=outcome,
+                duration_ms=0.0,
+                render=render,
+            )
+
+        lease: TargetLease | None = None
+        release_error: Exception | None = None
+        try:
             termination = control.signal()
             if termination is not None:
-                outcome = _termination_outcome(
-                    action,
-                    termination,
-                    invoked=False,
-                    fencing_token=lease.fencing_token if lease is not None else 0,
-                )
+                outcome = _termination_outcome(action, termination, invoked=False)
                 duration_ms = 0.0
-            elif action.effect_class is EffectClass.EXTERNAL_MUTATION:
-                if lease is None:  # pragma: no cover - defensive invariant
-                    raise EffectLeaseError("external effect requires a target lease")
-                invocation_id = tool_call_id
-                if not invocation_id:  # pragma: no cover - checked before approval
-                    raise EffectLeaseError("external effect requires an idempotency ID")
-                outcome, duration_ms = _run_external_effect(
-                    name,
-                    preflight.signature_args,
-                    cfg,
-                    action,
-                    invocation_id=invocation_id,
-                    dependencies=deps,
-                    lease=lease,
-                    control=control,
-                )
             else:
-                started = time.perf_counter()
-                try:
-                    with scoped_tool_runtime_env(cfg):
-                        raw_result = str(deps.invoke(name, dict(preflight.signature_args), cfg))
-                except BaseException as exc:
-                    raw_result = f"Tool error for {name}: {type(exc).__name__}"
-                duration_ms = round((time.perf_counter() - started) * 1000, 2)
+                if action.effect_class is not EffectClass.OBSERVE:
+                    lease = deps.lease_manager.acquire(action.target)
+                    if not lease.validate():
+                        raise EffectLeaseError("fresh effect lease failed validation")
                 termination = control.signal()
                 if termination is not None:
                     outcome = _termination_outcome(
                         action,
                         termination,
-                        invoked=True,
-                        result=raw_result,
+                        invoked=False,
                         fencing_token=lease.fencing_token if lease is not None else 0,
+                    )
+                    duration_ms = 0.0
+                elif action.effect_class is EffectClass.EXTERNAL_MUTATION:
+                    if lease is None:  # pragma: no cover - defensive invariant
+                        raise EffectLeaseError("external effect requires a target lease")
+                    invocation_id = tool_call_id
+                    if not invocation_id:  # pragma: no cover - checked before approval
+                        raise EffectLeaseError("external effect requires an idempotency ID")
+                    outcome, duration_ms = _run_external_effect(
+                        name,
+                        preflight.signature_args,
+                        cfg,
+                        action,
+                        invocation_id=invocation_id,
+                        dependencies=deps,
+                        lease=lease,
+                        control=control,
                     )
                 else:
-                    raw_status = runtime.classify_tool_status(raw_result, name=name)
-                    outcome = normalize_action_outcome(
-                        action,
-                        raw_result,
-                        reported_status=raw_status,
-                        invoked=True,
-                        fencing_token=lease.fencing_token if lease is not None else 0,
-                        error_code="tool_reported_failure" if raw_status == "failed" else "",
-                    )
-    except Exception as exc:
-        outcome = _preinvoke_outcome(
-            action,
-            "Action was not invoked because its target effect lease was unavailable.",
-            status="failed",
-            error_code=type(exc).__name__,
-        )
-        duration_ms = 0.0
-    finally:
-        if lease is not None:
-            try:
-                lease.release()
-            except Exception as exc:
-                release_error = exc
-
-    if release_error is not None:
-        release_error_code = f"lease_release_{type(release_error).__name__}"
-        if outcome.status is OutcomeStatus.SUCCEEDED and outcome.verification is not VerificationStatus.PASSED:
-            outcome = normalize_action_outcome(
+                    started = time.perf_counter()
+                    try:
+                        with scoped_tool_runtime_env(cfg):
+                            raw_result = str(deps.invoke(name, deepcopy(preflight.signature_args), cfg))
+                    except BaseException as exc:
+                        if isinstance(exc, KeyboardInterrupt):
+                            control.interrupt(exc)
+                        raw_result = f"Tool error for {name}: {type(exc).__name__}"
+                    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+                    termination = control.signal()
+                    if termination is not None:
+                        outcome = _termination_outcome(
+                            action,
+                            termination,
+                            invoked=True,
+                            result=raw_result,
+                            fencing_token=lease.fencing_token if lease is not None else 0,
+                        )
+                    else:
+                        raw_status = runtime.classify_tool_status(raw_result, name=name)
+                        outcome = normalize_action_outcome(
+                            action,
+                            raw_result,
+                            reported_status=raw_status,
+                            invoked=True,
+                            fencing_token=lease.fencing_token if lease is not None else 0,
+                            error_code="tool_reported_failure" if raw_status == "failed" else "",
+                        )
+        except Exception as exc:
+            outcome = _preinvoke_outcome(
                 action,
-                outcome.result,
-                reported_status="failed",
-                invoked=outcome.invoked,
-                effect_id=outcome.effect_id,
-                idempotency_key=outcome.idempotency_key,
-                fencing_token=outcome.fencing_token,
-                error_code=release_error_code,
+                "Action was not invoked because its target effect lease was unavailable.",
+                status="failed",
+                error_code=type(exc).__name__,
             )
-        else:
-            outcome = replace(outcome, error_code=release_error_code)
+            duration_ms = 0.0
+        finally:
+            if lease is not None:
+                try:
+                    lease.release()
+                except Exception as exc:
+                    release_error = exc
 
-    return _finalize(
-        name=name,
-        args=args,
-        cfg=cfg,
-        tool_call_id=tool_call_id,
-        preflight=preflight,
-        outcome=outcome,
-        duration_ms=duration_ms,
-        render=render,
-    )
+        if release_error is not None:
+            release_error_code = f"lease_release_{type(release_error).__name__}"
+            if outcome.status is OutcomeStatus.SUCCEEDED and outcome.verification is not VerificationStatus.PASSED:
+                outcome = normalize_action_outcome(
+                    action,
+                    outcome.result,
+                    reported_status="failed",
+                    invoked=outcome.invoked,
+                    effect_id=outcome.effect_id,
+                    idempotency_key=outcome.idempotency_key,
+                    fencing_token=outcome.fencing_token,
+                    error_code=release_error_code,
+                )
+            else:
+                outcome = replace(outcome, error_code=release_error_code)
+
+        return control.finish(
+            _finalize(
+                name=name,
+                args=args,
+                cfg=cfg,
+                tool_call_id=tool_call_id,
+                preflight=preflight,
+                outcome=outcome,
+                duration_ms=duration_ms,
+                render=render,
+            )
+        )
 
 
 __all__ = [
     "ApprovalCallback",
     "DispatchCancellation",
     "DispatchDependencies",
+    "DispatchInterrupted",
     "DispatchResult",
     "EffectVerifier",
     "TRUSTED_ADAPTER_ACTIONS",

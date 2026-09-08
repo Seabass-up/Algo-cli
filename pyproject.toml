@@ -59,7 +59,7 @@ pdf = [
     "PyMuPDF>=1.24",
 ]
 echo-veil = [
-    "echo-veil @ git+https://github.com/Seabass-up/echo-veil.git@271ebaa959aabd7a83cf338d30cd0fa1c7338488",
+    "echo-veil @ git+https://github.com/Seabass-up/echo-veil.git@cbee525687ac03c830d4b6632ff1d044b4b838fc",
 ]
 quantization = [
     "turbovec>=0.7",
@@ -114,6 +114,7 @@ allow-direct-references = true
 "docs/inference-harness-loop-blueprint-2026-06.md" = "algo_cli/resources/docs/inference-harness-loop-blueprint-2026-06.md"
 "docs/main-split-map.md" = "algo_cli/resources/docs/main-split-map.md"
 "docs/provider-auth-recovery.md" = "algo_cli/resources/docs/provider-auth-recovery.md"
+"docs/supervised-action-review.md" = "algo_cli/resources/docs/supervised-action-review.md"
 "docs/reflex-loop-v0.2.md" = "algo_cli/resources/docs/reflex-loop-v0.2.md"
 "docs/privacy-and-context.md" = "algo_cli/resources/docs/privacy-and-context.md"
 "docs/runtime-capability-catalog.md" = "algo_cli/resources/docs/runtime-capability-catalog.md"
@@ -145,6 +146,7 @@ include = [
     "/docs/inference-harness-loop-blueprint-2026-06.md",
     "/docs/main-split-map.md",
     "/docs/provider-auth-recovery.md",
+    "/docs/supervised-action-review.md",
     "/docs/reflex-loop-v0.2.md",
     "/docs/privacy-and-context.md",
     "/docs/runtime-capability-catalog.md",

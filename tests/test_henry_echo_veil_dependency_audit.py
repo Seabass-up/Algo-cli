@@ -158,6 +158,39 @@ def test_record_tamper_is_rejected(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("relative", "accepted"),
+    [
+        ("echo_veil/__pycache__/agent_memory.cpython-314.pyc", True),
+        ("echo_veil/agent_memory.pyc", False),
+        ("echo_veil/__pycache__/agent_memory.py", False),
+        ("echo_veil/unsigned.py", False),
+    ],
+)
+def test_hashless_record_exception_is_only_for_derived_bytecode(tmp_path, relative, accepted):
+    from types import SimpleNamespace
+
+    source = tmp_path / "echo_veil/__init__.py"
+    source.parent.mkdir()
+    source.write_bytes(b"VALUE = 1\n")
+    verified = PackagePath("echo_veil/__init__.py")
+    digest = base64.urlsafe_b64encode(hashlib.sha256(source.read_bytes()).digest()).rstrip(b"=").decode("ascii")
+    verified.hash = FileHash(f"sha256={digest}")
+    verified.size = source.stat().st_size
+    target = tmp_path / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"derived cache fixture")
+    unverified = PackagePath(relative)
+    unverified.hash = None
+    unverified.size = None
+    distribution = SimpleNamespace(files=[verified, unverified], locate_file=lambda path: tmp_path / path)
+    if accepted:
+        assert SCRIPT._verify_installed_record(distribution, install_prefix=tmp_path) == (1, 1, 2)
+    else:
+        with pytest.raises(SCRIPT.EchoDependencyAuditError, match="record_hash_missing"):
+            SCRIPT._verify_installed_record(distribution, install_prefix=tmp_path)
+
+
 def test_shadow_package_cannot_borrow_trusted_distribution_identity(tmp_path: Path) -> None:
     shadow = tmp_path / "shadow" / "echo_veil"
     shadow.mkdir(parents=True)

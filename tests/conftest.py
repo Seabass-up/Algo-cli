@@ -91,6 +91,8 @@ def clean_state():
         harness._extra_roots_cache = None
         harness._PROTECTED_MEMORY_AUTHORITY = False
         harness._QUERY_VEC_CACHE.clear()
+        harness._BM25_INDEX_CACHE.clear()
+        harness._VECTOR_MATRIX_CACHE.clear()
     except ImportError:
         pass
     try:

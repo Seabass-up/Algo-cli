@@ -56,7 +56,18 @@ _CALIBRATION_BLOCK = (
 CONTEXT_USAGE_CACHE: tuple[tuple[Any, ...], int] | None = None
 
 
-def _echo_veil_memory_items(cfg: Config) -> list[str]:
+def _memory_recall_query(cfg: Config, user_message: str | None) -> str:
+    """Prefer explicit turn intent; retain history fallback for standalone callers."""
+
+    if user_message is not None:
+        return user_message
+    return next(
+        (str(message.get("content", "")) for message in reversed(cfg.messages) if message.get("role") == "user"),
+        "",
+    )
+
+
+def _echo_veil_memory_items(cfg: Config, *, user_message: str | None = None) -> list[str]:
     """Return memories from the one explicitly selected backend."""
     try:
         from .ada_memory_echo_veil import echo_veil_authority_selected
@@ -71,10 +82,7 @@ def _echo_veil_memory_items(cfg: Config) -> list[str]:
     try:
         from .ada_memory_echo_veil import recall_with_echo_veil
 
-        query = next(
-            (str(message.get("content", "")) for message in reversed(cfg.messages) if message.get("role") == "user"),
-            "",
-        )
+        query = _memory_recall_query(cfg, user_message)
         recalled = recall_with_echo_veil(cfg, query, top_k=8) if query else []
         if recalled:
             return list(dict.fromkeys(recalled))
@@ -89,7 +97,7 @@ def _echo_veil_memory_items(cfg: Config) -> list[str]:
         return []
 
 
-def _protected_memory_prompt_section(cfg: Config) -> str:
+def _protected_memory_prompt_section(cfg: Config, *, user_message: str | None = None) -> str:
     """Render Echo memory metadata in required mode without legacy fallback."""
 
     try:
@@ -104,10 +112,7 @@ def _protected_memory_prompt_section(cfg: Config) -> str:
         if not protection_required(cfg):
             return ""
         contract = protected_memory_operating_contract(cfg)
-        query = next(
-            (str(message.get("content", "")) for message in reversed(cfg.messages) if message.get("role") == "user"),
-            "",
-        )
+        query = _memory_recall_query(cfg, user_message)
         if not query:
             return contract
         if is_exact_response_task(query):
@@ -147,11 +152,11 @@ def _protected_memory_prompt_section(cfg: Config) -> str:
         raise RuntimeError("required protected memory context is unavailable") from exc
 
 
-def _memory_prompt_section(cfg: Config) -> str:
-    protected = _protected_memory_prompt_section(cfg)
+def _memory_prompt_section(cfg: Config, *, user_message: str | None = None) -> str:
+    protected = _protected_memory_prompt_section(cfg, user_message=user_message)
     if protected:
         return protected
-    memory_items = _echo_veil_memory_items(cfg)
+    memory_items = _echo_veil_memory_items(cfg, user_message=user_message)
     if not memory_items:
         return ""
     memories = "\n".join(f"- {item}" for item in memory_items)
@@ -272,8 +277,11 @@ def fit_optional_context_blocks(
     base_used_tokens: int,
     runtime_cap: int,
     model_info: dict[str, Any] | None = None,
+    source_token_counts: dict[str, int] | None = None,
 ) -> tuple[str, list[str], list[str], int]:
     """Append optional context blocks only while the request stays within budget."""
+    if source_token_counts is not None:
+        source_token_counts.clear()
     budget = int(runtime_cap) - int(base_used_tokens) - context_response_reserve(runtime_cap, model_info)
     budget = max(0, budget)
     included: list[str] = []
@@ -302,6 +310,15 @@ def fit_optional_context_blocks(
             omitted.append(block.name)
     if not rendered_parts:
         return base_message, included, omitted, used_tokens
+    if source_token_counts is not None:
+        # Attribute only admitted text, including separators and truncation markers.
+        rendered_chars = len(base_message)
+        previous_tokens = estimate_text_tokens(base_message)
+        for name, rendered in zip(included, rendered_parts):
+            rendered_chars += 2 + len(rendered)
+            rendered_tokens = (rendered_chars + 3) // 4
+            source_token_counts[name] = source_token_counts.get(name, 0) + rendered_tokens - previous_tokens
+            previous_tokens = rendered_tokens
     return f"{base_message}\n\n" + "\n\n".join(rendered_parts), included, omitted, used_tokens
 
 
@@ -311,9 +328,13 @@ def build_system_prompt(
     retrieved_lessons: list[str] | None = None,
     active_model_info: dict[str, Any] | None = None,
     user_message: str | None = None,
+    source_token_counts: dict[str, int] | None = None,
 ) -> str:
     from .ada_memory_echo_veil import echo_veil_authority_selected
 
+    if source_token_counts is not None:
+        source_token_counts.clear()
+        source_token_counts.update(identity=0, memory=0)
     # Legacy lesson Markdown is a mutable plaintext memory store.  Once Echo
     # owns memory, an omitted lesson selection must mean "no legacy lessons",
     # never the historical inline-all fallback.
@@ -325,6 +346,8 @@ def build_system_prompt(
         protected=echo_authority,
     )
     prompt = (identity_block + "\n\n" if identity_block else "") + cfg.system
+    if source_token_counts is not None and identity_block:
+        source_token_counts["identity"] = estimate_text_tokens(identity_block + "\n\n")
     load_runtime_env(override=True)
     if routes_to_xai(cfg):
         provider = "xAI Grok API"
@@ -396,9 +419,12 @@ def build_system_prompt(
             "- Prefer action_program for a predictable multi-step workflow once targets and checks are known; failed verification returns control to the model.\n"
             "- After one successful fail-on-mismatch verifier, give one concise final answer; do not reread, rediff, or rerun unchanged evidence."
         )
-        memory_section = _memory_prompt_section(cfg)
+        memory_section = _memory_prompt_section(cfg, user_message=user_message)
         if memory_section:
+            before_memory_tokens = estimate_text_tokens(prompt)
             prompt += f"\n\n{memory_section}"
+            if source_token_counts is not None:
+                source_token_counts["memory"] = estimate_text_tokens(prompt) - before_memory_tokens
         if active_model_info:
             size_b = _model_info_module.parameter_size_billions(active_model_info)
             if size_b is not None and size_b < _SMALL_MODEL_THRESHOLD_B:
@@ -501,9 +527,12 @@ def build_system_prompt(
             "Only retry when the arguments materially change, new evidence appears, or the user asks.\n"
             + "\n".join(ledger_lines)
         )
-    memory_section = _memory_prompt_section(cfg)
+    memory_section = _memory_prompt_section(cfg, user_message=user_message)
     if memory_section:
+        before_memory_tokens = estimate_text_tokens(prompt)
         prompt += f"\n\n{memory_section}"
+        if source_token_counts is not None:
+            source_token_counts["memory"] = estimate_text_tokens(prompt) - before_memory_tokens
     if active_model_info:
         size_b = _model_info_module.parameter_size_billions(active_model_info)
         if size_b is not None and size_b < _SMALL_MODEL_THRESHOLD_B:

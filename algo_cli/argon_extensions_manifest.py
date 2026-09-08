@@ -142,7 +142,7 @@ def _homebrew_component(
 ) -> ExtensionComponent:
     if kind == "homebrew-formula":
         receipt = prefix / "Cellar" / name if prefix is not None else None
-        if receipt is None or not receipt.exists():
+        if prefix is None or receipt is None or not receipt.exists():
             return ExtensionComponent(name=name, kind=kind, status="missing")
         opt_path = prefix / "opt" / name
         command = opt_path / "bin" / probe if probe else None

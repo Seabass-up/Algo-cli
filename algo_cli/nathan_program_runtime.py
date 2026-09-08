@@ -1633,6 +1633,8 @@ def execute_program(
     and after dispatch.
     """
 
+    from .james_dispatch import DispatchInterrupted
+
     if isinstance(plan, CompiledProgram):
         compiled = _revalidate_compiled_program(
             plan,
@@ -1665,6 +1667,7 @@ def execute_program(
     cumulative_bytes = 0
     status = "worked"
     error = ""
+    interruption: DispatchInterrupted | None = None
     last_clock = started
     own_scope: execution_guardrails.ExecutionScope | None = None
     active_workspace = execution_guardrails.active_workspace()
@@ -1778,6 +1781,10 @@ def execute_program(
             except ProgramValidationError as exc:
                 value = f"Program step error: {exc}"
                 step_status = "failed"
+            except DispatchInterrupted as exc:
+                interruption = exc
+                value = exc.result.result
+                step_status = exc.result.outcome.status.value
             except Exception as exc:
                 value = f"Program step error: {type(exc).__name__}"
                 step_status = "failed"
@@ -1890,7 +1897,14 @@ def execute_program(
             )
         if not verify_receipt_chain(receipts):
             raise ProgramStoreError("program receipt chain failed self-verification")
-        receipt_uri = artifact_store.write_receipts(run_id, receipts)
+        try:
+            receipt_uri = artifact_store.write_receipts(run_id, receipts)
+        except Exception as exc:
+            if interruption is not None:
+                raise interruption from exc
+            raise
+        if interruption is not None:
+            raise interruption
         chain_hash = receipts[-1].receipt_hash if receipts else ZERO_RECEIPT_HASH
         requires_reconciliation = any(receipt.status == "unknown_outcome" for receipt in receipts)
         return ProgramResult(

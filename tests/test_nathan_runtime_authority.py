@@ -3,6 +3,8 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import time
 
+import pytest
+
 from algo_cli.config import Config
 from algo_cli.marcus_authority import ConfirmationMode
 from algo_cli.nathan_runtime import (
@@ -43,6 +45,69 @@ def test_runtime_grant_is_exact_target_exact_action_and_one_use(tmp_path) -> Non
     assert session.matching_grant(other_action, now) is None
     assert session.consume(grant.grant_id, now) is True
     assert session.consume(grant.grant_id, now) is False
+
+
+@pytest.mark.parametrize("path_kind", ["relative", "absolute", "symlink"])
+def test_directory_baseline_rejects_targets_outside_the_workspace(tmp_path, path_kind) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    if path_kind == "symlink":
+        link = workspace / "link"
+        link.symlink_to(outside, target_is_directory=True)
+        path = "link"
+    else:
+        path = "../outside" if path_kind == "relative" else str(outside)
+    cfg = Config(cwd=str(workspace))
+    preflight = preflight_runtime_tool("list_directory", {"path": path}, cfg)
+
+    assert preflight.policy.disposition is PolicyDisposition.DENY
+    assert not ask_approval("list_directory", {"path": path}, cfg, preflight=preflight)
+
+
+@pytest.mark.parametrize(
+    "name,first_args,second_args",
+    [
+        ("list_directory", {"path": "src"}, {"path": "tests"}),
+        ("list_directory", {"path": "src", "limit": 10}, {"path": "src", "limit": 20}),
+        ("read_file", {"path": "one.txt", "max_chars": 10}, {"path": "one.txt", "max_chars": 20}),
+        ("session_command", {"command": "/status"}, {"command": "/status"}),
+    ],
+)
+def test_overlapping_baseline_preflights_have_independent_one_use_grants(
+    tmp_path, name, first_args, second_args
+) -> None:
+    cfg = Config(cwd=str(tmp_path))
+    setattr(cfg, "_nathan_approval_mode", "never")
+    calls = [(args, preflight_runtime_tool(name, args, cfg)) for args in (first_args, second_args)]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        decisions = list(pool.map(lambda call: ask_approval(name, call[0], cfg, preflight=call[1]), calls))
+
+    assert decisions == [True, True]
+    assert calls[0][1].policy.grant_id != calls[1][1].policy.grant_id
+    assert all(not ask_approval(name, args, cfg, preflight=preflight) for args, preflight in calls)
+
+
+@pytest.mark.parametrize("unavailable", ["consumed", "revoked", "expired"])
+def test_unavailable_baseline_grant_cannot_fall_through_to_a_prompt(monkeypatch, tmp_path, unavailable) -> None:
+    cfg = Config(cwd=str(tmp_path))
+    args = {"path": "README.md"}
+    preflight = preflight_runtime_tool("read_file", args, cfg)
+    session = authority_session_for(cfg)
+    if unavailable == "consumed":
+        assert session.consume(preflight.policy.grant_id, time.time())
+    elif unavailable == "revoked":
+        session.revoke_all()
+    else:
+        expired_now = time.time() + 31
+        monkeypatch.setattr("algo_cli.nathan_runtime.time.time", lambda: expired_now)
+    prompts = []
+    monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "y")
+
+    assert not ask_approval("read_file", args, cfg, preflight=preflight)
+    assert prompts == []
 
 
 def test_grant_consumption_is_atomic_under_race(tmp_path) -> None:
@@ -100,13 +165,16 @@ def test_force_elevates_a_baseline_read_to_action_time(monkeypatch, tmp_path) ->
     monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "n")
     preflight = preflight_runtime_tool("read_file", {"path": "README.md"}, cfg)
 
-    assert ask_approval(
-        "read_file",
-        {"path": "README.md"},
-        cfg,
-        force=True,
-        preflight=preflight,
-    ) is False
+    assert (
+        ask_approval(
+            "read_file",
+            {"path": "README.md"},
+            cfg,
+            force=True,
+            preflight=preflight,
+        )
+        is False
+    )
     assert len(prompts) == 1
 
 

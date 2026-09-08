@@ -256,9 +256,7 @@ def test_verification_command_classification_accepts_real_verifiers(command: str
         ("cd /tmp/workspace && go vet ./... && go test ./...", "test"),
     ],
 )
-def test_verification_command_classification_accepts_verifier_chains(
-    command: str, kind: str
-) -> None:
+def test_verification_command_classification_accepts_verifier_chains(command: str, kind: str) -> None:
     decision = guardrails.classify_verification_command(command)
     assert decision.qualifies is True
     assert decision.kind == kind
@@ -281,9 +279,7 @@ def test_verification_command_classification_rejects_non_verifier_chains(command
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX environment-prefix syntax")
 def test_posix_environment_prefix_preserves_inline_verification() -> None:
-    decision = guardrails.classify_verification_command(
-        'PYTHONPATH=src python3 -c "value = 4\nassert value == 4" 2>&1'
-    )
+    decision = guardrails.classify_verification_command('PYTHONPATH=src python3 -c "value = 4\nassert value == 4" 2>&1')
 
     assert decision.qualifies is True
     assert decision.kind == "test"
@@ -309,9 +305,7 @@ def test_windows_inline_python_requires_cmd_compatible_double_quotes() -> None:
 
 
 def test_status_masking_verifier_suffix_is_detected() -> None:
-    assert guardrails.masks_verification_exit_status(
-        'python3 healthcheck.py 2>&1; echo "EXIT_CODE=$?"'
-    ) is True
+    assert guardrails.masks_verification_exit_status('python3 healthcheck.py 2>&1; echo "EXIT_CODE=$?"') is True
     assert guardrails.masks_verification_exit_status("python3 healthcheck.py") is False
     assert guardrails.masks_verification_exit_status('echo "EXIT_CODE=$?"') is False
 
@@ -549,7 +543,7 @@ def test_auto_verify_working_tree_requires_active_scope(tmp_path: Path) -> None:
 def test_auto_verify_working_tree_records_git_diff_on_clean_tree(tmp_path: Path) -> None:
     _init_git_repo(tmp_path)
     scope = guardrails.begin_execution_scope(tmp_path)
-    guardrails.record_mutation("module.py", success=True, operation="write_file")
+    guardrails.record_mutation("seed.txt", success=True, operation="write_file")
 
     decision = guardrails.auto_verify_working_tree(tmp_path)
 
@@ -577,7 +571,7 @@ def test_auto_verify_working_tree_blocks_on_structural_problems(tmp_path: Path) 
     guardrails.end_execution_scope(scope)
 
 
-def test_auto_verify_working_tree_allows_outside_git_repository(
+def test_auto_verify_working_tree_blocks_outside_git_repository(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -587,12 +581,12 @@ def test_auto_verify_working_tree_allows_outside_git_repository(
 
     decision = guardrails.auto_verify_working_tree(tmp_path)
 
-    assert decision.allowed is True
+    assert decision.allowed is False
     assert "not a git repository" in decision.reason
     guardrails.end_execution_scope(scope)
 
 
-def test_auto_verify_working_tree_allows_when_git_is_missing(
+def test_auto_verify_working_tree_blocks_when_git_is_missing(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -606,7 +600,7 @@ def test_auto_verify_working_tree_allows_when_git_is_missing(
 
     decision = guardrails.auto_verify_working_tree(tmp_path)
 
-    assert decision.allowed is True
+    assert decision.allowed is False
     assert "unavailable" in decision.reason
     guardrails.end_execution_scope(scope)
 

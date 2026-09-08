@@ -38,15 +38,15 @@ def test_harness_reuses_bm25_corpus_statistics(monkeypatch) -> None:
         {"id": "b", "harness": "h", "kind": "wiki", "search_text": "general helper"},
     ]
     monkeypatch.setattr(harness, "load_index", lambda refresh=False: {"records": records})
-    harness._BM25_INDEX_CACHE = None
+    harness._BM25_INDEX_CACHE.clear()
 
     harness.search_index("runtime")
-    first_index = harness._BM25_INDEX_CACHE[2]
+    first_index = harness._BM25_INDEX_CACHE.last[2]
     harness.search_index("kernel")
 
-    assert harness._BM25_INDEX_CACHE[2] is first_index
+    assert harness._BM25_INDEX_CACHE.last[2] is first_index
     harness._set_index_cache({"records": records})
-    assert harness._BM25_INDEX_CACHE is None
+    assert harness._BM25_INDEX_CACHE.last is None
 
 
 def test_stable_top_k_matches_full_stable_sort_with_ties() -> None:
@@ -211,15 +211,15 @@ def test_vector_retrieval_reuses_normalized_matrix_and_preserves_scalar_ranking(
         ]
     }
     monkeypatch.setattr(harness, "load_index", lambda refresh=False: index)
-    harness._VECTOR_MATRIX_CACHE = None
+    harness._VECTOR_MATRIX_CACHE.clear()
     def embed(_texts):
         return [[1.0, 1.0]]
 
     numpy_hits = harness.retrieve_for_query("matrix-cache-query", embed, "m", k=2)
-    first_matrix = harness._VECTOR_MATRIX_CACHE[2]
+    first_matrix = harness._VECTOR_MATRIX_CACHE.last[2]
     repeated_hits = harness.retrieve_for_query("matrix-cache-query", embed, "m", k=2)
 
-    assert harness._VECTOR_MATRIX_CACHE[2] is first_matrix
+    assert harness._VECTOR_MATRIX_CACHE.last[2] is first_matrix
     assert repeated_hits == numpy_hits
 
     monkeypatch.setattr(harness, "_NUMPY", False)
@@ -230,7 +230,7 @@ def test_vector_retrieval_reuses_normalized_matrix_and_preserves_scalar_ranking(
     )
 
     harness._set_index_cache(index)
-    assert harness._VECTOR_MATRIX_CACHE is None
+    assert harness._VECTOR_MATRIX_CACHE.last is None
 
 
 @pytest.mark.skipif(not harness._NUMPY, reason="NumPy is not installed")
@@ -250,7 +250,7 @@ def test_vector_retrieval_filters_nonfinite_rows_without_runtime_warnings(monkey
         ]
     }
     monkeypatch.setattr(harness, "load_index", lambda refresh=False: index)
-    harness._VECTOR_MATRIX_CACHE = None
+    harness._VECTOR_MATRIX_CACHE.clear()
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")

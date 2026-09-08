@@ -80,6 +80,41 @@ func TestOllamaEndpointIsCredentialFreePathlessAndLoopbackOnly(t *testing.T) {
 	}
 }
 
+func TestBoundEmbeddingRejectsMismatchesBeforeCallingUpstream(t *testing.T) {
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Path != "/api/embed" {
+			t.Errorf("unexpected upstream path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"fixture","embeddings":[[1,0]]}`)
+	}))
+	defer upstream.Close()
+	mux := newGatewayMux("unused", upstream.URL, upstream.Client())
+	for _, expected := range []string{"", "http://127.0.0.1:1", "http://user:secret@localhost:11434", "http://example.com:11434"} {
+		request := httptest.NewRequest(http.MethodPost, "/supplemental/embed-bound/v1", strings.NewReader(`{"model":"fixture","input":["public fixture"]}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Algo-Ollama-Host", expected)
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+		if response.Code != http.StatusConflict || calls.Load() != 0 {
+			t.Fatalf("mismatch forwarded: status=%d calls=%d", response.Code, calls.Load())
+		}
+		if strings.Contains(response.Body.String(), expected) && expected != "" {
+			t.Fatal("error echoed the rejected binding")
+		}
+	}
+	request := httptest.NewRequest(http.MethodPost, "/supplemental/embed-bound/v1", strings.NewReader(`{"model":"fixture","input":["public fixture"]}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Algo-Ollama-Host", upstream.URL)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || calls.Load() != 1 || response.Header().Get("X-Algo-Ollama-Host") != upstream.URL {
+		t.Fatalf("bound request failed: status=%d calls=%d", response.Code, calls.Load())
+	}
+}
+
 func TestIndexLoaderBoundsContractAndSymlinks(t *testing.T) {
 	valid := writeFixtureIndex(t, []map[string]interface{}{{"id": "one"}})
 	index, err := loadIndex(valid)

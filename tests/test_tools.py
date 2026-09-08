@@ -635,6 +635,20 @@ def test_denied_attempt_does_not_block_retry():
     assert tool_runtime.find_failed_attempt(cfg, signature) is None
 
 
+@pytest.mark.parametrize("status", ["unknown_outcome", "failed"])
+def test_nonretryable_outcome_survives_skips_denials_and_unrelated_edit(tmp_path, status):
+    cfg = Config(cwd=str(tmp_path))
+    args = {"command": "python change.py"}
+    signature = tool_runtime.tool_attempt_signature("run_shell", args)
+    cfg.attempt_ledger.append({"signature": signature, "status": status, "retry_allowed": False,
+                               "timestamp": time.time(), "summary": "unresolved"})
+    tool_runtime.record_tool_attempt(cfg, name="run_shell", args=args, result="not invoked", status="skipped")
+    tool_runtime.record_tool_attempt(cfg, name="run_shell", args=args, result="not approved", status="denied")
+    tool_runtime.record_tool_attempt(cfg, name="edit_file", args={"path": "unrelated.txt"},
+                                     result="Edited unrelated.txt: replaced 1 occurrence(s)", status="worked")
+    assert tool_runtime.find_failed_attempt(cfg, signature) is not None
+
+
 def test_successful_workspace_mutation_invalidates_cached_failures(tmp_path):
     cfg = Config(cwd=str(tmp_path))
     signature = tool_runtime.tool_attempt_signature("run_shell", {"command": "python3 healthcheck.py"})
@@ -651,6 +665,22 @@ def test_successful_workspace_mutation_invalidates_cached_failures(tmp_path):
     )
 
     assert tool_runtime.find_failed_attempt(cfg, signature) is None
+
+
+def test_observation_churn_preserves_unresolved_retry_barrier(tmp_path):
+    cfg = Config(cwd=str(tmp_path))
+    args = {"fact": "bounded"}
+    tool_runtime.record_tool_attempt(cfg, name="remember", args=args, result="unknown",
+                                     status="unknown_outcome", retry_allowed=False)
+    signature = tool_runtime.tool_attempt_signature("remember", args)
+    for i in range(tool_runtime.ATTEMPT_LEDGER_LIMIT + 4):
+        tool_runtime.record_tool_attempt(cfg, name="read_file", args={"path": f"{i}.txt"},
+                                         result="contents", status="worked")
+    assert len(cfg.attempt_ledger) == tool_runtime.ATTEMPT_LEDGER_LIMIT
+    assert tool_runtime.find_failed_attempt(cfg, signature) is not None
+    from algo_cli.config import sanitize_attempt_ledger
+    cfg.attempt_ledger = sanitize_attempt_ledger(cfg.attempt_ledger)
+    assert tool_runtime.find_failed_attempt(cfg, signature) is not None
 
 
 def test_classify_tool_status_marks_tool_errors_failed():
@@ -1214,6 +1244,9 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
             "performance": {"speedup": 2.5, "warm_mad_ratio": 0.01},
             "quality": {
                 "status": "pass",
+                "qualification_scope": "synthetic_lexical_fixture",
+                "semantic_quality_measured": False,
+                "answer_quality_measured": False,
                 "metrics": {
                     "recall_at_k": 1.0,
                     "mrr": 1.0,
@@ -1229,8 +1262,8 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
         algorithm_effectiveness,
         "run_algorithm_effectiveness_probe",
         lambda: {
-            "schema_version": 1,
-            "probe": "harness-algorithm-effectiveness-v2",
+            "schema_version": algorithm_effectiveness.PROBE_SCHEMA_VERSION,
+            "probe": algorithm_effectiveness.PROBE_NAME,
             "status": "pass",
             "reason": "",
             "required_checks": [
@@ -1274,10 +1307,10 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
 
     payload = json.loads(tools.harness_scorecard())
 
-    assert payload["score"] == 10
+    assert payload["score"] == 9.5
     assert payload["max_score"] == 10
     assert payload["schema_version"] == 2
-    assert payload["overall_status"] == "ready"
+    assert payload["overall_status"] == "degraded"
     assert payload["scored_gate_count"] == 10
     assert payload["validation_errors"] == []
     statuses = {check["name"]: check["status"] for check in payload["checks"]}
@@ -1289,9 +1322,13 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     assert statuses["knowledge graph"] == "pass"
     assert statuses["action registry runtime audit"] == "pass"
     assert statuses["harness maintenance loop"] == "pass"
-    assert statuses["retrieval benchmark"] == "pass"
+    assert statuses["retrieval benchmark"] == "warn"
     assert statuses["algorithm effectiveness"] == "pass"
-    assert all(check["points"] == 1.0 for check in payload["checks"])
+    assert all(check["points"] == (0.5 if check["name"] == "retrieval benchmark" else 1.0)
+               for check in payload["checks"])
+    retrieval_check = next(check for check in payload["checks"] if check["name"] == "retrieval benchmark")
+    assert retrieval_check["metrics"]["status"] == "pass"
+    assert retrieval_check["metrics"]["semantic_qualification_status"] == "unavailable"
     capabilities = {item["name"]: item for item in payload["capabilities"]}
     assert capabilities["web tools"]["status"] == "pass"
     assert capabilities["google workspace wiring"]["status"] == "pass"
@@ -1302,7 +1339,7 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     echo_probe.update(installed=True, enabled=True, live_probe_performed=True)
     enabled_but_unwired = json.loads(tools.harness_scorecard())
     enabled_statuses = {check["name"]: check["status"] for check in enabled_but_unwired["checks"]}
-    assert enabled_but_unwired["score"] == 9.0
+    assert enabled_but_unwired["score"] == 8.5
     assert enabled_but_unwired["overall_status"] == "blocked"
     assert enabled_statuses["project memory/wiki coverage"] == "fail"
 
@@ -1315,8 +1352,8 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     wired_check = next(
         check for check in enabled_and_wired["checks"] if check["name"] == "project memory/wiki coverage"
     )
-    assert enabled_and_wired["score"] == 10
-    assert enabled_and_wired["overall_status"] == "ready"
+    assert enabled_and_wired["score"] == 9.5
+    assert enabled_and_wired["overall_status"] == "degraded"
     assert wired_check["status"] == "pass"
     assert wired_check["metrics"]["echo_live_probe_performed"] is True
     assert wired_check["metrics"]["echo_probe_error"] == ""
@@ -1350,7 +1387,7 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     stats_payload["runtime_event_store"]["file_private"] = False
     unsafe_store = json.loads(tools.harness_scorecard())
     unsafe_statuses = {check["name"]: check["status"] for check in unsafe_store["checks"]}
-    assert unsafe_store["score"] == 9.0
+    assert unsafe_store["score"] == 8.5
     assert unsafe_store["overall_status"] == "blocked"
     assert unsafe_statuses["project memory/wiki coverage"] == "fail"
     stats_payload["runtime_event_store"]["file_private"] = True
@@ -1425,6 +1462,8 @@ def test_protected_harness_scorecard_never_reads_legacy_knowledge_graph(monkeypa
     graph_check = next(check for check in payload["checks"] if check["name"] == "knowledge graph")
     assert graph_check["status"] == "unavailable"
     assert "disabled under Echo Veil" in graph_check["evidence"]
+    assert "Reindex" not in graph_check["recommendation"]
+    assert "Echo" in graph_check["recommendation"]
     assert calls == []
 
 
@@ -1749,9 +1788,11 @@ def test_gateway_functions_never_open_remote_or_ambiguous_endpoints(monkeypatch,
 
 def test_gateway_embed_is_bounded_strict_and_uses_validated_loopback(monkeypatch):
     opened: list[tuple[str, float, dict]] = []
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
 
     class Response:
         status = 200
+        headers = {"X-Algo-Ollama-Host": "http://localhost:11434"}
 
         def __init__(self, raw: bytes):
             self.raw = raw
@@ -1782,7 +1823,7 @@ def test_gateway_embed_is_bounded_strict_and_uses_validated_loopback(monkeypatch
     assert result == {"model": "m1", "embeddings": [[1.0, 0.0]]}
     assert opened == [
         (
-            "http://127.0.0.1:8765/supplemental/embed",
+            "http://127.0.0.1:8765/supplemental/embed-bound/v1",
             60,
             {"model": "m1", "input": "hello", "truncate": True, "dimensions": 2},
         )

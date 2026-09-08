@@ -272,6 +272,8 @@ def _tool_search_text(tool: Callable[..., Any], action_metadata: dict[str, str])
 
 
 def _specialized_intent_allowed(name: str, query_terms: set[str]) -> bool:
+    if name and name.casefold() in query_terms:
+        return True
     for prefix, required, supporting in _SPECIALIZED_INTENT_GATES:
         if not name.startswith(prefix):
             continue
@@ -321,8 +323,9 @@ def rank_tools_for_prompt(
 
     def score(index: int) -> float:
         value = scores[index]
-        name_terms = set(lexical_tokens(re.sub(r"[^a-zA-Z0-9]+", " ", getattr(tools[index], "__name__", ""))))
-        if name_terms and name_terms <= query_term_set:
+        name = str(getattr(tools[index], "__name__", "") or "")
+        name_terms = set(lexical_tokens(re.sub(r"[^a-zA-Z0-9]+", " ", name)))
+        if name.casefold() in query_term_set or (name_terms and name_terms <= query_term_set):
             value += 2.0
         return value
 

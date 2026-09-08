@@ -86,6 +86,7 @@ ATTEMPT_LEDGER_MAX_ENTRIES = 48
 ATTEMPT_LEDGER_MAX_TOOL_CHARS = 128
 ATTEMPT_LEDGER_MAX_RESULT_COUNT = 1_000_000_000
 MAX_JSON_STATE_BYTES = 16 * 1024 * 1024
+MAX_HARNESS_INDEX_BYTES = 128 * 1024 * 1024
 _ATTEMPT_LEDGER_STATUSES = frozenset(
     {"worked", "failed", "denied", "skipped", "timed_out", "cancelled", "unknown_outcome"}
 )
@@ -1773,6 +1774,20 @@ def _state_descriptor_payload(path: Path, *, max_bytes: int) -> bytes:
     """Read one stable regular state file through pinned no-follow descriptors."""
 
     if not 0 < int(max_bytes) <= MAX_JSON_STATE_BYTES:
+        raise OSError("state read bound is invalid")
+    return _bounded_state_descriptor_payload(path, max_bytes=max_bytes)
+
+
+def _harness_index_descriptor_payload(path: Path) -> bytes:
+    """Allow the larger public-vector cache only at its exact config-root path."""
+    if _config_relative_path(path) != Path("harness_index.json"):
+        raise OSError("large index reads require the canonical harness index path")
+    return _bounded_state_descriptor_payload(path, max_bytes=MAX_HARNESS_INDEX_BYTES)
+
+
+def _bounded_state_descriptor_payload(path: Path, *, max_bytes: int) -> bytes:
+    """Shared no-follow reader; callers select a file-specific bounded contract."""
+    if not 0 < int(max_bytes) <= MAX_HARNESS_INDEX_BYTES:
         raise OSError("state read bound is invalid")
     selected = Path(path)
     relative = _config_relative_path(selected)

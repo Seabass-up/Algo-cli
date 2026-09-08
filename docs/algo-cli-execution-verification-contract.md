@@ -2,7 +2,7 @@
 title: Algo CLI Execution and Verification Contract
 description: Durable rules for runtime entrypoints, policy preflight, mutation ownership, evidence, and failure handling.
 status: active
-updated: 2026-07-23
+updated: 2026-09-07
 tags: [algo-cli, product-memory, execution-verification, tool-policy, mutation-owner]
 ---
 
@@ -83,6 +83,20 @@ required-change, and verification rules as an ordinary run.
   with a manual-verification warning.
 - Keep `worked`, `failed`, `skipped`, and `denied` outcomes distinct in the
   attempt ledger and telemetry.
+- Carry the dispatcher's invocation bit into evidence recording. An invoked
+  shell command classified as mutating invalidates prior reads and requires
+  later verification even if it fails, times out, or has an unknown outcome.
+  A noninvoked action supplies neither mutation nor verification evidence.
+- Bind recognized shell and Git verification to the execution workspace.
+  Explicit directory/runner selectors and outside targets cannot become
+  workspace-wide evidence. A subproject-only command is not automatically a
+  verifier for other project changes; run the appropriate check from the root.
+- Automatic Git fallback requires known mutated paths covered by tracked Git
+  state. Missing Git, non-repositories, untracked/ignored paths, unknown shell
+  write sets, and inherited Git scope overrides keep completion incomplete.
+  Syntax recognition and tracked coverage do not prove test relevance,
+  execution of every test, or functional correctness; independent task checks
+  remain separate authority.
 - Do not cosmetically retry a recent identical failed signature; change the
   hypothesis, input, or tool, or report the blocker.
 
@@ -93,9 +107,24 @@ and incompatible runtime state are explicit outcomes. Fallbacks must remain
 bounded and observable; swallowed exceptions and silent policy downgrades are
 not valid recovery.
 
-Recovery is typed and single-attempt. Only a contract-listed failure code may
+Agent plan recovery is typed and single-attempt. Only a contract-listed failure code may
 open a reduced-budget plan/retry cycle, and high-risk mutations do not recover
 automatically. Provider fallback never replays an uncertain mutation.
+
+Provider transport recovery is separate: Codex Responses may retry the current
+request twice after a transient failure or reasoning-only completion, with bounded
+backoff. It does not replay completed tools. Delivered answer text or a valid tool
+call prevents automatic retry; permanent auth, policy, and certificate failures
+remain explicit failures.
+
+User cancellation is not a tool retry signal. Ctrl-C stops subsequent tools and
+model rounds after recording the interrupted action's typed outcome. Queued
+actions receive cancelled, noninvoked results so provider history stays balanced.
+An interrupted mutation may have an unknown outcome and must not be replayed
+automatically. Agent Blocks become cancelled, action programs retain available
+receipts, and shell runners terminate their child process groups before
+propagating interruption. Already-running parallel observations are collected;
+this is cooperative cancellation, not preemption of arbitrary adapter code.
 
 ## Context and provider protocol
 
@@ -113,7 +142,7 @@ around that invariant.
 
 ## Qualification
 
-The model-free `nathan-agent-runtime-hardening-v1` workload exercises approval
+The model-free `nathan-agent-runtime-hardening` workload exercises approval
 separation, read-only containment, authority and workspace drift, prompt/token
 binding, context provenance, provider/tool balancing, journal tampering,
 semantic checkpoint forgery, uncertain mutation, verified resume, output
@@ -128,8 +157,10 @@ Run and validate it with:
 ```
 
 This is deterministic local runtime evidence, not model-quality, production
-power-loss, or cross-harness superiority evidence. The active hardening freeze
-still blocks tagging, releases, publication, and public benchmark claims.
+power-loss, or cross-harness superiority evidence. Read the current freeze policy
+in `hardening/henry-freeze.toml` and the requirement audit before release decisions;
+this document does not establish a freeze's current state. A lifted freeze does
+not qualify blocked external-browser requirements or authorize publication.
 
 Authoritative implementation boundaries: `run_contract.py`,
 `agent_run_journal.py`, `agent_context.py`, `agent_pipeline.py`,

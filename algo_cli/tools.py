@@ -1557,7 +1557,7 @@ def run_shell(command: str, cwd: str | None = None, timeout: float = 30, safe_mo
                 proc.communicate(timeout=5)
             except (OSError, subprocess.SubprocessError):
                 pass
-            return "Error: command interrupted; child processes were terminated."
+            raise
     except subprocess.TimeoutExpired:
         return f"Error: command timed out after {actual_timeout:g} seconds; child processes were terminated."
     except Exception as exc:
@@ -2982,24 +2982,41 @@ def gateway_ready(url: str | None = None) -> bool:
         return False
 
 
+def _gateway_upstream_host(host: str | None) -> str:
+    from .theodore_runtime_services import local_service_address
+
+    raw = host if host is not None else os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)
+    if type(raw) is not str:
+        raise ValueError("Gateway upstream must be text.")
+    candidate = raw.strip().rstrip("/")
+    if local_service_address(candidate) is None:
+        raise ValueError("Gateway upstream must be an explicit credential-free loopback endpoint.")
+    return candidate
+
+
 def gateway_embed(
     text: str,
     model: str,
     truncate: bool,
     dimensions: int | None,
     url: str | None = None,
+    *,
+    ollama_host: str | None = None,
 ) -> dict[str, Any] | None:
     try:
         data = _gateway_payload(text, model, truncate, dimensions)
         if data is None:
             return None
+        upstream = _gateway_upstream_host(ollama_host)
         request = Request(
-            current_gateway_url(url) + "/supplemental/embed",
+            current_gateway_url(url) + "/supplemental/embed-bound/v1",
             data=data,
             method="POST",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "X-Algo-Ollama-Host": upstream},
         )
         with _open_local_gateway(request, timeout=60) as response:
+            if getattr(response, "headers", {}).get("X-Algo-Ollama-Host") != upstream:
+                return None
             return _gateway_json_response(response)
     except (OSError, URLError, TypeError, ValueError):
         return None
@@ -3011,18 +3028,24 @@ def gateway_embed_batch(
     truncate: bool,
     dimensions: int | None,
     url: str | None = None,
+    *,
+    timeout_seconds: float = 60.0,
+    ollama_host: str | None = None,
 ) -> dict[str, Any] | None:
     try:
         data = _gateway_payload(texts, model, truncate, dimensions)
         if data is None:
             return None
+        upstream = _gateway_upstream_host(ollama_host)
         request = Request(
-            current_gateway_url(url) + "/supplemental/embed",
+            current_gateway_url(url) + "/supplemental/embed-bound/v1",
             data=data,
             method="POST",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "X-Algo-Ollama-Host": upstream},
         )
-        with _open_local_gateway(request, timeout=60) as response:
+        with _open_local_gateway(request, timeout=timeout_seconds) as response:
+            if getattr(response, "headers", {}).get("X-Algo-Ollama-Host") != upstream:
+                return None
             return _gateway_json_response(response)
     except (OSError, URLError, TypeError, ValueError):
         return None
@@ -3112,7 +3135,7 @@ def vision_describe(
     return content or "(empty response)"
 
 
-def available_actions(topic: str | None = None) -> str:
+def available_actions(topic: str | None = None, cfg: Config | None = None) -> str:
     """Show the CLI's available commands, model-callable tools, and internal harness stats.
 
     Use this before answering questions like "what can you do?", "what actions are available?",
@@ -3374,7 +3397,7 @@ def available_actions(topic: str | None = None) -> str:
         "Use x_account_* for X account actions through xurl; writes require explicit confirmation and separate X API OAuth.",
         "Treat memory/wiki as navigation; verify consequential facts against live files or endpoints.",
     ]
-    stats = harness.stats()
+    stats = _harness_stats_for_config(cfg)
     payload: dict[str, Any] = {
         "topic": focus or "all",
         "commands": commands,
@@ -3633,7 +3656,7 @@ def _direct_read_only_session_result(
     root = parts[0].lower()
     arg = parts[1].strip() if len(parts) > 1 else ""
     if root == "/actions":
-        return available_actions(arg or None)
+        return available_actions(arg or None, cfg=cfg)
     if root == "/hread":
         return harness_read(arg, cfg=cfg) if arg else "Error: Usage: /hread <record-id>"
     if root != "/harness":
@@ -3643,7 +3666,7 @@ def _direct_read_only_session_result(
     if len(harness_parts) > 1:
         return None
     if subcommand in {"", "status", "stats", "quality"}:
-        return harness_stats()
+        return harness_stats(cfg=cfg)
     if subcommand in {"score", "scorecard", "grade", "rating"}:
         return harness_scorecard(cfg=cfg)
     if subcommand in {"compare", "competitive"}:
@@ -3735,7 +3758,7 @@ def session_command(command: str, cfg: Any = None) -> str:
         return f"Error executing {normalized}: {exc}"
 
 
-def harness_refresh() -> str:
+def harness_refresh(cfg: Config | None = None) -> str:
     """Refresh the local harness index for skills, tools, prompts, memories, and wiki pages."""
     index = harness.load_index(refresh=True)
     indexer = str(index.get("indexer") or "python")
@@ -3748,7 +3771,14 @@ def harness_refresh() -> str:
             f"rebuilt: {refresh_stats.get('rebuilt_records', 0)}, "
             f"removed: {refresh_stats.get('removed_records', 0)}."
         )
-    embeddings = index.get("embeddings") or harness._embeddings_summary(index.get("records", []) or [])
+    embeddings = (
+        harness.embedding_summary(
+            index, model=harness.resolve_embed_model(cfg), dimensions=harness.resolve_embed_dimensions(cfg),
+            embedding_identity=harness.resolve_embed_identity(cfg),
+        )
+        if cfg is not None
+        else harness.embedding_summary(index)
+    )
     embedded_count = int(embeddings.get("embedded_count", 0))
     pending_count = int(embeddings.get("pending_count", 0))
     total = embedded_count + pending_count
@@ -3769,9 +3799,18 @@ def harness_refresh() -> str:
     )
 
 
-def harness_stats() -> str:
+def _harness_stats_for_config(cfg: Config | None) -> dict[str, Any]:
+    if cfg is None:
+        return harness.stats()
+    return harness.stats(
+        model=harness.resolve_embed_model(cfg), dimensions=harness.resolve_embed_dimensions(cfg),
+        embedding_identity=harness.resolve_embed_identity(cfg),
+    )
+
+
+def harness_stats(cfg: Config | None = None) -> str:
     """Show counts for indexed Codex, Claude, OpenClaw, Mercury, Pi, and shared harness assets."""
-    return json.dumps(harness.stats(), indent=2)
+    return json.dumps(_harness_stats_for_config(cfg), indent=2)
 
 
 def _scorecard_check(
@@ -3935,7 +3974,7 @@ def harness_scorecard(cfg: Config | None = None) -> str:
 
     stats_error = ""
     try:
-        stats = harness.stats()
+        stats = _harness_stats_for_config(cfg)
     except Exception as exc:
         stats = {}
         stats_error = type(exc).__name__
@@ -4187,7 +4226,11 @@ def harness_scorecard(cfg: Config | None = None) -> str:
     if cfg is not None and echo_veil_authority_selected(cfg):
         kg_text = "Legacy knowledge graph disabled under Echo Veil authority."
         status = "unavailable"
+        kg_recommendation = (
+            "Qualify graph retrieval through Echo Veil Contextual Logic; keep the legacy graph disabled."
+        )
     else:
+        kg_recommendation = "Reindex the graph and verify the exact project:algo-cli canonical."
         try:
             kg_text = str(query_knowledge_graph("rate your harness", cfg=cfg))
             canonical_match = re.search(r"(?<![\w-])project:algo-cli(?![\w-])", kg_text) is not None
@@ -4205,7 +4248,7 @@ def harness_scorecard(cfg: Config | None = None) -> str:
             "knowledge graph",
             status,
             kg_text[:240],
-            "Reindex the graph and verify the exact project:algo-cli canonical." if status != "pass" else "",
+            kg_recommendation if status != "pass" else "",
         )
     )
 
@@ -4289,6 +4332,9 @@ def harness_scorecard(cfg: Config | None = None) -> str:
             and math.isfinite(measured_mad_ratio)
             and measured_mad_ratio <= MAX_WARM_MAD_RATIO
             and quality.get("status") == "pass"
+            and quality.get("qualification_scope") == "synthetic_lexical_fixture"
+            and quality.get("semantic_quality_measured") is False
+            and quality.get("answer_quality_measured") is False
             and float(quality_metrics.get("recall_at_k") or 0.0) >= MIN_QUALITY_RECALL
             and float(quality_metrics.get("mrr") or 0.0) >= MIN_QUALITY_MRR
             and float(quality_metrics.get("ndcg_at_k") or 0.0) >= MIN_QUALITY_NDCG
@@ -4299,6 +4345,13 @@ def harness_scorecard(cfg: Config | None = None) -> str:
         if status == "pass" and not benchmark_contract:
             status = "fail"
             benchmark["scorecard_contract_error"] = "pass payload lacked required correctness/performance evidence"
+        benchmark["semantic_qualification_status"] = "unavailable"
+        if status == "pass":
+            status = "warn"
+            benchmark["scorecard_scope_warning"] = (
+                "The offline fixture passed, but this scorecard has no validated representative "
+                "semantic retrieval qualification. Lexical fixture scores cannot establish it."
+            )
     except Exception as exc:
         benchmark = {"status": "error", "reason": type(exc).__name__}
         status = "error"
@@ -4307,7 +4360,7 @@ def harness_scorecard(cfg: Config | None = None) -> str:
             "retrieval benchmark",
             status,
             json.dumps(benchmark, sort_keys=True, default=str)[:1000],
-            "Repair retrieval correctness or investigate the measured reusable-index regression."
+            "Repair failing retrieval checks and qualify representative semantic retrieval with source-bound evidence."
             if status != "pass"
             else "",
             critical=True,
@@ -4511,12 +4564,12 @@ def harness_search(
     limit: int = 10,
     cfg: Any = None,
 ) -> str:
-    """Search local harness assets.
+    """Search indexed harness assets, including Algo CLI's shipped policy contracts.
 
     Args:
         query: Search terms.
-        harness_name: Optional harness filter: codex, claude, openclaw, openclaude, mercury, pi, agents.
-        kind: Optional kind filter: skill, tool, prompt, memory, wiki, workflow, extension.
+        harness_name: Optional harness filter: algo-cli, codex, claude, openclaw, openclaude, mercury, pi, agents. Leave unset to search all harnesses.
+        kind: Optional kind filter. Leave unset to search all kinds. memory includes shipped policy contracts (not agent memory); wiki contains runbooks; runtime_capability contains tool metadata. Other kinds include skill, tool, prompt, workflow, extension, algorithm.
         limit: Maximum records.
     """
     echo_memory_authority = False
@@ -4524,29 +4577,77 @@ def harness_search(
         from .ada_memory_echo_veil import echo_veil_authority_selected
 
         echo_memory_authority = echo_veil_authority_selected(cfg)
-    if echo_memory_authority and str(kind or "").casefold() == "memory":
-        return (
-            "Protected memory search is available only through Echo Veil; "
-            "legacy harness memory records were not consulted."
-        )
-    results = harness.search_index(
-        query,
-        harness_name,
-        kind,
-        limit,
-        excluded_kinds={"memory"} if echo_memory_authority else None,
-    )
-    if echo_memory_authority:
-        results = [record for record in results if str(record.get("kind") or "").casefold() != "memory"]
-    if not results:
+    limit = _bounded_int(limit, 10, 0, 50)
+    if limit == 0 or not query.strip():
         return "No harness matches."
-    lines = []
-    for record in results:
+    harness_name = (harness_name or "").strip().casefold() or None
+    if harness_name == "all":
+        harness_name = None
+    harness_names = harness.harness_filter_names(harness_name)
+    kind = (kind or "").strip().casefold() or None
+    filters = [f"{name}={value!r}" for name, value in (("harness", harness_name), ("kind", kind)) if value]
+    filter_line = "Active filters: " + (", ".join(filters) or "none")
+    try:
+        index = harness.retrieval_index(protected_memory=echo_memory_authority)
+    except (OSError, ValueError):
+        return "Error: harness source policy is unavailable; protected memory is available only through Echo Veil."
+    records = index.get("records", [])
+    by_id = {
+        record["id"]: record
+        for record in records
+        if (not harness_names or record.get("harness") in harness_names) and (not kind or record.get("kind") == kind)
+    }
+    results: list[dict[str, Any]] = []
+    if cfg is not None and by_id:
+        from .main import make_local_embed_fn
+
+        model = harness.resolve_embed_model(cfg)
+        embed_fn = make_local_embed_fn(cfg, model, timeout_seconds=10.0, bind_identity=True)
+        results = harness.hybrid_search(
+            query,
+            embed_fn,
+            model,
+            dimensions=harness.resolve_embed_dimensions(cfg),
+            harness=harness_name,
+            kind=kind,
+            k=limit,
+            index=index,
+        )
+    elif by_id:
+        results = harness.search_index(query, harness_name, kind, limit, index=index)
+    # Format from the authorized snapshot, not arbitrary ranker-returned payloads.
+    results = [record for record in results if record.get("id") in by_id]
+    if not results:
+        message = (
+            "No shipped product-contract matches. Agent memory is available only through Echo Veil."
+            if echo_memory_authority and kind == "memory"
+            else "No harness matches."
+        )
+        if not filters:
+            return message
+        harnesses = sorted({record["harness"] for record in records if record.get("harness")})
+        kinds = sorted({record["kind"] for record in records if record.get("kind")})
+        return "\n".join(
+            [
+                message,
+                filter_line,
+                "Indexed harnesses: " + (", ".join(harnesses) or "none"),
+                "Indexed kinds: " + (", ".join(kinds) or "none"),
+                "kind='memory' includes shipped policy contracts, not agent memory. "
+                "Leave filters unset to search all authorized documentation; filters were not widened.",
+            ]
+        )
+    mode = "hybrid" if any("vector" in row.get("rank_sources", []) for row in results) else "keyword-only"
+    lines = [f"Retrieval: {mode} (shipped contracts are documentation, not agent memory).", filter_line]
+    for hit in results:
+        record = by_id[hit["id"]]
+        source = f"\n  source_kind: {record['source_kind']}" if record.get("source_kind") else ""
         lines.append(
             f"- {record['id']}\n"
+            f"  kind: {record.get('kind', '')}\n"
             f"  title: {record['title']}\n"
             f"  path: {record['path']}\n"
-            f"  summary: {record.get('description') or record.get('summary', '')[:220]}"
+            f"  summary: {record.get('description') or record.get('summary', '')[:220]}{source}"
         )
     return "\n".join(lines)
 
@@ -4562,21 +4663,22 @@ def harness_read(
         record_id: Exact record id returned by harness_search.
         max_chars: Maximum characters to return.
     """
+    protected = False
     if cfg is not None:
         from .ada_memory_echo_veil import echo_veil_authority_selected
 
+        protected = echo_veil_authority_selected(cfg)
+        if protected and not harness._PROTECTED_MEMORY_AUTHORITY:
+            return "Error: harness source policy is unavailable; protected memory is available only through Echo Veil."
         record = harness.get_record(record_id)
-        if (
-            echo_veil_authority_selected(cfg)
-            and isinstance(record, dict)
-            and str(record.get("kind") or "").casefold() == "memory"
-        ):
+        if protected and isinstance(record, dict) and not harness._protected_memory_record_allowed(record):
             return (
                 "Protected memory records are available only through Echo Veil; the legacy harness record was not read."
             )
     return harness.read_record(
         record_id,
         _bounded_int(max_chars, 20_000, 1, 50_000),
+        protected_memory=protected,
     )
 
 
@@ -5220,11 +5322,11 @@ ALL_TOOLS = [
     vision_describe,
     action_search,
     _hide_cfg_param(action_program),
-    available_actions,
+    _hide_cfg_param(available_actions),
     session_slash,
     _hide_cfg_param(session_command),
-    harness_refresh,
-    harness_stats,
+    _hide_cfg_param(harness_refresh),
+    _hide_cfg_param(harness_stats),
     _hide_cfg_param(harness_scorecard),
     _hide_cfg_param(harness_competitive_rating),
     _hide_cfg_param(harness_search),

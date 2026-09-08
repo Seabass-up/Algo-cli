@@ -139,6 +139,154 @@ def test_unknown_local_mutation_is_never_retried_automatically(monkeypatch, tmp_
     assert len(prompts) == 1
 
 
+def test_uncertain_local_action_stays_blocked_after_many_skips(monkeypatch, tmp_path):
+    from algo_cli.nathan_runtime import ATTEMPT_LEDGER_LIMIT
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    cfg = Config(cwd=str(tmp_path))
+    invoked = []
+    deps = _dependencies(tmp_path, lambda *_args: invoked.append(True) or "Tool error for remember: lost response")
+    outcomes = [dispatch_action("remember", {"fact": "bounded"}, cfg, tool_call_id=f"call-{i}",
+                               dependencies=deps, render=False).outcome.status
+                for i in range(ATTEMPT_LEDGER_LIMIT + 3)]
+    assert outcomes[0] is OutcomeStatus.UNKNOWN_OUTCOME
+    assert all(status is OutcomeStatus.SKIPPED for status in outcomes[1:])
+    assert invoked == [True]
+    assert any(item["status"] == "unknown_outcome" for item in cfg.attempt_ledger)
+
+
+def test_noninteractive_denial_is_not_attributed_to_the_user(tmp_path):
+    cfg = Config(cwd=str(tmp_path), auto_mode=True)
+    cfg._nathan_approval_mode = "auto"
+    result = dispatch_action("run_shell", {"command": "python -m pytest -q"}, cfg,
+                             dependencies=_dependencies(tmp_path, lambda *_args: "must not run"), render=False)
+    assert result.outcome.status is OutcomeStatus.DENIED
+    assert result.outcome.error_code == "approval_unavailable"
+    assert "noninteractive" in result.result
+    assert "User denied" not in result.result
+
+
+def test_full_retry_barrier_ledger_blocks_effects_but_not_reads(tmp_path):
+    from algo_cli import nathan_runtime as runtime
+
+    cfg = Config(cwd=str(tmp_path))
+    for i in range(runtime.ATTEMPT_LEDGER_LIMIT):
+        runtime.record_tool_attempt(cfg, name="remember", args={"fact": str(i)}, result="unknown",
+                                    status="unknown_outcome", retry_allowed=False)
+    approvals, invocations = [], []
+    deps = _dependencies(tmp_path, lambda name, *_args: invocations.append(name) or "contents")
+    deps.approve = lambda *_args, **_kwargs: approvals.append(True) or True
+    blocked = dispatch_action("remember", {"fact": "new"}, cfg, dependencies=deps, render=False)
+    assert blocked.outcome.status is OutcomeStatus.DENIED
+    assert blocked.outcome.error_code == "unresolved_action_capacity"
+    assert approvals == invocations == []
+    observed = dispatch_action("read_file", {"path": "README.md"}, cfg, dependencies=deps, render=False)
+    assert observed.outcome.status is OutcomeStatus.SUCCEEDED
+    assert invocations == ["read_file"]
+    assert len(cfg.attempt_ledger) == runtime.ATTEMPT_LEDGER_LIMIT
+    assert all(item["status"] == "unknown_outcome" for item in cfg.attempt_ledger)
+
+
+def test_retry_capacity_reserves_concurrent_effect_slots_and_releases(tmp_path):
+    from algo_cli import nathan_runtime as runtime
+
+    cfg = Config(cwd=str(tmp_path))
+    for i in range(runtime.ATTEMPT_LEDGER_LIMIT - 1):
+        runtime.record_tool_attempt(cfg, name="remember", args={"fact": str(i)}, result="unknown",
+                                    status="unknown_outcome", retry_allowed=False)
+    with runtime.reserve_retry_capacity(cfg, mutating=True) as first:
+        assert first is True
+        with runtime.reserve_retry_capacity(cfg, mutating=True) as second:
+            assert second is False
+        with runtime.reserve_retry_capacity(cfg, mutating=False) as observation:
+            assert observation is True
+    with runtime.reserve_retry_capacity(cfg, mutating=True) as available:
+        assert available is True
+    assert not hasattr(cfg, "_nathan_retry_slots")
+
+
+def test_retry_capacity_is_atomic_between_threads(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from algo_cli import nathan_runtime as runtime
+
+    cfg = Config(cwd=str(tmp_path))
+    for i in range(runtime.ATTEMPT_LEDGER_LIMIT - 1):
+        runtime.record_tool_attempt(cfg, name="remember", args={"fact": str(i)}, result="unknown",
+                                    status="unknown_outcome", retry_allowed=False)
+    contenders = Barrier(2, timeout=5)
+
+    def reserve():
+        contenders.wait()
+        with runtime.reserve_retry_capacity(cfg, mutating=True) as admitted:
+            contenders.wait()
+            return admitted
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(reserve) for _ in range(2)]
+        assert sorted(future.result(timeout=10) for future in futures) == [False, True]
+    assert not hasattr(cfg, "_nathan_retry_slots")
+
+
+def test_retry_capacity_releases_on_approval_exception(tmp_path):
+    import pytest
+
+    cfg = Config(cwd=str(tmp_path))
+    deps = _dependencies(tmp_path, lambda *_args: "must not run")
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("approval unavailable")
+
+    deps.approve = unavailable
+    with pytest.raises(RuntimeError, match="approval unavailable"):
+        dispatch_action("remember", {"fact": "bounded"}, cfg, dependencies=deps, render=False)
+    assert not hasattr(cfg, "_nathan_retry_slots")
+
+
+def test_dispatch_isolates_nested_arguments_after_approval(tmp_path):
+    from algo_cli import execution_guardrails, nathan_runtime
+
+    path = tmp_path / "result.txt"
+    path.write_text("original")
+    cfg = Config(cwd=str(tmp_path))
+    args = {"path": "result.txt", "edits": [{"old_string": "original", "new_string": "reviewed"}]}
+    deps = _dependencies(tmp_path, nathan_runtime.run_tool)
+    deps.approve = lambda *_args, **_kwargs: True
+    manager = deps.lease_manager
+
+    class ChangingCaller:
+        def acquire(self, target):
+            args["edits"][0]["new_string"] = "unreviewed"
+            return manager.acquire(target)
+
+    deps.lease_manager = ChangingCaller()  # type: ignore[assignment]
+    scope = execution_guardrails.begin_execution_scope(tmp_path)
+    try:
+        execution_guardrails.record_read(path, success=True)
+        result = dispatch_action("batch_edit", args, cfg, dependencies=deps, render=False)
+    finally:
+        execution_guardrails.end_execution_scope(scope)
+    assert result.outcome.status is OutcomeStatus.SUCCEEDED
+    assert path.read_text() == "reviewed"
+    assert result.preflight.signature_args["edits"][0]["new_string"] == "reviewed"
+
+
+def test_tool_cannot_mutate_the_recorded_argument_snapshot(tmp_path):
+    cfg = Config(cwd=str(tmp_path))
+    args = {"fact": "bounded", "metadata": {"label": "reviewed"}}
+
+    def invoke(_name, values, _cfg):
+        values["metadata"]["label"] = "mutated"
+        return "Memory saved."
+
+    deps = _dependencies(tmp_path, invoke)
+    deps.approve = lambda *_args, **_kwargs: True
+    result = dispatch_action("remember", args, cfg, dependencies=deps, render=False)
+    assert result.preflight.signature_args["metadata"]["label"] == "reviewed"
+    assert args["metadata"]["label"] == "reviewed"
+
+
 def test_external_effect_is_verified_and_deduplicated_by_call_id(monkeypatch, tmp_path) -> None:
     prompts: list[str] = []
     invocations: list[str] = []

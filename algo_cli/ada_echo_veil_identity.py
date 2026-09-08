@@ -67,7 +67,7 @@ QUALIFIED_ECHO_SOURCE_PATHS = (
     "echo_veil_origin/openfhe_engine.py",
     "echo_veil_origin/proof_verifier.py",
 )
-QUALIFIED_ECHO_SOURCE_TREE_SHA256 = "19c09ed9f5a2a21723755a1fb07a52b7321ddfbae82381beb3a63e08aa700110"
+QUALIFIED_ECHO_SOURCE_TREE_SHA256 = "fe94fbba3686ca44c2cb0274a8a4baaeedbb85c04e261c6f3d240e9e77f934f0"
 MAX_QUALIFIED_SOURCE_BYTES = 16 * 1024 * 1024
 
 

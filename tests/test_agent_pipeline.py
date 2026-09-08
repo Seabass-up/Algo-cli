@@ -1216,7 +1216,7 @@ def test_run_agent_block_enforces_medium_risk_approval(monkeypatch):
     captured: dict[str, bool] = {}
     _quiet_display(monkeypatch)
 
-    def fake_execute(_name, _args, _cfg, *, tool_call_id=None, force_approval=False):
+    def fake_execute(_name, _args, _cfg, *, tool_call_id=None, force_approval=False, cancellation=None):
         captured["force_approval"] = force_approval
         return {"role": "tool", "content": "ok"}, "ok"
 
@@ -1401,7 +1401,7 @@ def test_required_change_shell_mutation_forces_approval_outside_safe_mode(monkey
     captured: dict[str, bool] = {}
     _quiet_display(monkeypatch)
 
-    def fake_execute(_name, _args, _cfg, *, tool_call_id=None, force_approval=False):
+    def fake_execute(_name, _args, _cfg, *, tool_call_id=None, force_approval=False, cancellation=None):
         captured["force_approval"] = force_approval
         return {"role": "tool", "content": "approved"}, "approved"
 
@@ -1431,7 +1431,7 @@ def test_required_change_shell_verification_does_not_force_approval(monkeypatch)
     captured: dict[str, bool] = {}
     _quiet_display(monkeypatch)
 
-    def fake_execute(_name, _args, _cfg, *, tool_call_id=None, force_approval=False):
+    def fake_execute(_name, _args, _cfg, *, tool_call_id=None, force_approval=False, cancellation=None):
         captured["force_approval"] = force_approval
         return {"role": "tool", "content": "ok"}, "ok"
 

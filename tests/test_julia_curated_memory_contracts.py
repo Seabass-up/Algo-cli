@@ -28,6 +28,7 @@ EXPECTED_WIKI_DOCS = (
     "reflex-loop-v0.2.md",
     "privacy-and-context.md",
     "runtime-capability-catalog.md",
+    "supervised-action-review.md",
     "echo-veil-security-status.md",
 )
 EXPECTED_CATEGORIES = (
@@ -77,6 +78,7 @@ def test_curated_project_source_tuples_are_contract_focused() -> None:
     assert [root.patterns for root in docs_memory_roots] == [EXPECTED_MEMORY_DOCS]
     assert [root.patterns for root in docs_wiki_roots] == [EXPECTED_WIKI_DOCS]
     assert all((runtime_docs_root / filename).is_file() for filename in EXPECTED_MEMORY_DOCS)
+    assert all((runtime_docs_root / filename).is_file() for filename in EXPECTED_WIKI_DOCS)
 
 
 @pytest.mark.parametrize(
@@ -129,7 +131,7 @@ def test_curated_memory_probe_queries_surface_expected_contract(
 ) -> None:
     records = _curated_records()
     monkeypatch.setattr(harness, "load_index", lambda refresh=False: {"records": records})
-    harness._BM25_INDEX_CACHE = None
+    harness._BM25_INDEX_CACHE.clear()
 
     results = harness.search_index(query, harness="algo-cli", kind="memory", limit=3)
 

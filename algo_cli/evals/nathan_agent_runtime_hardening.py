@@ -57,6 +57,7 @@ _UTC_RE = re.compile(
 )
 
 SOURCE_PATHS = (
+    "algo_cli/action_registry.py",
     "algo_cli/ada_memory_echo_veil.py",
     "algo_cli/agent_blocks.py",
     "algo_cli/agent_context.py",
@@ -69,20 +70,39 @@ SOURCE_PATHS = (
     "algo_cli/context_budget.py",
     "algo_cli/evals/nathan_agent_runtime_hardening.py",
     "algo_cli/elsie_echo_preflight.py",
+    "algo_cli/execution_guardrails.py",
     "algo_cli/git_evidence.py",
     "algo_cli/grace_key_store.py",
     "algo_cli/grace_memory_receipts.py",
+    "algo_cli/harness.py",
+    "algo_cli/embedding_binding.py",
+    "tests/test_embedding_provider_identity.py",
+    "tests/test_harness_slice_cache.py",
+    "algo_cli/tools.py",
+    "algo_cli/oliver_slash_dispatch.py",
+    "algo_cli/evals/harness_retrieval_benchmark.py",
+    "algo_cli/evals/grounded_retrieval.py",
+    "algo_cli/evals/grounded_retrieval_validation.py",
+    "algo_cli/pattern_catalog.py",
+    "algo_cli/retrieval_algorithms.py",
     "algo_cli/irene_privacy_views.py",
+    "algo_cli/james_dispatch.py",
+    "algo_cli/marcus_authority.py",
     "algo_cli/main.py",
     "algo_cli/model_aliases.py",
     "algo_cli/model_info.py",
     "algo_cli/nathan_provider_protocol.py",
     "algo_cli/nathan_runtime.py",
+    "algo_cli/nathan_approval_channel.py",
+    "algo_cli/nathan_approval_reviewer.py",
+    "algo_cli/oliver_oneshot.py",
     "algo_cli/ada_private_event_store.py",
     "algo_cli/run_contract.py",
     "algo_cli/samuel_policy.py",
+    "algo_cli/samuel_policy_engine.py",
     "algo_cli/spawn_budget.py",
     "algo_cli/task_router.py",
+    "algo_cli/tool_context.py",
     "scripts/nathan_agent_runtime_qualification.py",
     "tests/test_agent_context.py",
     "tests/test_agent_pipeline.py",
@@ -90,12 +110,32 @@ SOURCE_PATHS = (
     "tests/test_agent_threads.py",
     "tests/test_ada_memory_echo_veil.py",
     "tests/test_chatgpt_client.py",
+    "tests/test_chatgpt_stream_recovery.py",
+    "tests/test_harness_query_recovery.py",
+    "tests/test_harness_query_profiles.py",
+    "tests/test_harness_embedding_dimensions.py",
+    "tests/test_harness_embedding_recovery.py",
+    "tests/test_harness_capability_coverage.py",
+    "tests/test_harness_retrieval_benchmark.py",
+    "tests/test_harness_selection.py",
+    "tests/test_harness_operational_retrieval.py",
+    "tests/test_grounded_retrieval.py",
+    "scripts/grounded_retrieval_qualification.py",
+    "tests/test_tools.py",
     "tests/test_elsie_echo_preflight.py",
     "tests/test_grace_key_store.py",
     "tests/test_grace_memory_receipts.py",
     "tests/test_main_helpers.py",
+    "tests/test_james_dispatch.py",
+    "tests/test_dispatch_interruptions.py",
+    "tests/test_completion_integrity.py",
+    "tests/test_execution_guardrails.py",
+    "tests/test_agent_progress_recovery.py",
     "tests/test_model_info.py",
     "tests/test_nathan_agent_runtime_hardening.py",
+    "tests/test_nathan_approval_channel.py",
+    "tests/test_nathan_approval_reviewer.py",
+    "tests/test_oliver_oneshot.py",
     "tests/test_run_contract.py",
     "tests/test_task_router.py",
 )
@@ -141,8 +181,8 @@ BENCHMARK_LIMITATIONS = (
     "set using the report's self-reported, non-attested operating-system "
     "label; Windows changes only the checkpoint-resume and workload-total "
     "durability ceilings. "
-    "Latency has not been independently reproduced, and the active "
-    "freeze forbids public benchmark claims."
+    "Latency has not been independently reproduced. This local evidence "
+    "is not authorization for public benchmark claims."
 )
 _FAILURE_CODE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,127}")
 

@@ -327,7 +327,9 @@ def test_runtime_capability_records_are_searchable_and_preserve_embeddings(monke
     records = harness._runtime_capability_records()
 
     assert records
-    assert len(records) == len(__import__("algo_cli.action_registry", fromlist=["ACTION_SPECS"]).ACTION_SPECS)
+    from algo_cli.action_registry import effective_action_specs
+
+    assert len(records) == len(effective_action_specs(include_archived=True))
     write_file = next(record for record in records if record["id"].endswith(":write_file"))
     assert write_file["kind"] == "runtime_capability"
     assert "approval required True" in write_file["index_text"]
@@ -678,7 +680,17 @@ def test_stats_surfaces_embeddings_block():
         "bm25_records",
         "vector_matrix_ready",
         "vector_matrix_rows",
+        "bm25_slices",
+        "vector_matrix_slices",
     }
+    lexical_cache = stats["retrieval_caches"]["bm25_slices"]
+    matrix_cache = stats["retrieval_caches"]["vector_matrix_slices"]
+    assert lexical_cache["slices"] == matrix_cache["slices"] == 0
+    assert lexical_cache["max_slices"] == matrix_cache["max_slices"] == 8
+    assert lexical_cache["max_input_rows"] == matrix_cache["max_input_rows"] == 4096
+    assert lexical_cache["weight_unit"] == "candidate_rows"
+    assert matrix_cache["weight_unit"] == "matrix_bytes"
+    assert matrix_cache["max_weight"] == 32 * 1024 * 1024
 
 
 def test_stats_surfaces_harness_quality_block():
@@ -742,7 +754,8 @@ def test_stats_surfaces_harness_quality_block():
 
     quality = harness.stats()["quality"]
 
-    assert quality["status"] == "ready"
+    assert quality["status"] == "degraded"
+    assert quality["runtime_capability_coverage"]["complete"] is False
     assert quality["project_specific_records"] == 3
     assert quality["extension_records"] == 1
     assert quality["memory_records"] == 1
@@ -752,7 +765,7 @@ def test_stats_surfaces_harness_quality_block():
     assert quality["embedding_complete"] is True
 
 
-def test_quality_allows_low_project_share_when_structured_plugin_metadata_is_indexed():
+def test_quality_does_not_warn_about_low_project_share_for_structured_plugin_metadata():
     records = [
         {
             "id": f"algo-cli:wiki:project-{i}.md",
@@ -832,8 +845,10 @@ def test_quality_allows_low_project_share_when_structured_plugin_metadata_is_ind
 
     assert quality["project_specific_share"] <= 0.25
     assert quality["extension_share"] < 0.7
-    assert quality["status"] == "ready"
-    assert not quality["recommendations"]
+    assert quality["status"] == "degraded"
+    assert quality["recommendations"] == [
+        "Run /harness refresh to synchronize the complete effective runtime capability catalog."
+    ]
 
 
 def test_iter_files_not_blocked_by_ancestor_tmp(tmp_path):
