@@ -25,6 +25,21 @@ npm run dev
 npm test
 ```
 
+## Dependency security
+
+Next.js and its lint configuration are pinned together. The Sharp override keeps
+both Next.js and Miniflare on the patched decoder while Miniflare still pins an
+older version. Remove the override only after the complete resolved tree is
+patched and the native-image controls pass. See the upstream
+[Next.js advisory](https://github.com/vercel/next.js/security/advisories/GHSA-2xp9-vwfh-vxw4)
+and [Sharp advisory](https://github.com/lovell/sharp/security/advisories/GHSA-rgj7-g3m4-5g8c).
+
+`npm test` verifies the resolved decoders and benign AVIF conversion, plus the
+YAML empty-merge work budget and ordinary inheritance. `npm audit` remains a
+separate blocking gate; the focused controls do not replace it or prove that a
+deployed environment is exploitable. The YAML control follows the upstream
+[merge-budget advisory](https://github.com/nodeca/js-yaml/security/advisories/GHSA-2883-xcg3-v3hh).
+
 ## Cloudflare publication
 
 The production Worker owns both `algo-cli.com` and `www.algo-cli.com` as
