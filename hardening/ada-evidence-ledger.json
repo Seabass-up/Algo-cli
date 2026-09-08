@@ -3661,6 +3661,15 @@
           "timestamp": "2026-09-08T20:34:53Z",
           "scope": "updated source digest sha256:379ddcbb155e103f78186b86a7c2d606fdf6ed2e043debd6fd97e86f90f7f28b includes the bounded collector, descriptor-bound protected search worker, runtime configuration injection, exact dependency lock, and synthetic descendant/race regression fixtures; local coverage remains non-exhaustive",
           "limitations": "The original recursive exposure and registered-subtree rename no longer reproduce in local synthetic checks. Native Windows qualification of this candidate has not run; prior Windows workload timing gates remain failed. This local report does not qualify the installed runtime, other file tools, external browsers, representative model quality, or competitive superiority; the requirement remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json verified by scripts/henry_m8_qualification.py after required CI backend and exact checkout-byte repairs",
+          "digest": "sha256:ea5f9015ac0e62fea929feb495386d23882394b565a4f9694205a4a361e9ad54",
+          "result": "status blocked: 9 existing source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics in this report; public_claim_eligible is false",
+          "timestamp": "2026-09-08T21:24:13Z",
+          "scope": "updated source digest sha256:951ce53375d144ebf110e781657ed724dfc30026a586a7335d191a949fb0566c binds the CI ripgrep prerequisite, exact LF lockfile checkout, synthetic regressions, and failure-only bounded native timing diagnostics; local coverage remains non-exhaustive",
+          "limitations": "Hosted run 34276924298 failed on Windows workload latency and lockfile source-byte mismatch; 34 search cases were skipped for missing ripgrep on macOS and Linux, plus one Windows-only case. The checkout mismatch reproduces locally and is repaired without weakening exact hashes. Native qualification of the CI repair and the Windows timing cause remain open. This report does not qualify other file tools, external browsers, representative model quality, or competitive superiority; the requirement remains in progress"
         }
       ]
     },
@@ -5271,6 +5280,24 @@
           "timestamp": "2026-09-08T20:34:53Z",
           "scope": "source digest sha256:b0147506bc936e7f5597db77064bfa752dcb6a902861f8b96b3f40e3768e3643 and report digest sha256:fb98eeed3744c1ac0467813cbfd3435b0ff8e261723bc4f8b1570436a8d97ec8 bind the current local candidate",
           "limitations": "Local synthetic protected-search fixtures pass, but native Windows checks for this candidate and diagnosis of the existing Windows latency failures remain outstanding. No installed qualification, live model task quality, or production browser claim follows. HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json verified by scripts/henry_m8_qualification.py after required CI backend and exact checkout-byte repairs",
+          "digest": "sha256:ea5f9015ac0e62fea929feb495386d23882394b565a4f9694205a4a361e9ad54",
+          "result": "status blocked: 9 existing source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics in this report; public_claim_eligible is false",
+          "timestamp": "2026-09-08T21:24:13Z",
+          "scope": "updated source digest sha256:951ce53375d144ebf110e781657ed724dfc30026a586a7335d191a949fb0566c binds the CI ripgrep prerequisite, exact LF lockfile checkout, synthetic regressions, and failure-only bounded native timing diagnostics; local coverage remains non-exhaustive",
+          "limitations": "Hosted run 34276924298 failed on Windows workload latency and lockfile source-byte mismatch; 34 search cases were skipped for missing ripgrep on macOS and Linux, plus one Windows-only case. The checkout mismatch reproduces locally and is repaired without weakening exact hashes. Native qualification of the CI repair and the Windows timing cause remain open. This report does not qualify other file tools, external browsers, representative model quality, or competitive superiority; the requirement remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json verified by scripts/nathan_agent_runtime_qualification.py --refresh after required CI backend and exact checkout-byte repairs",
+          "digest": "sha256:c29b535aff402bbe010f118bcf47ee0a31294cfb2d59ebf59dfaa6280fca6ddf",
+          "result": "status pass: 17 existing correctness probes and all local deterministic runtime gates pass; these fixtures are non-exhaustive and public_claim_eligible is false",
+          "timestamp": "2026-09-08T21:24:13Z",
+          "scope": "source digest sha256:a311c8accbf418573d2a20e97c169ef73c1737f629b4018ddcd240265eb17e75 and report digest sha256:1b383c597a466b1032d77323cef5ef6a2fa8fd592dd1565036ff842ce03a6893 bind the current local candidate",
+          "limitations": "All 15 installed smokes passed for delivered search commit ce45748, but the new CI repair is not natively qualified. Windows run 34276924298 retained its 3659.8754 ms workload p95 failure against the unchanged 3500 ms ceiling; native diagnostics are pending, not a passing benchmark or causal explanation. No live model task quality or production browser claim follows. HARD-081 remains in progress"
         }
       ]
     },

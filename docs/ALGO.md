@@ -15369,3 +15369,32 @@ Windows, other file tools, browser containment, or representative coding quality
 
 **Evidence:** `algo_cli/irene_search.py`, `algo_cli/irene_memory_path_policy.py`,
 `tests/test_irene_search.py`, `tests/test_search_execution.py`.
+
+## Required Backend And Native Failure Evidence
+
+A green job with an unavailable backend is not evidence for that backend. CI
+installs ripgrep 15.2.0 with its packaged Cargo lock, exposes that runner-local
+binary, and requires its exact version before pytest collection. Local installs
+may still use the Python fallback. Test both explicit backend paths; native skips
+must remain visible and must not be counted as passes or silently repaired by
+substituting another implementation.
+
+Source-bound receipts hash exact bytes. Pin line endings for every bound text
+input, including `uv.lock`, and reproduce checkout conversion with Git's
+`core.autocrlf=true` before changing the verifier. Do not normalize differing
+source bytes inside the digest algorithm or refresh an artifact merely to hide
+an unexplained platform mismatch.
+
+Retain the first failed run, head, log digest, test identity, measured values, and
+unchanged limits. A Windows timing failure triggers a separate, bounded profile
+of the frozen synthetic workload. The profile contains aggregate function names,
+call counts, timings, and source bindings, never model prompts, credentials,
+private memory, argument values, or executable pickle artifacts. Profile overhead
+makes its timings diagnostic only. It cannot overwrite qualification evidence,
+convert the failed job to success, authorize a retry, or establish a cause without
+native measurements. Keep correctness, performance, installation, and external
+authority results distinct.
+
+**Evidence:** `.gitattributes`, `.github/workflows/oliver-ci.yml`,
+`tests/conftest.py`, `scripts/nathan_agent_runtime_profile.py`,
+`tests/test_oliver_ci_backend_coverage.py`, `tests/test_nathan_agent_runtime_profile.py`.

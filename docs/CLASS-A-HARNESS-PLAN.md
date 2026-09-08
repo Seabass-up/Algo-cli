@@ -2177,3 +2177,45 @@ evaluation/recovery suite passes 53 cases.
   through the authorized feature-branch workflow without implying a main release,
   M8 completion, or competitive superiority. Keep the separate Windows timing,
   protected-coding verification, and representative-evaluation work open.
+
+### Protected Search Delivery And Hosted Findings
+
+- Committed and pushed the qualified search repair as
+  `ce45748b3a2424b5e603db4c3b347373a9ca4db3` to `feat/pattern-runtime`, PR #33.
+  No main merge, tag, or release was performed. The normal non-editable runtime
+  now matches the 324-file candidate digest above. Only the three newly pinned
+  search dependencies were added; the exact Echo pin and its source/RECORD
+  verification remain unchanged.
+- All 15 installed smokes passed, including the actual launcher, restart,
+  protected-search canaries, and required-Echo Astra empty-stream recovery.
+  Nineteen tracked settings remained unchanged, including the canonical saved
+  Algo-cli workspace. Synthetic authority checks did not approve real actions.
+  The existing interactive process was not restarted and will need a fresh launch
+  to load the new code. Evidence: `/tmp/algo-cli-search-delivery.chGHcTj6/`.
+- Refreshed O4-O8 and their 160-sample, model-free retrieval comparison against
+  the delivered source. The records-plus-rules cell reached 1.0 fixture accuracy
+  with no boundary violations; records without rules reached 0.75 with ten
+  violations. This measures frozen retrieval tasks only, not generated answers
+  or representative coding quality. Later source edits invalidate these receipts
+  and require another final-source refresh.
+- Hosted run `34276924298` completed with a Windows failure. The macOS matrix
+  passed 5,322 tests with 67 skips; Linux passed 5,319 with 70 skips. Each executed
+  76 of the 111 search cases and skipped 35: 34 required unavailable ripgrep,
+  and one required native Windows.
+  Windows executed 74 search cases and skipped 37, including platform exclusions.
+  No executed search case failed. This was incomplete native-backend coverage,
+  not successful qualification of both implementations.
+- Windows reported 5 failures, 4,429 passes, and 861 skips in 867.30 seconds.
+  Four failures derive from the workload p95 of 3,659.8754 ms exceeding the
+  unchanged 3,500 ms ceiling. First-event p95 was 794.0687 ms, and all 17
+  correctness probes passed. The fifth failure was a stored source-digest
+  mismatch. Log SHA-256:
+  `1b661a79391a3bb5252f5d66ade815e85d38fc3a49561095b644a7bb9337f090`.
+- A separate red test reproduced Git converting the newly source-bound `uv.lock`
+  to CRLF under `core.autocrlf=true`; `.gitattributes` had no LF rule for it.
+  The candidate pins checkout bytes instead of weakening hashing. Two other red
+  checks preserve the missing CI backend prerequisite. CI now builds an exact
+  locked ripgrep and rejects missing/wrong versions before collection. A
+  failure-only Windows profiler will retain bounded, source-bound diagnostic
+  JSON without changing the failed gate or its thresholds. Native qualification
+  of these changes and the Windows latency cause remain open.

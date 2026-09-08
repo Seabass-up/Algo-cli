@@ -41,6 +41,8 @@ from algo_cli.henry_hardening_qualification import (  # noqa: E402
 
 FUZZER = ROOT / "scripts" / "david_control_kernel_fuzzer.py"
 SOURCE_PATHS = (
+    ".gitattributes",
+    "scripts/nathan_agent_runtime_profile.py",
     "algo_cli/evals/harness_retrieval_benchmark.py",
     "algo_cli/evals/grounded_retrieval.py",
     "algo_cli/evals/grounded_retrieval_validation.py",
@@ -345,6 +347,8 @@ FOCUSED_TESTS = (
     "tests/test_tools.py",
     "tests/test_search_execution.py",
     "tests/test_irene_search.py",
+    "tests/test_nathan_agent_runtime_profile.py",
+    "tests/test_oliver_ci_backend_coverage.py",
 )
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 POSTWRITE_EVIDENCE_TESTS = (

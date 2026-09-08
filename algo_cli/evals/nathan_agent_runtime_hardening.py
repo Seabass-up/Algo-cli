@@ -57,6 +57,7 @@ _UTC_RE = re.compile(
 )
 
 SOURCE_PATHS = (
+    ".gitattributes",
     "pyproject.toml",
     "uv.lock",
     "algo_cli/action_registry.py",
@@ -109,6 +110,10 @@ SOURCE_PATHS = (
     "algo_cli/task_router.py",
     "algo_cli/tool_context.py",
     "scripts/nathan_agent_runtime_qualification.py",
+    "scripts/nathan_agent_runtime_profile.py",
+    "tests/test_nathan_agent_runtime_profile.py",
+    "tests/test_oliver_ci_backend_coverage.py",
+    "tests/conftest.py",
     "tests/test_agent_context.py",
     "tests/test_agent_pipeline.py",
     "tests/test_agent_run_journal.py",

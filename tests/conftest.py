@@ -12,6 +12,7 @@ import importlib
 import os
 import random
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -61,6 +62,23 @@ try:
     _harness_bootstrap.find_rust_indexer = lambda: None
 except ImportError:
     pass
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """CI must exercise ripgrep as well as the deliberately forced fallback."""
+    if os.environ.get("ALGO_TEST_REQUIRE_RIPGREP") != "1":
+        return
+    executable = shutil.which("rg")
+    if executable is None:
+        raise pytest.UsageError("CI requires ripgrep 15.2.0; missing backend coverage is not a pass")
+    try:
+        completed = subprocess.run(
+            [executable, "--version"], capture_output=True, check=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise pytest.UsageError("CI ripgrep preflight failed") from exc
+    if completed.stdout.splitlines()[:1] != [b"ripgrep 15.2.0"]:
+        raise pytest.UsageError("CI requires the pinned ripgrep 15.2.0 backend")
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:

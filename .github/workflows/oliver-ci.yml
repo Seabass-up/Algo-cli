@@ -14,6 +14,8 @@ jobs:
     name: Runtime quality gates
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      ALGO_TEST_REQUIRE_RIPGREP: "1"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -28,6 +30,11 @@ jobs:
           enable-cache: true
       - name: Install locked project and quality tools
         run: uv sync --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil --reinstall-package algo-cli-runtime --link-mode copy
+      - name: Install locked search backend
+        shell: bash
+        run: |
+          cargo install ripgrep --version 15.2.0 --locked --root "$RUNNER_TEMP/algo-ci-ripgrep"
+          printf '%s\n' "$RUNNER_TEMP/algo-ci-ripgrep/bin" >> "$GITHUB_PATH"
       - name: Installed-source parity (blocking)
         run: uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil python -I scripts/oliver_installed_source_parity.py
       - name: Ruff (blocking)
@@ -121,6 +128,7 @@ jobs:
           scripts/henry_github_hardening_readiness.py
           scripts/henry_echo_veil_dependency_audit.py
           scripts/nathan_agent_runtime_qualification.py
+          scripts/nathan_agent_runtime_profile.py
           scripts/austin_native_package_audit.py
           --ignore-missing-imports
           --no-strict-optional
@@ -152,6 +160,8 @@ jobs:
     name: Tests (${{ matrix.os }}, Python ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
+    env:
+      ALGO_TEST_REQUIRE_RIPGREP: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -176,12 +186,31 @@ jobs:
           enable-cache: true
       - name: Install locked project
         run: uv sync --frozen --no-editable --extra dev --extra echo-veil --reinstall-package algo-cli-runtime --link-mode copy
+      - name: Install locked search backend
+        shell: bash
+        run: |
+          cargo install ripgrep --version 15.2.0 --locked --root "$RUNNER_TEMP/algo-ci-ripgrep"
+          printf '%s\n' "$RUNNER_TEMP/algo-ci-ripgrep/bin" >> "$GITHUB_PATH"
       - name: Installed-source parity
         run: uv run --frozen --no-editable --extra dev --extra echo-veil python -I scripts/oliver_installed_source_parity.py
       - name: Run full suite
+        id: full-suite
         run: >-
           uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy pytest tests
           -vv --durations=25 -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true
+      - name: Diagnose failed Windows runtime timing
+        if: ${{ failure() && runner.os == 'Windows' && steps.full-suite.outcome == 'failure' }}
+        timeout-minutes: 3
+        run: >-
+          uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy
+          python scripts/nathan_agent_runtime_profile.py
+      - name: Retain Windows timing diagnostics
+        if: ${{ failure() && runner.os == 'Windows' && steps.full-suite.outcome == 'failure' }}
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: windows-runtime-profile-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/algo-agent-runtime-profile-*.json
+          if-no-files-found: error
 
   native:
     name: Native helper checks
