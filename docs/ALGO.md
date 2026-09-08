@@ -15217,3 +15217,24 @@ Preserve the failed run and qualify a changed diagnostic on a separate run.
 
 **Evidence:** `.github/workflows/oliver-ci.yml`,
 `tests/test_ci_timeout_diagnostics.py`.
+
+## Bounded Test Metadata
+
+Keep adversarial payloads in fixtures, not in their displayed test identifiers.
+Give oversized responses, malformed documents, and deeply nested inputs short,
+explicit parameter IDs. Do not shrink a boundary-test payload merely to reduce
+logging. The full collected node ID must fit within 1024 UTF-8 bytes; reject an
+oversized ID during collection with a bounded diagnostic that omits parameter
+contents. Report at most five examples even when many IDs violate the limit.
+
+Exercise the real pytest subprocess both ways: an unlabeled multi-megabyte
+fixture must fail collection without flooding output, and the labeled fixture
+must execute its original assertions successfully. Preserve ordinary test
+failures and the existing watchdog and job deadlines. Fast local tests with
+file-backed logs do not prove that a hosted runner can drain the same output;
+compare the actual hosted log boundary and requalify after changing metadata.
+Do not infer a product parser deadlock from the last visible passing test.
+
+**Evidence:** `tests/conftest.py`, `tests/test_ci_output_budget.py`,
+`tests/test_embedding_provider_identity.py`,
+`tests/test_competitor_benchmark.py`.

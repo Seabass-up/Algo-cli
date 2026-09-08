@@ -1867,3 +1867,49 @@ evaluation/recovery suite passes 53 cases.
   change saved embedding/compute settings. A performance change still needs
   negative controls and same-protocol before/after qualification. The strict
   eight-task answer score remains 6/8; this profile does not rescore it.
+
+### Bounded CI Test Metadata
+
+- Authenticated live logs for hosted run `34252238007` exposed a common
+  output boundary. Linux 3.12, Linux 3.10, and macOS 3.12 stopped immediately
+  before a provider-metadata case with a 2,097,267-byte generated test ID.
+  Windows stopped earlier, before a completion-receipt case with a
+  65,618-byte ID. All four jobs subsequently exceeded their existing job
+  limits; the completed quality log archive was again unavailable (HTTP 404).
+- A clean, isolated Linux probe ran the original 71 embedding/anchor tests
+  successfully in 1.85 seconds with file-backed output. Its longest log line
+  was 2,097,282 bytes. This identifies oversized diagnostic output as a real
+  defect and a hosted-stall suspect, not proof of a parser deadlock or a
+  completed hosted fix. Six oversized IDs were found across five test files.
+- Added short explicit IDs without changing the adversarial inputs or their
+  assertions. A collection hook rejects node IDs over 1024 UTF-8 bytes and
+  emits at most five bounded examples without parameter contents. Eight new
+  tests cover the real subprocess behavior, byte boundaries, diagnostic
+  bounds, and the complete collected suite. The pre-repair run had seven
+  failures; the repaired focused set passed 315 tests. Maximum collected ID
+  size fell from 2,097,267 to 500 bytes; only the eight new cases were added.
+- Full local delivery passed 5,173 tests with 32 skips and 69.06%
+  branch-aware coverage. Go race/vet, Ruff, default and CI typing, compilation,
+  source/history/artifact scans, locked dependency auditing, wheel-from-sdist
+  build, Twine, and scoped new-test formatting passed. No test, payload,
+  watchdog deadline, outer timeout, or coverage floor was relaxed.
+- O4/O5/O6/O7/O8 checks remain 17/218/13/239/142, with 160 paired samples and
+  six source-validated reports installed. M8 remains nine local passes and
+  five external blocks; M9 remains 29 verified and 13 blocked with no failed
+  requirements. M8 binds the collection guard and affected embedding/answer
+  metadata; the new output-budget tests and ALGO contract have separate
+  full-suite evidence, not an invented M8 binding.
+- Installed parity verified 322 files and 282 Python modules at
+  `sha256:9d499f8cdc085706c6504f7179fb915509e813dc444b318827fd7048d6e5b416`.
+  All twelve installed smokes passed, including required-Echo Astra retry
+  recovery in 11.48 seconds. The exact Echo `cbee525` pin, saved settings, and
+  46-source qualification are unchanged. Artifacts are retained under
+  `/tmp/algo-cli-linux-ci.JXC3da/`; fresh hosted qualification remains separate.
+- The isolated Linux x86_64 image runs under Rosetta on this arm64 host.
+  After correcting its Git ownership, user, tooling, and stale-report setup,
+  the full suite completed with 5,169 passes, 35 skips, and one failure in
+  186.27 seconds. The remaining benchmark failure reports a Rosetta anonymous
+  memory-map error under the existing 512 MB subprocess limit; a focused
+  pytest reproduction confirms it. This is not a green Linux qualification.
+  Preserve the failed runs and the memory cap; native hosted execution must
+  independently verify this patch. No installed runtime implementation changed.

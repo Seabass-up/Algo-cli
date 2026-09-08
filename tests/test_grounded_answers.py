@@ -199,8 +199,8 @@ def test_exact_answer_shape_required(defect):
         '{"answers":{"x":1,"x":2},"evidence":[]}',
         '{"answers":NaN,"evidence":[]}',
         '{"answers":Infinity,"evidence":[]}',
-        " " * (evaluation.MAX_ANSWER_CHARS + 1),
-        "[" * 2000 + "]" * 2000,
+        pytest.param(" " * (evaluation.MAX_ANSWER_CHARS + 1), id="oversized-answer"),
+        pytest.param("[" * 2000 + "]" * 2000, id="deeply-nested-json"),
     ],
 )
 def test_malformed_json_is_a_failure_not_a_crash(text):

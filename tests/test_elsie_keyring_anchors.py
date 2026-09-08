@@ -138,7 +138,10 @@ def test_rejects_rollback_skip_or_rebinding(setup, changes):
     assert anchors.load(head().journal_id) == head().to_bytes()
 
 
-@pytest.mark.parametrize("replacement", ["{}", "not-json", "x" * 65536, '{"schema_version":true}'])
+@pytest.mark.parametrize(
+    "replacement",
+    ["{}", "not-json", pytest.param("x" * 65536, id="oversized-bundle"), '{"schema_version":true}'],
+)
 def test_never_overwrites_invalid_bundle(setup, replacement):
     backend, keys, anchors = setup
     backend.values[keys.service, ELSIE_MEMORY_ANCHORS_LABEL] = replacement

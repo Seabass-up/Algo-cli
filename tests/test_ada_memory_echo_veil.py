@@ -489,7 +489,7 @@ def test_readiness_rejects_unreviewed_future_echo_veil_api(
         ),
         ('{"url":"file:///unbounded-source"}', "direct-url-unpinned"),
         ("not-json", "direct-url-unpinned"),
-        ("x" * 16_385, "direct-url-unpinned"),
+        pytest.param("x" * 16_385, "direct-url-unpinned", id="oversized-document"),
     ],
 )
 def test_distribution_installation_identity_is_fail_closed(

@@ -328,7 +328,13 @@ def test_refresh_carries_provider_identity_only_for_reusable_sources(
 
 
 @pytest.mark.parametrize(
-    "raw", [b'{"models":[],"models":[]}', b'{"models":NaN}', b"\xff", b"x" * (embedding_binding.MAX_TAGS_BYTES + 1)]
+    "raw",
+    [
+        b'{"models":[],"models":[]}',
+        b'{"models":NaN}',
+        b"\xff",
+        pytest.param(b"x" * (embedding_binding.MAX_TAGS_BYTES + 1), id="oversized-response"),
+    ],
 )
 def test_metadata_parser_rejects_duplicates_nonfinite_and_oversized_input(monkeypatch, raw):
     class Opener:

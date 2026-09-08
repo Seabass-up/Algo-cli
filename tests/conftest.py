@@ -63,6 +63,24 @@ except ImportError:
     pass
 
 
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Reject oversized test metadata before verbose reporting can flood CI."""
+    oversized = [
+        (item, len(item.nodeid.encode("utf-8", errors="backslashreplace")))
+        for item in items
+        if len(item.nodeid.encode("utf-8", errors="backslashreplace")) > 1024
+    ]
+    if oversized:
+        examples = "; ".join(
+            f"{ascii(item.nodeid.partition('[')[0])[:120]} ({size} bytes)"
+            for item, size in oversized[:5]
+        )
+        raise pytest.UsageError(
+            f"{len(oversized)} test IDs exceed 1024 bytes. Use short explicit pytest.param ids "
+            f"without changing the fixture payloads. Examples: {examples}"
+        )
+
+
 @pytest.fixture(autouse=True)
 def clean_state():
     """Wipe the test config dir and reset module-level caches around every test."""

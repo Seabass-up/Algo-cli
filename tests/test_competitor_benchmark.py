@@ -280,7 +280,7 @@ def test_completion_receipt_requires_exact_tests_and_phases(tmp_path, mutation):
         b"not-json",
         b"\xff",
         b'{"completed":true,"completed":false}',
-        b"x" * (runner.MAX_CHECKER_RECEIPT_BYTES + 1),
+        pytest.param(b"x" * (runner.MAX_CHECKER_RECEIPT_BYTES + 1), id="oversized-receipt"),
     ],
 )
 def test_invalid_completion_records_fail_closed(tmp_path, payload):
