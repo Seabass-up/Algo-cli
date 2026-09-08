@@ -156,6 +156,8 @@ SOURCE_PATHS = (
     "algo_cli/small_context.py",
     "algo_cli/tool_context.py",
     "algo_cli/tools.py",
+    "algo_cli/search_execution.py",
+    "algo_cli/irene_search.py",
     "docs/ada-algo-cli-memory-lifecycle-contract.md",
     "docs/boron-browser-isolation-contract.md",
     "docs/echo-veil-security-status.md",
@@ -341,6 +343,8 @@ FOCUSED_TESTS = (
     "tests/test_tool_context.py",
     "tests/test_tool_context_efficiency.py",
     "tests/test_tools.py",
+    "tests/test_search_execution.py",
+    "tests/test_irene_search.py",
 )
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 POSTWRITE_EVIDENCE_TESTS = (

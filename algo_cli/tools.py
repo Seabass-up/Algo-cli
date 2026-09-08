@@ -10,13 +10,13 @@ import logging
 import math
 import os
 import json
-import fnmatch
 import re
 import signal
 import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -97,6 +97,7 @@ SEARCH_FALLBACK_SKIP_DIRS = {
 }
 SEARCH_FALLBACK_MAX_FILE_BYTES = 2_000_000
 SEARCH_FALLBACK_MAX_FILES = 5_000
+SEARCH_TIMEOUT_SECONDS = 20.0
 DEFAULT_GATEWAY_URL = (
     os.environ.get("ALGO_CLI_GATEWAY_URL") or os.environ.get("OLLAMA_CLI_GATEWAY_URL") or "http://127.0.0.1:8765"
 )
@@ -1375,87 +1376,87 @@ def list_directory(path: str = ".", cwd: str | None = None, limit: int = 200) ->
 
 
 def search_files(
-    pattern: str, path: str = ".", cwd: str | None = None, glob: str | None = None, limit: int = 100
+    pattern: str, path: str = ".", cwd: str | None = None, glob: str | None = None, limit: int = 100,
+    cfg: Any = None,
 ) -> str:
-    """Search files with ripgrep when available.
+    """Search files with ripgrep when available, returning bounded partial results.
+
+    With Echo selected, search authorized regular text snapshots only. Protected
+    roots and aliases are excluded, and scan-budget limits are reported.
 
     Args:
         pattern: Text or regex pattern to search.
         path: Root path to search.
         cwd: Optional working directory for relative paths.
         glob: Optional rg glob, such as *.py.
-        limit: Maximum matching lines.
+        limit: Maximum matching lines (1-1000); results are also byte-limited.
     """
-    root = _resolve(path, cwd)
-    if not root.exists():
-        return f"Error: path not found: {root}"
-    if root.is_file():
+    from .search_execution import run_search_process
+
+    for name, value in (("pattern", pattern), ("glob", glob)):
+        if name == "glob" and value is None:
+            continue
         try:
-            if glob and not fnmatch.fnmatch(root.name, glob):
-                return "No matches."
-            if root.stat().st_size > SEARCH_FALLBACK_MAX_FILE_BYTES:
-                return "No matches."
-            text = root.read_text(encoding="utf-8", errors="ignore")
-            file_matches = [
-                f"{root}:{lineno}:{line}"
-                for lineno, line in enumerate(text.splitlines(), 1)
-                if re.search(pattern, line)
-            ]
-            return "\n".join(file_matches[:limit]) if file_matches else "No matches."
-        except Exception as exc:
-            return f"Error searching: {exc}"
-    rg = shutil.which("rg")
-    if rg:
-        cmd = [rg, "--line-number", "--hidden", "--glob", "!{.git,node_modules,.venv,venv,dist,build,__pycache__}"]
-        if glob:
-            cmd.extend(["--glob", glob])
-        cmd.extend([pattern, str(root)])
-        try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
-            if proc.returncode not in {0, 1}:
-                return f"Error searching: {(proc.stderr or proc.stdout or '').strip() or f'rg exited with {proc.returncode}'}"
-            lines = (proc.stdout or "").splitlines()
-            return "\n".join(lines[:limit]) or "No matches."
-        except subprocess.TimeoutExpired:
-            return "Error: search timed out after 20 seconds."
-    matches: list[str] = []
-    scanned = 0
-    truncated = False
+            if not isinstance(value, str) or "\x00" in value or len(value.encode("utf-8")) > 4096:
+                return f"Error: search {name} must be text of at most 4096 UTF-8 bytes without NUL."
+        except UnicodeEncodeError:
+            return f"Error: search {name} must contain valid UTF-8 text."
+    if type(limit) is not int or not 1 <= limit <= 1000:
+        return "Error: search limit must be an integer from 1 through 1000."
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    if cfg is not None and echo_veil_authority_selected(cfg):
+        from .irene_search import protected_search
+
+        return protected_search(pattern, path, cwd or cfg.cwd, glob, limit)
     try:
-        for current, dirs, files in os.walk(root):
-            dirs[:] = [d for d in dirs if d not in SEARCH_FALLBACK_SKIP_DIRS]
-            for filename in files:
-                if len(matches) >= limit:
-                    break
-                if scanned >= SEARCH_FALLBACK_MAX_FILES:
-                    truncated = True
-                    break
-                if glob and not fnmatch.fnmatch(filename, glob):
-                    continue
-                fpath = Path(current) / filename
-                try:
-                    if fpath.stat().st_size > SEARCH_FALLBACK_MAX_FILE_BYTES:
-                        continue
-                except OSError:
-                    continue
-                scanned += 1
-                try:
-                    text = fpath.read_text(encoding="utf-8", errors="ignore")
-                except OSError:
-                    continue
-                for lineno, line in enumerate(text.splitlines(), 1):
-                    if re.search(pattern, line):
-                        matches.append(f"{fpath}:{lineno}:{line}")
-                        if len(matches) >= limit:
-                            break
-            if len(matches) >= limit or truncated:
-                break
+        root = _resolve(path, cwd)
+        if not root.exists():
+            return _bounded_search_text(f"Error: path not found: {root}")
+        rg = None if root.is_file() else shutil.which("rg")
+        if rg:
+            cmd = [
+                rg, "--no-config", "--line-number", "--with-filename", "--no-heading",
+                "--color=never", "--line-buffered", "--hidden", "--glob",
+                "!{.git,node_modules,.venv,venv,dist,build,__pycache__}",
+            ]
+            if glob:
+                cmd.extend(["--glob", glob])
+            cmd.extend(["--", pattern, str(root)])
+        else:
+            request = {
+                "path": str(root), "pattern": pattern, "glob": glob, "limit": limit,
+                "max_files": SEARCH_FALLBACK_MAX_FILES, "max_file_bytes": SEARCH_FALLBACK_MAX_FILE_BYTES,
+                "skip_dirs": sorted(SEARCH_FALLBACK_SKIP_DIRS),
+            }
+            cmd = [sys.executable, "-I", "-S", str(Path(__file__).with_name("search_execution.py")), json.dumps(request)]
+        result = run_search_process(
+            cmd, limit=limit, max_bytes=MAX_TOOL_RESULT - 256, timeout=SEARCH_TIMEOUT_SECONDS,
+            process_kwargs=_isolated_process_group_kwargs(), terminate=_terminate_process_tree,
+        )
     except Exception as exc:
-        return f"Error searching: {exc}"
-    if not matches:
-        return "No matches."
-    suffix = f"\n...[stopped after scanning {SEARCH_FALLBACK_MAX_FILES} files]" if truncated else ""
-    return "\n".join(matches) + suffix
+        return _bounded_search_text(f"Error searching: {exc}")
+    lines = result.stdout.decode("utf-8", errors="replace").splitlines()
+    truncated = result.truncated or len(lines) > limit
+    stdout = "\n".join(lines[:limit])
+    stderr = result.stderr.decode("utf-8", errors="replace").strip()
+    if result.timed_out:
+        partial = f"\nPartial matches:\n{stdout}" if stdout else ""
+        return _bounded_search_text(
+            f"Error: search timed out after {SEARCH_TIMEOUT_SECONDS:g} seconds.{partial}", truncated=truncated,
+        )
+    if result.stderr_truncated or result.returncode > 1 or (not result.truncated and result.returncode not in {0, 1}):
+        detail = stderr or stdout or f"search exited with {result.returncode}"
+        return _bounded_search_text(f"Error searching: {detail}", truncated=result.stderr_truncated)
+    return _bounded_search_text(stdout or "No matches.", truncated=truncated)
+
+
+def _bounded_search_text(text: str, *, truncated: bool = False) -> str:
+    suffix = "\n...[truncated: narrow the path or pattern for remaining matches]"
+    payload = text.encode("utf-8", errors="replace")
+    if truncated or len(payload) > MAX_TOOL_RESULT:
+        return payload[:MAX_TOOL_RESULT - len(suffix)].decode("utf-8", errors="ignore").rstrip("\r\n") + suffix
+    return payload.decode("utf-8")
 
 
 def _isolated_process_group_kwargs(platform_name: str | None = None) -> dict[str, Any]:
@@ -1475,7 +1476,7 @@ def _isolated_process_group_kwargs(platform_name: str | None = None) -> dict[str
 
 
 def _terminate_process_tree(
-    proc: subprocess.Popen[str],
+    proc: subprocess.Popen[Any],
     *,
     platform_name: str | None = None,
 ) -> None:
@@ -5298,7 +5299,7 @@ ALL_TOOLS = [
     cleanup_pdf_render_artifact,
     write_file,
     list_directory,
-    search_files,
+    _hide_cfg_param(search_files),
     find_unique_anchor,
     batch_edit,
     _hide_runtime_params(run_shell, "cwd", "safe_mode"),

@@ -57,6 +57,8 @@ _UTC_RE = re.compile(
 )
 
 SOURCE_PATHS = (
+    "pyproject.toml",
+    "uv.lock",
     "algo_cli/action_registry.py",
     "algo_cli/ada_memory_echo_veil.py",
     "algo_cli/agent_blocks.py",
@@ -79,6 +81,9 @@ SOURCE_PATHS = (
     "tests/test_embedding_provider_identity.py",
     "tests/test_harness_slice_cache.py",
     "algo_cli/tools.py",
+    "algo_cli/search_execution.py",
+    "algo_cli/irene_search.py",
+    "algo_cli/irene_memory_path_policy.py",
     "algo_cli/oliver_slash_dispatch.py",
     "algo_cli/evals/harness_retrieval_benchmark.py",
     "algo_cli/evals/grounded_retrieval.py",
@@ -122,6 +127,8 @@ SOURCE_PATHS = (
     "tests/test_grounded_retrieval.py",
     "scripts/grounded_retrieval_qualification.py",
     "tests/test_tools.py",
+    "tests/test_search_execution.py",
+    "tests/test_irene_search.py",
     "tests/test_elsie_echo_preflight.py",
     "tests/test_grace_key_store.py",
     "tests/test_grace_memory_receipts.py",

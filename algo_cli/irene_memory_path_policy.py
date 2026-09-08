@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import stat
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -133,29 +134,57 @@ def _path_within(candidate: Path, root: Path) -> bool:
         return False
 
 
-def require_allowed_path(raw: object, *, cwd: object) -> Path:
-    """Validate one model-controlled path without following aliases."""
+@dataclass(frozen=True)
+class ProtectedPathRules:
+    roots: tuple[str, ...]
+    residue_parent: str
+    residue_prefixes: tuple[str, ...]
+    identities: tuple[tuple[int, int, int], ...] = ()
 
-    candidate = _absolute_nofollow_path(raw, cwd=cwd)
+    def denies_identity(self, information: os.stat_result) -> bool:
+        return (information.st_dev, information.st_ino, stat.S_IFMT(information.st_mode)) in self.identities
+
+    def denies(self, candidate: Path) -> bool:
+        candidate_text = os.path.abspath(os.fspath(candidate)).casefold()
+        try:
+            relative_text = os.path.relpath(candidate_text, self.residue_parent)
+        except ValueError:
+            relative_text = ""
+        first_component = relative_text.split(os.sep, 1)[0]
+        residue_match = first_component.startswith(self.residue_prefixes)
+        return residue_match or any(_path_within(candidate, Path(root)) for root in self.roots)
+
+
+def protected_path_rules() -> ProtectedPathRules:
+    """Capture immutable deny definitions for a bounded descendant operation."""
     from .config import CONFIG_DIR, get_legacy_backup_dir
 
     config_root = Path(CONFIG_DIR).expanduser()
     backup_root = get_legacy_backup_dir().expanduser()
-    residue_prefixes = (
-        f"{config_root.name}.migration-".casefold(),
-        f"{backup_root.name}.migration-".casefold(),
+    roots = tuple(sorted(os.path.abspath(os.fspath(root)) for root in _known_protected_roots()))
+    identities = set()
+    for root in roots:
+        try:
+            info = Path(root).lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ProtectedMemoryPathError("protected root identity is unavailable") from exc
+        if stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode):
+            identities.add((info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)))
+    return ProtectedPathRules(
+        roots,
+        os.path.abspath(os.fspath(config_root.parent)).casefold(),
+        (f"{config_root.name}.migration-".casefold(), f"{backup_root.name}.migration-".casefold()),
+        tuple(sorted(identities)),
     )
-    residue_parent = os.path.abspath(os.fspath(config_root.parent)).casefold()
-    candidate_text = os.path.abspath(os.fspath(candidate)).casefold()
-    residue_match = False
-    try:
-        relative_text = os.path.relpath(candidate_text, residue_parent)
-    except ValueError:
-        relative_text = ""
-    if relative_text and relative_text not in {".", ".."}:
-        first_component = relative_text.split(os.sep, 1)[0]
-        residue_match = first_component.startswith(residue_prefixes)
-    if residue_match or any(_path_within(candidate, root) for root in _known_protected_roots()):
+
+
+def require_allowed_path(raw: object, *, cwd: object) -> Path:
+    """Validate one model-controlled path without following aliases."""
+
+    candidate = _absolute_nofollow_path(raw, cwd=cwd)
+    if protected_path_rules().denies(candidate):
         raise ProtectedMemoryPathError("protected memory paths are unavailable to model-callable filesystem tools")
     return candidate
 

@@ -2055,3 +2055,125 @@ evaluation/recovery suite passes 53 cases.
   clear the prior native Windows latency failure. Hosted qualification of this
   source, representative coding quality, and M8 external requirements remain
   separate from this local delivery result.
+
+### Search Execution Candidate and Open Boundaries
+
+- Hosted run `34265899529` at `d785584` also failed the unchanged Windows
+  workload latency gates: total p95 5,135.5303 ms against 3,500 ms, and
+  first-event p95 1,825.3686 ms against 1,000 ms. All correctness probes passed.
+  Windows completed with 4,356 passes, 824 skips, and four failures, including
+  the three dependent artifact checks. Other executed jobs passed; four
+  protected-browser jobs were skipped and remain unqualified. Preserve both
+  this run and the earlier timing failure; no rerun or local pass diagnoses it.
+- Seventeen initial search regressions reproduced option-shaped patterns being
+  interpreted as ripgrep flags, inherited configuration changing the command,
+  unbounded single-line results in both backends, silent line truncation, and
+  invalid limits. The candidate disables inherited rg configuration and
+  separates positional data from options. A bounded pipe collector stops at
+  global byte/line limits instead of capturing all output first.
+- The Python fallback and single-file regex path now run in a cancellable
+  child with explicit UTF-8 output. Focused tests cover stuck regexes, unlimited
+  stdout/stderr, cancellation, child reaping, exact-limit results, byte/chunk
+  boundaries, legitimate regex/glob behavior, and malformed input. Post-patch
+  negative controls also caught and corrected malformed-Unicode exceptions
+  and a reported search failure being hidden by truncation. The first draft's
+  missing import and oversized parameter IDs are retained as failed attempts;
+  their correction did not shrink payloads or weaken the collection gate.
+- An independent synthetic fixture confirms a separate open security defect:
+  both backends return a private marker from a protected subtree when the model
+  searches its permitted ancestor. Direct access to the protected root is
+  correctly denied. Root admission is therefore not recursive read authority.
+  The next repair must authorize descendants and bind reads across symlink,
+  hardlink, reparse, and path-replacement races; output truncation is not a fix
+  for this boundary. The fixture reads no real protected records.
+- Artifacts for this candidate are under `/tmp/algo-cli-search.iFua3caS/`.
+  Full qualification and installation are not implied by focused passes.
+  Keep the installed runtime and saved workspace unchanged until the recursive
+  boundary is repaired and the combined candidate is qualified. No new release,
+  Windows performance qualification, representative task-quality gain, or M8
+  external completion is claimed.
+- The first full suite had 5,301 passes, 32 skips, and one stale M9 ledger-digest
+  failure after refreshing source-bound reports. Appending current content-bound
+  evidence and regenerating the still-blocked M9 report produced 5,302 passes
+  with 32 skips. A final portability check then reproduced two presentation
+  defects in binary capture: CRLF was no longer normalized, and Unicode line
+  separators could bypass the requested display-line limit. Their corrections
+  require a new source-bound qualification; the earlier green run is retained,
+  not relabeled as proof for later source.
+
+### Search Execution Local Receipt
+
+- The final matcher candidate passed 5,304 tests with 32 skips in 104.84 seconds
+  and 69.17% branch-aware coverage, including 58 dedicated search regressions.
+  Go race/vet, Ruff, default and CI typing, compilation, public source/history
+  and artifact scans, the locked dependency audit, wheel-from-sdist build, and
+  Twine passed. The original failures and intermediate source results remain
+  under `/tmp/algo-cli-search.iFua3caS/`; final receipts are in `final-source/`.
+- Five alternating baseline/candidate pairs used the same twelve synthetic
+  large-line files. The prior implementation returned 10,801,463 UTF-8 bytes;
+  the candidate returned 19,809 bytes with truncation disclosed. Maximum parent
+  Python allocation was about 32.4 MB versus 0.13 MB. This diagnostic does not
+  measure child or total RSS, representative search quality, or competitive
+  superiority; its source hashes and all ten samples are retained.
+- The built wheel contains the exact fallback helper source. Six isolated
+  packaged-helper checks passed across Python 3.10 and 3.14, covering Unicode
+  matches, invalid regexes, and no-match results. This is not an installed
+  harness or native Windows qualification. The normal installed environment,
+  Echo pin, saved workspace, and operator-generated application remain unchanged.
+- M8 retains nine existing local metric passes and five external blocks. M9
+  retains 29 verified and 13 blocked requirements within its defined checklist.
+  Their current digest bindings explicitly retain the independently reproduced
+  recursive protected-search defect and both failed native Windows timing
+  runs. Neither checklist is exhaustive proof of harness safety or readiness.
+- These changes remain a local uncommitted candidate. Before installation or
+  publication, repair descendant read authorization, add race and alias controls
+  to the owning regression suite, and qualify the combined source. The Windows
+  latency cause, contained protected-coding verifier, representative evaluations,
+  and M8 external qualification also remain open.
+
+### Protected Search Boundary Local Receipt
+
+- Seven synthetic red tests confirmed that allowed-ancestor searches exposed
+  protected descendants, hardlink aliases, and migration residue. The protected
+  search path now carries immutable deny paths and root identities into a
+  deadline-isolated worker, binds root handoff and descendant reads, and gives
+  the matcher only authorized in-memory text. Runtime configuration is injected
+  by the dispatcher and hidden from all provider schemas.
+- A separate post-patch race probe caught a real remaining route: renaming a
+  protected directory under a permitted path reached the content reader. Adding
+  registered protected-root filesystem identities closes that reproduced route
+  before bytes are read. Its red result remains alongside the original seven
+  failures. The initial oversized test ID and typing errors are also retained;
+  correcting them did not reduce fixture payloads or weaken any gate.
+- The original two-backend reproducer now returns the public control without
+  its fictional private marker, and direct protected-root access stays denied.
+  Fifty protected-search cases and three new bounded-stdin cases cover ordinary
+  globs, local ignore/negation rules, native regex semantics, links, replacements,
+  policy changes, budgets, Unicode limits, schemas, and child cleanup. The native
+  Windows DOS-alias case is skipped on this Mac, not counted as a native pass.
+- Combined source validation passed 5,356 tests with 33 skips in 111.49 seconds
+  and 69.15% branch-aware coverage. Go race/vet, Ruff, default and exact CI typing,
+  compilation, public source/history/artifact scans, the locked dependency audit,
+  wheel-from-sdist build, and Twine all passed. Runtime dependencies now explicitly
+  include pathspec 1.1.1 and wcmatch 10.2.1, with bracex 3.0.1 in the exact lock;
+  the Echo pin is unchanged.
+- Two disposable non-editable wheel environments, Python 3.10 and 3.14, each
+  passed seven synthetic smoke checks. Both match 324 packaged source files,
+  including 284 Python modules and the updated ALGO.md, at
+  `sha256:c00a304a6caabecbb0fd5abf379cfa62cf2cdc20d7cc3022a22f8882f9a55f4c`.
+  This verifies the packaged worker handoff, not the user's normal installation,
+  native Windows execution, required-Echo live-provider integration, or coding quality.
+- M8 remains nine local passes and five external blocks; M9 remains 29 verified
+  and 13 blocked requirements within its non-exhaustive checklist. Current M8
+  source binding is
+  `sha256:379ddcbb155e103f78186b86a7c2d606fdf6ed2e043debd6fd97e86f90f7f28b`.
+  Both previous native Windows timing failures remain failed and unexplained.
+  No benchmark threshold, browser approval/signing gate, or protection setting
+  changed. Artifacts are under `/tmp/algo-cli-protected-search.k7ZTMrg9/`.
+- The combined candidate remains uncommitted, uninstalled in the normal runtime,
+  and unpushed. The installed launcher's saved workspace was verified as the
+  canonical Algo-cli checkout; this iteration changed no saved settings. Next:
+  qualify the final installed runtime and native Windows boundary, then publish
+  through the authorized feature-branch workflow without implying a main release,
+  M8 completion, or competitive superiority. Keep the separate Windows timing,
+  protected-coding verification, and representative-evaluation work open.

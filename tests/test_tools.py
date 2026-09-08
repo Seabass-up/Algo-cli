@@ -2001,13 +2001,13 @@ def test_search_files_supports_single_file_target(tmp_path):
 
 
 def test_search_files_reports_rg_error_as_error(tmp_path, monkeypatch):
-    class Proc:
-        returncode = 2
-        stdout = ""
-        stderr = "regex parse error"
+    from algo_cli import search_execution
 
     monkeypatch.setattr(tools.shutil, "which", lambda name: "rg")
-    monkeypatch.setattr(tools.subprocess, "run", lambda *args, **kwargs: Proc())
+    monkeypatch.setattr(
+        search_execution, "run_search_process",
+        lambda *args, **kwargs: search_execution.SearchProcessResult(b"", b"regex parse error", 2, False, False, False),
+    )
 
     out = tools.search_files("[", path=str(tmp_path))
 

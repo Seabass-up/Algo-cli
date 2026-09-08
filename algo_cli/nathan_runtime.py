@@ -726,6 +726,7 @@ def run_tool(name: str, args: dict[str, Any], cfg: Config) -> str:
         if violation:
             return f"Error: {violation}"
     if name in (
+        "search_files",
         "remember",
         "echo_veil_remember",
         "echo_veil_refresh_live",

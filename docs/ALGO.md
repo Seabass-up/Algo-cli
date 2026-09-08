@@ -15294,3 +15294,78 @@ representative coding success or evidence of competitive superiority.
 **Evidence:** `tests/test_nathan_action_admission.py`,
 `tests/test_nathan_verification_recovery.py`,
 `tests/test_cobalt_browser_service.py`, `tests/test_completion_integrity.py`.
+
+## Bounded Search Execution
+
+Treat model search patterns as data, including leading dashes. Disable inherited
+ripgrep configuration and terminate option parsing before the pattern and path;
+quoting alone does not prevent a positional value from becoming an option.
+Keep native regex and glob behavior for the existing ripgrep path.
+
+Bound output while reading each process pipe, not after capturing it. Apply a
+global matching-line ceiling and a UTF-8 byte ceiling, including diagnostics and
+truncation notices. A single enormous line must not fill agent context. Mark
+partial results explicitly and preserve reported search failures even when a
+limit was also reached. Bound pattern and glob inputs before launching a child.
+Normalize presentation line boundaries after bounded decoding, including CRLF
+and Unicode separators, and reapply the line ceiling to the bounded text. This
+does not normalize source bytes used for identity or protected-read verification.
+
+The Python fallback and direct-file regex path execute in an isolated child
+process with the same deadline and output collector. A catastrophic backtracking
+regex, full output pipe, or closed-pipe sleeping child must not strand the agent.
+Reap children and close all child pipes on normal exit, timeout, output limits, reader
+failure, or cancellation. Specify UTF-8 explicitly for the fallback protocol.
+
+These controls bound matcher execution; they do not establish a filesystem
+containment boundary. Root admission is not descendant read authority. When
+Echo owns memory, use the separate protected-snapshot path below; a passing
+matcher suite alone is not proof of its authorization properties.
+
+**Evidence:** `algo_cli/search_execution.py`, `algo_cli/tools.py`,
+`tests/test_search_execution.py`, `tests/test_tools.py`.
+
+## Protected Descendant Search
+
+Capture the protected-root paths and filesystem identities, including resolved
+deny aliases and migration-residue rules, before a recursive search. Carry this
+immutable policy into the worker and compare a fresh snapshot before releasing
+its result. Refuse if the policy is unavailable or the completed snapshot differs.
+Bind the selected root across the parent-to-worker handoff. Moving a registered
+protected directory under an allowed name must not grant read authority.
+
+On POSIX, open every ancestry edge with directory-relative no-follow descriptors.
+On Windows, use the existing native ancestry pins, reject reparse points and DOS
+short-path aliases, and validate the descriptor's final path before reading.
+For each candidate, authorize its path and identity, require a singly linked
+regular file, and compare descriptor/path identities before and after the bounded
+read. Recheck ancestry before accepting bytes. A race discards the operation;
+it does not authorize a retry or fallback through ordinary path-based reads.
+
+Only these validated in-memory snapshots reach the regex engine. Ripgrep receives
+bytes on stdin, never a real traversal root; returned line numbers map back to
+their source files. Python matching remains in the deadline-isolated worker.
+Bound stdin, stdout, and stderr together, including blocked writers and early
+reader exit. No plaintext staging tree or inherited ripgrep configuration is used.
+
+Use the established `wcmatch` glob and `pathspec` ignore parsers instead of a new
+glob language. Protected mode honors local `.gitignore` and `.ignore` files from
+within the requested root only; it does not consume ancestor/global ignore files.
+Positive explicit globs override those local ignores, not protected-root or
+fixed build-directory exclusions. Parse ignore files through the same protected
+reader. Invalid/oversized ignore policies fail closed. Binary files and aliases
+are omitted. Pattern errors remain distinct from unsafe-path errors.
+
+The worker bounds individual files at 2,000,000 bytes, aggregate source reads at
+32 MiB, reads at 5,000 files, directory entries at 20,000, depth at 64, and brace
+expansion at 256 alternatives, under the existing 20-second deadline. Disclose
+scan-budget incompleteness separately from no matches; do not label a bounded
+prefix as an exhaustive search. Protected timeout results release no partial text.
+
+Synthetic private canaries must test the actual dispatch path, plus links,
+renames, file replacement, policy changes, glob/ignore controls, line numbering,
+Unicode limits, and process cleanup. Local POSIX results do not qualify native
+Windows, other file tools, browser containment, or representative coding quality.
+
+**Evidence:** `algo_cli/irene_search.py`, `algo_cli/irene_memory_path_policy.py`,
+`tests/test_irene_search.py`, `tests/test_search_execution.py`.
