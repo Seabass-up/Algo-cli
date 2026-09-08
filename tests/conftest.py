@@ -72,8 +72,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     ]
     if oversized:
         examples = "; ".join(
-            f"{ascii(item.nodeid.partition('[')[0])[:120]} ({size} bytes)"
-            for item, size in oversized[:5]
+            f"{ascii(item.nodeid.partition('[')[0])[:120]} ({size} bytes)" for item, size in oversized[:5]
         )
         raise pytest.UsageError(
             f"{len(oversized)} test IDs exceed 1024 bytes. Use short explicit pytest.param ids "
@@ -145,6 +144,18 @@ def clean_state():
 @pytest.fixture
 def config_dir() -> Path:
     return _TEST_CONFIG_DIR
+
+
+@pytest.fixture(params=("utf-8", "cp1252"), ids=("utf8-default", "windows-cp1252-default"))
+def text_default_encoding(monkeypatch, request):
+    """Exercise opted-in text readers under both common host defaults."""
+    original = Path.read_text
+
+    def read_text(path, encoding=None, errors=None, **kwargs):
+        return original(path, encoding=request.param if encoding is None else encoding, errors=errors, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    return request.param
 
 
 _KEYWORDS = [

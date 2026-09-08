@@ -15238,3 +15238,23 @@ Do not infer a product parser deadlock from the last visible passing test.
 **Evidence:** `tests/conftest.py`, `tests/test_ci_output_budget.py`,
 `tests/test_embedding_provider_identity.py`,
 `tests/test_competitor_benchmark.py`.
+
+## Byte-Stable Catalog Evidence
+
+Digest-bound source readers must agree on the exact UTF-8 bytes, including line
+endings. Disable universal-newline translation when indexing and reading a
+pattern catalog; the protected descriptor-bound read must not normalize bytes
+to accommodate a stale index. LF, CRLF, and CR sources may all be valid, but a
+newline-only edit changes source identity and requires an index refresh. Keep
+strict decoding, byte limits, source authorization, and link checks intact.
+
+Read shipped UTF-8 documentation with an explicit encoding. Qualify opted-in
+readers under both UTF-8 and Windows cp1252 defaults instead of globally forcing
+an encoding that hides portability defects. Use exact byte fixtures on every
+platform, confirm unchanged protected and ordinary reads, then reject newline
+changes and link replacements. Local simulation supplements native CI; it does
+not replace Windows qualification or prove representative task quality.
+
+**Evidence:** `algo_cli/harness.py`, `tests/conftest.py`,
+`tests/test_harness_operational_retrieval.py`,
+`tests/test_pattern_catalog_runtime.py`, `tests/test_grounded_answers.py`.

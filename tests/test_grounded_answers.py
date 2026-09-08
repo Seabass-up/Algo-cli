@@ -65,7 +65,7 @@ def test_frozen_equivalent_authorities_support_both_retry_claims(source):
     assert evaluation.evaluate_answer(json.dumps(answer), case, bodies_for(case))["passed"]
 
 
-def test_all_declared_alternatives_match_current_public_source_bodies(monkeypatch):
+def test_all_declared_alternatives_match_current_public_source_bodies(monkeypatch, text_default_encoding):
     records = harness._runtime_capability_records()
     monkeypatch.setattr(harness, "load_index", lambda **_kwargs: {"records": records})
     bodies = {}
@@ -76,7 +76,9 @@ def test_all_declared_alternatives_match_current_public_source_bodies(monkeypatc
                 if ":runtime_capability:" in rid:
                     bodies[rid] = harness.read_record(rid).split("\n\n", 2)[2]
                 else:
-                    bodies[rid] = (Path(__file__).parents[1] / "docs" / rid.split(":", 2)[2]).read_text()
+                    bodies[rid] = (Path(__file__).parents[1] / "docs" / rid.split(":", 2)[2]).read_text(
+                        encoding="utf-8"
+                    )
         assert evaluation.validate_labels(case, bodies), case.name
 
 

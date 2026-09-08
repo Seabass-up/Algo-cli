@@ -1654,7 +1654,7 @@ def _merge_pattern_records(index: dict[str, Any], *, previous: dict[str, Any] | 
     errors: list[str] = []
     for parent in parents:
         try:
-            with Path(parent["path"]).open(encoding="utf-8") as handle:
+            with Path(parent["path"]).open(encoding="utf-8", newline="") as handle:
                 text = handle.read(pattern_catalog.MAX_CATALOG_BYTES + 1)
             patterns = pattern_catalog.parse_patterns(text)
         except (OSError, UnicodeError, ValueError) as exc:
@@ -2548,7 +2548,7 @@ def read_record(record_id: str, max_chars: int = MAX_READ_TEXT, *, protected_mem
             if protected_memory:
                 catalog_text = _read_public_source(path, max_bytes=pattern_catalog.MAX_CATALOG_BYTES).decode("utf-8")
             else:
-                with path.open(encoding="utf-8") as handle:
+                with path.open(encoding="utf-8", newline="") as handle:
                     catalog_text = handle.read(pattern_catalog.MAX_CATALOG_BYTES + 1)
             pattern = next((row for row in pattern_catalog.parse_patterns(catalog_text)
                             if row["pattern_id"] == record["pattern_id"]), None)

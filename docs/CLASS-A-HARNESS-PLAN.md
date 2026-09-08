@@ -1913,3 +1913,69 @@ evaluation/recovery suite passes 53 cases.
   pytest reproduction confirms it. This is not a green Linux qualification.
   Preserve the failed runs and the memory cap; native hosted execution must
   independently verify this patch. No installed runtime implementation changed.
+
+### Byte-Stable Catalog Portability
+
+- Hosted run `34256348318` at `6add6e2` completed without the earlier output
+  stall. Linux quality and Python 3.10 each passed 5,170 tests with 35 skips;
+  macOS passed 5,173 with 32 skips. Native helper, Swift, website, packaging,
+  and installed-wheel jobs also passed. Windows completed with 4,284 passes,
+  824 skips, and three failures. The overall run is failed, not qualified.
+- Two Windows failures used an implicit cp1252 default to read UTF-8 source
+  documents. The third was a real protected-read inconsistency: indexing
+  normalized CRLF to LF, while the descriptor-bound read hashed original bytes.
+  Ordinary reads also failed to invalidate an index after a newline-only edit.
+- Pattern indexing and ordinary reads now preserve UTF-8 line endings. The
+  protected reader, strict decoding, byte limits, link checks, and source digest
+  comparison are unchanged. Two document tests now name their UTF-8 encoding.
+  An opt-in fixture exercises both host defaults without globally hiding
+  encoding errors. Exact LF/CRLF/CR fixtures cover digest identity, valid reads,
+  link replacement, and stale rejection in both read modes.
+- After correcting a missing digest-prefix assertion in the first test draft,
+  the retained pre-repair run had 10 failures and eight passes. The repaired
+  focused suite passed 213 checks. Full local delivery passed 5,187 tests with
+  32 skips and 69.06% branch-aware coverage, plus Go race/vet, Ruff, default
+  and CI typing, compilation, source/history/artifact scans, locked dependency
+  audit, wheel-from-sdist build, Twine, and scoped test formatting.
+- O4/O5/O6/O7/O8 source-bound checks are 17/231/13/252/155, with 160 paired
+  samples and six current reports installed. M8 remains nine local passes and
+  five external blocks. M9 remains 29 verified and 13 blocked, with no failed
+  requirements. No approval, browser qualification, coverage, watchdog,
+  benchmark, or source-authorization requirement was relaxed.
+- Installed-source parity covers 322 files and 282 Python modules at
+  `sha256:88fe8c7dcd7ab8f780deae6de6eb6d777ae576d0fc23fe2a5a37c3a92d1bc742`.
+  Thirteen installed smokes passed, including 21 byte-stability/link checks
+  and required-Echo Astra stream retry in 11.73 seconds. The exact Echo
+  `cbee525` pin and its 46-source audit are unchanged. Artifacts are retained
+  under `/tmp/algo-cli-windows-text.UfEgJM/`; new native hosted qualification
+  remains separate from these local and installed results.
+
+### Operator Verification Loop (Open)
+
+- A supplied operator transcript exposes a separate incomplete coding turn:
+  a file mutation succeeded, but shell verification was prohibited by Echo
+  policy, browser service was unavailable, and the temporary workspace was
+  not a Git repository. Repeated discovery and transform probes did not
+  satisfy the completion gate. Do not weaken the gate or retry a policy denial.
+- Three isolated offline regressions reproduce current defects: discovery
+  advertises `available_actions` for a program runtime that forbids it; Echo
+  shell policy is checked after approval instead of during preflight; and
+  browser unavailability is classified as successful tool execution. These
+  intentionally failing probes are retained separately in the iteration's
+  `transcript-repro/` directory. The passing portability suite does not fix
+  or qualify these failures.
+- The transcript also records program validation errors as uncertain effects,
+  and the completion nudge requests verifier routes without checking their
+  availability. Next iteration: preserve typed pre-dispatch denial versus
+  post-dispatch uncertainty, expose executable discovery paths, and bound
+  verification recovery even when successful discovery calls keep resetting
+  the nonexecuting-batch counter. Retain per-action approvals and return an
+  honest partial result when verification cannot run. No real coding benchmark
+  pass or representative quality gain is claimed from this transcript.
+- Correction to earlier smoke receipts: configuration comparisons covered
+  model/Echo preferences but omitted `cwd`. The real launcher's `--cwd` was
+  persisted, so a smoke test changed the next normal launch's workspace.
+  The runner now uses and verifies the existing saved workspace. The operator
+  selected the canonical repository for restoration; only that field changed,
+  and the generated file remains unchanged. Earlier claims of unchanged
+  settings must not be interpreted as complete configuration parity.

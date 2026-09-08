@@ -1,6 +1,7 @@
 """Protected operational retrieval exposes shipped contracts, never host memory."""
 
 from copy import deepcopy
+import hashlib
 from pathlib import Path
 import os
 import shutil
@@ -404,23 +405,30 @@ def test_ranker_payload_cannot_override_authorized_metadata(public_contracts, mo
 
 
 @pytest.mark.parametrize("source_kind", ["wiki", "algorithm"])
-def test_protected_public_read_rejects_link_replacement(public_contracts, tmp_path, source_kind, monkeypatch):
+@pytest.mark.parametrize(
+    "newline", [pytest.param("\n", id="lf"), pytest.param("\r\n", id="crlf"), pytest.param("\r", id="cr")]
+)
+def test_protected_public_read_rejects_link_replacement(public_contracts, tmp_path, source_kind, newline, monkeypatch):
     docs, records, cfg = public_contracts
     monkeypatch.setattr(harness, "_algo_cli_repo_dir", lambda: tmp_path)
     if source_kind == "algorithm":
         path = docs / "ALGO.md"
-        path.write_text("### O1. Public pattern\n**Status:** proposed\nPublic source body.\n")
+        path.write_bytes(
+            "### O1. Public pattern\n**Status:** proposed\nPublic source body.\n".replace("\n", newline).encode("utf-8")
+        )
         root = harness.SourceRoot("algo-cli", "algorithm", docs, ("ALGO.md",), 1)
         index = harness._merge_pattern_records({"records": [harness.make_record(root, path)]})
         record = next(row for row in index["records"] if row.get("pattern_id"))
+        assert record["source_digest"] == "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
     else:
         path = docs / "provider-auth-recovery.md"
-        path.write_text("# Public runbook\n\nPublic source body.\n")
+        path.write_bytes("# Public runbook\n\nPublic source body.\n".replace("\n", newline).encode("utf-8"))
         root = harness.SourceRoot("algo-cli", "wiki", docs, (path.name,), 1)
         record = harness.make_record(root, path)
     monkeypatch.setattr(harness, "SOURCE_ROOTS", (root,))
     records.append(record)
     assert "Public source body." in tools.harness_read(record["id"], cfg=cfg)
+    assert "Public source body." in harness.read_record(record["id"])
     target = tmp_path / "private.txt"
     target.write_text("PRIVATE_HOST_MEMORY_CANARY")
     path.unlink()
@@ -428,6 +436,35 @@ def test_protected_public_read_rejects_link_replacement(public_contracts, tmp_pa
     result = tools.harness_read(record["id"], cfg=cfg)
     assert result.startswith("Error:")
     assert "PRIVATE_HOST_MEMORY_CANARY" not in result
+
+
+@pytest.mark.parametrize("protected", [False, True], ids=["ordinary", "protected"])
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        pytest.param("\n", "\r\n", id="lf-to-crlf"),
+        pytest.param("\r\n", "\n", id="crlf-to-lf"),
+        pytest.param("\n", "\r", id="lf-to-cr"),
+        pytest.param("\r", "\n", id="cr-to-lf"),
+    ],
+)
+def test_pattern_read_rejects_newline_only_source_changes(
+    public_contracts, tmp_path, monkeypatch, protected, before, after
+):
+    docs, records, _ = public_contracts
+    monkeypatch.setattr(harness, "_algo_cli_repo_dir", lambda: tmp_path)
+    path = docs / "ALGO.md"
+    body = "### O1. Public pattern\n**Status:** proposed\nPublic source body. Caf\u00e9.\n"
+    path.write_bytes(body.replace("\n", before).encode("utf-8"))
+    root = harness.SourceRoot("algo-cli", "algorithm", docs, ("ALGO.md",), 1)
+    monkeypatch.setattr(harness, "SOURCE_ROOTS", (root,))
+    index = harness._merge_pattern_records({"records": [harness.make_record(root, path)]})
+    record = next(row for row in index["records"] if row.get("pattern_id"))
+    records.append(record)
+    assert "Public source body. Caf\u00e9." in harness.read_record(record["id"], protected_memory=protected)
+    path.write_bytes(body.replace("\n", after).encode("utf-8"))
+    result = harness.read_record(record["id"], protected_memory=protected)
+    assert result == "Error: pattern source changed; refresh the harness index before reading."
 
 
 def test_query_embedding_timeout_reaches_both_local_transports(monkeypatch):
