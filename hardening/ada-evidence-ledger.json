@@ -3589,6 +3589,15 @@
           "timestamp": "2026-09-08T13:44:35Z",
           "scope": "updated source digest sha256:d104263524ee897afd1015fe37a1cf3256181b95fcac9400935d60857685d8bb includes the frozen per-claim answer evaluator, bounded installed runner, and their regressions; no external-browser or efficiency threshold changed",
           "limitations": "Local source checks do not qualify external browsers, representative model quality, operator consent, or competitive superiority; generated-answer qualification is separate and the requirement remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json verified by scripts/henry_m8_qualification.py after root-relative read repair",
+          "digest": "sha256:12604e72b902497612c6f2ac61aec74235b80b87fc7c141a9c9449dddd5a1ffd",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-08T15:39:49Z",
+          "scope": "updated source digest sha256:d2d074a92698756bc6b09f0689b27d27d99a4fefc112a9f3a41f4300eb33af95 includes current-root lexical read exclusions, credential-directory rejection, cross-platform path regressions, and timed CI diagnostics; no external-browser or efficiency threshold changed",
+          "limitations": "Local source checks do not qualify external browsers, representative model quality, operator consent, or competitive superiority; generated-answer qualification is separate and the requirement remains in progress"
         }
       ]
     },
@@ -5054,6 +5063,24 @@
           "result": "status pass: 17 correctness probes and all deterministic runtime gates pass with zero policy escapes, unverified completions, or duplicate mutations; public_claim_eligible is false",
           "timestamp": "2026-09-08T13:44:35Z",
           "scope": "source digest sha256:12fedf06e7f5686b5594a5105e2e1cac22b87b0efa23ee9d3b6225a75e741486 and report digest sha256:3ff75d41d036daffd234d5a31d6cb6a755c1f96074d293e2cea1d76cc262e2c5 bind the current runtime",
+          "limitations": "Model-free fixtures do not establish installed protection, live model task quality, or production browser qualification. HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json verified by scripts/henry_m8_qualification.py after root-relative read repair",
+          "digest": "sha256:12604e72b902497612c6f2ac61aec74235b80b87fc7c141a9c9449dddd5a1ffd",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-08T15:39:49Z",
+          "scope": "updated source digest sha256:d2d074a92698756bc6b09f0689b27d27d99a4fefc112a9f3a41f4300eb33af95 includes current-root lexical read exclusions, credential-directory rejection, cross-platform path regressions, and timed CI diagnostics; no external-browser or efficiency threshold changed",
+          "limitations": "Local source checks do not qualify external browsers, representative model quality, operator consent, or competitive superiority; generated-answer qualification is separate and the requirement remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json verified by scripts/nathan_agent_runtime_qualification.py --refresh after root-relative read repair",
+          "digest": "sha256:87f9e66034732b4bbb071e48809e7007bad6b520c2578a04544df3855e8fcd4e",
+          "result": "status pass: 17 correctness probes and all deterministic runtime gates pass with zero policy escapes, unverified completions, or duplicate mutations; public_claim_eligible is false",
+          "timestamp": "2026-09-08T15:39:49Z",
+          "scope": "source digest sha256:f9662decd36b5552439c6fd98d24ab0e453db09fe3bd1e3f76277a202491d610 and report digest sha256:38f1acbfc9b636008b1a33d35524c08211b832b7e0f96329604ec140659efffa bind the current runtime",
           "limitations": "Model-free fixtures do not establish installed protection, live model task quality, or production browser qualification. HARD-081 remains in progress"
         }
       ]

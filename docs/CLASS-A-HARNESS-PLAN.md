@@ -1749,3 +1749,51 @@ evaluation/recovery suite passes 53 cases.
   model/embedding setting change, or approval relaxation occurred. Representative
   coding and competitive qualification, annotation calibration, context-path
   optimization, and external qualification remain open.
+
+### Hosted Root-Relative Read Repair
+
+- Published candidate `c36f06352614b45ac3dccf016b8c26a5845236f7` in PR #33.
+  Its local gate passed 5,114 tests, but hosted run `34236382090` failed the
+  same 12 retrieval cases on Linux Python 3.10 and 3.12. macOS, native helpers,
+  Swift, website, and hardening-policy checks passed. The Windows cell exceeded
+  its 25-minute limit; the runner's log archive was unavailable. Do not call
+  that timeout a Linux-path failure or a completed Windows qualification.
+- Reproduced the exact 12 failures on macOS by placing the unchanged tests
+  under a `/tmp` ancestor: 12 failed, 108 passed. Discovery and source freshness
+  already used root-relative exclusions, while reading rejected every absolute
+  ancestor, including valid temporary checkouts and virtual environments.
+- Repaired the reader using the current configured source roots and lexical
+  relative components. It still rejects nested excluded directories, credential
+  filenames, parent traversal, and link aliases through excluded components.
+  Added complete relative-path credential checks: three negative controls proved
+  that a stale record could previously expose a benign filename under
+  `credentials`, `secrets`, or `tokens`. Cached `relative_path` values grant no
+  exception. Protected source validation and the exact runbook exception remain
+  unchanged. Two public-document fixtures now register their actual source root.
+- Added 39 deterministic read-path cases; 19 failed against the original reader.
+  The repaired focused set passed 159 cases under `/tmp`, and the expanded
+  source, pattern, workflow, and dependency set passed 286. CI now names each
+  running test, reports slow tests, and dumps thread stacks after 120 seconds;
+  the job deadline, matrix cells, test assertions, and skips were not relaxed.
+- Full local delivery passed 5,153 tests with 32 skips and 69.06% branch-aware
+  coverage. Go race/vet, Ruff, default/CI typing, compilation, public
+  source/history/artifact scans, locked dependency auditing, wheel-from-sdist
+  build, and Twine passed. The new regression module passes scoped formatting.
+- Source-bound O4/O5/O6/O7/O8 reports passed 17/218/13/239/142 checks; 160 paired
+  samples completed, and six current reports were installed. M8 remains nine
+  local passes and five external blocks; M9 remains 29 verified and 13 blocked,
+  with zero failed requirements. These reports do not qualify external browsers
+  or establish representative task quality.
+- Installed the qualified wheel and verified all 322 files and 282 Python
+  modules at
+  `sha256:beb6288be8d4075b54b3278e1caf43d7bd55cfa6c0d6df735d034d087c793f26`.
+  Nineteen installed read-boundary probes and all twelve installed smokes passed.
+  Required-Echo Astra recovery passed in 14.62 seconds with one identical-request
+  retry, no tools, and restored settings. Echo's published exact `cbee525` pin
+  and all 46 qualified Python source files remain unchanged and audited.
+- Retained red tests, expanded regressions, installed probes, and delivery logs
+  are under `/tmp/algo-cli-ci-paths.By3JWO/`. This iteration repairs a real read
+  boundary; it does not resolve the earlier context-preparation bottleneck,
+  recalibrate the 6/8 answer evaluation, or complete the broad Class A goal.
+  Fresh hosted results must qualify this follow-up separately from the failed
+  initial run. No release tag or merge is authorized by these local results.

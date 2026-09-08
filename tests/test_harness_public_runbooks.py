@@ -14,6 +14,7 @@ def test_shipped_supervisor_guide_is_discovered_by_the_builtin_wiki(monkeypatch,
     guide.write_text("# Supervised One-Shot Action Review\nExact-action confirmations require operator review.")
     monkeypatch.setattr(harness, "_algo_cli_docs_dir", lambda: docs)
     root = next(root for root in harness.built_in_source_roots() if root.kind == "wiki" and root.root == docs)
+    monkeypatch.setattr(harness, "SOURCE_ROOTS", (root,))
     assert guide in harness.iter_files(root)
     record = harness.make_record(root, guide)
     assert record["id"] == "algo-cli:wiki:supervised-action-review.md"

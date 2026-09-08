@@ -418,6 +418,7 @@ def test_protected_public_read_rejects_link_replacement(public_contracts, tmp_pa
         path.write_text("# Public runbook\n\nPublic source body.\n")
         root = harness.SourceRoot("algo-cli", "wiki", docs, (path.name,), 1)
         record = harness.make_record(root, path)
+    monkeypatch.setattr(harness, "SOURCE_ROOTS", (root,))
     records.append(record)
     assert "Public source body." in tools.harness_read(record["id"], cfg=cfg)
     target = tmp_path / "private.txt"

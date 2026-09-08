@@ -140,6 +140,7 @@ jobs:
           --cov-report=term-missing:skip-covered
           --cov-report=xml:coverage.xml
           --cov-fail-under=57
+          -vv --durations=25 -o faulthandler_timeout=120
       - name: Upload coverage evidence
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
@@ -178,7 +179,9 @@ jobs:
       - name: Installed-source parity
         run: uv run --frozen --no-editable --extra dev --extra echo-veil python -I scripts/oliver_installed_source_parity.py
       - name: Run full suite
-        run: uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy pytest tests
+        run: >-
+          uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy pytest tests
+          -vv --durations=25 -o faulthandler_timeout=120
 
   native:
     name: Native helper checks

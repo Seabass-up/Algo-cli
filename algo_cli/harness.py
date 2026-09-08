@@ -769,6 +769,13 @@ def first_heading(text: str) -> str | None:
 def should_skip(path: Path) -> bool:
     if _is_reviewed_public_runbook(path):
         return False
+    relative = _path_relative_to_some_root(path, all_source_roots(), resolve_links=False)
+    if relative is not None:
+        return (
+            ".." in relative.parts
+            or bool(SECRET_RE.search(relative.as_posix()))
+            or any(part in _SKIP_DIRS for part in relative.parts[:-1])
+        )
     if SECRET_RE.search(path.name):
         return True
     return any(part in _SKIP_DIRS for part in path.parts)
@@ -1533,22 +1540,27 @@ def _index_has_missing_sources(index: dict[str, Any] | None) -> bool:
     return False
 
 
-def _path_relative_to_some_root(path: Path, all_roots: tuple[SourceRoot, ...]) -> Path | None:
+def _path_relative_to_some_root(
+    path: Path, all_roots: tuple[SourceRoot, ...], *, resolve_links: bool = True,
+) -> Path | None:
     """If path lives under any configured SourceRoot, return the relative path.
 
     Returns None when no root contains the path (e.g. test fixtures under
     /tmp or stale index records pointing at moved files). The caller decides
     what to do with that â€” for watermark checks we still want to count
     their mtime, but for SKIP_DIRS application we want a relative view.
+
+    Read exclusions use lexical paths so resolving a link or ``..`` cannot
+    erase a forbidden directory component. Watermarks retain resolved identity.
     """
     try:
-        resolved = path.resolve()
+        resolved = path.resolve() if resolve_links else path.absolute()
     except OSError:
         return None
     best: Path | None = None
     for root in all_roots:
         try:
-            root_resolved = root.root.resolve()
+            root_resolved = root.root.resolve() if resolve_links else root.root.absolute()
         except OSError:
             continue
         try:

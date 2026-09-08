@@ -15177,3 +15177,23 @@ The seven frozen offline retrieval-quality cases pass their recall, MRR, nDCG,
 and citation-precision thresholds. This is evidence for those fixtures, not a
 global score for all catalog entries. Historical measurements above remain dated;
 they are not silently promoted to current performance claims.
+
+## Source-Root Read Consistency
+
+Discovery and reading must apply directory exclusions relative to the current
+configured source root. A legitimate installation or checkout under `tmp`,
+`.venv`, or another excluded ancestor must not become searchable but unreadable.
+Keep credential-name checks on the complete relative path and reject excluded
+subdirectories even when an old index record still names the file. Cached
+relative-path metadata grants no exception. Use lexical components for read
+exclusions so links or parent traversal cannot erase a forbidden component;
+protected reads still require their descriptor-bound source validation.
+
+Exercise the same discover/search/read path under temporary and virtual-
+environment ancestors on every supported platform. Preserve failed hosted
+results and identify the running test before extending a job deadline. These
+checks establish read-boundary consistency, not representative answer quality.
+
+**Evidence:** `algo_cli/harness.py`, `tests/test_harness_read_paths.py`,
+`tests/test_harness_public_runbooks.py`,
+`tests/test_harness_operational_retrieval.py`.
