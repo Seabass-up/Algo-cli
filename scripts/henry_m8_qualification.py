@@ -349,6 +349,7 @@ FOCUSED_TESTS = (
     "tests/test_irene_search.py",
     "tests/test_nathan_agent_runtime_profile.py",
     "tests/test_oliver_ci_backend_coverage.py",
+    "tests/test_oliver_windows_security_api.py",
 )
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 POSTWRITE_EVIDENCE_TESTS = (

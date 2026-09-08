@@ -2219,3 +2219,34 @@ evaluation/recovery suite passes 53 cases.
   failure-only Windows profiler will retain bounded, source-bound diagnostic
   JSON without changing the failed gate or its thresholds. Native qualification
   of these changes and the Windows latency cause remain open.
+
+### Native Windows Profile And Static Binding Repair
+
+- Run `34280924721` at `2d7c2bd8d9e40c36c894ffc52440be97e7a1eaa5` ended
+  with five Windows failures: four assertions from the unchanged 3,500 ms
+  workload p95 limit, and one CRLF anchor expectation. All other executed jobs,
+  including the three installed-wheel jobs, passed. Four external Boron jobs
+  remained skipped and unqualified. Windows recorded 4,481 passes, 827 skips,
+  and workload p95 4,527.6351 ms; all 17 correctness probes passed. Log SHA-256:
+  `d24c87fcfc3c26adb12cb4d02c29f7e4db63b6d9cc1a5aa05c02d0d8c846a491`.
+- The failure-only profile is diagnostic, not replacement gate evidence. Its
+  source digest is
+  `sha256:a311c8accbf418573d2a20e97c169ef73c1737f629b4018ddcd240265eb17e75`;
+  its merge revision `b2839dec70be88578bdcef04503889634c87d9e6` has the
+  tested candidate and main as parents. Artifact `10078187231`, JSON SHA-256
+  `5d62feb4717309249922b5b05f5484cf179f11ef74bc04f0f767cbcf192a6347`,
+  records 9,000 ACL checks and 9,010 identity lookups over five workloads.
+  These repeatedly rebuilt ctypes structures and signatures. The cumulative
+  timings overlap and must not be summed or treated as isolated cost estimates.
+- The candidate reuses only static API/type metadata. Identity, owner, DACL,
+  allocations, native handles, ancestry checks, locks, and flushes stay fresh.
+  The pre-fix regression made 12 library-wrapper constructions where two suffice;
+  it still required two actual ACL queries and four actual token queries.
+  Warm identity/ACL mutation and API-failure controls passed before the change
+  and must continue passing after it. Native latency improvement remains unproven
+  until the new exact-source Windows gate executes with unchanged limits.
+- The anchor failure was an implicit Windows CRLF fixture, not a matcher defect:
+  direct ripgrep and protected search agreed on all nine explicit-byte oracle
+  cases. Tests now cover LF, CRLF, and missing final newline without changing
+  runtime matching. The current candidate requires fresh local reports, pattern
+  receipts, installed smoke, and native CI before delivery claims.

@@ -8,6 +8,7 @@ import inspect
 from contextlib import contextmanager
 from pathlib import Path
 import shutil
+import subprocess
 
 import pytest
 
@@ -179,13 +180,30 @@ def test_protected_rg_retains_native_regex_language(protected_tree):
 
 
 @pytest.mark.parametrize("pattern", [r"\Aneedle", r"CONTROL\z", r"(?-m:^needle)"])
-def test_native_anchor_semantics_remain_line_based(protected_tree, pattern):
-    if shutil.which("rg") is None:
+@pytest.mark.parametrize("ending", [b"\n", b"\r\n", b""], ids=["lf", "crlf", "no-final-newline"])
+def test_native_anchor_semantics_remain_line_based(protected_tree, pattern, ending):
+    executable = shutil.which("rg")
+    if executable is None:
         pytest.skip("ripgrep is not installed")
     workspace, _private, cfg = protected_tree
-    (workspace / "second.txt").write_bytes(b"needle SECOND_CONTROL")
+    ordinary = workspace / "ordinary.txt"
+    ordinary.write_bytes(b"needle PUBLIC_CONTROL" + ending)
+    second = workspace / "second.txt"
+    second.write_bytes(b"needle SECOND_CONTROL")
+    direct = subprocess.run(
+        [
+            executable, "--no-config", "--line-number", "--with-filename", "--no-heading",
+            "--color=never", "--text", "--encoding=none", "--", pattern, str(ordinary), str(second),
+        ],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert direct.returncode == 0, direct.stderr.decode("utf-8", errors="replace")
     result = nathan_runtime.run_tool("search_files", {"pattern": pattern}, cfg)
-    assert "PUBLIC_CONTROL" in result and "SECOND_CONTROL" in result
+    assert set(result.splitlines()) == set(direct.stdout.decode("utf-8").splitlines())
+    assert ("PUBLIC_CONTROL" in result) is not (ending == b"\r\n" and pattern == r"CONTROL\z")
+    assert "SECOND_CONTROL" in result and "PRIVATE_CANARY" not in result
 
 
 @pytest.mark.parametrize("backend", ["rg", "fallback"])

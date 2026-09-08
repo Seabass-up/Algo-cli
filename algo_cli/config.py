@@ -12,6 +12,7 @@ import tempfile
 import time
 from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Iterator, Mapping
 
@@ -645,8 +646,18 @@ def _portable_publication_identity(information: os.stat_result) -> tuple[int, ..
     return (*common, int(information.st_mode), int(information.st_uid))
 
 
-def _windows_current_user_sid_string() -> str:
-    """Return the current process user's SID without leaking native handles."""
+@dataclass(frozen=True)
+class _WindowsSecurityApi:
+    advapi32: Any
+    kernel32: Any
+    token_user: Any
+    acl_size_information: Any
+    ace_header: Any
+
+
+@lru_cache(maxsize=1)
+def _windows_security_api() -> _WindowsSecurityApi:
+    """Reuse only static bindings; never cache identities, descriptors, or decisions."""
 
     if os.name != "nt":
         raise OSError("Windows identity APIs are unavailable")
@@ -655,8 +666,6 @@ def _windows_current_user_sid_string() -> str:
 
     advapi32 = getattr(ctypes, "WinDLL")("advapi32", use_last_error=True)
     kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
-    win_error = getattr(ctypes, "WinError")
-    get_last_error = getattr(ctypes, "get_last_error")
     kernel32.GetCurrentProcess.argtypes = ()
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
     kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
@@ -682,6 +691,47 @@ def _windows_current_user_sid_string() -> str:
         ctypes.POINTER(ctypes.c_void_p),
     )
     advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+    advapi32.GetNamedSecurityInfoW.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    )
+    advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi32.EqualSid.argtypes = (ctypes.c_void_p, ctypes.c_void_p)
+    advapi32.EqualSid.restype = wintypes.BOOL
+    advapi32.IsValidSid.argtypes = (ctypes.c_void_p,)
+    advapi32.IsValidSid.restype = wintypes.BOOL
+    advapi32.GetLengthSid.argtypes = (ctypes.c_void_p,)
+    advapi32.GetLengthSid.restype = wintypes.DWORD
+    advapi32.ConvertStringSidToSidW.argtypes = (
+        wintypes.LPCWSTR,
+        ctypes.POINTER(ctypes.c_void_p),
+    )
+    advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
+    advapi32.GetAclInformation.argtypes = (
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.c_int,
+    )
+    advapi32.GetAclInformation.restype = wintypes.BOOL
+    advapi32.GetAce.argtypes = (
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+    )
+    advapi32.GetAce.restype = wintypes.BOOL
+    advapi32.GetSecurityDescriptorControl.argtypes = (
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.WORD),
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    advapi32.GetSecurityDescriptorControl.restype = wintypes.BOOL
 
     class _SidAndAttributes(ctypes.Structure):
         _fields_ = [("sid", ctypes.c_void_p), ("attributes", wintypes.DWORD)]
@@ -689,6 +739,35 @@ def _windows_current_user_sid_string() -> str:
     class _TokenUser(ctypes.Structure):
         _fields_ = [("user", _SidAndAttributes)]
 
+    class _AclSizeInformation(ctypes.Structure):
+        _fields_ = [
+            ("ace_count", wintypes.DWORD),
+            ("acl_bytes_in_use", wintypes.DWORD),
+            ("acl_bytes_free", wintypes.DWORD),
+        ]
+
+    class _AceHeader(ctypes.Structure):
+        _fields_ = [
+            ("ace_type", ctypes.c_ubyte),
+            ("ace_flags", ctypes.c_ubyte),
+            ("ace_size", wintypes.WORD),
+        ]
+
+    return _WindowsSecurityApi(advapi32, kernel32, _TokenUser, _AclSizeInformation, _AceHeader)
+
+
+def _windows_current_user_sid_string() -> str:
+    """Return the current process user's SID without leaking native handles."""
+
+    if os.name != "nt":
+        raise OSError("Windows identity APIs are unavailable")
+    import ctypes
+    from ctypes import wintypes
+
+    api = _windows_security_api()
+    advapi32, kernel32 = api.advapi32, api.kernel32
+    win_error = getattr(ctypes, "WinError")
+    get_last_error = getattr(ctypes, "get_last_error")
     token = wintypes.HANDLE()
     if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
         raise win_error(get_last_error())
@@ -706,7 +785,7 @@ def _windows_current_user_sid_string() -> str:
             ctypes.byref(required),
         ):
             raise win_error(get_last_error())
-        current_sid = ctypes.cast(token_buffer, ctypes.POINTER(_TokenUser)).contents.user.sid
+        current_sid = ctypes.cast(token_buffer, ctypes.POINTER(api.token_user)).contents.user.sid
         sid_text = ctypes.c_void_p()
         if not current_sid or not advapi32.ConvertSidToStringSidW(current_sid, ctypes.byref(sid_text)):
             raise win_error(get_last_error())
@@ -836,66 +915,9 @@ def _windows_dacl_is_safe(
         import ctypes
         from ctypes import wintypes
 
-        advapi32 = getattr(ctypes, "WinDLL")("advapi32", use_last_error=True)
-        kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+        api = _windows_security_api()
+        advapi32, kernel32 = api.advapi32, api.kernel32
         get_named_security = advapi32.GetNamedSecurityInfoW
-        get_named_security.argtypes = (
-            wintypes.LPCWSTR,
-            wintypes.DWORD,
-            wintypes.DWORD,
-            ctypes.POINTER(ctypes.c_void_p),
-            ctypes.POINTER(ctypes.c_void_p),
-            ctypes.POINTER(ctypes.c_void_p),
-            ctypes.POINTER(ctypes.c_void_p),
-            ctypes.POINTER(ctypes.c_void_p),
-        )
-        get_named_security.restype = wintypes.DWORD
-        advapi32.EqualSid.argtypes = (ctypes.c_void_p, ctypes.c_void_p)
-        advapi32.EqualSid.restype = wintypes.BOOL
-        advapi32.IsValidSid.argtypes = (ctypes.c_void_p,)
-        advapi32.IsValidSid.restype = wintypes.BOOL
-        advapi32.GetLengthSid.argtypes = (ctypes.c_void_p,)
-        advapi32.GetLengthSid.restype = wintypes.DWORD
-        advapi32.ConvertStringSidToSidW.argtypes = (
-            wintypes.LPCWSTR,
-            ctypes.POINTER(ctypes.c_void_p),
-        )
-        advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
-        advapi32.GetAclInformation.argtypes = (
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            wintypes.DWORD,
-            ctypes.c_int,
-        )
-        advapi32.GetAclInformation.restype = wintypes.BOOL
-        advapi32.GetAce.argtypes = (
-            ctypes.c_void_p,
-            wintypes.DWORD,
-            ctypes.POINTER(ctypes.c_void_p),
-        )
-        advapi32.GetAce.restype = wintypes.BOOL
-        advapi32.GetSecurityDescriptorControl.argtypes = (
-            ctypes.c_void_p,
-            ctypes.POINTER(wintypes.WORD),
-            ctypes.POINTER(wintypes.DWORD),
-        )
-        advapi32.GetSecurityDescriptorControl.restype = wintypes.BOOL
-        kernel32.LocalFree.argtypes = (ctypes.c_void_p,)
-        kernel32.LocalFree.restype = ctypes.c_void_p
-
-        class _AclSizeInformation(ctypes.Structure):
-            _fields_ = [
-                ("ace_count", wintypes.DWORD),
-                ("acl_bytes_in_use", wintypes.DWORD),
-                ("acl_bytes_free", wintypes.DWORD),
-            ]
-
-        class _AceHeader(ctypes.Structure):
-            _fields_ = [
-                ("ace_type", ctypes.c_ubyte),
-                ("ace_flags", ctypes.c_ubyte),
-                ("ace_size", wintypes.WORD),
-            ]
 
         owner = ctypes.c_void_p()
         dacl = ctypes.c_void_p()
@@ -952,7 +974,7 @@ def _windows_dacl_is_safe(
                 if not any(advapi32.EqualSid(owner, trusted_sids[index]) for index in trusted_owner_indexes):
                     return False
 
-            acl_information = _AclSizeInformation()
+            acl_information = api.acl_size_information()
             if not advapi32.GetAclInformation(
                 dacl,
                 ctypes.byref(acl_information),
@@ -1000,7 +1022,7 @@ def _windows_dacl_is_safe(
                 ace_pointer = ctypes.c_void_p()
                 if not advapi32.GetAce(dacl, index, ctypes.byref(ace_pointer)) or not ace_pointer.value:
                     return False
-                header = ctypes.cast(ace_pointer, ctypes.POINTER(_AceHeader)).contents
+                header = ctypes.cast(ace_pointer, ctypes.POINTER(api.ace_header)).contents
                 ace_size = int(header.ace_size)
                 if ace_size < 8:
                     return False

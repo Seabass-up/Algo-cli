@@ -3670,6 +3670,15 @@
           "timestamp": "2026-09-08T21:24:13Z",
           "scope": "updated source digest sha256:951ce53375d144ebf110e781657ed724dfc30026a586a7335d191a949fb0566c binds the CI ripgrep prerequisite, exact LF lockfile checkout, synthetic regressions, and failure-only bounded native timing diagnostics; local coverage remains non-exhaustive",
           "limitations": "Hosted run 34276924298 failed on Windows workload latency and lockfile source-byte mismatch; 34 search cases were skipped for missing ripgrep on macOS and Linux, plus one Windows-only case. The checkout mismatch reproduces locally and is repaired without weakening exact hashes. Native qualification of the CI repair and the Windows timing cause remain open. This report does not qualify other file tools, external browsers, representative model quality, or competitive superiority; the requirement remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json verified by scripts/henry_m8_qualification.py after native security binding reuse and explicit-byte regex controls",
+          "digest": "sha256:6919b9e195e66a78cf1674f89a77b28f944ff5f1cdcef20df2fea869e9e12f4e",
+          "result": "status blocked: 9 existing source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics in this report; public_claim_eligible is false",
+          "timestamp": "2026-09-08T22:14:56Z",
+          "scope": "updated source digest sha256:9d1d09fc81728e3696b0526fbd6a7d24e42fadb14b411af6a37b0ef35708df0b binds static Win32 API/type reuse, uncached identity and DACL queries, warm mutation/failure controls, concurrent native controls, and explicit LF/CRLF/no-final-newline native regex oracles; local coverage remains non-exhaustive",
+          "limitations": "Hosted run 34280924721 failed on Windows workload latency and an implicit CRLF test expectation; all other executed jobs and all installed-wheel jobs passed. The preserved native profile measured repeated ctypes setup; this candidate does not cache authorization decisions or weaken checks, and native improvement is not yet qualified. This report does not qualify other file tools, external browsers, representative model quality, or competitive superiority; the requirement remains in progress"
         }
       ]
     },
@@ -5298,6 +5307,24 @@
           "timestamp": "2026-09-08T21:24:13Z",
           "scope": "source digest sha256:a311c8accbf418573d2a20e97c169ef73c1737f629b4018ddcd240265eb17e75 and report digest sha256:1b383c597a466b1032d77323cef5ef6a2fa8fd592dd1565036ff842ce03a6893 bind the current local candidate",
           "limitations": "All 15 installed smokes passed for delivered search commit ce45748, but the new CI repair is not natively qualified. Windows run 34276924298 retained its 3659.8754 ms workload p95 failure against the unchanged 3500 ms ceiling; native diagnostics are pending, not a passing benchmark or causal explanation. No live model task quality or production browser claim follows. HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json verified by scripts/henry_m8_qualification.py after native security binding reuse and explicit-byte regex controls",
+          "digest": "sha256:6919b9e195e66a78cf1674f89a77b28f944ff5f1cdcef20df2fea869e9e12f4e",
+          "result": "status blocked: 9 existing source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics in this report; public_claim_eligible is false",
+          "timestamp": "2026-09-08T22:14:56Z",
+          "scope": "updated source digest sha256:9d1d09fc81728e3696b0526fbd6a7d24e42fadb14b411af6a37b0ef35708df0b binds static Win32 API/type reuse, uncached identity and DACL queries, warm mutation/failure controls, concurrent native controls, and explicit LF/CRLF/no-final-newline native regex oracles; local coverage remains non-exhaustive",
+          "limitations": "Hosted run 34280924721 failed on Windows workload latency and an implicit CRLF test expectation; all other executed jobs and all installed-wheel jobs passed. The preserved native profile measured repeated ctypes setup; this candidate does not cache authorization decisions or weaken checks, and native improvement is not yet qualified. This report does not qualify other file tools, external browsers, representative model quality, or competitive superiority; the requirement remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json verified by scripts/nathan_agent_runtime_qualification.py --refresh after native security binding reuse and explicit-byte regex controls",
+          "digest": "sha256:dcdcd88846091ffa4ed3e20f9bd1f829fe48a7166fe37041a210781f2dc66b9c",
+          "result": "status pass: 17 existing correctness probes and all local deterministic runtime gates pass; these fixtures are non-exhaustive and public_claim_eligible is false",
+          "timestamp": "2026-09-08T22:14:56Z",
+          "scope": "source digest sha256:e69daed94e200e31ba5fda4b37ca35d02e22ed18ee4934150266240268e8f2d0 and report digest sha256:7b2b61f701851cc5c8107bf6b3d31ad175d7b2767ad606045e5dcd144ac6cd21 bind the current local candidate",
+          "limitations": "All 15 installed smokes passed for delivered commit 2d7c2bd, but the new Windows binding repair is not natively qualified. Windows run 34280924721 retained its 4527.6351 ms workload p95 failure against the unchanged 3500 ms ceiling. Its bounded profile is diagnostic only, not passing evidence or an isolated cost estimate. No live model task quality or production browser claim follows. HARD-081 remains in progress"
         }
       ]
     },

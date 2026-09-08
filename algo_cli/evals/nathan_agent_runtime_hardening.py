@@ -113,6 +113,7 @@ SOURCE_PATHS = (
     "scripts/nathan_agent_runtime_profile.py",
     "tests/test_nathan_agent_runtime_profile.py",
     "tests/test_oliver_ci_backend_coverage.py",
+    "tests/test_oliver_windows_security_api.py",
     "tests/conftest.py",
     "tests/test_agent_context.py",
     "tests/test_agent_pipeline.py",

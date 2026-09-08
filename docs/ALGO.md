@@ -15398,3 +15398,35 @@ authority results distinct.
 **Evidence:** `.gitattributes`, `.github/workflows/oliver-ci.yml`,
 `tests/conftest.py`, `scripts/nathan_agent_runtime_profile.py`,
 `tests/test_oliver_ci_backend_coverage.py`, `tests/test_nathan_agent_runtime_profile.py`.
+
+## Static Bindings, Live Security Decisions
+
+Optimize from a source-bound native profile, not from a passing local timing
+sample. Windows identity and ACL validation may reuse fully initialized ctypes
+library wrappers, function signatures, and structure classes in a process-local
+lazy cache. Failed initialization must not publish an entry. Preserve
+`use_last_error=True` and its thread-local error handling. Concurrent first
+callers may construct independent complete bundles; never publish partial setup.
+
+The cache must contain no current-user SID, process token, security descriptor,
+converted SID allocation, path identity, permission result, or authorization
+decision. Reopen the current process token and query the actual named owner and
+DACL on every validation. Keep all native buffers and token handles local to the
+call, with unchanged cleanup on success and failure. Preserve ancestry pins,
+mode-specific rights, locks, rechecks, and durable flushes even when profiling
+shows they are expensive. Static setup reuse does not authorize decision reuse.
+
+Prove freshness after warmup: change identity, owner, permissions, protection
+flags, and validation mode; inject API and partial-allocation failures; verify
+immediate rejection and cleanup, followed by successful recovery when the actual
+condition is repaired. Exercise concurrent native reads and a real DACL mutation
+on Windows. Mocked ABI tests cannot qualify native behavior or latency.
+
+For platform-sensitive text semantics, build fixtures with explicit LF, CRLF,
+and missing-final-newline bytes. Compare the protected path with the native
+engine on only the authorized controls. A CR retained before LF may legitimately
+change an end-anchor match; fix an incorrect fixture expectation rather than
+rewriting source bytes or changing matcher semantics to get a green test.
+
+**Evidence:** `algo_cli/config.py`, `tests/test_oliver_windows_security_api.py`,
+`tests/test_config.py`, `tests/test_irene_search.py`.
