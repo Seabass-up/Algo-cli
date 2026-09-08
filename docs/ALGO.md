@@ -15258,3 +15258,39 @@ not replace Windows qualification or prove representative task quality.
 **Evidence:** `algo_cli/harness.py`, `tests/conftest.py`,
 `tests/test_harness_operational_retrieval.py`,
 `tests/test_pattern_catalog_runtime.py`, `tests/test_grounded_answers.py`.
+
+## Admission-Aware Verification Recovery
+
+Discover only actions composable by the typed program language, intersected
+with the active runtime authority and globally applicable protection rules.
+Discovery does not grant execution authority. Empty discovery must explain the
+unavailable capability instead of prescribing another impossible program.
+
+Reject known policy denials, invalid static plans, and unavailable adapters
+before approval or effect dispatch. Validate every static program step before
+starting the program, and revalidate each step at execution. A pre-dispatch
+denial must not create uncertain-effect evidence. A failed request after
+dispatch remains uncertain when its external effect cannot be reconciled.
+
+Browser opening, navigation, clicking, typing, scrolling, and closing can change
+external state. Require action-time approval and at-most-once semantics; an
+adapter's success string or retry hint is not independent effect verification.
+The unqualified Cobalt browser service is unavailable while Echo is the memory
+authority. This refusal does not implement the missing browser containment,
+identity-bound reconciliation, signing, or M8 external qualification.
+
+After the first withheld unverified final answer, allow at most four recovery
+model rounds within the existing work budget. Count discovery, transformations,
+rereads, and additional writes against that same window. A passing verifier on
+the last recovery round permits only a tool-free final answer. Otherwise retain
+the work and stop as partial. Chat may use the existing tracked-path automatic
+Git verifier; it cannot cover untracked files or uncertain shell scope.
+
+Both chat and Agent Blocks must request permitted verification only. With Echo
+selected, do not seek shell approval or a browser workaround. Discovery and
+source reads are not functional tests; an honest partial result is not a
+representative coding success or evidence of competitive superiority.
+
+**Evidence:** `tests/test_nathan_action_admission.py`,
+`tests/test_nathan_verification_recovery.py`,
+`tests/test_cobalt_browser_service.py`, `tests/test_completion_integrity.py`.

@@ -55,6 +55,7 @@ from .samuel_policy_engine import (
 ATTEMPT_LEDGER_LIMIT = 48
 REFLECTION_RECENT_MESSAGES = 8
 TOOL_RESULT_CONTENT_LIMIT = 20_000
+MAX_COMPLETION_RECOVERY_ROUNDS = 4
 FAILED_ATTEMPT_SKIP_SECONDS = 120.0
 _SHELL_EXIT_CODE_RE = re.compile(r"\[exit code:\s*(-?\d+)\]", re.IGNORECASE)
 _BASELINE_CAPABILITIES = CapabilityMask(Capability.READ.value | Capability.MODEL.value | Capability.MEMORY.value)
@@ -427,6 +428,72 @@ def _effective_tool_path(args: dict[str, Any]) -> Path | None:
         return None
 
 
+def completion_recovery_prompt(cfg: Config, *, block_output: bool = False) -> str:
+    """Request only permitted verification, without granting new authority."""
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    if echo_veil_authority_selected(cfg):
+        verifier = (
+            "Echo Veil is the memory authority, so run_shell is unavailable. "
+            "Do not seek shell approval, retry it, or route around this restriction. "
+            "Use git_diff only if admitted and able to verify the tracked workspace changes; "
+            "it cannot verify new untracked files. "
+        )
+    else:
+        verifier = (
+            "Use one admitted non-mutating test, lint/type check, or git_diff tool. "
+            "Run verification from the active execution workspace root; a check redirected "
+            "to another directory cannot verify this workspace. Custom verification must fail "
+            "on mismatch: use a healthcheck/check/verify script, or Python -c with assertions. "
+        )
+    final_label = "final ## Block Output" if block_output else "final answer"
+    return (
+        "[Internal completion gate] Do not claim completion yet. The last workspace mutation "
+        "has no successful post-mutation verifier. "
+        f"{verifier}"
+        "Successful discovery, transforms, read_file, or source substring checks are not "
+        "functional verification. If no permitted verifier is available, report the blocker "
+        "and unverified work without claiming success. "
+        f"At most {MAX_COMPLETION_RECOVERY_ROUNDS} recovery model rounds remain, within the "
+        f"existing work budget. Then give a concise {final_label} grounded in actual evidence."
+    )
+
+
+def _pre_dispatch_tool_error(name: str, args: dict[str, Any], cfg: Config) -> str | None:
+    """Reject known unavailable operations before approval or effect dispatch."""
+    from .irene_memory_path_policy import UNQUALIFIED_BROWSER_ACTIONS, protected_tool_policy_error
+
+    protected_error = protected_tool_policy_error(name, args, cfg)
+    if protected_error is not None:
+        return protected_error
+    if name == "action_program":
+        from .nathan_program_runtime import ActionProgramStep, ProgramAuthorization, compile_program
+
+        authorization = getattr(cfg, "_algo_program_authorization", None)
+        if not isinstance(authorization, ProgramAuthorization):
+            return "Runtime program authorization was not bound"
+        plan = args.get("plan")
+        if not isinstance(plan, dict):
+            return "ProgramValidationError: program must be a JSON object"
+        try:
+            compiled = compile_program(
+                plan,
+                authorization=authorization,
+                cwd=cfg.cwd,
+                safe_mode=bool(cfg.safe_mode),
+            )
+        except (TypeError, ValueError) as exc:
+            return f"{type(exc).__name__}: {exc}"
+        for step in compiled.steps:
+            if isinstance(step, ActionProgramStep):
+                error = _pre_dispatch_tool_error(step.action, tool_runtime_args(step.action, step.args(), cfg), cfg)
+                if error is not None:
+                    return f"Program step {step.step_id} was not dispatched: {error}"
+    if name in UNQUALIFIED_BROWSER_ACTIONS:
+        return tools_module._browser_guard()
+    return None
+
+
 def preflight_runtime_tool(
     name: str,
     args: dict[str, Any],
@@ -451,6 +518,10 @@ def preflight_runtime_tool(
     guardrail_reasons: list[str] = []
     if ceiling_reason:
         guardrail_reasons.append(ceiling_reason)
+    if not ceiling_reason and action.effect_class is not EffectClass.UNCLASSIFIED:
+        admission_error = _pre_dispatch_tool_error(name, signature_args, cfg)
+        if admission_error is not None:
+            guardrail_reasons.append(admission_error)
     if name == "run_shell" and execution_guardrails.masks_verification_exit_status(
         str(signature_args.get("command") or "")
     ):
@@ -672,6 +743,7 @@ def run_tool(name: str, args: dict[str, Any], cfg: Config) -> str:
         "write_knowledge_graph_note",
         "x_search",
         "session_command",
+        "action_search",
         "action_program",
         "harness_search",
         "harness_stats",

@@ -1979,3 +1979,79 @@ evaluation/recovery suite passes 53 cases.
   selected the canonical repository for restoration; only that field changed,
   and the generated file remains unchanged. Earlier claims of unchanged
   settings must not be interpreted as complete configuration parity.
+
+### Admission and Verification Recovery Repair
+
+- The next Windows run, `34260295375` at `cb448d4`, removed all three original
+  portability failures but remains failed: 4,297 passed, 824 skipped, and four
+  failed. One model-free benchmark exceeded unchanged p95 limits: 6,538 ms
+  workload total against 3,500 ms and 1,072 ms first-event time against 1,000 ms.
+  Three artifact/receipt tests depend on that failed report. All correctness
+  probes passed; the timing cause is not established. Other executed CI jobs
+  passed, and protected-browser jobs remain skipped and unqualified.
+- Reproduced non-composable discovery, late Echo refusals, invalid-program
+  uncertain effects, browser error false successes, and unbounded post-nudge
+  recovery. Known admission failures now precede approval and dispatch.
+  Discovery intersects the canonical composable set with runtime authority and
+  globally applicable Echo denials. Static programs are validated before
+  starting and again during normal step dispatch.
+- A negative control exposed an additional authority defect: browser mutations
+  were classified as pure observations. Six stateful browser actions now require
+  action-time approval and at-most-once dispatch. Success strings do not replace
+  independent effect verification, and uncertain attempts cannot be retried.
+  All eight unqualified browser actions are refused under Echo before readiness
+  probing. This does not qualify browser containment or reconcile external state.
+- Chat and Agent Blocks share a four-round post-nudge recovery ceiling and a
+  protection-aware verifier prompt. Successful discovery, rereads, and new
+  mutations do not reset that window. A final permitted verifier allows a
+  tool-free answer; otherwise work is retained with partial status. Existing
+  global iteration limits, tracked-path Git rules, and approval gates remain.
+- Early isolated regressions retained their failures, including the browser
+  metadata defect and a corrected configured-root fixture assumption. The first
+  combined recovery slice passed 442 tests; full delivery and installed
+  qualification remain separate and must be recorded after source freeze.
+- The first broader local qualification failed because the new discovery
+  configuration argument was not hidden from the provider schema. Conversion
+  dropped `action_search`, leaving 73 schemas for 74 callables. The focused
+  hardening failure and token-efficiency failure share this cause. Apply the
+  existing runtime-parameter hiding helper and test both provider-neutral and
+  Responses schemas; retain the failed report and unchanged completeness gate.
+- Open work: native Windows timing diagnosis, a permitted contained verifier
+  for protected new-project coding, representative coding/answer evaluation,
+  and a byte bound for search output (line limits alone admitted a multi-megabyte
+  result). The original generated application and normal-launch workspace are
+  unchanged. No representative quality improvement or M8 completion is claimed.
+
+### Admission Repair Delivery Receipt
+
+- Final source delivery passed 5,246 tests with 32 skips in 108.31 seconds and
+  69.16% branch-aware coverage. There are 59 new admission/recovery regression
+  cases. Go race/vet, Ruff, default and CI typing, compilation, public
+  source/history/artifact scans, locked dependency audit, wheel-from-sdist build,
+  Twine, and new-test formatting passed without lowering any existing gate.
+- The corrected schema conversion retains all 74 runtime callables. O4-O8
+  source-bound checks remain 17/231/13/252/155; 160 paired samples completed,
+  and six current reports were installed. M8 retains nine local passes and five
+  external blocks; M9 retains 29 verified and 13 blocked requirements, with no
+  failed requirements. The earlier failed local qualification is retained.
+- Installed parity covers 322 files and 282 Python modules at
+  `sha256:271a08a312a03410789ed589163ac949137c787b005b670396c13326351e5f41`.
+  Fourteen installed smokes passed, including actual launcher refresh/search/read,
+  fresh-process retention, 21 byte/link checks, five isolated admission/recovery
+  controls, and required-Echo Astra empty-stream recovery in 10.59 seconds.
+  The new fixture reproduces the original denial on the previous installed
+  package and passes against the repair; it makes no real model tool calls or
+  operator decisions and is not a representative coding qualification.
+- The first installed context fixture failed after early admission correctly
+  rejected its workspace inside protected state. Moving that fixture also exposed
+  its noncanonical `/tmp` symlink ancestry. The corrected fixture uses a canonical
+  sibling workspace, asserts protected paths remain denied, and supplies a
+  synthetic privacy key. All failed fixture attempts are retained; no runtime
+  path protection was relaxed to make the smoke pass.
+- The exact Echo `cbee525` dependency and 46-source audit remain unchanged.
+  Saved workspace/model/Echo settings and the operator-generated application
+  were checked unchanged. Receipts live under `/tmp/algo-cli-verification.xyESly/`.
+  A ten-sample local workload profile is diagnostic only: it does not explain or
+  clear the prior native Windows latency failure. Hosted qualification of this
+  source, representative coding quality, and M8 external requirements remain
+  separate from this local delivery result.

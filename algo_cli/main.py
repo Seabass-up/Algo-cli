@@ -126,7 +126,9 @@ from .dorothy_perf_telemetry import (
     record_perf_event,
 )
 from .nathan_runtime import (
+    MAX_COMPLETION_RECOVERY_ROUNDS,
     ask_approval,
+    completion_recovery_prompt,
     reflection_checkpoint,
     run_tool,
     show_typed_tool_result,
@@ -3207,6 +3209,7 @@ def agent_loop(
     small_context_ledger: small_context.SmallContextLedger | None = None
     small_context_notified = False
     completion_nudged = False
+    completion_recovery_rounds = 0
     no_progress_tool_rounds = 0
     next_round_trigger = "initial_plan"
     tool_ms_since_previous_round = 0.0
@@ -3350,7 +3353,22 @@ def agent_loop(
         # partial solely because its verifier consumed the last work turn.
         for _ in range(max_iterations + 1):
             context_build_started = agent_loop_started if iterations_used == 0 else time.perf_counter()
-            finalization_turn = _ == max_iterations
+            recovery_finalization = completion_nudged and completion_recovery_rounds >= MAX_COMPLETION_RECOVERY_ROUNDS
+            if recovery_finalization and _ < max_iterations:
+                completion = execution_guardrails.completion_decision()
+                if not completion.allowed:
+                    completion = execution_guardrails.auto_verify_working_tree(cfg.cwd)
+                    if completion.allowed:
+                        show_info("Auto-verified the last workspace mutation with git diff --check.")
+                if not completion.allowed:
+                    final_content = ""
+                    show_error(
+                        "Completion blocked: verification recovery exhausted after "
+                        f"{MAX_COMPLETION_RECOVERY_ROUNDS} model rounds. Workspace changes are retained; "
+                        "no successful task completion is claimed."
+                    )
+                    break
+            finalization_turn = _ == max_iterations or recovery_finalization
             if finalization_turn:
                 if no_progress_tool_rounds:
                     show_error(
@@ -3370,14 +3388,17 @@ def agent_loop(
                     {
                         "role": "user",
                         "content": (
-                            "[Internal finalization turn] The configured work-iteration budget is "
-                            "exhausted. The mutation-completion gate has no outstanding check; "
+                            "[Internal finalization turn] The "
+                            + ("verification recovery" if recovery_finalization else "configured work-iteration")
+                            + " budget is exhausted. The mutation-completion gate has no outstanding check; "
                             "this alone does not prove the user's task is complete. Do not call more tools. "
                             "Describe the observed result, verification actually performed, and remaining blockers. "
                             "Never describe an unexecuted action as completed."
                         ),
                     }
                 )
+            if completion_nudged and not finalization_turn:
+                completion_recovery_rounds += 1
             iterations_used += 1
             chars_before_prune = sum(len(str(message.get("content") or "")) for message in cfg.messages)
             prune_stale_tool_messages(cfg)
@@ -3698,16 +3719,7 @@ def agent_loop(
                     cfg.messages.append(
                         {
                             "role": "user",
-                            "content": (
-                                "[Internal completion gate] Do not claim completion yet. The last "
-                                "workspace mutation has no successful post-mutation verifier. Run one "
-                                "appropriate non-mutating test, lint/type check, or git_diff tool now. "
-                                "Run verification from the active execution workspace root; a check "
-                                "redirected to another directory cannot verify this workspace. "
-                                "Custom verification must fail on mismatch: run a healthcheck/check/verify "
-                                "script, or Python -c with one or more assertions; then give a concise "
-                                "final answer grounded in that result."
-                            ),
+                            "content": completion_recovery_prompt(cfg),
                         }
                     )
                     continue

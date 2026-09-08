@@ -1806,7 +1806,7 @@ def x_search(
 # ---------------------------------------------------------------------------
 
 _BROWSER_UNAVAILABLE = (
-    "Browser service is not available. Start the Camoufox service at "
+    "Error: Browser service is not available. Start the Camoufox service at "
     "http://localhost:9377 or set ALGO_BROWSER_URL. Run /doctor for diagnostics."
 )
 
@@ -1837,7 +1837,7 @@ def cobalt_open(url: str) -> str:
         return guard
     result = cobalt_browser_service.open_tab(url)
     if "error" in result:
-        return f"Error opening browser tab: {result['error']}"
+        return f"Error: opening browser tab: {result['error']}"
     tab_id = result.get("tabId", "")
     final_url = result.get("url", url)
     return f"Opened tab {tab_id} at {final_url}. Use cobalt_snapshot or cobalt_screenshot to inspect the page."
@@ -1859,7 +1859,7 @@ def cobalt_snapshot(tab_id: str) -> str:
         return guard
     result = cobalt_browser_service.snapshot(tab_id)
     if "error" in result:
-        return f"Error getting snapshot: {result['error']}"
+        return f"Error: getting snapshot: {result['error']}"
     snapshot_text = result.get("snapshot", "")
     refs = result.get("refsCount", 0)
     page_url = result.get("url", "")
@@ -1887,7 +1887,7 @@ def cobalt_screenshot(tab_id: str) -> str:
         return guard
     result = cobalt_browser_service.screenshot(tab_id)
     if "error" in result:
-        return f"Error getting screenshot: {result['error']}"
+        return f"Error: getting screenshot: {result['error']}"
     # Save to a temp file for vision_describe
     import tempfile
 
@@ -1921,7 +1921,7 @@ def cobalt_navigate(tab_id: str, url: str) -> str:
         return guard
     result = cobalt_browser_service.navigate(tab_id, url)
     if "error" in result:
-        return f"Error navigating: {result['error']}"
+        return f"Error: navigating: {result['error']}"
     new_url = result.get("url", url)
     refs = result.get("refsAvailable", False)
     hint = " Call cobalt_snapshot to see the page structure." if refs else ""
@@ -1947,8 +1947,8 @@ def cobalt_click(tab_id: str, ref: str | None = None, selector: str | None = Non
     if "error" in result:
         hint = ""
         if result.get("retryable"):
-            hint = " Call cobalt_snapshot to see the current state and retry."
-        return f"Error clicking: {result['error']}.{hint}"
+            hint = " Call cobalt_snapshot to inspect the current state; do not repeat the action until its outcome is reconciled."
+        return f"Error: clicking: {result['error']}.{hint}"
     refs = result.get("refsAvailable", False)
     hint = " Call cobalt_snapshot to see the new page." if refs else ""
     return f"Clicked {ref or selector}.{hint}"
@@ -1975,8 +1975,8 @@ def cobalt_type(tab_id: str, text: str, ref: str | None = None, selector: str | 
     if "error" in result:
         hint = ""
         if result.get("retryable"):
-            hint = " Call cobalt_snapshot to see the current state and retry."
-        return f"Error typing: {result['error']}.{hint}"
+            hint = " Call cobalt_snapshot to inspect the current state; do not repeat the action until its outcome is reconciled."
+        return f"Error: typing: {result['error']}.{hint}"
     return f"Typed {len(text)} characters into {ref or selector}."
 
 
@@ -1995,7 +1995,7 @@ def cobalt_scroll(tab_id: str, direction: str = "down", amount: int = 3) -> str:
         return guard
     result = cobalt_browser_service.scroll(tab_id, direction=direction, amount=amount)
     if "error" in result:
-        return f"Error scrolling: {result['error']}"
+        return f"Error: scrolling: {result['error']}"
     return f"Scrolled {direction} by {amount}."
 
 
@@ -2012,7 +2012,7 @@ def cobalt_close(tab_id: str) -> str:
         return guard
     result = cobalt_browser_service.close_tab(tab_id)
     if "error" in result:
-        return f"Error closing tab: {result['error']}"
+        return f"Error: closing tab: {result['error']}"
     return f"Closed tab {tab_id}."
 
 
@@ -5172,7 +5172,7 @@ def url_scheme_parse(url: str) -> str:
     return json.dumps(result, indent=2, sort_keys=True)
 
 
-def action_search(query: str, limit: int = 6) -> str:
+def action_search(query: str, limit: int = 6, cfg: Any = None) -> str:
     """Discover relevant deferred actions and return their exact schemas.
 
     Use this when the small visible tool set does not contain a needed action.
@@ -5186,6 +5186,8 @@ def action_search(query: str, limit: int = 6) -> str:
     """
 
     from .action_registry import get_action_spec
+    from .irene_memory_path_policy import GLOBALLY_DISABLED_PROTECTED_ACTIONS, protected_tool_policy_error
+    from .nathan_program_runtime import ProgramAuthorization, authorization_for_actions
     from .tool_context import rank_tools_for_prompt
     from .tool_schema import serialized_tool_schemas
 
@@ -5193,8 +5195,16 @@ def action_search(query: str, limit: int = 6) -> str:
     if not normalized_query:
         return json.dumps({"status": "error", "error": "query must not be empty"})
     bounded_limit = max(1, min(12, int(limit)))
-    excluded = {"action_search", "action_program", "session_command", "session_slash"}
-    candidates = [fn for name, fn in TOOL_MAP.items() if name not in excluded]
+    allowed = authorization_for_actions(tuple(TOOL_MAP)).allowed_actions
+    if cfg is not None:
+        authorization = getattr(cfg, "_algo_program_authorization", None)
+        allowed &= authorization.allowed_actions if isinstance(authorization, ProgramAuthorization) else frozenset()
+        allowed = frozenset(
+            name for name in allowed
+            if name not in GLOBALLY_DISABLED_PROTECTED_ACTIONS
+            or protected_tool_policy_error(name, {}, cfg) is None
+        )
+    candidates = [fn for name, fn in TOOL_MAP.items() if name in allowed]
     ranked = rank_tools_for_prompt(normalized_query, candidates)[:bounded_limit]
     actions: list[dict[str, Any]] = []
     for fn in ranked:
@@ -5225,7 +5235,12 @@ def action_search(query: str, limit: int = 6) -> str:
             "query": normalized_query,
             "count": len(actions),
             "actions": actions,
-            "next": "Call action_program with a bounded typed plan; discovery does not bypass runtime policy or approval.",
+            "next": (
+                "Call action_program with a bounded typed plan; discovery does not bypass runtime policy or approval."
+                if actions else
+                "No composable actions are available within the current runtime policy. "
+                "Report the unavailable capability; do not keep retrying discovery."
+            ),
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -5320,7 +5335,7 @@ ALL_TOOLS = [
     _hide_cfg_param(update_user_profile),
     embed_text,
     vision_describe,
-    action_search,
+    _hide_cfg_param(action_search),
     _hide_cfg_param(action_program),
     _hide_cfg_param(available_actions),
     session_slash,

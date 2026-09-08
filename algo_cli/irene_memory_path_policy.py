@@ -29,6 +29,11 @@ _GIT_PATH_ACTIONS = frozenset({"git_status", "git_diff"})
 _SESSION_PATH_COMMANDS = frozenset({"/cd", "/ls", "/read"})
 _SESSION_DENIED_PATH_COMMANDS = frozenset({"/embed", "/identity", "/pdf", "/vision"})
 _MAX_PATH_BYTES = 16_384
+UNQUALIFIED_BROWSER_ACTIONS = frozenset({
+    "cobalt_open", "cobalt_snapshot", "cobalt_screenshot", "cobalt_navigate",
+    "cobalt_click", "cobalt_type", "cobalt_scroll", "cobalt_close",
+})
+GLOBALLY_DISABLED_PROTECTED_ACTIONS = UNQUALIFIED_BROWSER_ACTIONS | {"run_shell", "update_user_profile"}
 
 
 def _known_protected_roots() -> tuple[Path, ...]:
@@ -182,6 +187,12 @@ def protected_tool_policy_error(
 
     if not echo_veil_authority_selected(cfg):
         return None
+    if name in UNQUALIFIED_BROWSER_ACTIONS:
+        return (
+            "Error: the unqualified browser service is disabled while Echo Veil "
+            "is the exclusive memory authority; browser access requires a "
+            "qualified containment boundary."
+        )
     if name == "update_user_profile":
         return (
             "Error: update_user_profile is unavailable while Echo Veil is the "

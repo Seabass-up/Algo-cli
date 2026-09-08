@@ -63,9 +63,11 @@ from .theodore_runtime_services import client_for_model, create_client
 from .james_dispatch import DispatchCancellation, DispatchInterrupted, batch_policy_ceiling_codes
 from .marcus_authority import EffectClass
 from .nathan_runtime import (
+    MAX_COMPLETION_RECOVERY_ROUNDS,
     PipelineToolResult,
     approval_mode_for_config,
     classify_tool_status,
+    completion_recovery_prompt,
     execute_tool_call_for_pipeline,
     summarize_tool_result,
 )
@@ -439,6 +441,7 @@ def run_agent_block(
     ]
     block.messages = messages
     completion_nudged = False
+    completion_recovery_rounds = 0
     loop_state = AgentLoopState()
 
     def record_protocol_dispatch(
@@ -563,6 +566,30 @@ def run_agent_block(
 
     try:
         for _ in range(iteration_limit):
+            recovery_finalization = completion_nudged and completion_recovery_rounds >= MAX_COMPLETION_RECOVERY_ROUNDS
+            if recovery_finalization:
+                if not execution_guardrails.completion_decision().allowed:
+                    block.status = "partial"
+                    block.status_code = "verification_missing"
+                    block.status_reason = (
+                        "Verification recovery exhausted after "
+                        f"{MAX_COMPLETION_RECOVERY_ROUNDS} model rounds without a passing post-mutation verifier."
+                    )
+                    block.verification_warning = block.status_reason
+                    block.output = f"## Block Output\n\nUNVERIFIED: {block.status_reason}"
+                    break
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "The verification recovery budget is exhausted. Do not call more tools. "
+                            "Give a final ## Block Output grounded in observed evidence and remaining blockers."
+                        ),
+                    }
+                )
+            elif completion_nudged:
+                completion_recovery_rounds += 1
+            round_tools = [] if recovery_finalization else allowed_tools
             if run_contract is not None:
                 try:
                     run_contract.assert_live_authority(
@@ -587,7 +614,7 @@ def run_agent_block(
                 try:
                     prompt_tokens = _estimate_agent_request_tokens(
                         request_messages,
-                        allowed_tools,
+                        round_tools,
                     )
                     if contract_tracker is not None:
                         contract_tracker.start_model_round(prompt_tokens)
@@ -620,7 +647,7 @@ def run_agent_block(
                 stream = block_client.chat(
                     model=block_model,
                     messages=request_messages,
-                    tools=allowed_tools,
+                    tools=round_tools,
                     stream=True,
                     think=cfg.show_thinking,
                     keep_alive=cfg.keep_alive,
@@ -689,6 +716,14 @@ def run_agent_block(
                     block.output = f"## Block Output\n\nDurable run checkpoint failed after model dispatch: {exc}"
                     break
 
+            if recovery_finalization and tool_calls:
+                loop_state.cancel("verification recovery finalization attempted a tool call")
+                block.status = "partial"
+                block.status_code = "model_error"
+                block.status_reason = "Tool-free verification recovery finalization attempted an additional action."
+                block.output = f"## Block Output\n\nINCOMPLETE: {block.status_reason}"
+                break
+
             if not tool_calls:
                 loop_state.finish_without_tools()
                 completion = execution_guardrails.completion_decision()
@@ -700,12 +735,7 @@ def run_agent_block(
                         messages.append(
                             {
                                 "role": "user",
-                                "content": (
-                                    "[Internal completion gate] The last workspace mutation is not "
-                                    "verified. Run one appropriate non-mutating test, lint/type check, "
-                                    "or git_diff tool now. Then provide a final ## Block Output grounded "
-                                    "in that verifier."
-                                ),
+                                "content": completion_recovery_prompt(cfg, block_output=True),
                             }
                         )
                         continue
