@@ -48,6 +48,21 @@ BORON_CA_PATH = BORON_PROFILE_PATH / "xenon-session-ca.pem"
 
 _VERSION_RE = re.compile(r"^[1-9][0-9]{0,3}(?:\.[0-9]{1,6}){3}$")
 _HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")
+_NAVIGATION_NETWORK_ERRORS = {
+    "net::ERR_CERT_AUTHORITY_INVALID": "navigation_certificate_untrusted",
+    "net::ERR_CERT_COMMON_NAME_INVALID": "navigation_certificate_name",
+    "net::ERR_CERT_DATE_INVALID": "navigation_certificate_validity",
+    "net::ERR_PROXY_CONNECTION_FAILED": "navigation_proxy_unavailable",
+    "net::ERR_TUNNEL_CONNECTION_FAILED": "navigation_proxy_tunnel",
+    "net::ERR_NAME_NOT_RESOLVED": "navigation_dns",
+    "net::ERR_CONNECTION_REFUSED": "navigation_connection_refused",
+    "net::ERR_CONNECTION_CLOSED": "navigation_connection_closed",
+    "net::ERR_CONNECTION_RESET": "navigation_connection_reset",
+    "net::ERR_TIMED_OUT": "navigation_timeout",
+    "net::ERR_CONNECTION_TIMED_OUT": "navigation_timeout",
+    "net::ERR_ABORTED": "navigation_aborted",
+}
+BORON_NAVIGATION_FAILURE_REASONS = frozenset(_NAVIGATION_NETWORK_ERRORS.values())
 
 _ALLOWED_METHODS = frozenset(
     {
@@ -342,7 +357,7 @@ def install_ephemeral_xenon_ca(
     certutil_path: str = BORON_CERTUTIL_PATH,
     runner: Runner = subprocess.run,
 ) -> str:
-    """Import one short-lived CA into the ephemeral profile and read it back."""
+    """Import one short-lived CA into Chrome's ephemeral NSS store and read it back."""
 
     if type(ca_pem) is not bytes or not 1 <= len(ca_pem) <= 16_384:
         _reject("ca_size")
@@ -366,11 +381,15 @@ def install_ephemeral_xenon_ca(
     ):
         _reject("ca_validity")
 
+    # Chrome M146+ resolves NSS below XDG_DATA_HOME, which the launcher pins
+    # to this same private tmpfs root rather than a host user's trust store.
+    database_path = profile_path / "pki" / "nssdb"
     try:
-        profile_path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if profile_path.is_symlink() or not profile_path.is_dir():
-            _reject("profile_path")
-        os.chmod(profile_path, 0o700)
+        for directory in (profile_path, database_path.parent, database_path):
+            directory.mkdir(mode=0o700, parents=directory == profile_path, exist_ok=True)
+            if directory.is_symlink() or not directory.is_dir():
+                _reject("profile_path")
+            os.chmod(directory, 0o700)
         ca_path = profile_path / BORON_CA_PATH.name
         descriptor = os.open(ca_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         try:
@@ -390,12 +409,12 @@ def install_ephemeral_xenon_ca(
         _reject("ca_write")
 
     commands: Sequence[Sequence[str]] = (
-        (certutil_path, "-N", "-d", f"sql:{profile_path}", "--empty-password"),
+        (certutil_path, "-N", "-d", f"sql:{database_path}", "--empty-password"),
         (
             certutil_path,
             "-A",
             "-d",
-            f"sql:{profile_path}",
+            f"sql:{database_path}",
             "-n",
             "algo-xenon-session",
             "-t",
@@ -407,7 +426,7 @@ def install_ephemeral_xenon_ca(
             certutil_path,
             "-L",
             "-d",
-            f"sql:{profile_path}",
+            f"sql:{database_path}",
             "-n",
             "algo-xenon-session",
             "-a",
@@ -653,8 +672,14 @@ class BoronNavigationMachine:
             return ()
 
         if method == "Page.navigate":
-            if result.get("errorText") not in (None, ""):
-                self._terminal(BoronNavigationState.FAILED, "navigation_failed")
+            error_text = result.get("errorText")
+            if error_text not in (None, ""):
+                reason = (
+                    _NAVIGATION_NETWORK_ERRORS.get(error_text, "navigation_failed")
+                    if type(error_text) is str
+                    else "navigation_failed"
+                )
+                self._terminal(BoronNavigationState.FAILED, reason)
                 return ()
             if result.get("isDownload") is True:
                 self._terminal(BoronNavigationState.HANDOFF, "download_denied")
@@ -954,6 +979,7 @@ def launch_boron_chrome(
         file_actions.append((os.POSIX_SPAWN_CLOSE, descriptor))
     environment = {
         "HOME": "/home/algo",
+        "XDG_DATA_HOME": str(BORON_PROFILE_PATH),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "PATH": "/usr/bin:/bin",
@@ -1023,6 +1049,7 @@ __all__ = [
     "BORON_CHROME_PATH",
     "BORON_MAX_PIPE_BUFFER_BYTES",
     "BORON_MAX_PIPE_MESSAGE_BYTES",
+    "BORON_NAVIGATION_FAILURE_REASONS",
     "BORON_PIPE_PROTOCOL_VERSION",
     "BoronChromeProcess",
     "BoronPidProcess",

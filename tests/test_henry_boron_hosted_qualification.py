@@ -1405,6 +1405,8 @@ def test_build_diagnostics_do_not_stringify_objects_or_multiple_arguments() -> N
         "browser_entry_navigation_browser_disconnected",
         "browser_entry_navigation_json_float_and_cleanup_incomplete",
         "browser_navigation_failed",
+        "browser_navigation_certificate_untrusted",
+        "browser_navigation_proxy_tunnel_and_cleanup_incomplete",
         "browser_result_timeout_and_cleanup_incomplete",
         "live_internal_error",
     ],

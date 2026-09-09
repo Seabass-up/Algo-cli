@@ -40,7 +40,11 @@ from algo_cli.boron_browser_isolation import (
     BoronReleaseEvidenceSource,
     verify_docker_topology,
 )
-from algo_cli.boron_browser_wrapper import BoronPipeRejected, decode_boron_pipe_message
+from algo_cli.boron_browser_wrapper import (
+    BORON_NAVIGATION_FAILURE_REASONS,
+    BoronPipeRejected,
+    decode_boron_pipe_message,
+)
 from algo_cli.xenon_browser_broker import (
     XENON_BROKER_PROTOCOL_VERSION,
     XENON_BROKER_SCHEMA_VERSION,
@@ -117,6 +121,7 @@ _BROWSER_TERMINAL_REASONS = frozenset(
         "upload_handoff",
         "websocket_denied",
     }
+    | BORON_NAVIGATION_FAILURE_REASONS
 )
 _BROWSER_ENTRY_REASONS = frozenset(
     {"ca_install_digest", "entry_config", "navigation_evidence"}
