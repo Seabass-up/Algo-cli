@@ -39,6 +39,10 @@ index still serves 0.18.0 until the approved release workflow succeeds.
 
 ### Release Operations
 
+- Bind live browser evidence to the builder's complete package provenance:
+  exact Debian snapshots, package-lock digests and counts, and explicit false
+  hermetic/reproducible claims. Exercise the real producer-to-consumer contract
+  so a stale hand-written fixture cannot hide an incompatible record.
 - Preserve the live browser driver's closed failure codes in hosted diagnostics,
   including cleanup failures. Unknown exception text remains redacted, failed
   runs remain blocked, and no passing evidence is written after a rejection.
