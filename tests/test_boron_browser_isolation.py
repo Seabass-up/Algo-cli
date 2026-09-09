@@ -997,6 +997,58 @@ def test_cleanup_waits_for_late_owned_resource_before_mutation(monkeypatch) -> N
     assert mutations == [["docker", "network", "rm", resource_id]]
 
 
+@pytest.mark.parametrize(("kind", "role"), [("container", "managed-browser"), ("network", "browser-internal")])
+@pytest.mark.parametrize("final_state", ["absent", "owned", "foreign", "error"])
+@pytest.mark.parametrize("exhausted_probe_errors", [False, True])
+def test_settled_cleanup_requires_fresh_final_inspection(
+    monkeypatch, kind: str, role: str, final_state: str, exhausted_probe_errors: bool
+) -> None:
+    module = _live_module()
+    clock = [100.0]
+    timeouts: list[float] = []
+    resource_id = "a" * 64 if final_state in {"owned", "foreign"} else None
+
+    def identity(observed_kind, identifier, *, session_digest, role: str, timeout_seconds: float):
+        assert observed_kind == kind
+        assert identifier == "pending-resource"
+        assert session_digest == _plan().session_digest
+        timeouts.append(timeout_seconds)
+        if clock[0] >= 100.12:
+            assert timeout_seconds == module.CLEANUP_INSPECT_TIMEOUT_SECONDS
+            return final_state, resource_id
+        clock[0] += min(timeout_seconds, 0.04)
+        if exhausted_probe_errors and timeout_seconds < 0.04:
+            return "error", None
+        return "absent", None
+
+    monkeypatch.setattr(module, "CLEANUP_ABSENCE_TIMEOUT_SECONDS", 0.12)
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(module.time, "sleep", lambda duration: clock.__setitem__(0, clock[0] + duration))
+    monkeypatch.setattr(module, "_cleanup_resource_identity", identity)
+    assert module._settled_cleanup_resource_identity(
+        kind, "pending-resource", session_digest=_plan().session_digest, role=role
+    ) == (final_state, resource_id)
+    assert len(timeouts) == 3
+    assert 0 < timeouts[1] < 0.04
+    assert all(0 < timeout <= 0.12 for timeout in timeouts[:-1])
+    assert timeouts[-1] == module.CLEANUP_INSPECT_TIMEOUT_SECONDS
+
+
+def test_settled_cleanup_does_not_retry_an_early_inspection_error(monkeypatch) -> None:
+    module = _live_module()
+    calls = []
+
+    def identity(*_args, **kwargs):
+        calls.append(kwargs)
+        return "error", None
+
+    monkeypatch.setattr(module, "_cleanup_resource_identity", identity)
+    assert module._settled_cleanup_resource_identity(
+        "container", "pending-resource", session_digest=_plan().session_digest, role="managed-browser"
+    ) == ("error", None)
+    assert len(calls) == 1
+
+
 def test_absence_probe_caps_each_command_to_remaining_deadline(monkeypatch) -> None:
     module = _live_module()
     clock = [100.0]

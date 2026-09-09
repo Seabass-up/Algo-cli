@@ -206,6 +206,11 @@ The candidate closes several source-level provenance gaps:
   falls back to bounded force removal, and suppresses evidence if any resource
   cannot be proven absent. Report publication likewise remains descriptor-bound
   and rolls back the final path after any late integrity or durability failure.
+- Initially absent resources retain the three-second create-settlement watch,
+  followed by one fresh inspection with the existing two-second I/O cap (up to
+  five seconds total). A deadline-clipped probe cannot establish absence. The
+  final inspection must return absence or an exact owned identity; foreign
+  resources and inspection errors still block cleanup qualification.
 - Any July artifact produced through the former `command | tee` plus
   `if: always()`/warn-on-missing path is invalidated for qualification. That path
   could retain or attest failure-shaped output without proving that the

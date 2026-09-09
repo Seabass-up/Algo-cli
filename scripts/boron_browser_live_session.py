@@ -928,24 +928,32 @@ def _settled_cleanup_resource_identity(
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return "absent", None
+            break
+        inspection_timeout = min(CLEANUP_INSPECT_TIMEOUT_SECONDS, CLEANUP_ABSENCE_TIMEOUT_SECONDS, remaining)
         state, resource_id = _cleanup_resource_identity(
             kind,
             identifier,
             session_digest=session_digest,
             role=role,
-            timeout_seconds=min(
-                CLEANUP_INSPECT_TIMEOUT_SECONDS,
-                CLEANUP_ABSENCE_TIMEOUT_SECONDS,
-                remaining,
-            ),
+            timeout_seconds=inspection_timeout,
         )
+        if state == "error" and inspection_timeout < CLEANUP_INSPECT_TIMEOUT_SECONDS and time.monotonic() >= deadline:
+            break
         if state != "absent":
             return state, resource_id
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return "absent", None
+            break
         time.sleep(min(0.05, remaining))
+    # A settled create window still needs a fresh bounded inspection, never an
+    # inference from an exhausted or millisecond-sized final probe.
+    return _cleanup_resource_identity(
+        kind,
+        identifier,
+        session_digest=session_digest,
+        role=role,
+        timeout_seconds=CLEANUP_INSPECT_TIMEOUT_SECONDS,
+    )
 
 
 def _cleanup_container(
