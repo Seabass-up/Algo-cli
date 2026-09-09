@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
+
 from algo_cli import harness
 from algo_cli.evals import algorithm_effectiveness
 
@@ -110,8 +112,8 @@ def _write_probe_index(*, complete_coverage: bool = False) -> None:
     harness._INDEX_CACHE = None
     harness._INDEX_CACHE_SIGNATURE = None
     harness._STALE_CHECK_CACHE = None
-    harness._BM25_INDEX_CACHE = None
-    harness._VECTOR_MATRIX_CACHE = None
+    harness._BM25_INDEX_CACHE.clear()
+    harness._VECTOR_MATRIX_CACHE.clear()
     harness._QUERY_VEC_CACHE.clear()
 
 
@@ -125,6 +127,9 @@ def test_live_probe_passes_all_required_checks_with_partial_coverage() -> None:
         "required": len(algorithm_effectiveness.REQUIRED_CHECKS),
         "passed": len(algorithm_effectiveness.REQUIRED_CHECKS),
         "failed": 0,
+        "error": 0,
+        "unavailable": 0,
+        "executed": len(algorithm_effectiveness.REQUIRED_CHECKS),
     }
     assert all(check["status"] == "pass" for check in result["checks"].values())
     assert result["checks"]["bm25_lexical"]["evidence"]["cache_reused"] is True
@@ -175,7 +180,11 @@ def test_live_probe_reports_unavailable_without_canonical_record() -> None:
 
     assert result["status"] == "unavailable"
     assert "canonical record is missing" in result["reason"]
-    assert all(check["status"] == "unavailable" for check in result["checks"].values())
+    assert result["summary"]["passed"] == 4
+    assert result["summary"]["unavailable"] == 3
+    assert result["checks"]["stable_top_k"]["status"] == "pass"
+    assert result["checks"]["memory_admission"]["status"] == "pass"
+    assert result["checks"]["exact_vector"]["executed"] is False
 
 
 def test_live_probe_reports_error_instead_of_raising(monkeypatch) -> None:
@@ -189,8 +198,11 @@ def test_live_probe_reports_error_instead_of_raising(monkeypatch) -> None:
     result = algorithm_effectiveness.run_algorithm_effectiveness_probe()
 
     assert result["status"] == "error"
-    assert "synthetic hybrid failure" in result["reason"]
-    assert all(check["status"] == "error" for check in result["checks"].values())
+    assert "RuntimeError" in result["reason"]
+    assert "synthetic hybrid failure" not in result["reason"]
+    assert result["checks"]["exact_vector"]["status"] == "error"
+    assert result["checks"]["rrf_fusion"]["status"] == "error"
+    assert result["summary"]["passed"] == 5
 
 
 def test_live_probe_fails_when_any_required_check_fails(monkeypatch) -> None:
@@ -206,3 +218,56 @@ def test_live_probe_fails_when_any_required_check_fails(monkeypatch) -> None:
     assert result["status"] == "fail"
     assert result["checks"]["stable_top_k"]["status"] == "fail"
     assert result["summary"]["passed"] == len(algorithm_effectiveness.REQUIRED_CHECKS) - 1
+
+
+@pytest.mark.parametrize("missing", ["vector", "model", "numpy", "zero", "nan"])
+def test_unavailable_vector_prerequisites_preserve_independent_coverage(monkeypatch, missing: str) -> None:
+    _write_probe_index()
+    index = json.loads(harness.INDEX_PATH.read_text())
+    canonical = next(row for row in index["records"] if row["id"] == algorithm_effectiveness.CANONICAL_ALGO_ID)
+    if missing == "vector":
+        canonical.pop("embedding")
+    elif missing == "model":
+        canonical.pop("embedding_model")
+    elif missing == "zero":
+        canonical["embedding"] = [0.0, 0.0, 0.0]
+    elif missing == "nan":
+        canonical["embedding"] = [float("nan"), 0.0, 0.0]
+    else:
+        monkeypatch.setattr(harness, "_NUMPY", False)
+    monkeypatch.setattr(harness, "load_index", lambda: index)
+    monkeypatch.setattr(harness, "hybrid_search", lambda *_args, **_kwargs: pytest.fail("blocked vector path ran"))
+
+    result = algorithm_effectiveness.run_algorithm_effectiveness_probe()
+
+    assert result["status"] == "unavailable"
+    assert result["summary"]["passed"] == 5
+    assert result["summary"]["executed"] == 5
+    for name in ("exact_vector", "rrf_fusion"):
+        assert result["checks"][name]["status"] == "unavailable"
+        assert result["checks"][name]["blocked_by"] == ["hybrid"]
+    assert result["checks"]["bm25_lexical"]["dependencies"] == ["canonical"]
+
+
+def test_independent_failure_dominates_unavailable_neighbors(monkeypatch) -> None:
+    _write_probe_index()
+    monkeypatch.setattr(harness, "_NUMPY", False)
+    monkeypatch.setattr(algorithm_effectiveness, "stable_top_k", lambda *_args, **_kwargs: [])
+    result = algorithm_effectiveness.run_algorithm_effectiveness_probe()
+    assert result["status"] == "fail"
+    assert result["summary"]["failed"] == 1
+    assert result["summary"]["unavailable"] == 2
+    assert result["summary"]["passed"] == 4
+
+
+def test_index_exception_does_not_suppress_memory_or_cache_checks(monkeypatch) -> None:
+    def fail():
+        raise OSError("private index location")
+
+    monkeypatch.setattr(harness, "load_index", fail)
+    result = algorithm_effectiveness.run_algorithm_effectiveness_probe()
+    assert result["status"] == "error"
+    assert result["summary"]["executed"] == 3
+    assert result["summary"]["passed"] == 3
+    assert result["prerequisites"]["index"]["status"] == "error"
+    assert "private index location" not in json.dumps(result)

@@ -16,6 +16,7 @@ from algo_cli.david_control_kernel import ControlSigner, canonical_json_bytes
 from algo_cli.grace_key_store import (
     ADA_CREDENTIAL_REGISTRY_LABEL,
     ALGO_FIXED_CREDENTIAL_LABELS,
+    ALGO_KNOWN_FIXED_CREDENTIAL_LABELS,
     BROWSER_PAIRING_KEY_LABEL,
     CONTROL_SIGNING_KEY_LABEL,
     ContentFreeReceiptHead,
@@ -338,7 +339,7 @@ def test_fresh_registry_is_signed_complete_and_idempotent(tmp_path) -> None:
     snapshot = store.complete_inventory_snapshot()
 
     assert first == second
-    assert first.labels == tuple(sorted(ALGO_FIXED_CREDENTIAL_LABELS))
+    assert first.labels == tuple(sorted(ALGO_KNOWN_FIXED_CREDENTIAL_LABELS))
     assert first.migration_kind == "fresh_namespace"
     assert snapshot is not None
     assert tuple(label for label, _digest in snapshot) == first.labels
@@ -364,7 +365,7 @@ def test_native_empty_census_creates_signed_complete_registry(tmp_path) -> None:
     snapshot = dict(store.complete_inventory_snapshot() or ())
 
     assert registry.migration_kind == "native_enumeration"
-    assert registry.labels == tuple(sorted(ALGO_FIXED_CREDENTIAL_LABELS))
+    assert registry.labels == tuple(sorted(ALGO_KNOWN_FIXED_CREDENTIAL_LABELS))
     assert snapshot[CONTROL_SIGNING_KEY_LABEL] is not None
     assert snapshot[ADA_CREDENTIAL_REGISTRY_LABEL] is not None
     assert all(
@@ -577,6 +578,31 @@ def test_privacy_key_can_use_bounded_process_fallback() -> None:
     assert first.key == second.key
     assert first.persistent is False
     assert first.backend == "volatile_process"
+
+
+@pytest.mark.parametrize("persistent", [False, True])
+def test_existing_only_lookup_never_attempts_os_key_creation(persistent):
+    calls = []
+
+    class MissingStore:
+        def get_existing(self, *_args, **_kwargs):
+            calls.append("read")
+            raise KeyStoreError("key absent")
+
+        def get_or_create(self, *_args, **_kwargs):
+            calls.append("write")
+            raise AssertionError("must not create OS credentials")
+
+    if persistent:
+        with pytest.raises(KeyStoreError, match="key absent"):
+            get_key_material("read-only-privacy-probe", require_persistent=True,
+                             create_if_missing=False, store=MissingStore())
+    else:
+        material = get_key_material("read-only-privacy-probe", require_persistent=False,
+                                    create_if_missing=False, store=MissingStore())
+        assert material.persistent is False
+        assert material.backend == "volatile_process"
+    assert calls == ["read"]
 
 
 def test_static_store_rejects_wrong_key_length() -> None:

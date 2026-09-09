@@ -60,11 +60,14 @@ from .display import (
 )
 from .dorothy_perf_telemetry import flush_perf_records, record_chat_metrics
 from .theodore_runtime_services import client_for_model, create_client
-from .james_dispatch import batch_policy_ceiling_codes
+from .james_dispatch import DispatchCancellation, DispatchInterrupted, batch_policy_ceiling_codes
 from .marcus_authority import EffectClass
 from .nathan_runtime import (
+    MAX_COMPLETION_RECOVERY_ROUNDS,
+    PipelineToolResult,
     approval_mode_for_config,
     classify_tool_status,
+    completion_recovery_prompt,
     execute_tool_call_for_pipeline,
     summarize_tool_result,
 )
@@ -438,6 +441,7 @@ def run_agent_block(
     ]
     block.messages = messages
     completion_nudged = False
+    completion_recovery_rounds = 0
     loop_state = AgentLoopState()
 
     def record_protocol_dispatch(
@@ -562,6 +566,30 @@ def run_agent_block(
 
     try:
         for _ in range(iteration_limit):
+            recovery_finalization = completion_nudged and completion_recovery_rounds >= MAX_COMPLETION_RECOVERY_ROUNDS
+            if recovery_finalization:
+                if not execution_guardrails.completion_decision().allowed:
+                    block.status = "partial"
+                    block.status_code = "verification_missing"
+                    block.status_reason = (
+                        "Verification recovery exhausted after "
+                        f"{MAX_COMPLETION_RECOVERY_ROUNDS} model rounds without a passing post-mutation verifier."
+                    )
+                    block.verification_warning = block.status_reason
+                    block.output = f"## Block Output\n\nUNVERIFIED: {block.status_reason}"
+                    break
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "The verification recovery budget is exhausted. Do not call more tools. "
+                            "Give a final ## Block Output grounded in observed evidence and remaining blockers."
+                        ),
+                    }
+                )
+            elif completion_nudged:
+                completion_recovery_rounds += 1
+            round_tools = [] if recovery_finalization else allowed_tools
             if run_contract is not None:
                 try:
                     run_contract.assert_live_authority(
@@ -586,7 +614,7 @@ def run_agent_block(
                 try:
                     prompt_tokens = _estimate_agent_request_tokens(
                         request_messages,
-                        allowed_tools,
+                        round_tools,
                     )
                     if contract_tracker is not None:
                         contract_tracker.start_model_round(prompt_tokens)
@@ -619,7 +647,7 @@ def run_agent_block(
                 stream = block_client.chat(
                     model=block_model,
                     messages=request_messages,
-                    tools=allowed_tools,
+                    tools=round_tools,
                     stream=True,
                     think=cfg.show_thinking,
                     keep_alive=cfg.keep_alive,
@@ -688,6 +716,14 @@ def run_agent_block(
                     block.output = f"## Block Output\n\nDurable run checkpoint failed after model dispatch: {exc}"
                     break
 
+            if recovery_finalization and tool_calls:
+                loop_state.cancel("verification recovery finalization attempted a tool call")
+                block.status = "partial"
+                block.status_code = "model_error"
+                block.status_reason = "Tool-free verification recovery finalization attempted an additional action."
+                block.output = f"## Block Output\n\nINCOMPLETE: {block.status_reason}"
+                break
+
             if not tool_calls:
                 loop_state.finish_without_tools()
                 completion = execution_guardrails.completion_decision()
@@ -699,12 +735,7 @@ def run_agent_block(
                         messages.append(
                             {
                                 "role": "user",
-                                "content": (
-                                    "[Internal completion gate] The last workspace mutation is not "
-                                    "verified. Run one appropriate non-mutating test, lint/type check, "
-                                    "or git_diff tool now. Then provide a final ## Block Output grounded "
-                                    "in that verifier."
-                                ),
+                                "content": completion_recovery_prompt(cfg, block_output=True),
                             }
                         )
                         continue
@@ -882,6 +913,8 @@ def run_agent_block(
                     )
                     block.output = f"## Block Output\n\nTool outcome checkpoint failed after dispatch: {exc}"
 
+            batch_cancellation = DispatchCancellation()
+            dispatch_interruption: DispatchInterrupted | None = None
             for index, ((name, args), tool_call_id) in enumerate(batch):
                 if journal_result_failed:
                     record_protocol_dispatch(
@@ -947,18 +980,24 @@ def run_agent_block(
                     args,
                     tool_call_id,
                 )
-                execution = execute_tool_call_for_pipeline(
-                    name,
-                    args,
-                    cfg,
-                    tool_call_id=tool_call_id,
-                    force_approval=tool_policy.requires_explicit_approval(
+                try:
+                    execution = execute_tool_call_for_pipeline(
                         name,
-                        block_policy=policy,
-                        shell_decision=shell_decision,
-                        policy_enforced=policy_enforced,
-                    ),
-                )
+                        args,
+                        cfg,
+                        tool_call_id=tool_call_id,
+                        force_approval=tool_policy.requires_explicit_approval(
+                            name,
+                            block_policy=policy,
+                            shell_decision=shell_decision,
+                            policy_enforced=policy_enforced,
+                        ),
+                        cancellation=batch_cancellation,
+                    )
+                except DispatchInterrupted as exc:
+                    dispatch_interruption = exc
+                    batch_cancellation.cancel("keyboard_interrupt")
+                    execution = PipelineToolResult(exc.result.message, exc.result.result, exc.result.outcome)
                 tool_message, _result = execution
                 append_journal_result(index, execution, _result)
                 outcome_status = _pipeline_outcome_status(execution, _result)
@@ -989,10 +1028,18 @@ def run_agent_block(
                 messages.append(tool_message)
                 loop_state.record_tool_result(tool_call_id)
             loop_state.finish_tool_batch()
+            if dispatch_interruption is not None:
+                loop_state.cancel("Agent Block tool dispatch interrupted")
+                raise dispatch_interruption
             if block.status == "failed" or journal_result_failed:
                 break
         else:
             finish_with_partial_output()
+    except KeyboardInterrupt:
+        block.status = "cancelled"
+        block.status_code = "interrupted"
+        block.status_reason = "Agent Block was interrupted; unfinished actions were not retried."
+        raise
     finally:
         completion_error = ""
         try:

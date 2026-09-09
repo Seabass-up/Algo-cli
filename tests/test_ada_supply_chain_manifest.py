@@ -9,6 +9,7 @@ import sys
 
 import pytest
 
+from algo_cli import __version__
 from algo_cli.ada_supply_chain_manifest import (
     SupplyChainManifestError,
     normalize_sbom,
@@ -73,7 +74,7 @@ def test_sbom_normalization_is_deterministic_and_removes_wall_clock_identity(tmp
     assert "timestamp" not in normalized["metadata"]
     assert normalized["serialNumber"].startswith("urn:uuid:")
     assert normalized["metadata"]["component"]["type"] == "application"
-    assert normalized["metadata"]["component"]["version"] == "0.18.0"
+    assert normalized["metadata"]["component"]["version"] == __version__
     assert {
         (item["name"], item["value"])
         for item in normalized["metadata"]["properties"]

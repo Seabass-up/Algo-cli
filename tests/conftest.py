@@ -12,6 +12,7 @@ import importlib
 import os
 import random
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -63,6 +64,40 @@ except ImportError:
     pass
 
 
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """CI must exercise ripgrep as well as the deliberately forced fallback."""
+    if os.environ.get("ALGO_TEST_REQUIRE_RIPGREP") != "1":
+        return
+    executable = shutil.which("rg")
+    if executable is None:
+        raise pytest.UsageError("CI requires ripgrep 15.2.0; missing backend coverage is not a pass")
+    try:
+        completed = subprocess.run(
+            [executable, "--version"], capture_output=True, check=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise pytest.UsageError("CI ripgrep preflight failed") from exc
+    if completed.stdout.splitlines()[:1] != [b"ripgrep 15.2.0"]:
+        raise pytest.UsageError("CI requires the pinned ripgrep 15.2.0 backend")
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Reject oversized test metadata before verbose reporting can flood CI."""
+    oversized = [
+        (item, len(item.nodeid.encode("utf-8", errors="backslashreplace")))
+        for item in items
+        if len(item.nodeid.encode("utf-8", errors="backslashreplace")) > 1024
+    ]
+    if oversized:
+        examples = "; ".join(
+            f"{ascii(item.nodeid.partition('[')[0])[:120]} ({size} bytes)" for item, size in oversized[:5]
+        )
+        raise pytest.UsageError(
+            f"{len(oversized)} test IDs exceed 1024 bytes. Use short explicit pytest.param ids "
+            f"without changing the fixture payloads. Examples: {examples}"
+        )
+
+
 @pytest.fixture(autouse=True)
 def clean_state():
     """Wipe the test config dir and reset module-level caches around every test."""
@@ -91,6 +126,8 @@ def clean_state():
         harness._extra_roots_cache = None
         harness._PROTECTED_MEMORY_AUTHORITY = False
         harness._QUERY_VEC_CACHE.clear()
+        harness._BM25_INDEX_CACHE.clear()
+        harness._VECTOR_MATRIX_CACHE.clear()
     except ImportError:
         pass
     try:
@@ -125,6 +162,18 @@ def clean_state():
 @pytest.fixture
 def config_dir() -> Path:
     return _TEST_CONFIG_DIR
+
+
+@pytest.fixture(params=("utf-8", "cp1252"), ids=("utf8-default", "windows-cp1252-default"))
+def text_default_encoding(monkeypatch, request):
+    """Exercise opted-in text readers under both common host defaults."""
+    original = Path.read_text
+
+    def read_text(path, encoding=None, errors=None, **kwargs):
+        return original(path, encoding=request.param if encoding is None else encoding, errors=errors, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    return request.param
 
 
 _KEYWORDS = [

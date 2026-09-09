@@ -159,6 +159,9 @@ def _privacy_hmac_key() -> bytes:
                 PRIVACY_KEY_LABEL,
                 length=32,
                 require_persistent=False,
+                # Projection is not credential provisioning. Creating a Keychain
+                # item here can block an otherwise noninteractive tool display.
+                create_if_missing=False,
             ).key
         return _PRIVACY_KEY
 

@@ -36,7 +36,7 @@ PROJECT_PATH = ROOT / "pyproject.toml"
 LOCK_PATH = ROOT / "uv.lock"
 EXPECTED_NAME = "echo-veil"
 EXPECTED_VERSION = "0.8.0"
-EXPECTED_COMMIT = "271ebaa959aabd7a83cf338d30cd0fa1c7338488"
+EXPECTED_COMMIT = "cbee525687ac03c830d4b6632ff1d044b4b838fc"
 EXPECTED_REPOSITORY = "https://github.com/Seabass-up/echo-veil.git"
 EXPECTED_REQUIREMENT = f"echo-veil @ git+{EXPECTED_REPOSITORY}@{EXPECTED_COMMIT}"
 MAX_METADATA_BYTES = 2 * 1024 * 1024
@@ -254,6 +254,10 @@ def _verify_installed_record(
             _reject("record_size_mismatch")
         file_hash = getattr(member, "hash", None)
         if file_hash is None:
+            # Match the runtime verifier: pip's derived bytecode entries have
+            # no RECORD hash. The snapshot loader executes verified sources.
+            if resolved.suffix == ".pyc" and "__pycache__" in Path(str(member)).parts:
+                continue
             if Path(str(member)).name != "RECORD":
                 _reject("record_hash_missing")
             continue

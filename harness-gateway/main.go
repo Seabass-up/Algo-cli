@@ -110,6 +110,18 @@ func newGatewayMux(indexPath string, ollamaHost string, client *http.Client) htt
 		}
 		proxyOllamaJSON(w, r, client, ollamaHost, "/api/embed")
 	})
+	mux.HandleFunc("/supplemental/embed-bound/v1", func(w http.ResponseWriter, r *http.Request) {
+		if !requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		expected, err := validateOllamaHost(r.Header.Get("X-Algo-Ollama-Host"))
+		if err != nil || expected != ollamaHost {
+			writeGatewayError(w, http.StatusConflict, "upstream_binding_mismatch")
+			return
+		}
+		w.Header().Set("X-Algo-Ollama-Host", expected)
+		proxyOllamaJSON(w, r, client, ollamaHost, "/api/embed")
+	})
 	mux.HandleFunc("/supplemental/models", func(w http.ResponseWriter, r *http.Request) {
 		if !requireMethod(w, r, http.MethodGet) {
 			return

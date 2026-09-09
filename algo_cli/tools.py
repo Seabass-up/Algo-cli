@@ -10,13 +10,13 @@ import logging
 import math
 import os
 import json
-import fnmatch
 import re
 import signal
 import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -97,6 +97,7 @@ SEARCH_FALLBACK_SKIP_DIRS = {
 }
 SEARCH_FALLBACK_MAX_FILE_BYTES = 2_000_000
 SEARCH_FALLBACK_MAX_FILES = 5_000
+SEARCH_TIMEOUT_SECONDS = 20.0
 DEFAULT_GATEWAY_URL = (
     os.environ.get("ALGO_CLI_GATEWAY_URL") or os.environ.get("OLLAMA_CLI_GATEWAY_URL") or "http://127.0.0.1:8765"
 )
@@ -1375,87 +1376,87 @@ def list_directory(path: str = ".", cwd: str | None = None, limit: int = 200) ->
 
 
 def search_files(
-    pattern: str, path: str = ".", cwd: str | None = None, glob: str | None = None, limit: int = 100
+    pattern: str, path: str = ".", cwd: str | None = None, glob: str | None = None, limit: int = 100,
+    cfg: Any = None,
 ) -> str:
-    """Search files with ripgrep when available.
+    """Search files with ripgrep when available, returning bounded partial results.
+
+    With Echo selected, search authorized regular text snapshots only. Protected
+    roots and aliases are excluded, and scan-budget limits are reported.
 
     Args:
         pattern: Text or regex pattern to search.
         path: Root path to search.
         cwd: Optional working directory for relative paths.
         glob: Optional rg glob, such as *.py.
-        limit: Maximum matching lines.
+        limit: Maximum matching lines (1-1000); results are also byte-limited.
     """
-    root = _resolve(path, cwd)
-    if not root.exists():
-        return f"Error: path not found: {root}"
-    if root.is_file():
+    from .search_execution import run_search_process
+
+    for name, value in (("pattern", pattern), ("glob", glob)):
+        if name == "glob" and value is None:
+            continue
         try:
-            if glob and not fnmatch.fnmatch(root.name, glob):
-                return "No matches."
-            if root.stat().st_size > SEARCH_FALLBACK_MAX_FILE_BYTES:
-                return "No matches."
-            text = root.read_text(encoding="utf-8", errors="ignore")
-            file_matches = [
-                f"{root}:{lineno}:{line}"
-                for lineno, line in enumerate(text.splitlines(), 1)
-                if re.search(pattern, line)
-            ]
-            return "\n".join(file_matches[:limit]) if file_matches else "No matches."
-        except Exception as exc:
-            return f"Error searching: {exc}"
-    rg = shutil.which("rg")
-    if rg:
-        cmd = [rg, "--line-number", "--hidden", "--glob", "!{.git,node_modules,.venv,venv,dist,build,__pycache__}"]
-        if glob:
-            cmd.extend(["--glob", glob])
-        cmd.extend([pattern, str(root)])
-        try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
-            if proc.returncode not in {0, 1}:
-                return f"Error searching: {(proc.stderr or proc.stdout or '').strip() or f'rg exited with {proc.returncode}'}"
-            lines = (proc.stdout or "").splitlines()
-            return "\n".join(lines[:limit]) or "No matches."
-        except subprocess.TimeoutExpired:
-            return "Error: search timed out after 20 seconds."
-    matches: list[str] = []
-    scanned = 0
-    truncated = False
+            if not isinstance(value, str) or "\x00" in value or len(value.encode("utf-8")) > 4096:
+                return f"Error: search {name} must be text of at most 4096 UTF-8 bytes without NUL."
+        except UnicodeEncodeError:
+            return f"Error: search {name} must contain valid UTF-8 text."
+    if type(limit) is not int or not 1 <= limit <= 1000:
+        return "Error: search limit must be an integer from 1 through 1000."
+    from .ada_memory_echo_veil import echo_veil_authority_selected
+
+    if cfg is not None and echo_veil_authority_selected(cfg):
+        from .irene_search import protected_search
+
+        return protected_search(pattern, path, cwd or cfg.cwd, glob, limit)
     try:
-        for current, dirs, files in os.walk(root):
-            dirs[:] = [d for d in dirs if d not in SEARCH_FALLBACK_SKIP_DIRS]
-            for filename in files:
-                if len(matches) >= limit:
-                    break
-                if scanned >= SEARCH_FALLBACK_MAX_FILES:
-                    truncated = True
-                    break
-                if glob and not fnmatch.fnmatch(filename, glob):
-                    continue
-                fpath = Path(current) / filename
-                try:
-                    if fpath.stat().st_size > SEARCH_FALLBACK_MAX_FILE_BYTES:
-                        continue
-                except OSError:
-                    continue
-                scanned += 1
-                try:
-                    text = fpath.read_text(encoding="utf-8", errors="ignore")
-                except OSError:
-                    continue
-                for lineno, line in enumerate(text.splitlines(), 1):
-                    if re.search(pattern, line):
-                        matches.append(f"{fpath}:{lineno}:{line}")
-                        if len(matches) >= limit:
-                            break
-            if len(matches) >= limit or truncated:
-                break
+        root = _resolve(path, cwd)
+        if not root.exists():
+            return _bounded_search_text(f"Error: path not found: {root}")
+        rg = None if root.is_file() else shutil.which("rg")
+        if rg:
+            cmd = [
+                rg, "--no-config", "--line-number", "--with-filename", "--no-heading",
+                "--color=never", "--line-buffered", "--hidden", "--glob",
+                "!{.git,node_modules,.venv,venv,dist,build,__pycache__}",
+            ]
+            if glob:
+                cmd.extend(["--glob", glob])
+            cmd.extend(["--", pattern, str(root)])
+        else:
+            request = {
+                "path": str(root), "pattern": pattern, "glob": glob, "limit": limit,
+                "max_files": SEARCH_FALLBACK_MAX_FILES, "max_file_bytes": SEARCH_FALLBACK_MAX_FILE_BYTES,
+                "skip_dirs": sorted(SEARCH_FALLBACK_SKIP_DIRS),
+            }
+            cmd = [sys.executable, "-I", "-S", str(Path(__file__).with_name("search_execution.py")), json.dumps(request)]
+        result = run_search_process(
+            cmd, limit=limit, max_bytes=MAX_TOOL_RESULT - 256, timeout=SEARCH_TIMEOUT_SECONDS,
+            process_kwargs=_isolated_process_group_kwargs(), terminate=_terminate_process_tree,
+        )
     except Exception as exc:
-        return f"Error searching: {exc}"
-    if not matches:
-        return "No matches."
-    suffix = f"\n...[stopped after scanning {SEARCH_FALLBACK_MAX_FILES} files]" if truncated else ""
-    return "\n".join(matches) + suffix
+        return _bounded_search_text(f"Error searching: {exc}")
+    lines = result.stdout.decode("utf-8", errors="replace").splitlines()
+    truncated = result.truncated or len(lines) > limit
+    stdout = "\n".join(lines[:limit])
+    stderr = result.stderr.decode("utf-8", errors="replace").strip()
+    if result.timed_out:
+        partial = f"\nPartial matches:\n{stdout}" if stdout else ""
+        return _bounded_search_text(
+            f"Error: search timed out after {SEARCH_TIMEOUT_SECONDS:g} seconds.{partial}", truncated=truncated,
+        )
+    if result.stderr_truncated or result.returncode > 1 or (not result.truncated and result.returncode not in {0, 1}):
+        detail = stderr or stdout or f"search exited with {result.returncode}"
+        return _bounded_search_text(f"Error searching: {detail}", truncated=result.stderr_truncated)
+    return _bounded_search_text(stdout or "No matches.", truncated=truncated)
+
+
+def _bounded_search_text(text: str, *, truncated: bool = False) -> str:
+    suffix = "\n...[truncated: narrow the path or pattern for remaining matches]"
+    payload = text.encode("utf-8", errors="replace")
+    if truncated or len(payload) > MAX_TOOL_RESULT:
+        return payload[:MAX_TOOL_RESULT - len(suffix)].decode("utf-8", errors="ignore").rstrip("\r\n") + suffix
+    return payload.decode("utf-8")
 
 
 def _isolated_process_group_kwargs(platform_name: str | None = None) -> dict[str, Any]:
@@ -1475,7 +1476,7 @@ def _isolated_process_group_kwargs(platform_name: str | None = None) -> dict[str
 
 
 def _terminate_process_tree(
-    proc: subprocess.Popen[str],
+    proc: subprocess.Popen[Any],
     *,
     platform_name: str | None = None,
 ) -> None:
@@ -1557,7 +1558,7 @@ def run_shell(command: str, cwd: str | None = None, timeout: float = 30, safe_mo
                 proc.communicate(timeout=5)
             except (OSError, subprocess.SubprocessError):
                 pass
-            return "Error: command interrupted; child processes were terminated."
+            raise
     except subprocess.TimeoutExpired:
         return f"Error: command timed out after {actual_timeout:g} seconds; child processes were terminated."
     except Exception as exc:
@@ -1806,7 +1807,7 @@ def x_search(
 # ---------------------------------------------------------------------------
 
 _BROWSER_UNAVAILABLE = (
-    "Browser service is not available. Start the Camoufox service at "
+    "Error: Browser service is not available. Start the Camoufox service at "
     "http://localhost:9377 or set ALGO_BROWSER_URL. Run /doctor for diagnostics."
 )
 
@@ -1837,7 +1838,7 @@ def cobalt_open(url: str) -> str:
         return guard
     result = cobalt_browser_service.open_tab(url)
     if "error" in result:
-        return f"Error opening browser tab: {result['error']}"
+        return f"Error: opening browser tab: {result['error']}"
     tab_id = result.get("tabId", "")
     final_url = result.get("url", url)
     return f"Opened tab {tab_id} at {final_url}. Use cobalt_snapshot or cobalt_screenshot to inspect the page."
@@ -1859,7 +1860,7 @@ def cobalt_snapshot(tab_id: str) -> str:
         return guard
     result = cobalt_browser_service.snapshot(tab_id)
     if "error" in result:
-        return f"Error getting snapshot: {result['error']}"
+        return f"Error: getting snapshot: {result['error']}"
     snapshot_text = result.get("snapshot", "")
     refs = result.get("refsCount", 0)
     page_url = result.get("url", "")
@@ -1887,7 +1888,7 @@ def cobalt_screenshot(tab_id: str) -> str:
         return guard
     result = cobalt_browser_service.screenshot(tab_id)
     if "error" in result:
-        return f"Error getting screenshot: {result['error']}"
+        return f"Error: getting screenshot: {result['error']}"
     # Save to a temp file for vision_describe
     import tempfile
 
@@ -1921,7 +1922,7 @@ def cobalt_navigate(tab_id: str, url: str) -> str:
         return guard
     result = cobalt_browser_service.navigate(tab_id, url)
     if "error" in result:
-        return f"Error navigating: {result['error']}"
+        return f"Error: navigating: {result['error']}"
     new_url = result.get("url", url)
     refs = result.get("refsAvailable", False)
     hint = " Call cobalt_snapshot to see the page structure." if refs else ""
@@ -1947,8 +1948,8 @@ def cobalt_click(tab_id: str, ref: str | None = None, selector: str | None = Non
     if "error" in result:
         hint = ""
         if result.get("retryable"):
-            hint = " Call cobalt_snapshot to see the current state and retry."
-        return f"Error clicking: {result['error']}.{hint}"
+            hint = " Call cobalt_snapshot to inspect the current state; do not repeat the action until its outcome is reconciled."
+        return f"Error: clicking: {result['error']}.{hint}"
     refs = result.get("refsAvailable", False)
     hint = " Call cobalt_snapshot to see the new page." if refs else ""
     return f"Clicked {ref or selector}.{hint}"
@@ -1975,8 +1976,8 @@ def cobalt_type(tab_id: str, text: str, ref: str | None = None, selector: str | 
     if "error" in result:
         hint = ""
         if result.get("retryable"):
-            hint = " Call cobalt_snapshot to see the current state and retry."
-        return f"Error typing: {result['error']}.{hint}"
+            hint = " Call cobalt_snapshot to inspect the current state; do not repeat the action until its outcome is reconciled."
+        return f"Error: typing: {result['error']}.{hint}"
     return f"Typed {len(text)} characters into {ref or selector}."
 
 
@@ -1995,7 +1996,7 @@ def cobalt_scroll(tab_id: str, direction: str = "down", amount: int = 3) -> str:
         return guard
     result = cobalt_browser_service.scroll(tab_id, direction=direction, amount=amount)
     if "error" in result:
-        return f"Error scrolling: {result['error']}"
+        return f"Error: scrolling: {result['error']}"
     return f"Scrolled {direction} by {amount}."
 
 
@@ -2012,7 +2013,7 @@ def cobalt_close(tab_id: str) -> str:
         return guard
     result = cobalt_browser_service.close_tab(tab_id)
     if "error" in result:
-        return f"Error closing tab: {result['error']}"
+        return f"Error: closing tab: {result['error']}"
     return f"Closed tab {tab_id}."
 
 
@@ -2982,24 +2983,41 @@ def gateway_ready(url: str | None = None) -> bool:
         return False
 
 
+def _gateway_upstream_host(host: str | None) -> str:
+    from .theodore_runtime_services import local_service_address
+
+    raw = host if host is not None else os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)
+    if type(raw) is not str:
+        raise ValueError("Gateway upstream must be text.")
+    candidate = raw.strip().rstrip("/")
+    if local_service_address(candidate) is None:
+        raise ValueError("Gateway upstream must be an explicit credential-free loopback endpoint.")
+    return candidate
+
+
 def gateway_embed(
     text: str,
     model: str,
     truncate: bool,
     dimensions: int | None,
     url: str | None = None,
+    *,
+    ollama_host: str | None = None,
 ) -> dict[str, Any] | None:
     try:
         data = _gateway_payload(text, model, truncate, dimensions)
         if data is None:
             return None
+        upstream = _gateway_upstream_host(ollama_host)
         request = Request(
-            current_gateway_url(url) + "/supplemental/embed",
+            current_gateway_url(url) + "/supplemental/embed-bound/v1",
             data=data,
             method="POST",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "X-Algo-Ollama-Host": upstream},
         )
         with _open_local_gateway(request, timeout=60) as response:
+            if getattr(response, "headers", {}).get("X-Algo-Ollama-Host") != upstream:
+                return None
             return _gateway_json_response(response)
     except (OSError, URLError, TypeError, ValueError):
         return None
@@ -3011,18 +3029,24 @@ def gateway_embed_batch(
     truncate: bool,
     dimensions: int | None,
     url: str | None = None,
+    *,
+    timeout_seconds: float = 60.0,
+    ollama_host: str | None = None,
 ) -> dict[str, Any] | None:
     try:
         data = _gateway_payload(texts, model, truncate, dimensions)
         if data is None:
             return None
+        upstream = _gateway_upstream_host(ollama_host)
         request = Request(
-            current_gateway_url(url) + "/supplemental/embed",
+            current_gateway_url(url) + "/supplemental/embed-bound/v1",
             data=data,
             method="POST",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "X-Algo-Ollama-Host": upstream},
         )
-        with _open_local_gateway(request, timeout=60) as response:
+        with _open_local_gateway(request, timeout=timeout_seconds) as response:
+            if getattr(response, "headers", {}).get("X-Algo-Ollama-Host") != upstream:
+                return None
             return _gateway_json_response(response)
     except (OSError, URLError, TypeError, ValueError):
         return None
@@ -3112,7 +3136,7 @@ def vision_describe(
     return content or "(empty response)"
 
 
-def available_actions(topic: str | None = None) -> str:
+def available_actions(topic: str | None = None, cfg: Config | None = None) -> str:
     """Show the CLI's available commands, model-callable tools, and internal harness stats.
 
     Use this before answering questions like "what can you do?", "what actions are available?",
@@ -3374,7 +3398,7 @@ def available_actions(topic: str | None = None) -> str:
         "Use x_account_* for X account actions through xurl; writes require explicit confirmation and separate X API OAuth.",
         "Treat memory/wiki as navigation; verify consequential facts against live files or endpoints.",
     ]
-    stats = harness.stats()
+    stats = _harness_stats_for_config(cfg)
     payload: dict[str, Any] = {
         "topic": focus or "all",
         "commands": commands,
@@ -3633,7 +3657,7 @@ def _direct_read_only_session_result(
     root = parts[0].lower()
     arg = parts[1].strip() if len(parts) > 1 else ""
     if root == "/actions":
-        return available_actions(arg or None)
+        return available_actions(arg or None, cfg=cfg)
     if root == "/hread":
         return harness_read(arg, cfg=cfg) if arg else "Error: Usage: /hread <record-id>"
     if root != "/harness":
@@ -3643,7 +3667,7 @@ def _direct_read_only_session_result(
     if len(harness_parts) > 1:
         return None
     if subcommand in {"", "status", "stats", "quality"}:
-        return harness_stats()
+        return harness_stats(cfg=cfg)
     if subcommand in {"score", "scorecard", "grade", "rating"}:
         return harness_scorecard(cfg=cfg)
     if subcommand in {"compare", "competitive"}:
@@ -3735,7 +3759,7 @@ def session_command(command: str, cfg: Any = None) -> str:
         return f"Error executing {normalized}: {exc}"
 
 
-def harness_refresh() -> str:
+def harness_refresh(cfg: Config | None = None) -> str:
     """Refresh the local harness index for skills, tools, prompts, memories, and wiki pages."""
     index = harness.load_index(refresh=True)
     indexer = str(index.get("indexer") or "python")
@@ -3748,7 +3772,14 @@ def harness_refresh() -> str:
             f"rebuilt: {refresh_stats.get('rebuilt_records', 0)}, "
             f"removed: {refresh_stats.get('removed_records', 0)}."
         )
-    embeddings = index.get("embeddings") or harness._embeddings_summary(index.get("records", []) or [])
+    embeddings = (
+        harness.embedding_summary(
+            index, model=harness.resolve_embed_model(cfg), dimensions=harness.resolve_embed_dimensions(cfg),
+            embedding_identity=harness.resolve_embed_identity(cfg),
+        )
+        if cfg is not None
+        else harness.embedding_summary(index)
+    )
     embedded_count = int(embeddings.get("embedded_count", 0))
     pending_count = int(embeddings.get("pending_count", 0))
     total = embedded_count + pending_count
@@ -3769,9 +3800,18 @@ def harness_refresh() -> str:
     )
 
 
-def harness_stats() -> str:
+def _harness_stats_for_config(cfg: Config | None) -> dict[str, Any]:
+    if cfg is None:
+        return harness.stats()
+    return harness.stats(
+        model=harness.resolve_embed_model(cfg), dimensions=harness.resolve_embed_dimensions(cfg),
+        embedding_identity=harness.resolve_embed_identity(cfg),
+    )
+
+
+def harness_stats(cfg: Config | None = None) -> str:
     """Show counts for indexed Codex, Claude, OpenClaw, Mercury, Pi, and shared harness assets."""
-    return json.dumps(harness.stats(), indent=2)
+    return json.dumps(_harness_stats_for_config(cfg), indent=2)
 
 
 def _scorecard_check(
@@ -3935,7 +3975,7 @@ def harness_scorecard(cfg: Config | None = None) -> str:
 
     stats_error = ""
     try:
-        stats = harness.stats()
+        stats = _harness_stats_for_config(cfg)
     except Exception as exc:
         stats = {}
         stats_error = type(exc).__name__
@@ -4187,7 +4227,11 @@ def harness_scorecard(cfg: Config | None = None) -> str:
     if cfg is not None and echo_veil_authority_selected(cfg):
         kg_text = "Legacy knowledge graph disabled under Echo Veil authority."
         status = "unavailable"
+        kg_recommendation = (
+            "Qualify graph retrieval through Echo Veil Contextual Logic; keep the legacy graph disabled."
+        )
     else:
+        kg_recommendation = "Reindex the graph and verify the exact project:algo-cli canonical."
         try:
             kg_text = str(query_knowledge_graph("rate your harness", cfg=cfg))
             canonical_match = re.search(r"(?<![\w-])project:algo-cli(?![\w-])", kg_text) is not None
@@ -4205,7 +4249,7 @@ def harness_scorecard(cfg: Config | None = None) -> str:
             "knowledge graph",
             status,
             kg_text[:240],
-            "Reindex the graph and verify the exact project:algo-cli canonical." if status != "pass" else "",
+            kg_recommendation if status != "pass" else "",
         )
     )
 
@@ -4289,6 +4333,9 @@ def harness_scorecard(cfg: Config | None = None) -> str:
             and math.isfinite(measured_mad_ratio)
             and measured_mad_ratio <= MAX_WARM_MAD_RATIO
             and quality.get("status") == "pass"
+            and quality.get("qualification_scope") == "synthetic_lexical_fixture"
+            and quality.get("semantic_quality_measured") is False
+            and quality.get("answer_quality_measured") is False
             and float(quality_metrics.get("recall_at_k") or 0.0) >= MIN_QUALITY_RECALL
             and float(quality_metrics.get("mrr") or 0.0) >= MIN_QUALITY_MRR
             and float(quality_metrics.get("ndcg_at_k") or 0.0) >= MIN_QUALITY_NDCG
@@ -4299,6 +4346,13 @@ def harness_scorecard(cfg: Config | None = None) -> str:
         if status == "pass" and not benchmark_contract:
             status = "fail"
             benchmark["scorecard_contract_error"] = "pass payload lacked required correctness/performance evidence"
+        benchmark["semantic_qualification_status"] = "unavailable"
+        if status == "pass":
+            status = "warn"
+            benchmark["scorecard_scope_warning"] = (
+                "The offline fixture passed, but this scorecard has no validated representative "
+                "semantic retrieval qualification. Lexical fixture scores cannot establish it."
+            )
     except Exception as exc:
         benchmark = {"status": "error", "reason": type(exc).__name__}
         status = "error"
@@ -4307,7 +4361,7 @@ def harness_scorecard(cfg: Config | None = None) -> str:
             "retrieval benchmark",
             status,
             json.dumps(benchmark, sort_keys=True, default=str)[:1000],
-            "Repair retrieval correctness or investigate the measured reusable-index regression."
+            "Repair failing retrieval checks and qualify representative semantic retrieval with source-bound evidence."
             if status != "pass"
             else "",
             critical=True,
@@ -4511,12 +4565,12 @@ def harness_search(
     limit: int = 10,
     cfg: Any = None,
 ) -> str:
-    """Search local harness assets.
+    """Search indexed harness assets, including Algo CLI's shipped policy contracts.
 
     Args:
         query: Search terms.
-        harness_name: Optional harness filter: codex, claude, openclaw, openclaude, mercury, pi, agents.
-        kind: Optional kind filter: skill, tool, prompt, memory, wiki, workflow, extension.
+        harness_name: Optional harness filter: algo-cli, codex, claude, openclaw, openclaude, mercury, pi, agents. Leave unset to search all harnesses.
+        kind: Optional kind filter. Leave unset to search all kinds. memory includes shipped policy contracts (not agent memory); wiki contains runbooks; runtime_capability contains tool metadata. Other kinds include skill, tool, prompt, workflow, extension, algorithm.
         limit: Maximum records.
     """
     echo_memory_authority = False
@@ -4524,29 +4578,77 @@ def harness_search(
         from .ada_memory_echo_veil import echo_veil_authority_selected
 
         echo_memory_authority = echo_veil_authority_selected(cfg)
-    if echo_memory_authority and str(kind or "").casefold() == "memory":
-        return (
-            "Protected memory search is available only through Echo Veil; "
-            "legacy harness memory records were not consulted."
-        )
-    results = harness.search_index(
-        query,
-        harness_name,
-        kind,
-        limit,
-        excluded_kinds={"memory"} if echo_memory_authority else None,
-    )
-    if echo_memory_authority:
-        results = [record for record in results if str(record.get("kind") or "").casefold() != "memory"]
-    if not results:
+    limit = _bounded_int(limit, 10, 0, 50)
+    if limit == 0 or not query.strip():
         return "No harness matches."
-    lines = []
-    for record in results:
+    harness_name = (harness_name or "").strip().casefold() or None
+    if harness_name == "all":
+        harness_name = None
+    harness_names = harness.harness_filter_names(harness_name)
+    kind = (kind or "").strip().casefold() or None
+    filters = [f"{name}={value!r}" for name, value in (("harness", harness_name), ("kind", kind)) if value]
+    filter_line = "Active filters: " + (", ".join(filters) or "none")
+    try:
+        index = harness.retrieval_index(protected_memory=echo_memory_authority)
+    except (OSError, ValueError):
+        return "Error: harness source policy is unavailable; protected memory is available only through Echo Veil."
+    records = index.get("records", [])
+    by_id = {
+        record["id"]: record
+        for record in records
+        if (not harness_names or record.get("harness") in harness_names) and (not kind or record.get("kind") == kind)
+    }
+    results: list[dict[str, Any]] = []
+    if cfg is not None and by_id:
+        from .main import make_local_embed_fn
+
+        model = harness.resolve_embed_model(cfg)
+        embed_fn = make_local_embed_fn(cfg, model, timeout_seconds=10.0, bind_identity=True)
+        results = harness.hybrid_search(
+            query,
+            embed_fn,
+            model,
+            dimensions=harness.resolve_embed_dimensions(cfg),
+            harness=harness_name,
+            kind=kind,
+            k=limit,
+            index=index,
+        )
+    elif by_id:
+        results = harness.search_index(query, harness_name, kind, limit, index=index)
+    # Format from the authorized snapshot, not arbitrary ranker-returned payloads.
+    results = [record for record in results if record.get("id") in by_id]
+    if not results:
+        message = (
+            "No shipped product-contract matches. Agent memory is available only through Echo Veil."
+            if echo_memory_authority and kind == "memory"
+            else "No harness matches."
+        )
+        if not filters:
+            return message
+        harnesses = sorted({record["harness"] for record in records if record.get("harness")})
+        kinds = sorted({record["kind"] for record in records if record.get("kind")})
+        return "\n".join(
+            [
+                message,
+                filter_line,
+                "Indexed harnesses: " + (", ".join(harnesses) or "none"),
+                "Indexed kinds: " + (", ".join(kinds) or "none"),
+                "kind='memory' includes shipped policy contracts, not agent memory. "
+                "Leave filters unset to search all authorized documentation; filters were not widened.",
+            ]
+        )
+    mode = "hybrid" if any("vector" in row.get("rank_sources", []) for row in results) else "keyword-only"
+    lines = [f"Retrieval: {mode} (shipped contracts are documentation, not agent memory).", filter_line]
+    for hit in results:
+        record = by_id[hit["id"]]
+        source = f"\n  source_kind: {record['source_kind']}" if record.get("source_kind") else ""
         lines.append(
             f"- {record['id']}\n"
+            f"  kind: {record.get('kind', '')}\n"
             f"  title: {record['title']}\n"
             f"  path: {record['path']}\n"
-            f"  summary: {record.get('description') or record.get('summary', '')[:220]}"
+            f"  summary: {record.get('description') or record.get('summary', '')[:220]}{source}"
         )
     return "\n".join(lines)
 
@@ -4562,21 +4664,22 @@ def harness_read(
         record_id: Exact record id returned by harness_search.
         max_chars: Maximum characters to return.
     """
+    protected = False
     if cfg is not None:
         from .ada_memory_echo_veil import echo_veil_authority_selected
 
+        protected = echo_veil_authority_selected(cfg)
+        if protected and not harness._PROTECTED_MEMORY_AUTHORITY:
+            return "Error: harness source policy is unavailable; protected memory is available only through Echo Veil."
         record = harness.get_record(record_id)
-        if (
-            echo_veil_authority_selected(cfg)
-            and isinstance(record, dict)
-            and str(record.get("kind") or "").casefold() == "memory"
-        ):
+        if protected and isinstance(record, dict) and not harness._protected_memory_record_allowed(record):
             return (
                 "Protected memory records are available only through Echo Veil; the legacy harness record was not read."
             )
     return harness.read_record(
         record_id,
         _bounded_int(max_chars, 20_000, 1, 50_000),
+        protected_memory=protected,
     )
 
 
@@ -5070,7 +5173,7 @@ def url_scheme_parse(url: str) -> str:
     return json.dumps(result, indent=2, sort_keys=True)
 
 
-def action_search(query: str, limit: int = 6) -> str:
+def action_search(query: str, limit: int = 6, cfg: Any = None) -> str:
     """Discover relevant deferred actions and return their exact schemas.
 
     Use this when the small visible tool set does not contain a needed action.
@@ -5084,6 +5187,8 @@ def action_search(query: str, limit: int = 6) -> str:
     """
 
     from .action_registry import get_action_spec
+    from .irene_memory_path_policy import GLOBALLY_DISABLED_PROTECTED_ACTIONS, protected_tool_policy_error
+    from .nathan_program_runtime import ProgramAuthorization, authorization_for_actions
     from .tool_context import rank_tools_for_prompt
     from .tool_schema import serialized_tool_schemas
 
@@ -5091,8 +5196,16 @@ def action_search(query: str, limit: int = 6) -> str:
     if not normalized_query:
         return json.dumps({"status": "error", "error": "query must not be empty"})
     bounded_limit = max(1, min(12, int(limit)))
-    excluded = {"action_search", "action_program", "session_command", "session_slash"}
-    candidates = [fn for name, fn in TOOL_MAP.items() if name not in excluded]
+    allowed = authorization_for_actions(tuple(TOOL_MAP)).allowed_actions
+    if cfg is not None:
+        authorization = getattr(cfg, "_algo_program_authorization", None)
+        allowed &= authorization.allowed_actions if isinstance(authorization, ProgramAuthorization) else frozenset()
+        allowed = frozenset(
+            name for name in allowed
+            if name not in GLOBALLY_DISABLED_PROTECTED_ACTIONS
+            or protected_tool_policy_error(name, {}, cfg) is None
+        )
+    candidates = [fn for name, fn in TOOL_MAP.items() if name in allowed]
     ranked = rank_tools_for_prompt(normalized_query, candidates)[:bounded_limit]
     actions: list[dict[str, Any]] = []
     for fn in ranked:
@@ -5123,7 +5236,12 @@ def action_search(query: str, limit: int = 6) -> str:
             "query": normalized_query,
             "count": len(actions),
             "actions": actions,
-            "next": "Call action_program with a bounded typed plan; discovery does not bypass runtime policy or approval.",
+            "next": (
+                "Call action_program with a bounded typed plan; discovery does not bypass runtime policy or approval."
+                if actions else
+                "No composable actions are available within the current runtime policy. "
+                "Report the unavailable capability; do not keep retrying discovery."
+            ),
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -5181,7 +5299,7 @@ ALL_TOOLS = [
     cleanup_pdf_render_artifact,
     write_file,
     list_directory,
-    search_files,
+    _hide_cfg_param(search_files),
     find_unique_anchor,
     batch_edit,
     _hide_runtime_params(run_shell, "cwd", "safe_mode"),
@@ -5218,13 +5336,13 @@ ALL_TOOLS = [
     _hide_cfg_param(update_user_profile),
     embed_text,
     vision_describe,
-    action_search,
+    _hide_cfg_param(action_search),
     _hide_cfg_param(action_program),
-    available_actions,
+    _hide_cfg_param(available_actions),
     session_slash,
     _hide_cfg_param(session_command),
-    harness_refresh,
-    harness_stats,
+    _hide_cfg_param(harness_refresh),
+    _hide_cfg_param(harness_stats),
     _hide_cfg_param(harness_scorecard),
     _hide_cfg_param(harness_competitive_rating),
     _hide_cfg_param(harness_search),

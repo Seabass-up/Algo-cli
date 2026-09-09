@@ -15,6 +15,24 @@ from algo_cli.irene_privacy_views import (
 HMAC_KEY = b"k" * 32
 
 
+def test_privacy_projection_only_loads_existing_os_key(monkeypatch):
+    from algo_cli import irene_privacy_views as privacy
+    from algo_cli.grace_key_store import KeyMaterial
+
+    calls = []
+
+    def material(label, **kwargs):
+        calls.append((label, kwargs))
+        return KeyMaterial(HMAC_KEY, persistent=True, backend="os_keyring")
+
+    monkeypatch.setattr(privacy, "_PRIVACY_KEY", None)
+    monkeypatch.setattr(privacy, "get_key_material", material)
+    assert privacy._privacy_hmac_key() == HMAC_KEY
+    assert privacy._privacy_hmac_key() == HMAC_KEY
+    assert calls == [(privacy.PRIVACY_KEY_LABEL,
+                      {"length": 32, "require_persistent": False, "create_if_missing": False})]
+
+
 def _render(value) -> str:
     return json.dumps(value, sort_keys=True)
 

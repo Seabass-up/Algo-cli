@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from io import StringIO
 import os
 import stat
 import subprocess
@@ -12,6 +13,7 @@ import time
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 
 from algo_cli.config import CODE_RAG_CONSENT_VERSION, Config
 from algo_cli import main
@@ -79,6 +81,40 @@ def test_update_command_exits_before_runtime_state_initialization(monkeypatch):
 
     assert exc.value.code == 0
     assert "0.15.0 → 0.16.0" in rendered[0]
+
+
+@pytest.mark.parametrize("command", ["update", "UPDATE", " update "])
+def test_bare_update_does_not_inspect_or_migrate_existing_user_state(monkeypatch, command):
+    monkeypatch.setattr(main.sys, "argv", ["algo-cli", command])
+    monkeypatch.setattr(main, "_force_utf8_console", lambda: None)
+    for name in ("has_legacy_data", "perform_legacy_migration", "migrate_legacy_sidecar_files", "load_runtime_env"):
+        monkeypatch.setattr(main, name, lambda *args, **kwargs: pytest.fail("update must not touch user state"))
+    monkeypatch.setattr(main, "_run_update_entry", lambda: 64)
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 64
+
+
+def test_update_keeps_the_recovery_command_copyable_in_a_narrow_terminal(monkeypatch):
+    output = StringIO()
+    command = "& 'C:\\Long Path With Spaces\\python.exe' '-m' 'pip' 'install' '--upgrade' 'algo-cli-runtime'"
+    monkeypatch.setattr(main, "console", Console(file=output, width=20, color_system=None))
+    monkeypatch.setattr(main.updater, "update_algo_cli", lambda: updater.UpdateResult(
+        returncode=64, manager="pip", before_version="0.19.0", after_version="0.19.0",
+        message="Run this command from PowerShell", details=command,
+    ))
+    assert main._run_update_entry() == 64
+    assert command + "\n" in output.getvalue()
+
+
+def test_oneshot_update_prompt_still_requires_normal_migration_checks(monkeypatch):
+    monkeypatch.setattr(main.sys, "argv", ["algo-cli", "--oneshot", "update"])
+    monkeypatch.setattr(main, "has_legacy_data", lambda: True)
+    monkeypatch.setattr(main, "perform_legacy_migration", lambda: (_ for _ in ()).throw(main.LegacyMigrationError("blocked")))
+    monkeypatch.setattr(main, "_run_update_entry", lambda: pytest.fail("one-shot prompt is not package recovery"))
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 1
 
 
 def test_model_name_classifiers():
@@ -361,9 +397,9 @@ def test_ensure_harness_index_returns_true_for_incremental_embedding(monkeypatch
     monkeypatch.setattr(main, "resolve_embed_backend", lambda _cfg: ("local", "ok"))
     monkeypatch.setattr(main.harness, "resolve_embed_model", lambda _cfg: "embed-model")
     monkeypatch.setattr(
-        main, "make_embed_fn", lambda _cfg, _model: (lambda texts: [[1.0] for _ in texts], "local", "embed-model")
+        main, "make_embed_fn", lambda _cfg, _model, *, bind_identity: (lambda texts: [[1.0] for _ in texts], "local", "embed-model")
     )
-    monkeypatch.setattr(main.harness, "embedded_count", lambda _model=None: (0, 10))
+    monkeypatch.setattr(main.harness, "embedded_count", lambda _model=None, **_kwargs: (0, 10))
     monkeypatch.setattr(main, "host_is_local", lambda _host: True)
     monkeypatch.setattr(main, "ollama_server_ready", lambda _host: True)
     monkeypatch.setattr(main, "local_model_names", lambda _cfg: ["embed-model:latest"])
@@ -1030,6 +1066,121 @@ def test_required_echo_prompt_failure_stops_before_model_execution(monkeypatch):
     assert captures == [False]
 
 
+@pytest.mark.parametrize("compacted", [False, True])
+def test_agent_loop_counts_rendered_protected_memory_without_another_read(monkeypatch, compacted):
+    from algo_cli import context_budget
+    from algo_cli.tool_schema import estimate_tool_schema_tokens
+
+    _patch_agent_loop_for_tool_policy_test(monkeypatch)
+    memory = "## Protected Echo Veil Memory\nPRIVATE_MEMORY_ACCOUNTING_CANARY " * 11
+    lookups = []
+    identity_reads = []
+    rounds = []
+    requests = []
+
+    class Sink:
+        def model_round(self, **fields):
+            rounds.append(fields)
+
+    class CapturingClient:
+        def chat(self, **kwargs):
+            requests.append(kwargs)
+            return iter([{"message": {"content": "Done."}}])
+
+    sink = Sink()
+    monkeypatch.setattr(main, "json_sink", lambda: sink)
+    monkeypatch.setattr(context_budget, "json_sink", lambda: sink)
+    monkeypatch.setattr(
+        context_budget,
+        "_memory_prompt_section",
+        lambda _cfg, **_kwargs: lookups.append(True) or ("" if compacted and len(lookups) > 1 else memory),
+    )
+    monkeypatch.setattr(main, "maybe_compact_context", lambda *_args, **_kwargs: compacted)
+    monkeypatch.setattr(
+        context_budget.identity,
+        "build_identity_block",
+        lambda **_kwargs: identity_reads.append(True) or "immutable identity",
+    )
+    monkeypatch.setattr(main, "record_perf_event", lambda *_args, **_kwargs: None)
+    cfg = Config(
+        model="test-model",
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+        skill_crystallize_enabled=False,
+        memory_auto_capture_enabled=False,
+    )
+
+    main.agent_loop(CapturingClient(), cfg, "Read the current protected context")
+
+    assert len(rounds) == len(requests) == 1
+    assert len(lookups) == len(identity_reads) == (2 if compacted else 1)
+    sources = rounds[0]["context_sources"]
+    if compacted:
+        assert sources["memory"] == 0
+    else:
+        assert sources["memory"] >= context_budget.estimate_text_tokens(memory)
+    assert rounds[0]["context_accounting_version"] == 2
+    request = requests[0]
+    estimated = sum(context_budget.estimate_message_tokens(message) for message in request["messages"])
+    estimated += estimate_tool_schema_tokens(request["tools"])
+    assert sum(sources.values()) == estimated
+    assert "PRIVATE_MEMORY_ACCOUNTING_CANARY" not in str(rounds)
+
+
+def test_agent_loop_optional_sources_partition_only_actual_admitted_text(monkeypatch):
+    from algo_cli.tool_schema import estimate_tool_schema_tokens
+
+    _patch_agent_loop_for_tool_policy_test(monkeypatch)
+    rounds = []
+    requests = []
+    admissions = []
+
+    class Sink:
+        def model_round(self, **fields):
+            rounds.append(fields)
+
+    class CapturingClient:
+        def chat(self, **kwargs):
+            requests.append(kwargs)
+            return iter([{"message": {"content": "Done."}}])
+
+    original_fit = context_budget.fit_optional_context_blocks
+
+    def bounded_fit(base, blocks, **kwargs):
+        kwargs["runtime_cap"] = 1024
+        kwargs["base_used_tokens"] = 500
+        result = original_fit(base, blocks, **kwargs)
+        admissions.append(dict(kwargs["source_token_counts"]))
+        return result
+
+    sink = Sink()
+    monkeypatch.setattr(main, "json_sink", lambda: sink)
+    monkeypatch.setattr(context_budget, "json_sink", lambda: sink)
+    monkeypatch.setattr(main, "fit_optional_context_blocks", bounded_fit)
+    monkeypatch.setattr(main.reconciliation, "guidance_for_prompt", lambda _text: "optional reference " * 400)
+    monkeypatch.setattr(context_budget, "_memory_prompt_section", lambda _cfg, **_kwargs: "")
+    monkeypatch.setattr(context_budget.identity, "build_identity_block", lambda **_kwargs: "immutable identity")
+    monkeypatch.setattr(main, "record_perf_event", lambda *_args, **_kwargs: None)
+    cfg = Config(
+        model="test-model",
+        echo_veil_enabled=True,
+        echo_veil_protection="required",
+        skill_crystallize_enabled=False,
+        memory_auto_capture_enabled=False,
+    )
+
+    main.agent_loop(CapturingClient(), cfg, "Use the current references")
+
+    assert len(rounds) == len(requests) == len(admissions) == 1
+    sources = rounds[0]["context_sources"]
+    assert 0 < sources["other_optional"] == admissions[0]["reconciliation"] <= 183
+    request = requests[0]
+    assert "...[truncated by context budget]" in request["messages"][-1]["content"]
+    estimated = sum(context_budget.estimate_message_tokens(message) for message in request["messages"])
+    estimated += estimate_tool_schema_tokens(request["tools"])
+    assert sum(sources.values()) == estimated
+
+
 def test_echo_authority_skips_persisted_intuition_for_ordinary_chat(monkeypatch):
     canary = "PERSISTED_INTUITION_CHAT_CANARY"
 
@@ -1482,6 +1633,14 @@ def test_agent_loop_withholds_unverified_final_and_requires_later_verifier(
     _patch_agent_loop_for_tool_policy_test(monkeypatch)
     streamed: list[str] = []
     infos: list[str] = []
+    context_queries: list[str] = []
+    original_builder = main.build_system_prompt
+
+    def build_prompt(cfg, **kwargs):
+        context_queries.append(kwargs["user_message"])
+        return original_builder(cfg, **kwargs)
+
+    monkeypatch.setattr(main, "build_system_prompt", build_prompt)
     monkeypatch.setattr(main, "start_streaming_response", lambda: None)
     monkeypatch.setattr(main, "show_stream_text", streamed.append)
     monkeypatch.setattr(main, "show_info", infos.append)
@@ -1512,6 +1671,7 @@ def test_agent_loop_withholds_unverified_final_and_requires_later_verifier(
     main.agent_loop(client, cfg, "create and verify a file")  # type: ignore[arg-type]
 
     assert len(client.calls) == 4
+    assert context_queries == ["create and verify a file"] * 4
     assert "Premature completion claim." not in streamed
     assert "Verified completion." in streamed
     assert any("Unverified final text was withheld" in message for message in infos)

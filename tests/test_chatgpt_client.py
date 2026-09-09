@@ -256,6 +256,7 @@ def test_codex_tool_arguments_correlate_item_id_to_call_id(use_done):
     ]
     if use_done:
         events.append({"type": "response.function_call_arguments.done", "item_id": "fc_1", "arguments": '{"path":"final.md"}'})
+    events.append("[DONE]")
     chunks = list(chatgpt_client._stream_codex_responses_iter(_FakeStreamResponse(events)))
     calls = chunks[-1]["message"]["tool_calls"]
     assert len(calls) == 1

@@ -97,6 +97,23 @@ def test_model_round_receipts_buffer_instead_of_flushing_per_round(monkeypatch: 
     assert flushed == []
 
 
+def test_context_accounting_version_and_numeric_sources_survive_privacy_projection() -> None:
+    record = perf_telemetry.sanitize_perf_record(
+        {
+            "event": "model_round",
+            "context_accounting_version": 2,
+            "context_sources": {"memory": 123, "harness_rag": 45, "PRIVATE_MEMORY_CANARY": 999},
+            "memory_payload": "PRIVATE_MEMORY_CANARY",
+        }
+    )
+
+    assert record == {
+        "event": "model_round",
+        "context_accounting_version": 2,
+        "context_sources": {"memory": 123, "harness_rag": 45},
+    }
+
+
 def test_event_allowlist_drops_content_paths_urls_selectors_and_ids(monkeypatch: Any) -> None:
     monkeypatch.setattr(perf_telemetry, "PERF_BUFFER", [])
     monkeypatch.setattr(perf_telemetry, "flush_perf_records", lambda: True)
@@ -144,9 +161,7 @@ def test_unknown_event_is_rejected_without_persistence(monkeypatch: Any) -> None
     monkeypatch.setattr(perf_telemetry, "PERF_BUFFER", [])
     monkeypatch.setattr(perf_telemetry, "_TELEMETRY_REJECTED", 0)
 
-    assert perf_telemetry.append_perf_record(
-        {"event": "future_event", "content": "PRIVATE"}
-    ) is False
+    assert perf_telemetry.append_perf_record({"event": "future_event", "content": "PRIVATE"}) is False
 
     assert perf_telemetry.PERF_BUFFER == []
     assert perf_telemetry._TELEMETRY_REJECTED == 1

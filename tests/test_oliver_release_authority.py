@@ -159,6 +159,9 @@ def _environment(**overrides: str) -> dict[str, str]:
     values = {
         "GITHUB_ACTIONS": "true",
         "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "GITHUB_ACTOR": "Seabass-up",
+        "GITHUB_ACTOR_ID": "184999458",
+        "GITHUB_TRIGGERING_ACTOR": "Seabass-up",
         "GITHUB_REPOSITORY": SCRIPT.REPOSITORY,
         "GITHUB_REPOSITORY_ID": str(SCRIPT.REPOSITORY_ID),
         "GITHUB_REF": SCRIPT.DEFAULT_REF,
@@ -612,6 +615,13 @@ def test_dispatch_rejects_non_main_or_untrusted_workflow_revision() -> None:
         SCRIPT.DispatchContext.from_environment(_environment(GITHUB_REF="refs/heads/release"))
     with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_workflow_revision"):
         SCRIPT.DispatchContext.from_environment(_environment(GITHUB_WORKFLOW_SHA="f" * 40))
+
+
+@pytest.mark.parametrize("field", ["GITHUB_ACTOR", "GITHUB_ACTOR_ID", "GITHUB_TRIGGERING_ACTOR"])
+@pytest.mark.parametrize("value", ["", "202", "another-user", "seabass-up"])
+def test_dispatch_rejects_any_non_owner_or_ambiguous_trigger(field: str, value: str) -> None:
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_owner"):
+        SCRIPT.DispatchContext.from_environment(_environment(**{field: value}))
 
 
 def test_repository_policy_loader_binds_exact_raw_snapshot(tmp_path: Path) -> None:
@@ -1371,8 +1381,16 @@ def test_release_workflow_is_draft_first_least_privilege_and_durable() -> None:
     assert "actions/checkout" not in environment
     assert "secrets." not in environment
     assert '"protected_branches": True' in environment
-    assert 'environment.get("can_admins_bypass") is not False' in environment
-    assert 'rule.get("prevent_self_review") is not True' in environment
+    assert 'environment.get("can_admins_bypass") is not True' in environment
+    assert 'rule.get("prevent_self_review") is not False' in environment
+    assert 'reviewer["id"] != 184999458' in environment
+    assert 'reviewer.get("login") != "Seabass-up"' in environment
+    for expected in (
+        '${GITHUB_ACTOR_ID}" == "184999458',
+        '${GITHUB_ACTOR}" == "Seabass-up',
+        '${GITHUB_TRIGGERING_ACTOR}" == "Seabass-up',
+    ):
+        assert expected in dispatch
 
     policy = workflow.split("  repository-policy:\n", 1)[1].split("\n  release-authority:\n", 1)[0]
     assert "actions/checkout" not in policy
@@ -1776,7 +1794,7 @@ def test_public_release_checklist_is_manual_draft_first_and_names_external_block
     assert "then publish a\n  final" not in checklist
 
 
-def test_exact_environment_authority_rejects_self_review_or_admin_bypass(tmp_path: Path) -> None:
+def test_exact_environment_authority_requires_only_the_approved_owner(tmp_path: Path) -> None:
     workflow = (ROOT / ".github/workflows/oliver-release.yml").read_text(encoding="utf-8")
     validator = _environment_authority_validator(workflow)
     state = tmp_path / "state"
@@ -1784,12 +1802,12 @@ def test_exact_environment_authority_rejects_self_review_or_admin_bypass(tmp_pat
     valid_environment = {
         "name": "release-authority",
         "deployment_branch_policy": {"protected_branches": True, "custom_branch_policies": False},
-        "can_admins_bypass": False,
+        "can_admins_bypass": True,
         "protection_rules": [
             {
                 "type": "required_reviewers",
-                "prevent_self_review": True,
-                "reviewers": [{"type": "User", "reviewer": {"id": 202}}],
+                "prevent_self_review": False,
+                "reviewers": [{"type": "User", "reviewer": {"id": 184999458, "login": "Seabass-up"}}],
             },
             {"type": "branch_policy"},
         ],
@@ -1800,7 +1818,7 @@ def test_exact_environment_authority_rejects_self_review_or_admin_bypass(tmp_pat
         "updated_at": "2026-08-09T00:00:00Z",
     }
     environment = os.environ.copy()
-    environment.update({"STATE": str(state), "ACTOR_ID": "101"})
+    environment.update({"STATE": str(state), "ACTOR_ID": "184999458"})
 
     def validate(document: dict[str, Any], marker: dict[str, Any] = readiness) -> subprocess.CompletedProcess[str]:
         (state / "environment.json").write_text(json.dumps(document), encoding="utf-8")
@@ -1819,11 +1837,25 @@ def test_exact_environment_authority_rejects_self_review_or_admin_bypass(tmp_pat
 
     assert validate(valid_environment).returncode == 0
     bypass = copy.deepcopy(valid_environment)
-    bypass["can_admins_bypass"] = True
+    bypass["can_admins_bypass"] = False
     assert validate(bypass).returncode != 0
-    self_review = copy.deepcopy(valid_environment)
-    self_review["protection_rules"][0]["reviewers"][0]["reviewer"]["id"] = 101
-    assert validate(self_review).returncode != 0
+    for patch in ({"id": 202}, {"id": True}, {"login": "another-user"}):
+        other_reviewer = copy.deepcopy(valid_environment)
+        other_reviewer["protection_rules"][0]["reviewers"][0]["reviewer"].update(patch)
+        assert validate(other_reviewer).returncode != 0
+    for mutation in ("extra", "team", "self_review_blocked"):
+        changed = copy.deepcopy(valid_environment)
+        rule = changed["protection_rules"][0]
+        if mutation == "extra":
+            rule["reviewers"].append({"type": "User", "reviewer": {"id": 202, "login": "another-user"}})
+        elif mutation == "team":
+            rule["reviewers"][0]["type"] = "Team"
+        else:
+            rule["prevent_self_review"] = True
+        assert validate(changed).returncode != 0
+    environment["ACTOR_ID"] = "202"
+    assert validate(valid_environment).returncode != 0
+    environment["ACTOR_ID"] = "184999458"
     missing_branch_policy = copy.deepcopy(valid_environment)
     missing_branch_policy["protection_rules"].pop()
     assert validate(missing_branch_policy).returncode != 0

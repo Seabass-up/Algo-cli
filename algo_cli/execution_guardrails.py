@@ -55,12 +55,8 @@ _SENSITIVE_FILENAMES = frozenset(
         "id_ed25519",
     }
 )
-_SENSITIVE_SUFFIXES = frozenset(
-    {".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kdbx"}
-)
-_CONTROL_OPERATOR_RE = re.compile(
-    r"(?:\r|\n|;|&&|\|\||(?<!\|)\|(?!\|)|(?<!&)\&(?!&)|`|\$\(|[<>])"
-)
+_SENSITIVE_SUFFIXES = frozenset({".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kdbx"})
+_CONTROL_OPERATOR_RE = re.compile(r"(?:\r|\n|;|&&|\|\||(?<!\|)\|(?!\|)|(?<!&)\&(?!&)|`|\$\(|[<>])")
 _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", re.DOTALL)
 _RUNNER_OPTIONS_WITH_VALUE = frozenset(
     {
@@ -87,7 +83,7 @@ class ExecutionGuardrailError(RuntimeError):
 
 @dataclass(frozen=True)
 class EvidenceEvent:
-    """One successful, content-free event in execution order."""
+    """One content-free event; mutation evidence may describe a possible effect."""
 
     sequence: int
     kind: EvidenceKind
@@ -369,11 +365,7 @@ def evaluate_read_before_edit(
     if not reads:
         return ReadBeforeEditDecision(False, "edit requires a successful same-file read")
     last_read = reads[-1]
-    mutations = [
-        event
-        for event in events
-        if event.kind == "mutation" and event.relative_path in {relative_path, "."}
-    ]
+    mutations = [event for event in events if event.kind == "mutation" and event.relative_path in {relative_path, "."}]
     if mutations and mutations[-1].sequence > last_read.sequence:
         return ReadBeforeEditDecision(False, "edit requires a fresh read after the previous mutation")
     return ReadBeforeEditDecision(True, "same-file read evidence is fresh", last_read.sequence)
@@ -434,11 +426,12 @@ def record_mutation(
 def record_workspace_mutation(
     *,
     success: bool,
+    possible: bool = False,
     operation: str = "run_shell",
 ) -> EvidenceEvent | None:
-    """Record a successful workspace-wide mutation without retaining its command."""
+    """Invalidate workspace evidence after a successful or possibly partial mutation."""
 
-    if not success or operation != "run_shell":
+    if not (success or possible) or operation != "run_shell":
         return None
     ledger = _ACTIVE_LEDGER.get()
     if ledger is None or ledger.closed:
@@ -455,9 +448,7 @@ def _shell_split(command: str, *, platform_name: str | None = None) -> list[str]
         # ``cmd.exe`` uses double quotes for grouping and removes the outer
         # pair before invoking Python. Single quotes are literal characters.
         tokens = [
-            token[1:-1]
-            if len(token) >= 2 and token.startswith('"') and token.endswith('"')
-            else token
+            token[1:-1] if len(token) >= 2 and token.startswith('"') and token.endswith('"') else token
             for token in tokens
         ]
     return tokens
@@ -562,10 +553,7 @@ def _assertion_script_qualifies(source: str) -> bool:
             and node.func.value.id == "sys"
             and node.func.attr == "exit"
             and node.args
-            and not (
-                isinstance(node.args[0], ast.Constant)
-                and node.args[0].value in {0, None}
-            )
+            and not (isinstance(node.args[0], ast.Constant) and node.args[0].value in {0, None})
         ):
             return True
     return False
@@ -594,9 +582,11 @@ def _inline_python_verification(
         return None
     while platform != "nt" and tokens and _ENV_ASSIGNMENT_RE.match(tokens[0]):
         tokens.pop(0)
-    if len(tokens) != 3 or not re.fullmatch(
-        r"python(?:\d+(?:\.\d+)*)?|py", _executable_name(tokens[0])
-    ) or tokens[1].casefold() != "-c":
+    if (
+        len(tokens) != 3
+        or not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?|py", _executable_name(tokens[0]))
+        or tokens[1].casefold() != "-c"
+    ):
         return None
     if _assertion_script_qualifies(tokens[2]):
         return VerificationCommand(True, "test", "inline assertions execute a fail-on-error check")
@@ -626,15 +616,8 @@ def _verifier_chain(command: str) -> VerificationCommand | None:
             prefix = _shell_split(segments[0])
         except ValueError:
             prefix = []
-        if (
-            len(prefix) == 2
-            and _executable_name(prefix[0]) == "cd"
-            and prefix[1]
-        ) or (
-            len(prefix) == 3
-            and _executable_name(prefix[0]) == "cd"
-            and prefix[1] == "--"
-            and prefix[2]
+        if (len(prefix) == 2 and _executable_name(prefix[0]) == "cd" and prefix[1]) or (
+            len(prefix) == 3 and _executable_name(prefix[0]) == "cd" and prefix[1] == "--" and prefix[2]
         ):
             segments = segments[1:]
     if len(segments) < 2:
@@ -783,9 +766,7 @@ def classify_verification_command(command: str) -> VerificationCommand:
     return VerificationCommand(False, None, "command is not a recognized verifier")
 
 
-_STATUS_MASKING_ECHO_RE = re.compile(
-    r"(?is)^(?P<base>.+?);\s*echo\s+(?:[\"'])?[^\n;]*\$\?[^\n;]*(?:[\"'])?\s*$"
-)
+_STATUS_MASKING_ECHO_RE = re.compile(r"(?is)^(?P<base>.+?);\s*echo\s+(?:[\"'])?[^\n;]*\$\?[^\n;]*(?:[\"'])?\s*$")
 
 
 def masks_verification_exit_status(command: str) -> bool:
@@ -801,6 +782,7 @@ def record_verification(
     verification_kind: str,
     *,
     success: bool,
+    cwd: str | Path | None = None,
 ) -> EvidenceEvent | None:
     """Record a successful recognized verifier without command/output data."""
 
@@ -809,18 +791,152 @@ def record_verification(
     ledger = _ACTIVE_LEDGER.get()
     if ledger is None or ledger.closed:
         return None
+    if not _verification_workspace_matches(cwd) or (verification_kind == "git_diff" and _git_scope_overridden()):
+        return None
     return ledger.append("verification", "verification", verification_kind=verification_kind)
 
 
-def record_shell_verification(command: str, *, returncode: int) -> EvidenceEvent | None:
-    """Classify a shell invocation and record it only when it passed."""
+def _verification_workspace_matches(cwd: str | Path | None) -> bool:
+    workspace = active_workspace()
+    if workspace is None:
+        return False
+    try:
+        candidate = workspace if cwd is None else Path(cwd).expanduser().resolve(strict=True)
+        return candidate == workspace
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+
+
+def _git_scope_overridden() -> bool:
+    return any(
+        value
+        and (
+            key
+            in {
+                "GIT_DIR",
+                "GIT_WORK_TREE",
+                "GIT_INDEX_FILE",
+                "GIT_COMMON_DIR",
+                "GIT_OBJECT_DIRECTORY",
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            }
+            or key.startswith("GIT_CONFIG")
+        )
+        for key, value in os.environ.items()
+    )
+
+
+def _shell_verification_scope_matches(command: str, cwd: str | Path | None) -> bool:
+    """Require workspace-wide evidence, not a verifier redirected to another root.
+
+    Classification recognizes command syntax, not test relevance or arbitrary
+    script internals. Reject explicit directory changes and out-of-root targets
+    that would otherwise lose their scope when shell/runner wrappers are stripped.
+    """
+
+    workspace = active_workspace()
+    if workspace is None or not _verification_workspace_matches(cwd):
+        return False
+
+    def contained(value: str, *, same_root: bool = False) -> bool:
+        if not value or any(char in value for char in ("$", "`", "%")):
+            return False
+        try:
+            path = Path(value).expanduser()
+            resolved = (workspace / path).resolve(strict=same_root)
+            return resolved == workspace if same_root else resolved.is_relative_to(workspace)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return False
+
+    directory_options = {"--directory", "--project", "--cwd", "--dir", "--prefix", "--working-directory", "-C"}
+    path_options = {"--manifest-path", "--rootdir", "--test-dir", "--config-file"}
+    # Use the same bounded shell framing accepted by the classifier. Quoted
+    # ambiguous chains may be refused; they must never gain broader evidence.
+    for segment in command.strip().split("&&"):
+        segment = re.sub(r"\s+2\s*>\s*&\s*1\s*$", "", segment).strip()
+        try:
+            tokens = _shell_split(segment)
+        except ValueError:
+            return False
+        if not tokens:
+            return False
+        if _executable_name(tokens[0]) == "cd":
+            path = tokens[2] if len(tokens) == 3 and tokens[1] == "--" else tokens[1] if len(tokens) == 2 else ""
+            if not contained(path, same_root=True):
+                return False
+            continue
+        nested = list(tokens)
+        while nested and _ENV_ASSIGNMENT_RE.match(nested[0]):
+            nested.pop(0)
+        nested = _strip_runner(nested) if nested else []
+        if not nested:
+            return False
+        executable_index = len(tokens) - len(nested)
+        if _looks_like_verifier_script(nested[0]) and not contained(nested[0]):
+            return False
+        verifier = _executable_name(nested[0])
+        if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?|py", verifier) and len(nested) > 2 and nested[1] == "-m":
+            verifier = nested[2]
+        inline_source_index = (
+            executable_index + 2
+            if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?|py", _executable_name(nested[0]))
+            and len(nested) == 3
+            and nested[1] == "-c"
+            else None
+        )
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if _ENV_ASSIGNMENT_RE.match(token):
+                key, value = token.split("=", 1)
+                if key.startswith("GIT_"):
+                    return False
+                if key == "PYTHONPATH" and not all(contained(path) for path in value.split(os.pathsep)):
+                    return False
+            option, separator, value = token.partition("=")
+            non_target_option = (index < executable_index and option == "--python") or (
+                verifier in {"pytest", "py.test"} and option in {"--basetemp", "--junitxml", "--junit-xml"}
+            )
+            if non_target_option:
+                if not separator:
+                    index += 1
+                    if index >= len(tokens):
+                        return False
+            elif option in directory_options | path_options:
+                if not separator:
+                    index += 1
+                    if index >= len(tokens):
+                        return False
+                    value = tokens[index]
+                if not contained(value, same_root=option in directory_options):
+                    return False
+            elif token.startswith("-C") and token != "-C":
+                if not contained(token[2:], same_root=True):
+                    return False
+            elif index != executable_index and not token.startswith("-") and not _ENV_ASSIGNMENT_RE.match(token):
+                # Executable paths and inline Python are not target operands.
+                if index != inline_source_index and not contained(token):
+                    return False
+            index += 1
+    return True
+
+
+def record_shell_verification(
+    command: str,
+    *,
+    returncode: int,
+    cwd: str | Path | None = None,
+) -> EvidenceEvent | None:
+    """Record a passed verifier only when its explicit scope matches this run."""
 
     if returncode != 0:
         return None
     classification = classify_verification_command(command)
     if not classification.qualifies or classification.kind is None:
         return None
-    return record_verification(classification.kind, success=True)
+    if not _shell_verification_scope_matches(command, cwd):
+        return None
+    return record_verification(classification.kind, success=True, cwd=cwd)
 
 
 def evaluate_completion(events: Sequence[EvidenceEvent]) -> CompletionDecision:
@@ -830,7 +946,7 @@ def evaluate_completion(events: Sequence[EvidenceEvent]) -> CompletionDecision:
         return CompletionDecision(False, "execution evidence is invalid")
     mutations = [event for event in events if event.kind == "mutation"]
     if not mutations:
-        return CompletionDecision(True, "no successful file mutation requires verification")
+        return CompletionDecision(True, "no recorded workspace mutation requires verification")
     last_mutation = mutations[-1]
     for event in events:
         if event.sequence <= last_mutation.sequence:
@@ -864,11 +980,9 @@ def completion_decision(events: Iterable[EvidenceEvent] | None = None) -> Comple
 def auto_verify_working_tree(root: str | Path | None = None) -> CompletionDecision:
     """Second-stop fallback: run git diff --check HEAD as a structural verifier.
 
-    Restores the pre-hardening behavior: when the model stops twice without a
-    recognized post-mutation verifier, run git diff --check directly. A pass
-    records git_diff verification and allows completion; a missing git binary
-    or a non-git workspace allows completion with a manual-review warning; a
-    failing structural check keeps completion blocked.
+    A pass qualifies only known file mutations covered by the tracked diff.
+    Missing Git, an unknown shell write set, and untracked/ignored paths require
+    explicit verification instead of a success claim with a manual warning.
     """
     ledger = _ACTIVE_LEDGER.get()
     if ledger is None or ledger.closed:
@@ -879,6 +993,15 @@ def auto_verify_working_tree(root: str | Path | None = None) -> CompletionDecisi
         return CompletionDecision(False, "verification workspace cannot be resolved")
     if workspace != ledger.workspace:
         return CompletionDecision(False, "verification workspace does not match the active execution scope")
+    if _git_scope_overridden():
+        return CompletionDecision(False, "Git environment overrides prevent workspace-bound automatic verification")
+    pending = completion_decision()
+    if pending.allowed:
+        return pending
+    last_verifier = max((event.sequence for event in ledger.events if event.kind == "verification"), default=0)
+    mutations = [event for event in ledger.events if event.kind == "mutation" and event.sequence > last_verifier]
+    if any(event.relative_path == "." for event in mutations):
+        return CompletionDecision(False, "shell mutation scope requires an explicit workspace verifier")
     try:
         completed = subprocess.run(
             ["git", "diff", "--check", "HEAD"],
@@ -890,8 +1013,8 @@ def auto_verify_working_tree(root: str | Path | None = None) -> CompletionDecisi
         )
     except FileNotFoundError:
         return CompletionDecision(
-            True,
-            "git is unavailable; review the last workspace change manually",
+            False,
+            "git is unavailable; verification is incomplete",
         )
     except subprocess.TimeoutExpired:
         return CompletionDecision(False, "git diff --check timed out; verification is incomplete")
@@ -900,12 +1023,26 @@ def auto_verify_working_tree(root: str | Path | None = None) -> CompletionDecisi
     if completed.returncode != 0:
         if "not a git repository" in (completed.stderr or "").lower():
             return CompletionDecision(
-                True,
-                "workspace is not a git repository; review the last change manually",
+                False,
+                "workspace is not a git repository; verification is incomplete",
             )
         return CompletionDecision(
             False,
             "git diff --check reported structural problems",
         )
-    record_verification("git_diff", success=True)
+    paths = sorted({str(event.relative_path) for event in mutations})
+    try:
+        tracked = subprocess.run(
+            ["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", *paths],
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return CompletionDecision(False, "tracked mutation coverage could not be verified")
+    if tracked.returncode != 0:
+        return CompletionDecision(False, "tracked diff does not cover every mutated path; run an explicit verifier")
+    record_verification("git_diff", success=True, cwd=workspace)
     return completion_decision()

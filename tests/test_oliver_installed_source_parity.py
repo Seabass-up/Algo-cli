@@ -25,7 +25,109 @@ def _trees(tmp_path: Path) -> tuple[Path, Path]:
         (root / "__init__.py").write_text("VERSION = 1\n", encoding="utf-8")
         (root / "nested" / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
         (root / "resource.json").write_text('{"safe":true}\n', encoding="utf-8")
+    _manifest(source, {})
     return source, installed
+
+
+def _manifest(source: Path, entries: dict[str, object]) -> None:
+    lines = [
+        "[tool.hatch.build.targets.wheel]",
+        'packages = ["algo_cli"]',
+        "[tool.hatch.build.targets.wheel.force-include]",
+    ]
+    lines.extend(f"{json.dumps(key)} = {json.dumps(value)}" for key, value in entries.items())
+    (source.parent / "pyproject.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize("state", ["current", "missing", "stale"])
+def test_force_included_document_is_bound_to_its_source(tmp_path, state) -> None:
+    source, installed = _trees(tmp_path)
+    docs = source.parent / "docs"
+    docs.mkdir()
+    (docs / "ALGO.md").write_text("current catalog\n", encoding="utf-8")
+    _manifest(source, {"docs/ALGO.md": "algo_cli/resources/docs/ALGO.md"})
+    target = installed / "resources/docs/ALGO.md"
+    target.parent.mkdir(parents=True)
+    if state != "missing":
+        target.write_text("current catalog\n" if state == "current" else "old catalog\n", encoding="utf-8")
+
+    report = SCRIPT.check_installed_source_parity(source_root=source, installed_root=installed)
+
+    assert report.passed is (state == "current")
+    assert report.source_files == 4
+    assert report.missing == (("resources/docs/ALGO.md",) if state == "missing" else ())
+    assert report.divergent == (("resources/docs/ALGO.md",) if state == "stale" else ())
+
+
+def test_force_included_skill_directory_changes_the_digest(tmp_path) -> None:
+    source, installed = _trees(tmp_path)
+    skills = source.parent / "skills/example"
+    skills.mkdir(parents=True)
+    (skills / "SKILL.md").write_text("original\n", encoding="utf-8")
+    target = installed / "resources/skills/example/SKILL.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("original\n", encoding="utf-8")
+    _manifest(source, {"skills": "algo_cli/resources/skills"})
+    before = SCRIPT.check_installed_source_parity(source_root=source, installed_root=installed)
+    assert before.passed
+
+    (skills / "SKILL.md").write_text("changed\n", encoding="utf-8")
+    after = SCRIPT.check_installed_source_parity(source_root=source, installed_root=installed)
+    assert not after.passed
+    assert after.divergent == ("resources/skills/example/SKILL.md",)
+    assert before.source_digest != after.source_digest
+    assert before.installed_digest == after.installed_digest
+
+
+@pytest.mark.parametrize(
+    "origin,target",
+    [
+        ("../outside.md", "algo_cli/resources/doc.md"),
+        ("/outside.md", "algo_cli/resources/doc.md"),
+        ("C:/outside.md", "algo_cli/resources/doc.md"),
+        ("docs/doc.md", "algo_cli/../outside.md"),
+        ("docs/doc.md", "/algo_cli/resources/doc.md"),
+        ("docs/doc.md", "C:/algo_cli/resources/doc.md"),
+        ("docs/doc.md", True),
+        ("docs/doc.md", "algo_cli/__init__.py"),
+    ],
+)
+def test_invalid_force_include_configuration_is_rejected(tmp_path, origin, target) -> None:
+    source, installed = _trees(tmp_path)
+    (source.parent / "docs").mkdir()
+    (source.parent / "docs/doc.md").write_text("document\n", encoding="utf-8")
+    _manifest(source, {origin: target})
+    with pytest.raises(SCRIPT.InstalledSourceParityError, match="wheel_"):
+        SCRIPT.check_installed_source_parity(source_root=source, installed_root=installed)
+
+
+@pytest.mark.parametrize(
+    "state", ["missing", "linked-file", "linked-directory", "linked-manifest", "malformed-manifest", "missing-manifest"]
+)
+def test_unavailable_or_linked_force_include_sources_reject(tmp_path, state) -> None:
+    source, installed = _trees(tmp_path)
+    docs = source.parent / "docs"
+    docs.mkdir()
+    target = docs / "doc.md"
+    _manifest(source, {"docs/doc.md": "algo_cli/resources/doc.md"})
+    if state == "linked-file":
+        target.symlink_to(source / "__init__.py")
+    elif state == "linked-directory":
+        docs.rmdir()
+        docs.symlink_to(source, target_is_directory=True)
+    elif state == "linked-manifest":
+        manifest = source.parent / "pyproject.toml"
+        content = manifest.read_text(encoding="utf-8")
+        manifest.unlink()
+        outside = tmp_path / "manifest.toml"
+        outside.write_text(content, encoding="utf-8")
+        manifest.symlink_to(outside)
+    elif state == "malformed-manifest":
+        (source.parent / "pyproject.toml").write_text("[[broken", encoding="utf-8")
+    elif state == "missing-manifest":
+        (source.parent / "pyproject.toml").unlink()
+    with pytest.raises(SCRIPT.InstalledSourceParityError, match="wheel_"):
+        SCRIPT.check_installed_source_parity(source_root=source, installed_root=installed)
 
 
 def test_exact_source_subset_and_generated_data_pass(tmp_path) -> None:

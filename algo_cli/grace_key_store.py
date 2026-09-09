@@ -30,6 +30,7 @@ CONTROL_SIGNING_KEY_LABEL = "control-signing-ed25519-v1"
 BROWSER_PAIRING_KEY_LABEL = "browser-pairing-hmac-v1"
 RECEIPT_ANCHOR_LABEL_PREFIX = "receipt-head-v1-"
 AUTHORITY_ROTATION_ANCHOR_LABEL_PREFIX = "authority-rotation-v1-"
+ELSIE_MEMORY_ANCHORS_LABEL = "elsie-memory-anchors-v1"
 ALGO_FIXED_CREDENTIAL_LABELS = frozenset(
     {
         "alice-artifact-master-v1",
@@ -39,6 +40,9 @@ ALGO_FIXED_CREDENTIAL_LABELS = frozenset(
         "irene-privacy-hmac-v1",
     }
 )
+# Keep the original registry's required set compatible. New statically known
+# labels are always inventoried, including for older signed registries.
+ALGO_KNOWN_FIXED_CREDENTIAL_LABELS = ALGO_FIXED_CREDENTIAL_LABELS | {ELSIE_MEMORY_ANCHORS_LABEL}
 MAX_RECEIPT_ANCHOR_BYTES = 4 * 1024
 MAX_AUTHORITY_ROTATION_ANCHOR_BYTES = 16 * 1024
 _SAFE_LABEL_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
@@ -155,7 +159,7 @@ class KeyringKeyStore:
     @staticmethod
     def _allowed_inventory_label(label: str) -> bool:
         return (
-            label in ALGO_FIXED_CREDENTIAL_LABELS
+            label in ALGO_KNOWN_FIXED_CREDENTIAL_LABELS
             or _ANCHOR_LABEL_RE.fullmatch(label) is not None
             or _ROTATION_ANCHOR_LABEL_RE.fullmatch(label) is not None
         )
@@ -223,7 +227,7 @@ class KeyringKeyStore:
                     return existing
                 if any(
                     backend.get_password(self.service, label) is not None
-                    for label in ALGO_FIXED_CREDENTIAL_LABELS
+                    for label in ALGO_KNOWN_FIXED_CREDENTIAL_LABELS
                     if label != ADA_CREDENTIAL_REGISTRY_LABEL
                 ):
                     raise KeyStoreError("credential_registry_migration_required")
@@ -238,7 +242,7 @@ class KeyringKeyStore:
                 registry = AdaCredentialRegistry.create(
                     revision=1,
                     service=self.service,
-                    labels=tuple(sorted(ALGO_FIXED_CREDENTIAL_LABELS)),
+                    labels=tuple(sorted(ALGO_KNOWN_FIXED_CREDENTIAL_LABELS)),
                     migration_kind="fresh_namespace",
                     migration_evidence_digest=content_digest(
                         {
@@ -300,7 +304,7 @@ class KeyringKeyStore:
                 if any(not self._allowed_inventory_label(label) for label in observed):
                     raise KeyStoreError("credential_enumeration_scope")
 
-                for label in ALGO_FIXED_CREDENTIAL_LABELS - {ADA_CREDENTIAL_REGISTRY_LABEL}:
+                for label in ALGO_KNOWN_FIXED_CREDENTIAL_LABELS - {ADA_CREDENTIAL_REGISTRY_LABEL}:
                     actual = self._fingerprint_encoded(backend.get_password(self.service, label))
                     expected = observed.get(label)
                     if actual != expected:
@@ -328,7 +332,7 @@ class KeyringKeyStore:
                 labels = tuple(
                     sorted(
                         {
-                            *ALGO_FIXED_CREDENTIAL_LABELS,
+                            *ALGO_KNOWN_FIXED_CREDENTIAL_LABELS,
                             *(label for label in observed if _ANCHOR_LABEL_RE.fullmatch(label)),
                         }
                     )
@@ -532,7 +536,7 @@ class KeyringKeyStore:
     def complete_inventory_snapshot(
         self,
     ) -> tuple[tuple[str, str | None], ...] | None:
-        """Atomically fingerprint every signed registry label under one lease."""
+        """Fingerprint signed dynamic labels and all compiled fixed labels."""
 
         backend = self._password_backend()
         try:
@@ -545,7 +549,7 @@ class KeyringKeyStore:
                         label,
                         self._fingerprint_encoded(backend.get_password(self.service, label)),
                     )
-                    for label in registry.labels
+                    for label in sorted(set(registry.labels) | ALGO_KNOWN_FIXED_CREDENTIAL_LABELS)
                 )
         except KeyStoreError:
             raise
@@ -953,14 +957,18 @@ def get_key_material(
     length: int = 32,
     require_persistent: bool,
     store: Any | None = None,
+    create_if_missing: bool = True,
 ) -> KeyMaterial:
     """Load an OS-backed key or an explicitly bounded volatile privacy key."""
 
     safe_label = _validate_label(label)
     safe_length = _validate_length(length)
+    if type(create_if_missing) is not bool:
+        raise ValueError("create_if_missing must be a boolean")
     selected = store or KeyringKeyStore()
     try:
-        material = selected.get_or_create(safe_label, length=safe_length)
+        loader = selected.get_or_create if create_if_missing else selected.get_existing
+        material = loader(safe_label, length=safe_length)
     except Exception as exc:
         if require_persistent:
             if isinstance(exc, KeyStoreError):

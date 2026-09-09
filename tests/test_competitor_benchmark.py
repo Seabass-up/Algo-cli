@@ -55,6 +55,22 @@ def test_every_measured_product_has_an_adapter() -> None:
     }
 
 
+def test_algo_final_answer_uses_content_deltas_after_the_last_tool(tmp_path):
+    events = [
+        {"type": "content", "text": "Preliminary commentary."},
+        {"type": "tool_call", "call_id": "read-1", "name": "read_file"},
+        {"type": "tool_result", "call_id": "read-1", "status": "ok", "summary": "Untrusted tool text"},
+        {"type": "thinking", "text": "Not an answer."},
+        {"type": "content", "text": "Verified "},
+        {"type": "content", "text": "result."},
+        {"type": "done", "status": "complete", "usage": {"total_tokens": 12}},
+    ]
+    result = runner.event_metrics("algo_cli", events, tmp_path)
+    assert result["final_text"] == "Verified result."
+    assert result["tokens"] == 12
+    assert result["tool_calls"] == 1
+
+
 def test_rotating_order_is_deterministic_and_complete() -> None:
     harnesses = ["algo_cli", "codex_cli", "pi"]
     tasks = ["code_repair_small_repo", "tool_trap_misleading_state"]
@@ -88,15 +104,256 @@ def test_model_warmup_is_receipted_and_excluded_from_scores(tmp_path: Path, monk
 
 def test_code_repair_checker_fails_then_passes(tmp_path: Path) -> None:
     workspace, artifacts = fixture_copy(tmp_path, "code_repair_small_repo")
-    passed, _receipt = runner.run_task_checker("code_repair_small_repo", workspace, artifacts)
+    checked = runner.run_task_checker("code_repair_small_repo", workspace, artifacts)
+    passed, _receipt = checked
     assert passed is False
+    assert checked.completed
 
     source = workspace / "src/calculator.py"
     source.write_text(source.read_text().replace(" // ", " / "), encoding="utf-8")
 
-    passed, receipt = runner.run_task_checker("code_repair_small_repo", workspace, artifacts)
+    checked = runner.run_task_checker("code_repair_small_repo", workspace, artifacts)
+    passed, receipt = checked
     assert passed is True
+    assert checked.completed
     assert "PASS code_repair_small_repo" in receipt
+
+
+@pytest.mark.parametrize("failure_mode", ["import_exit", "partial_exit", "forged_stdout"])
+def test_code_checker_requires_completed_tests_not_only_exit_zero(tmp_path: Path, failure_mode: str) -> None:
+    workspace, artifacts = fixture_copy(tmp_path, "code_repair_small_repo")
+    source = workspace / "src/calculator.py"
+    if failure_mode == "partial_exit":
+        source.write_text(
+            "import os\n\ndef add(left, right):\n    return left + right\n\ndef average(values):\n    os._exit(0)\n",
+            encoding="utf-8",
+        )
+    else:
+        prefix = "print('4 passed in 0.01s', flush=True)\n" if failure_mode == "forged_stdout" else ""
+        source.write_text(prefix + "import os\nos._exit(0)\n", encoding="utf-8")
+
+    passed, receipt = runner.run_task_checker("code_repair_small_repo", workspace, artifacts)
+
+    assert passed is False, receipt
+    assert "completion" in receipt.lower()
+
+
+@pytest.mark.parametrize("task_id", list(runner.TASKS))
+def test_pristine_baselines_finish_and_fail_for_the_task(tmp_path: Path, task_id: str) -> None:
+    workspace, artifacts = fixture_copy(tmp_path, task_id)
+    checked = runner.run_task_checker(task_id, workspace, artifacts)
+    assert not checked.passed and checked.completed, checked.receipt
+
+
+@pytest.mark.parametrize("body", ["import os\nos._exit(0)", "raise SystemExit(0)"])
+def test_script_checker_requires_normal_completion(tmp_path: Path, body: str) -> None:
+    workspace, artifacts = fixture_copy(tmp_path, "tool_trap_misleading_state")
+    (workspace / "app/settings.py").write_text('STATUS_ENDPOINT = "/status"\n' + body + "\n")
+    checked = runner.run_task_checker("tool_trap_misleading_state", workspace, artifacts)
+    assert not checked.passed and not checked.completed
+    assert "completion" in checked.receipt
+
+
+@pytest.mark.parametrize(
+    "body", ["import pytest\npytest.skip('skip', allow_module_level=True)", "import pytest\npytest.xfail('not tested')"]
+)
+def test_skips_and_xfails_cannot_replace_executed_tests(tmp_path: Path, body: str) -> None:
+    workspace, artifacts = fixture_copy(tmp_path, "code_repair_small_repo")
+    source = workspace / "src/calculator.py"
+    source.write_text(body + "\n" + source.read_text().replace(" // ", " / "))
+    checked = runner.run_task_checker("code_repair_small_repo", workspace, artifacts)
+    assert not checked.passed and not checked.completed
+
+
+def test_checker_cannot_pass_after_candidate_rewrites_its_source_at_exit(tmp_path):
+    workspace, artifacts = fixture_copy(tmp_path, "code_repair_small_repo")
+    source = workspace / "src/calculator.py"
+    original = source.read_text()
+    source.write_text(
+        "import atexit\nfrom pathlib import Path\n"
+        f"atexit.register(lambda: Path(__file__).write_text({original!r}))\n" + original.replace(" // ", " / ")
+    )
+    checked = runner.run_task_checker("code_repair_small_repo", workspace, artifacts)
+    assert source.read_text() == original
+    assert not checked.passed and not checked.completed
+    assert "checker modified" in checked.receipt
+
+
+@pytest.mark.parametrize("baseline_passed", [False, True])
+def test_unqualified_baseline_never_starts_an_agent_or_reviewer(tmp_path, monkeypatch, baseline_passed):
+    from algo_cli.nathan_approval_reviewer import TerminalApprovalReviewer
+
+    monkeypatch.setattr(
+        runner,
+        "run_task_checker",
+        lambda *args: runner.TaskCheckerResult(
+            baseline_passed, baseline_passed, "incomplete or already passing baseline"
+        ),
+    )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("agent or reviewer started with an unqualified baseline")
+
+    monkeypatch.setattr(runner, "run_process", forbidden)
+    monkeypatch.setattr(TerminalApprovalReviewer, "open_tty", forbidden)
+
+    result = runner.execute_run(
+        tmp_path, "code_repair_small_repo", "algo_cli", 1, "fixture", 5, "unused", review_actions=True
+    )
+    assert not result["baseline_checker_failed_as_expected"]
+    assert not result["clean_process"]
+    assert result["approval_review"]["reason"] == "baseline_unqualified"
+
+
+def completion_fixture():
+    return {
+        "schema": runner.CHECKER_COMPLETION_SCHEMA,
+        "nonce": "test-nonce",
+        "kind": "pytest",
+        "completed": True,
+        "exit_code": 0,
+        "collected": sorted(runner.CODE_REPAIR_TEST_IDS),
+        "reports": [
+            {"nodeid": node, "phase": phase, "outcome": "passed", "xfail": False}
+            for node in sorted(runner.CODE_REPAIR_TEST_IDS)
+            for phase in ("setup", "call", "teardown")
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "none",
+        "stale",
+        "duplicate_test",
+        "missing_test",
+        "extra_test",
+        "duplicate_phase",
+        "missing_phase",
+        "failed",
+        "skipped",
+        "xfail",
+        "incomplete",
+        "bool_exit",
+        "extra_key",
+        "bad_kind",
+    ],
+)
+def test_completion_receipt_requires_exact_tests_and_phases(tmp_path, mutation):
+    data = completion_fixture()
+    if mutation == "stale":
+        data["nonce"] = "old-nonce"
+    elif mutation == "duplicate_test":
+        data["collected"][-1] = data["collected"][0]
+    elif mutation == "missing_test":
+        data["collected"].pop()
+    elif mutation == "extra_test":
+        data["collected"].append("tests/other.py::test_other")
+    elif mutation == "duplicate_phase":
+        data["reports"][-1] = data["reports"][0]
+    elif mutation == "missing_phase":
+        data["reports"].pop()
+    elif mutation in {"failed", "skipped"}:
+        data["reports"][0]["outcome"] = mutation
+    elif mutation == "xfail":
+        data["reports"][0]["xfail"] = True
+    elif mutation == "incomplete":
+        data["completed"] = False
+    elif mutation == "bool_exit":
+        data["exit_code"] = False
+    elif mutation == "extra_key":
+        data["extra"] = None
+    elif mutation == "bad_kind":
+        data["kind"] = "script"
+    path = tmp_path / "completion.json"
+    path.write_text(json.dumps(data))
+    checked = runner._checker_completion(path, nonce="test-nonce", kind="pytest", return_code=0)
+    assert (checked is not None) is (mutation == "none")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"[]",
+        b"null",
+        b"not-json",
+        b"\xff",
+        b'{"completed":true,"completed":false}',
+        pytest.param(b"x" * (runner.MAX_CHECKER_RECEIPT_BYTES + 1), id="oversized-receipt"),
+    ],
+)
+def test_invalid_completion_records_fail_closed(tmp_path, payload):
+    path = tmp_path / "completion.json"
+    path.write_bytes(payload)
+    assert runner._checker_completion(path, nonce="test-nonce", kind="pytest", return_code=0) is None
+
+
+@pytest.mark.parametrize(
+    "phase,return_code,valid",
+    [
+        ("call", 1, True),
+        ("setup", 1, False),
+        ("teardown", 1, False),
+        (None, 1, False),
+        ("call", 0, False),
+        (None, 3, False),
+        (None, False, False),
+    ],
+)
+def test_only_completed_test_failures_qualify_a_failing_baseline(tmp_path, phase, return_code, valid):
+    data = completion_fixture()
+    data["exit_code"] = return_code
+    if phase is not None:
+        next(report for report in data["reports"] if report["phase"] == phase)["outcome"] = "failed"
+    path = tmp_path / "completion.json"
+    path.write_text(json.dumps(data))
+    checked = runner._checker_completion(path, nonce="test-nonce", kind="pytest", return_code=return_code)
+    assert (checked is not None) is valid
+
+
+@pytest.mark.parametrize("kind", ["missing", "directory", "symlink", "hardlink"])
+def test_completion_requires_a_regular_unlinked_receipt(tmp_path, kind):
+    path = tmp_path / "completion.json"
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps(completion_fixture()))
+    if kind == "directory":
+        path.mkdir()
+    elif kind == "symlink":
+        path.symlink_to(source)
+    elif kind == "hardlink":
+        os.link(source, path)
+    assert runner._checker_completion(path, nonce="test-nonce", kind="pytest", return_code=0) is None
+
+
+@pytest.mark.parametrize("fixed", [False, True])
+def test_run_preserves_real_checker_completion_evidence(tmp_path, monkeypatch, fixed):
+    real_process = runner.run_process
+
+    def simulated_agent(command, *, cwd, env, timeout):
+        if cwd.name == "workspace":
+            return real_process(command, cwd=cwd, env=env, timeout=timeout)
+        if fixed:
+            source = cwd / "workspace/src/calculator.py"
+            source.write_text(source.read_text().replace(" // ", " / "))
+        return {
+            "return_code": 0,
+            "timed_out": False,
+            "duration_seconds": 0.0,
+            "stdout": '{"type":"content","text":"Simulated agent fixture, not a model run"}\n',
+            "stderr": "",
+        }
+
+    monkeypatch.setattr(runner, "run_process", simulated_agent)
+    result = runner.execute_run(tmp_path, "code_repair_small_repo", "algo_cli", 1, "fixture", 5, "unused")
+
+    assert result["baseline_checker_completed"] and result["baseline_checker_failed_as_expected"]
+    assert result["checker_completed"] and result["checker_sources_unchanged"]
+    assert result["checker_pass"] is result["clean_process"] is fixed
+    saved = json.loads((Path(result["result_path"]) / "checker_completion.json").read_text())
+    assert saved["baseline"]["evidence"][0]["exit_code"] == 1
+    assert saved["final"]["evidence"][0]["exit_code"] == (0 if fixed else 1)
+    assert len(saved["final"]["evidence"][0]["reports"]) == 12
 
 
 def test_tool_trap_checker_rejects_decoy_edits(tmp_path: Path) -> None:
@@ -495,6 +752,10 @@ def publication_fixture() -> dict:
                         "model": "qwen3.6:35b-mlx",
                         "duration_seconds": float(harnesses.index(harness) + 1),
                         "checker_pass": True,
+                        "checker_completed": True,
+                        "baseline_checker_completed": True,
+                        "checker_source_sha256": "d" * 64,
+                        "checker_sources_unchanged": True,
                         "clean_process": True,
                         "workspace_scope_pass": True,
                         "baseline_checker_failed_as_expected": True,
@@ -529,7 +790,7 @@ def publication_fixture() -> dict:
         "schema_version": 1,
         "created_at": "2026-07-15T00:00:00+00:00",
         "protocol": {
-            "id": "algo-cli-cross-harness-v3-draft",
+            "id": "algo-cli-cross-harness-v4-draft",
             "harnesses": harnesses,
             "tasks": task_ids,
             "repetitions": 3,
@@ -541,6 +802,7 @@ def publication_fixture() -> dict:
             "same_machine": True,
             "same_task_fixtures": True,
             "task_suite_sha256": "a" * 64,
+            "checker_source_sha256": "d" * 64,
             "timeout_seconds": 360,
             "order_policy": "deterministic cyclic rotation",
             "model_warmup": {
@@ -579,6 +841,28 @@ def test_website_publisher_validates_and_sanitizes_complete_cell() -> None:
     assert "executable" not in json.dumps(curated)
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ["old_protocol", "missing_baseline", "incomplete", "missing_checker", "changed_source", "source_mismatch"],
+)
+def test_publisher_rejects_unqualified_completion_or_legacy_protocol(mutation):
+    raw = publication_fixture()
+    if mutation == "old_protocol":
+        raw["protocol"]["id"] = "algo-cli-cross-harness-v3-draft"
+    elif mutation == "missing_baseline":
+        raw["runs"][0].pop("baseline_checker_completed")
+    elif mutation == "incomplete":
+        raw["runs"][0]["checker_completed"] = False
+    elif mutation == "missing_checker":
+        raw["runs"][0].pop("checker_completed")
+    elif mutation == "changed_source":
+        raw["runs"][0]["checker_sources_unchanged"] = False
+    else:
+        raw["runs"][0]["checker_source_sha256"] = "e" * 64
+    with pytest.raises(ValueError):
+        publisher._validate(raw, "b" * 40)
+
+
 def test_website_publisher_rejects_unwarmed_cell() -> None:
     raw = publication_fixture()
     raw["protocol"]["model_warmup"]["success"] = False
@@ -602,3 +886,104 @@ def test_website_publisher_preserves_protected_input_failure_as_a_score() -> Non
 
     assert curated["results"][-1]["clean_runs"] == 11
     assert curated["results"][-1]["scope_passes"] == 11
+
+
+@pytest.mark.parametrize("marker", ["protocol", "status", "run"])
+def test_supervised_results_cannot_be_published_as_unattended_comparisons(marker) -> None:
+    raw = publication_fixture()
+    if marker == "protocol":
+        raw["protocol"]["operator_action_review"] = True
+    elif marker == "status":
+        raw["status"] = "draft_supervised_algo_qualification"
+    else:
+        raw["runs"][0]["approval_review"] = {"mode": "operator_terminal"}
+    with pytest.raises(ValueError, match="operator-supervised"):
+        publisher._validate(raw, "b" * 40)
+
+
+def test_algo_approval_channel_is_explicit_and_default_policy_is_unchanged(tmp_path):
+    result = tmp_path / "run"
+    state = result / "state"
+    plain, _ = runner.command_for("algo_cli", "algo-cli", result, state, "prompt", "model", 30)
+    reviewed, _ = runner.command_for("algo_cli", "algo-cli", result, state, "-prompt", "model", 30, approval_fd=88)
+    assert plain[plain.index("--approval-mode") + 1] == "auto"
+    assert "--approval-fd" not in plain
+    assert reviewed[reviewed.index("--approval-mode") + 1] == "interactive"
+    assert reviewed[reviewed.index("--approval-fd") + 1] == "88"
+    assert reviewed[-2:] == ["--", "-prompt"]
+
+
+def test_supervised_and_unattended_products_cannot_share_a_ranked_run(monkeypatch):
+    monkeypatch.setattr(runner, "product_availability", lambda product: {"product": product, "status": "runnable"})
+    with pytest.raises(SystemExit, match="cannot be mixed"):
+        runner.main(["--harness", "algo_cli,codex_cli", "--algo-review-actions"])
+
+
+def test_run_process_inherits_explicit_fd_and_calls_started_once(tmp_path):
+    if os.name != "posix":
+        pytest.skip("POSIX descriptor inheritance")
+    read_fd, write_fd = os.pipe()
+    called = []
+    try:
+        result = runner.run_process(
+            [sys.executable, "-c", "import os,sys; os.write(int(sys.argv[1]),b'fixture')", str(write_fd)],
+            cwd=tmp_path,
+            env=dict(os.environ),
+            timeout=5,
+            pass_fds=(write_fd,),
+            on_started=lambda: called.append(True),
+        )
+        assert result["return_code"] == 0 and called == [True]
+        assert os.read(read_fd, 7) == b"fixture"
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_supervised_run_records_decisions_without_private_frames(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    from algo_cli.nathan_approval_reviewer import TerminalApprovalReviewer
+
+    calls = []
+
+    class Reviewer:
+        def fileno(self):
+            return 77
+
+        def child_started(self):
+            calls.append("started")
+
+        def receipt(self):
+            return {"mode": "operator_terminal", "approved_decisions": 1, "denied_decisions": 0, "review_seconds": 0.2}
+
+    monkeypatch.setattr(TerminalApprovalReviewer, "open_tty", lambda: nullcontext(Reviewer()))
+    checkers = iter(
+        [
+            runner.TaskCheckerResult(False, True, "baseline fixture"),
+            runner.TaskCheckerResult(True, True, "checker fixture"),
+        ]
+    )
+    monkeypatch.setattr(runner, "run_task_checker", lambda *a: next(checkers))
+
+    def process(command, *, cwd, env, timeout, pass_fds, on_started):
+        assert pass_fds == (77,)
+        assert command[command.index("--approval-fd") + 1] == "77"
+        on_started()
+        return {
+            "return_code": 0,
+            "timed_out": False,
+            "duration_seconds": 1.2,
+            "stdout": '{"type":"content","text":"fixture result"}\n',
+            "stderr": "",
+        }
+
+    monkeypatch.setattr(runner, "run_process", process)
+    result = runner.execute_run(
+        tmp_path, "code_repair_small_repo", "algo_cli", 1, "fixture", 30, "algo-cli", review_actions=True
+    )
+    assert calls == ["started"]
+    assert result["approval_review"] == Reviewer().receipt()
+    assert result["duration_seconds"] == 1.2
+    context = json.loads((Path(result["result_path"]) / "run_context.json").read_text())
+    assert context["action_review"] == "operator_terminal_exact_action"
+    assert "arguments" not in result["approval_review"]

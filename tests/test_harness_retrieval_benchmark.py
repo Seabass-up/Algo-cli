@@ -119,6 +119,10 @@ def test_quality_workload_covers_multilingual_complex_and_supersession() -> None
 
     assert result["status"] == "pass"
     assert categories == {"multilingual", "complex"}
+    assert result["qualification_scope"] == "synthetic_lexical_fixture"
+    assert result["semantic_quality_measured"] is False
+    assert result["answer_quality_measured"] is False
+    assert "synthetic lexical" in result["scope"]
     assert "quality:auth:obsolete" not in temporal["ranked_ids"]
     assert len(result["fixture_digest"]) == 64
 
@@ -243,8 +247,9 @@ def test_correctness_pass_with_slow_or_noisy_reuse_is_warn() -> None:
 
 
 def test_benchmark_does_not_mutate_process_global_retrieval_caches() -> None:
-    bm25_cache = harness._BM25_INDEX_CACHE
-    vector_cache = harness._VECTOR_MATRIX_CACHE
+    bm25_cache = harness._BM25_INDEX_CACHE.last
+    vector_cache = harness._VECTOR_MATRIX_CACHE.last
+    slice_stats = (harness._BM25_INDEX_CACHE.snapshot(), harness._VECTOR_MATRIX_CACHE.snapshot())
     query_cache_before = harness._QUERY_VEC_CACHE.snapshot()
     durations = [3.0] * benchmark.COLD_SAMPLE_TARGET + [1.0] * benchmark.REUSABLE_SAMPLE_TARGET
 
@@ -253,8 +258,9 @@ def test_benchmark_does_not_mutate_process_global_retrieval_caches() -> None:
         clock_ns=_clock_fn(durations),
     )
 
-    assert harness._BM25_INDEX_CACHE is bm25_cache
-    assert harness._VECTOR_MATRIX_CACHE is vector_cache
+    assert harness._BM25_INDEX_CACHE.last is bm25_cache
+    assert harness._VECTOR_MATRIX_CACHE.last is vector_cache
+    assert slice_stats == (harness._BM25_INDEX_CACHE.snapshot(), harness._VECTOR_MATRIX_CACHE.snapshot())
     assert harness._QUERY_VEC_CACHE.snapshot() == query_cache_before
 
 

@@ -4,7 +4,9 @@
 
 - Lint: `python -m ruff check .`
 - Tests on this Mac: `.venv/bin/python -m pytest -q`
-- Focused regression tests before full suite: `.venv/bin/python -m pytest tests/test_harness.py tests/test_tools.py tests/test_config.py tests/test_chatgpt_client.py tests/test_xai_client.py tests/test_intelligence_wiring.py tests/test_slash_unknown.py -q`
+- Focused regression tests before full suite: `.venv/bin/python -m pytest tests/test_harness.py tests/test_tools.py tests/test_config.py tests/test_chatgpt_client.py tests/test_xai_client.py tests/test_intelligence_wiring.py tests/test_oliver_slash_unknown.py -q`
+- Pattern evidence: `/harness patterns status [ID]`, `/harness patterns explain ID`, `/harness patterns verify ID`, `/harness patterns compare`. Verification executes only repository-owned test selections, never commands from this catalog.
+- Reproducible pattern artifacts: `.venv/bin/python -m algo_cli.pattern_runtime --output-directory hardening/pattern-runtime compare`; replace `compare` with `verify O5` for a registered test selection.
 - Typecheck: `python -m mypy algo_cli --show-error-codes`
 - Build: `python -m build`
 - Format: no project-wide formatter is configured; keep edits minimal and run `python -m ruff check .`
@@ -94,6 +96,32 @@ Tests:
 - Exact file/function query outranks vague semantic match.
 - Semantic paraphrase still retrieves the right record when exact terms differ.
 - Ranking is deterministic for ties.
+
+Active slice-reuse contract:
+
+- Production combines separate BM25 and exact-cosine rankings through A2 RRF;
+  the weighted-score sketch above is not the runtime fusion formula.
+- Reuse derived corpus statistics and normalized matrices across alternating
+  filters. Keys include the complete ordered candidate identities and the
+  relevant model, dimensions, harness, kind, and exclusion constraints.
+- Each LRU holds at most eight slices and 4,096 input-row references. Lexical
+  retention is row-bounded; matrix payload retention is additionally capped at
+  32 MiB. These are cache bounds, not a whole-process memory limit. Oversized
+  derivations still execute correctly without evicting reusable small slices.
+- An uncached lookup clears the most-recent-slice observation so diagnostics
+  cannot mistake an older cached result for reuse by the current request.
+- Hold every input row, including rows removed by numeric validation, while its
+  identity key is cached. Refresh clears every slice; a build that began before
+  invalidation cannot repopulate the new cache generation.
+- These caches do not bypass authorized-source reconstruction, applicability,
+  provider-identity validation, query-vector binding, or current source checks.
+- Compare full ranked outputs and provenance using frozen query vectors. Record
+  fresh provider calls and alternating-filter timings separately; numeric drift
+  in two unchanged live baselines is not evidence of a cache regression or a
+  reason to silently relax an exact-parity checker.
+
+Evidence: `harness._RetrievalSliceCache`, `tests/test_harness_slice_cache.py`, and
+the existing retrieval, provider-identity, and algorithm-effectiveness tests.
 
 ---
 
@@ -594,18 +622,41 @@ Tests:
 - Duplicate summaries collapse to one or two representatives.
 - A lower-ranked but distinct source enters context when many duplicates exist.
 
+Implementation boundary:
+
+- The qualified Echo dependency uses MMR internally for protected recall; this
+  does not enable an MMR reranker for Algo's public harness search. Public
+  retrieval changes still need their own paired quality evaluation (L5).
+- Maintain each remaining candidate's maximum similarity to the selected set.
+  After choosing a winner, compare only that new eligible pair. This preserves
+  greedy selection while reducing full-ranking pair comparisons from cubic to
+  quadratic growth, with linear per-call state.
+- Preserve the existing weight, current-record priority, effective-time and
+  input-order ties, case-folded same-topic exclusions, missing-vector behavior,
+  and the original first-value/max fold. Do not turn an optimization into an
+  unreviewed relevance policy change or drop competing evidence downstream.
+- Compare exact object ordering against the prior algorithm before promotion;
+  count eligible pairs deterministically as well as timing public fixtures.
+  Include malformed vectors and fresh calls after candidate changes. Never
+  persist this transient state, cache a recall decision, or use it to skip the
+  required protection and semantic-availability checks. Report ranker timing
+  separately from embeddings, protected storage, and model-response latency.
+
 ---
 
-### A4. Model-Aware LRU Query Embedding Cache
+### A4. Model-Aware Query Embedding Cache
 
 **Use for:** repeated retrieval calls during one agent turn/session.
 
-**Status:** implemented in `algo_cli/harness.py` via `_QUERY_VEC_CACHE`, `reset_query_embedding_cache()`, and `query_embedding_cache_stats()`.
+**Status:** implemented in `algo_cli/harness.py` via the `_QUERY_VEC_CACHE`
+`WindowTinyLFUCache` instance. Its `clear()` and `snapshot()` methods reset
+transient entries and expose telemetry; no separate module-level reset/stats
+helpers are defined.
 
 Cache key:
 
 ```text
-(query_text, embedding_model)
+(embedding_model, requested_dimensions, embedding_identity, exact_query_embedding_input)
 ```
 
 Why it matters:
@@ -613,10 +664,17 @@ Why it matters:
 - Agent loops often issue repeated or near-identical retrieval calls.
 - Embedding calls are expensive even when local.
 - Model name in the key prevents cross-model vector pollution.
+- Requested dimensions distinguish a numeric override from model-default mode,
+  even when both produce the same vector width. The exact input includes any
+  model-specific query instruction; display text alone is not the cache identity.
+- Runtime identity fingerprints the configured local endpoint, requested model,
+  and observed Ollama model digest. A changed tag or endpoint cannot reuse an
+  equal-width vector merely because its model name still matches.
 
 Harness contract:
 
-- Input: query text and embedding model.
+- Input: exact query embedding input, model, requested dimension mode, and a
+  freshly validated provider/model-artifact identity.
 - Output: cached or freshly computed vector.
 - Telemetry: cache hit/miss/eviction/clear count plus size/capacity.
 
@@ -624,7 +682,12 @@ Tests:
 
 - Same query/model calls embedder once.
 - Same query/different model calls embedder twice.
-- Cache evicts least-recently-used entry after capacity.
+- Same query/different dimension mode never reuses the prior vector.
+- Same query/model/width with a different identity computes a new vector.
+- A warm query cache and the shared per-turn embedding memo still validate the
+  provider. Missing, malformed, or changed metadata makes semantic retrieval
+  unavailable; public keyword retrieval remains available under the same filters.
+- The bounded WindowTinyLFU cache follows its admission/eviction policy.
 
 ---
 
@@ -639,6 +702,8 @@ path
 size
 mtime_ns
 embedding_model
+embedding_dimensions (explicit integer or explicit model-default null)
+embedding_identity (endpoint + requested model + observed artifact digest)
 optional content_hash
 ```
 
@@ -660,6 +725,43 @@ Tests:
 - Changed mtime/size drops vector.
 - Changed embedding model drops vector.
 - Wrong-dimension vector is skipped, not used.
+- Changing dimensions, including returning to model default, rebuilds matching
+  source records. Legacy vectors without request metadata remain unqualified.
+- Capped builds and interrupted batches resume only the current dimension mode;
+  a provider returning the wrong explicit width cannot mark a batch ready.
+- An equal-width artifact or endpoint change makes every old-identity vector
+  ineligible. Previously completed batches keep their truthful identity; a new
+  binding rebuilds them. A change during a batch cannot stamp it with the old
+  identity, and readiness is checked again after progress callbacks.
+
+Implementation boundary:
+
+- Runtime embedding, search, progress, and status use the same requested mode
+  and identity. `algo_cli/embedding_binding.py` probes bounded `/api/tags`
+  metadata without proxies or redirects; unavailable metadata never silently
+  falls back to a model-name-only runtime identity.
+  Python/Rust refresh, capability regeneration, and checked public projections
+  retain that metadata only when the existing source-reuse checks pass. Until
+  migration completes, incompatible vectors stay out of semantic ranking and
+  public search retains its keyword fallback without widening source access.
+- The gateway's versioned `/supplemental/embed-bound/v1` endpoint checks
+  `X-Algo-Ollama-Host` against its configured upstream before forwarding input.
+  Algo accepts only a matching response binding; old or mismatched gateways
+  fall back to the selected direct local SDK endpoint with proxies and redirects
+  disabled. Loopback aliases are not assumed to be equivalent.
+- These before/after metadata observations are not attestation or an atomic
+  provider snapshot. A dishonest endpoint, or an artifact changing away and
+  back between probes, is outside this contract. Do not call it proof of model
+  execution identity or production isolation.
+- Low-level callers that omit dimensions or identity retain legacy unbound
+  behavior; it does not qualify their vectors for a configured public harness
+  request. Echo's separately governed memory profile and embedding settings are
+  unchanged; public lexical fallback is not a protected-memory fallback.
+- `tests/test_harness_embedding_dimensions.py` exercises explicit/default
+  transitions, cache isolation, restart, failure recovery, and runtime wiring.
+- `tests/test_embedding_provider_identity.py` exercises artifact/endpoint
+  changes, bounded metadata parsing, warm-cache validation, partial builds,
+  gateway binding, and automatic/slash runtime wiring.
 
 ---
 
@@ -849,11 +951,28 @@ Harness contract:
 
 - Input: message history.
 - Output: compacted history with no orphaned tool results/calls.
+- Keep the active user request as a separate turn-local anchor. The last
+  user-role message may be a runtime recovery, completion, or finalization
+  control, not a new user instruction or approval.
+- Bind recall and optional context to that exact active request. If compaction
+  drops it, restore it only in the provider request and charge its full estimated
+  message cost before admitting optional context. Do not restore excluded
+  plaintext summaries or duplicate injected context into persisted history.
+
+Current chat-loop wiring: `main.agent_loop` retains the active message by object
+identity across pruning and compaction. `context_budget.build_system_prompt`
+accepts the original request explicitly for required and optional Echo recall.
+This does not make model text, retrieval, or restored history execution authority.
 
 Tests:
 
 - Compaction boundary never splits a tool call from its result.
 - Stale tool results are pruned with their call group.
+- Internal controls survive optional-context injection byte for byte.
+- Repeated identical user text and user-written control-prefix lookalikes do not
+  change which message receives context.
+- Compaction preserves active intent in the provider request without changing
+  the stored history, bypassing required Echo, or omitting its budget cost.
 
 ---
 
@@ -11401,6 +11520,20 @@ Algo CLI exposes `/harness score` and the model-callable `harness_scorecard` too
 
 The retrieval benchmark runs five fixed canaries across three stability passes, requires the canonical ALGO record at top-1, checks adaptive stable-top-k parity, and compares five cold BM25 build/query samples against nine reusable-index samples after three warmups. Correctness failures fail the gate; reusable speedup below `1.5x`, insufficient samples, or warm MAD ratio above `0.25` warn and prevent 10/10.
 
+Its six-record quality fixture is synthetic lexical evidence with explicit
+translated aliases, not representative semantic retrieval. Preserve its raw pass
+or failure, but keep the scorecard gate at warning until a source-bound semantic
+qualification is validated by the scorecard. The current scorecard has no such
+validated evidence path and must not award that missing half point. The separate
+public development evaluation in `scripts/grounded_retrieval_qualification.py`
+measures real hybrid search and source-body read-through; it does not by itself
+qualify held-out quality, protected Echo recall, answer correctness, or superiority.
+
+Catalog completeness and retrieval quality are separate checks. Compare discovered
+capabilities with the effective runtime registry, including generated tool and
+slash descriptions; vector completion over an incomplete catalog is not readiness.
+Neither an indexed capability nor a passing retrieval test grants execution authority.
+
 The algorithm probe runs real production paths without a network/model call. It verifies BM25 provenance and cache reuse, exact-vector score and normalized-matrix reuse, RRF mode/coverage/arithmetic and dual-source provenance, the heap branch of adaptive top-k, a Window TinyLFU cache hit with bounded state, value-aware embedding tier arithmetic, and durable-memory admission with duplicate/secret rejection plus metadata-only persistence. All seven checks must pass.
 
 Scoring is fail-closed: `pass=1`, `warn=0.5`, and `unavailable|fail|error=0`. Critical index, memory-readiness, retrieval, action, benchmark-correctness, or algorithm failures block readiness; other shortfalls degrade it. A disabled optional Echo Veil layer is valid, but enabling it before write, retrieval-consumption, and full persistence are all operational fails the memory gate. Web and Google availability remain unscored capability diagnostics so an intentionally local-only installation is not penalized for absent credentials. Each benchmark/probe result carries structured metrics and evidence digests in the scorecard JSON.
@@ -13957,7 +14090,28 @@ Harness contract:
 - Input: ranked candidates, similarity/coverage features, token budget.
 - Output: selected records with marginal-gain provenance.
 - Telemetry: relevance retained, sources/concepts covered, redundancy avoided.
-- Fallback: MMR when feature extraction is unavailable.
+- Fallback: retain compatible relevance ordering when coverage features are
+  unavailable. A proposed reranker, including MMR, needs paired regression
+  evidence before activation.
+
+Current runtime subset:
+
+- `harness.hybrid_search` applies deterministic source-repeat decay to its
+  existing bounded candidate pool: `rrf_score / (1 + 0.5 * selected_from_source)`.
+  Original RRF scores remain unchanged and selection policy is disclosed.
+- A source means a document within one harness, not all capabilities implemented
+  in the same Python file. Each runtime capability and explicitly named pattern
+  is distinct. Kind-filtered queries retain relevance ordering.
+- Exact pattern IDs and code-like capability names enter the lexical candidate
+  pool before fusion; they never bypass status, applicability, conflicts, or
+  resource budgets. Discovery still grants no execution authority.
+- This is source-aware selection, not facility-location optimization, semantic
+  deduplication, token-cost optimization, or full implementation of L5. The
+  public development ablation rejected physical-file grouping of tools and
+  the tested MMR variants after multi-result regressions.
+- Retrieval evaluations validate label eligibility before provider calls.
+  Historical documents are exclusion checks, scored separately from positive
+  recall. Correcting an invalid label is not a ranking improvement.
 
 Tests:
 
@@ -14284,6 +14438,264 @@ deletions, concurrency barriers, and the live index shape.
 
 ---
 
+## Embedding Recovery Audit - 2026-09-07
+
+Embedding completion must mean usable vectors and durable, source-current work,
+not merely a successful HTTP request. Local coverage is an operational fact to
+measure; it is not an algorithm-quality or competitive-ranking score.
+
+### Contract
+
+- Validate each complete response batch before accepting any vector: exact
+  cardinality, nonempty numeric finite nonzero vectors, and consistent dimensions
+  with already embedded records for the same model. Reject malformed batches;
+  retrying cannot make an invalid payload valid.
+- Checkpoint valid completed batches periodically and on a backend error,
+  malformed response, or keyboard cancellation. A resumed build skips durable
+  completed records. Cancellation propagates instead of becoming automatic retry.
+- Check source freshness during bulk builds as well as small incremental builds.
+  Never write a fresh index timestamp over stale source content. A source change
+  stops the pass and requires refresh before continuing; it is not a completed
+  build. Hard process termination and disk failure can still lose the most recent
+  uncheckpointed batch.
+- Refresh record metadata after timestamp changes, but retain an existing vector
+  when its exact bounded embedding input and record kind are unchanged. Actual
+  embedding-input edits invalidate the vector. This prevents reinstall or touch
+  operations from discarding otherwise reusable work.
+  Generated runtime-capability records likewise compare their actual content,
+  not the action-registry package timestamp.
+- Protected startup reads the canonical `harness_index.json` with a dedicated
+  128 MiB bound through the same ownership, link, reparse, and descriptor-stability
+  checks. General config and credential readers keep their 16 MiB ceiling (and
+  smaller caller limits). The live vector index exceeded the general ceiling and
+  was previously deleted as unreadable on startup. A binary sidecar remains a
+  separately measured optimization, not permission to remove all bounds.
+- For recognized harness self-evaluation queries, reserve the first result for
+  the eligible canonical ALGO reference. Full-coverage RRF can otherwise bury a
+  lexical-only canonical match behind generic dual-ranked records. Preserve raw
+  RRF scores, disclose `canonical-harness-reference` selection, and honor source
+  and kind exclusions. Ordinary queries retain ordinary fusion ordering.
+- The exact shipped `provider-auth-recovery.md` is reviewed public documentation,
+  not an OAuth credential store. Index it and monitor its freshness while retaining
+  secret-name exclusions elsewhere, including plural `secrets` and `tokens`.
+  The exception does not cover external copies, symlinks, or multiply linked files.
+- Keep required Echo authority separate from the legacy graph. A disabled graph
+  remains unqualified, not passed; its remediation must not recommend enabling a
+  conflicting mutable-memory store.
+
+### Evidence and Limits
+
+`tests/test_harness_embedding_recovery.py` reproduces short-response progress
+loss, cancellation loss, malformed-vector false readiness, mixed dimensions,
+bulk source-change masking, invalid batch sizes, and timestamp-only invalidation.
+It also checks resumability, valid progress preservation, and real content edits.
+`tests/test_harness_index_restart.py` covers large-index survival and retained
+config/auth bounds; `tests/test_harness_hybrid_canonical.py` covers canonical
+selection under full coverage without fabricated relevance scores.
+These deterministic checks establish the recovery contract, not semantic recall.
+
+Query vectors have the same validation boundary as document vectors: accept one
+finite, numeric, nonzero vector of a usable dimension before caching it. Reject
+booleans, malformed batches, nonfinite values, and dimension mismatches. Own the
+cached list instead of retaining a provider's mutable object; normalize before
+float32 conversion, and invalidate query vectors when the index is replaced.
+An unavailable semantic branch may fall back to lexical evidence, but must not
+poison subsequent queries or call the embedding provider for an empty slice.
+Cancellation propagates; a later explicit query is a new bounded opportunity,
+not an unbounded retry loop. `tests/test_harness_query_recovery.py` covers this
+contract on both scalar and NumPy paths.
+
+Apply model-specific input formatting only at the harness query boundary.
+Recognized `qwen3-embedding` names and tags use the one-sentence retrieval
+instruction and `Instruct: ...\nQuery:...` format from the
+[Qwen model card](https://huggingface.co/Qwen/Qwen3-Embedding-8B).
+Keep retrieval documents unprefixed, other model names unchanged, and the raw
+query available to lexical ranking. This does not alter Echo memory embeddings.
+Cache the exact formatted input with the model, so a plain-query vector cannot
+satisfy an instructed query and an instruction change cannot reuse an old vector.
+Disclose the selected `query_embedding_profile` in rank provenance; that label
+is not proof of vector availability, which remains explicit in `rank_sources`.
+`tests/test_harness_query_profiles.py` checks format isolation, cache identity,
+fallback recovery, cancellation, and empty-slice behavior. Measure query profiles
+on frozen paired cases before adoption; do not assume vendor benchmark gains
+transfer to this harness or relabel development cases as independent evidence.
+
+Expose retrieval filters to the model instead of treating an empty filtered
+slice as proof that a source does not exist. Normalize case and surrounding
+whitespace, name `algo-cli` in the tool schema, and explain that `kind=memory`
+includes shipped policy contracts, not mutable agent memory. Include each hit's
+kind and the active filters. On an empty filtered result, report the available
+harnesses and kinds from the same authorized snapshot, never excluded host
+records. Do not silently widen a filter or call the embedding provider for an
+empty slice. `tests/test_harness_operational_retrieval.py` checks this discovery
+contract; source-read and generated-answer checks remain separate quality gates.
+
+Evaluate relevance separately from index coverage and ranking microbenchmarks.
+`scripts/grounded_retrieval_qualification.py --output NEW_REPORT.json` builds an
+isolated, public-only index and exercises the production hybrid search plus
+source read-through using a local embedding model. Its fixed development set
+contains exact, paraphrased, multilingual, filtered, and multi-evidence queries.
+Bind model identity, source bytes, ranking inputs, case labels, and raw samples;
+retain failed queries and reject source drift. A lexical fallback cannot pass
+semantic qualification. Check evidence in the actual source body, not merely
+the search title or generated reader wrapper. Unjudged results are not evidence
+of irrelevance. These public labels are development data, not held-out quality,
+generated-answer correctness, protected-memory evaluation, or competitor proof.
+Do not tune labels after seeing misses or generalize a small development pass.
+
+Generated-answer checks must bind each claim to supporting evidence, not just
+to a cited document. `algo_cli/evals/grounded_answers.py` freezes answer types,
+per-claim supporting spans, and equivalent authorities before model execution.
+`python -I scripts/grounded_answer_qualification.py --output NEW_DIRECTORY`
+uses a non-editable installed interpreter, the normal catalog, required Echo,
+and an execution guard permitting only public harness search/read. It runs eight
+public development questions, with a 120-second request deadline, 150-second
+worker limit, and eight tool rounds. Source or configuration drift stops the run.
+The scorer rejects unrelated or unread quotes, partial claim coverage, duplicate
+JSON keys, and incorrectly typed values. Qualification receipts retain failed
+verdicts and numeric metrics, not arbitrary model text, queries, or memory payloads.
+These annotated-span checks are not general semantic entailment, independent
+held-out quality, coding success, or competitive proof. Equivalent authorities
+belong to a new frozen protocol version; never rescore an older failure under
+new labels or claim model improvement from a scoring-rule change.
+
+Default package mypy and the CI runtime contract are distinct from optional
+`mypy --strict`: the September 7 strict audit exposed 565 errors across 73 files.
+Do not describe the repository as strict-clean until that separate backlog passes.
+
+See `docs/CLASS-A-HARNESS-PLAN.md` for the broader measurement and delivery plan.
+
+---
+
+## Bounded Runtime Recovery Audit - 2026-09-07
+
+Model recovery, tool retry, approval, and task verification have different
+contracts. A completed provider stream does not prove completed work.
+
+### Contract
+
+- Retry an empty, reasoning-only, truncated, or transiently interrupted Codex
+  Responses request at most twice, with 1- and 2-second waits, only before
+  delivering answer text or valid tool calls. Preserve the exact request and
+  completed tool results. Do not replay the surrounding tool loop, suppress
+  cancellation, retry permanent protocol failures, or restart a partial answer.
+  Request opening, stream reading, and reconnecting share that same budget;
+  transient HTTP failures and wrapped transport errors must not escape it.
+  Certificate verification failures remain nonretryable. Reconcile sparse final
+  text by stable message ID, not its position in a shortened output list.
+- Keep native database failures outside provider retry. On POSIX, opening and
+  closing a live SQLite database or sidecar for a permission check can cancel
+  that process's SQLite locks. Validate metadata through pinned directories
+  without opening existing database files, preserve identity and access checks,
+  and prove writer exclusion with a second process. Do not delete WAL/SHM files,
+  reset keys, or replay uncertain writes as a repair. A fixed source tree is
+  not an installed fix until the exact dependency pins and artifact checks pass.
+- Balance each tool batch before evaluating progress. Three consecutive batches
+  with no invocation or verified deduplicated success stop the turn as partial.
+  A permitted observation resets that consecutive budget; a denial does not.
+  Give one bounded recovery hint before stopping. Do not let wording variants
+  of a blocked command consume the entire model budget.
+- Distinguish unavailable noninteractive approval from a human denial.
+  `--approval-mode auto` grants session-preapproval only. It never grants
+  action-time or handoff authority, even for a benchmark or a proposed retry.
+- An explicitly inherited local supervisor socket can carry exact one-shot
+  approvals in `interactive` mode. Bind each decision to a fresh request nonce
+  and action digest; cap frames and review time, reject stale/malformed replies,
+  and close the descriptor on exit. Recheck arguments and authority after review
+  before issuing the existing single-use consent. Handoff rules remain intact.
+  This is operator-supplied consent, not automatic benchmark permission or
+  independently attested reviewer identity. See `docs/supervised-action-review.md`.
+- A terminal reviewer must display the complete bounded request with terminal
+  controls escaped, keep its terminal and server descriptor out of the agent,
+  and require a fresh request-specific decision. Never truncate an action and
+  approve unseen arguments. Include review time and decision counts in supervised
+  qualification, keep task-solving help out of that review, and reject supervised
+  runs from unattended rankings rather than conflating the two authority modes.
+- Take a private deep snapshot of tool arguments before review. Give invokers
+  their own copy so later caller or tool mutations cannot change the reviewed
+  operation or its audit record. Re-reading a shared nested dictionary is not
+  an immutable action contract.
+- Give each in-flight baseline observation its own single-use grant, including
+  concurrent reads of the same target. Sharing a cached one-use grant creates
+  an authorization race even when both reads are independently allowed. Bind
+  directory listings to their actual path, and make policy path resolution
+  match execution, including tilde expansion and literal surrounding spaces.
+  A consumed, revoked, or expired no-confirmation grant fails closed without
+  sending an invalid approval frame or reviving that grant through a prompt.
+  Test an ordered competing-read interleaving followed by a real transport
+  review in a synthetic terminal; transport success is not operator consent.
+- Retain an uncertain or explicitly nonretryable attempt through skipped calls,
+  denials, unrelated edits, observation churn, and persisted-ledger sanitization.
+  Neither time nor a skipped request reconciles an effect. Reserve finite ledger
+  capacity atomically before another mutation; when full, deny new effects but
+  retain observations for reconciliation. Release reservations on every exit.
+  Optional volatile fingerprints do not establish cross-process durability;
+  required protected state must still satisfy its persistent-key contract.
+- One-shot `done` describes a model turn, with `completion_scope=model_turn` and
+  `task_verification=not_evaluated`. Empty final output and blocked progress are
+  partial, not success. Absence of a pending mutation check is not affirmative
+  task verification. External checkers remain independent authority.
+- Treat user interruption as control flow, not an ordinary retryable tool error.
+  Stop the remaining batch and model rounds; retain a typed outcome for the
+  interrupted action and cancelled, noninvoked results for queued actions.
+  An interrupted mutation can remain unknown even though the run is cancelled.
+  Release effect leases and retry-capacity reservations before propagating the
+  interrupt. Preserve program/journal receipts when available without allowing
+  receipt failure to resume execution. Shell cancellation terminates its child
+  process group, then propagates Ctrl-C instead of returning an error string.
+  Parallel observations already in flight still require outcome collection;
+  cooperative cancellation is not immediate preemption of arbitrary adapters.
+- Preserve invocation evidence independently of exit status. A shell command
+  can write before failing or timing out; record a possible workspace mutation,
+  invalidate earlier reads, and require later verification without claiming the
+  effect succeeded. Denied, skipped, or otherwise noninvoked actions cannot add
+  mutation or verifier evidence. Keep uncertain-effect retry barriers intact.
+- Bind verification before crediting it: use the active execution workspace,
+  retain directory/runner selectors while checking scope, resolve outside and
+  symlinked targets, and refuse to promote subproject-only checks to global
+  proof. Automatic Git verification must cover the known changed paths; an empty
+  tracked diff cannot verify untracked files or an unknown shell write set.
+  Missing Git or redirected Git state leaves the result incomplete, never
+  complete with a manual-review warning. A recognized command is still only a
+  bounded local verifier, not proof of test relevance or independent task success.
+- Optional privacy projections reuse existing key material without creating a
+  Keychain item during tool rendering. Explicit provisioning retains creation;
+  required Echo protection still fails closed. A read-only Keychain lookup is
+  not a guarantee against every locked-backend prompt or stall.
+- Benchmark answer extraction consumes structured content deltas after the last
+  tool call; thinking and tool-result text are not the final answer. Preserve raw
+  failures and distinguish protocol completion, scope safety, and checker pass.
+- Treat checker execution as its own observable contract. A zero process exit
+  or printed pass message cannot prove that tests ran. Require bounded, fresh
+  completion evidence for every frozen test ID and setup/call/teardown phase;
+  reject skips, xfails, duplicates, missing phases, and malformed receipts.
+  Distinguish an expected failing baseline from an incomplete checker, and do
+  not start the agent when that baseline is unqualified. Bind task and checker
+  source digests, retain completion records, and version scoring changes rather
+  than reclassifying historical runs. An in-process observer is not isolation
+  or independent attestation against compromised candidate code or a hostile host.
+
+### Evidence and Limits
+
+`tests/test_chatgpt_stream_recovery.py`,
+`tests/test_agent_progress_recovery.py`, `tests/test_james_dispatch.py`, and
+`tests/test_tools.py` cover recovery, no-progress limits, retry retention,
+concurrent reservation, and safe release. Key-store and privacy-view regressions
+cover existing-only key lookup; competitor-runner tests cover answer extraction.
+`tests/test_dispatch_interruptions.py` covers serial/parallel cancellation,
+uncertain effects, pipeline/program cleanup, and actual POSIX SIGINT propagation.
+`tests/test_completion_integrity.py` covers partial shell writes, workspace-bound
+verification, untracked-diff false passes, and one-shot partial completion.
+
+A frozen local-model probe originally blocked in macOS Keychain item creation.
+After repair, a sequential installed-runtime probe executed observations and
+stopped at the approval boundary in 11.47 seconds instead of timing out. Another
+probe was confounded by concurrent embedding-driven model eviction/reload.
+These are diagnostic runs, not a controlled speedup or a successful coding
+benchmark. Do not weaken authority to turn the existing 0/4 baseline green.
+
+---
+
 ## Julia Governed System Memory — 2026-07-21
 
 Algo CLI retains its small `memory.json` compatibility list for pinned facts and
@@ -14558,6 +14970,12 @@ package content hashes with source outside the repository import path. Exercise
 the installed provider catalog and one no-tool request before declaring repair.
 Keep the prior installed package available for rollback. A version string alone
 cannot establish parity, especially for a local patch with an unchanged version.
+Read the wheel's declared `force-include` mappings as well as the Python package
+tree. Include shipped documentation and skill-directory contents in the same
+installed-path comparison and digest. Missing or stale declared resources must
+fail even when every Python module matches. Reject malformed mappings, path
+escapes, links, unavailable sources, and conflicting destinations. Undeclared
+generated non-Python extras remain outside this source-parity claim.
 
 **Evidence:** `scripts/oliver_installed_source_parity.py`,
 `scripts/oliver_smoke_wheel_install.py`, `scripts/smoke_installed_release.py`, and
@@ -14566,7 +14984,9 @@ or bypass external qualification gates.
 
 ### O4. Prerequisite-Partitioned Diagnostic Probes
 
-**Status:** proposed
+**Status:** implemented
+
+**Applicability:** {"prerequisites": ["local-files"], "fallback": "Report unavailable dependencies; continue independent checks without an aggregate pass."}
 
 **Use for:** improving diagnosis when one unavailable prerequisite currently
 prevents unrelated checks from running.
@@ -14579,9 +14999,163 @@ aggregate all-required rule. Never convert partial execution into an overall pas
 **Acceptance:** remove the canonical embedding and prove independent checks still
 execute while vector checks remain unavailable; inject failures and prove they
 cannot be hidden by unavailable neighbors. Compare executed-check coverage and
-latency against the current all-or-nothing prerequisite probe. No runtime benefit
-is claimed until `algo_cli/evals/algorithm_effectiveness.py` and its tests adopt
-and measure this behavior.
+latency against the current all-or-nothing prerequisite probe.
+
+**Evidence:** `algo_cli/evals/diagnostic_graph.py` validates the DAG before any
+callback runs. `algo_cli/evals/algorithm_effectiveness.py` uses it in the existing
+scorecard path. `tests/test_diagnostic_graph.py` and
+`tests/test_algorithm_effectiveness.py` prove that missing vectors leave five of
+seven checks executable, rather than zero, while two remain unavailable. Errors
+and failures dominate unavailable results. Independent cache checks use an
+isolated instance of the production cache; persisted-query cache reuse is still
+checked on the vector-dependent path. This is diagnostic coverage, not faster
+model inference or full external-browser qualification.
+
+### O5. Source-Bound Pattern-Level Retrieval
+
+**Status:** implemented
+
+**Applicability:** {"prerequisites": ["lexical-retrieval", "local-files"], "fallback": "Retain the parent catalog reference when parsing fails; report the catalog error and do not invent pattern records."}
+
+**Use for:** returning a relevant contract near the end of this catalog without
+substituting its opening summary. Extend H2 identity and A1/A2 retrieval.
+
+On refresh, parse each unfenced pattern heading into a stable record such as
+`algo-cli:algorithm:ALGO.md#O5`. Retain status, section, line span, whole-source
+and pattern hashes, applicability, and bounded redacted body text. The existing
+lexical and vector paths rank these records. Keep the parent record for backward
+compatibility. Reuse an embedding only when its pattern content and indexed text
+remain identical; delete removed patterns. A source mismatch at `/hread` requires
+refresh rather than reading an old line span. Retrieved text is reference data,
+not permission, activation, or evidence of implementation.
+
+**Bounds:** catalog 2 MB, 4096 patterns, indexed body 32000 characters per
+pattern; the embedding input keeps the existing 4000-character bound. Long
+contracts may require `/hread`; retrieval does not claim complete embeddings.
+
+**Evidence:** `algo_cli/harness.py`, `algo_cli/pattern_catalog.py`, and
+`tests/test_pattern_catalog_runtime.py`. O7 measures six late-catalog contracts
+and two applicability fixtures with the production ranker and a fixed budget.
+
+**Protected operational path:** a record category is not its authority. The
+three shipped governance contracts retain their historical `memory` IDs, but
+are product documentation, not mutable agent memory. Under Echo authority,
+reconstruct them only from exact allowlisted paths and descriptor-bound,
+bounded UTF-8 reads; reject links, path replacement, and forged classification.
+Rebuild runtime capability text from the code-owned registry. Search, automatic
+context, and `/hsearch` use this public projection; `harness_read` and `/hread`
+revalidate the source before returning its body. Host memory remains available
+only through Echo Veil. Documentation never grants execution permission.
+
+Reconstruct before cache reuse. Preserve one previous projection only when the
+new records compare equal, so ranking caches retain stable row identities
+without skipping source reads. Copy carried vectors to prevent later index
+mutation from silently changing the retained projection. A changed contract's
+indexed text invalidates its embedding. These checks do not authenticate every
+field in the ordinary public index or protect against a compromised host.
+`tests/test_harness_operational_retrieval.py` covers these boundaries.
+
+### O6. Executable Pattern Evidence Registry
+
+**Status:** implemented
+
+**Applicability:** {"prerequisites": ["repository-tests"], "fallback": "Show unavailable test evidence; use an explicit trusted checkout with the pattern-runtime --repo option."}
+
+**Use for:** extending B198-B203 without treating a declared status or a pasted
+benchmark as verification. A repository-owned registry binds pattern IDs to
+entrypoints, test selections, dependency IDs, and activation descriptions.
+
+Keep `implemented`, `enabled`, `tested`, and `measured` separate. Entrypoint
+presence supports only implementation inspection. Unknown activation remains
+null, not true. Test evidence requires an actual successful, nonempty test run;
+measurements require a completed source-matching comparison. Missing registration
+leaves implementation unknown. Hash the transitive registry closure and
+conservatively include all Python package sources, test sources, project config,
+lockfile, and catalog. Missing, changed, or deleted dependencies invalidate prior
+evidence; source changes during execution yield stale evidence.
+
+Only explicit operator verification launches fixed pytest arguments without a
+shell, with a timeout and bounded parsed results. No retrieved Markdown can
+choose test commands. Dated JSON artifacts include raw source hashes and an
+integrity checksum. These are unsigned local records, not independent approval,
+tamper-proof attestations, deployment receipts, or M8 qualification.
+
+**Evidence:** `algo_cli/evals/pattern_evidence.py`, `algo_cli/pattern_runtime.py`,
+`tests/test_pattern_evidence.py`. Use `/harness patterns status` for current
+evidence instead of copying a permanent pass into this catalog.
+
+### O7. Paired Pattern and Interaction Comparisons
+
+**Status:** implemented
+
+**Applicability:** {"prerequisites": ["repository-tests", "lexical-retrieval"], "fallback": "Keep benefit unmeasured if the frozen comparison cannot run; do not substitute catalog claims."}
+
+**Use for:** extending B199 with controlled comparisons rather than assuming
+every individually useful pattern improves the combined harness.
+
+Freeze task IDs, corpus content, checker, model identity, and resource budget.
+Run four cells: O5 records off/on crossed with O8 applicability off/on. Rotate
+cell order within each task and repeat; keep per-task paired deltas and the
+difference-of-differences correctness interaction. Preserve raw correctness,
+latency, context size, token accounting, and applicability-policy violations.
+Use the exact production lexical ranker with explicit isolated indexes, not a
+second ranking implementation or mutations of the live index.
+
+**Scope:** this first suite uses six late-catalog queries and two synthetic
+applicability tasks, top-1 selection, and 2000 context characters. The model is
+explicitly `none:production-lexical-ranker`: actual provider tokens are zero;
+context token counts are estimates, not tokenizer or billing measurements.
+It tests bounded contract retrieval, not generated-answer quality. A discarded
+warm-up runs first; rotating corpora can miss or evict the bounded lexical-slice
+cache, so latency includes ranking cache costs. No universal speedup is asserted.
+
+**Evidence:** `algo_cli/evals/pattern_comparison.py`,
+`tests/test_pattern_comparison.py`, `/harness patterns compare`. Reports remain
+dated and source-bound; incomplete cells or stale source cannot support a claim.
+
+### O8. Applicability-First Compatible Selection
+
+**Status:** implemented
+
+**Applicability:** {"prerequisites": ["lexical-retrieval"], "fallback": "Exclude malformed or inapplicable candidates and continue with eligible reference records."}
+
+**Use for:** extending B202 so relevance does not override applicability.
+
+Read one optional `Applicability` JSON declaration per pattern. Its closed schema
+supports `environments` (darwin/linux/windows), observed capability
+`prerequisites`, conflicting pattern IDs, nonnegative `resource_costs`, and a
+descriptive `fallback`. Reject duplicate keys, null lists, boolean costs,
+nonfinite numbers, and unknown fields. No declaration means an unconstrained
+reference, not a claim of cross-platform implementation.
+
+Filter before lexical/vector ranking and coverage calculation. Reject conflicts
+in both directions against caller-supplied active patterns and selected results;
+sum declared costs across selected patterns within supplied resource budgets.
+Unspecified budgets are not invented. Runtime context observes local files,
+lexical availability, NumPy, repository tests, and active tool names, not provider
+entitlement or user approval. The same-sized filtered corpus must not reuse a
+cache built for different records. `/harness patterns explain ID` reports local
+exclusion reasons and fallback text without running the fallback.
+
+Use one explicit index snapshot for lexical ranking, vector ranking, coverage,
+and tool-output formatting. The model-facing search uses the same local hybrid
+path with bounded transport timeouts and discloses keyword-only degradation;
+it does not launch corpus embedding work. When the vector ranker is unavailable,
+preserve lexical selection without adding the hybrid source-repeat penalty.
+Component recall is not operational
+success: also test the real search/read tools and a bounded installed model
+turn. Measure repeated-query cache reuse separately from interleaved corpus
+switches, and distinguish cached query-vector timing from provider latency.
+
+An exact tool identifier in the user's prompt satisfies specialist discovery
+intent, including case and surrounding punctuation. Partial names do not.
+Keep declared class restrictions and schema/count budgets intact; selecting a
+tool exposes its schema and never invokes it or changes approval requirements.
+An answer without the required source lookup is a failed operational check,
+even when its final statements happen to be correct.
+
+**Evidence:** `algo_cli/pattern_catalog.py`, `algo_cli/harness.py`,
+`tests/test_pattern_catalog_runtime.py`; O7 records compatibility interactions.
 
 ## Runtime Pattern Review - 2026-09-04
 
@@ -14603,3 +15177,256 @@ The seven frozen offline retrieval-quality cases pass their recall, MRR, nDCG,
 and citation-precision thresholds. This is evidence for those fixtures, not a
 global score for all catalog entries. Historical measurements above remain dated;
 they are not silently promoted to current performance claims.
+
+## Source-Root Read Consistency
+
+Discovery and reading must apply directory exclusions relative to the current
+configured source root. A legitimate installation or checkout under `tmp`,
+`.venv`, or another excluded ancestor must not become searchable but unreadable.
+Keep credential-name checks on the complete relative path and reject excluded
+subdirectories even when an old index record still names the file. Cached
+relative-path metadata grants no exception. Use lexical components for read
+exclusions so links or parent traversal cannot erase a forbidden component;
+protected reads still require their descriptor-bound source validation.
+
+Exercise the same discover/search/read path under temporary and virtual-
+environment ancestors on every supported platform. Preserve failed hosted
+results and identify the running test before extending a job deadline. These
+checks establish read-boundary consistency, not representative answer quality.
+
+**Evidence:** `algo_cli/harness.py`, `tests/test_harness_read_paths.py`,
+`tests/test_harness_public_runbooks.py`,
+`tests/test_harness_operational_retrieval.py`.
+
+## Bounded Test Watchdogs
+
+A diagnostic timer that prints stacks but leaves a blocked test running does
+not establish a bounded failure. The locked CI pytest runtime must terminate
+with a nonzero status after the existing 120-second per-test deadline, while
+the outer job keeps its separate deadline. Cover fixture setup, the test body,
+and fixture teardown; retain ordinary success and assertion-failure behavior.
+Keep matrix fail-fast disabled so one platform failure cannot hide the others.
+
+Validate this contract with genuinely stalled disposable subprocesses and a
+shorter test-only timer, not just a string check of workflow configuration.
+The watchdog makes a stalled test observable; it does not diagnose the stall,
+cover collection or session-shutdown hangs, or prove descendant cleanup. A
+cancelled run or missing log is not a passing test, and stack dumping must never
+justify relaxing a coverage floor, skipping a test, or extending a benchmark.
+Preserve the failed run and qualify a changed diagnostic on a separate run.
+
+**Evidence:** `.github/workflows/oliver-ci.yml`,
+`tests/test_ci_timeout_diagnostics.py`.
+
+## Bounded Test Metadata
+
+Keep adversarial payloads in fixtures, not in their displayed test identifiers.
+Give oversized responses, malformed documents, and deeply nested inputs short,
+explicit parameter IDs. Do not shrink a boundary-test payload merely to reduce
+logging. The full collected node ID must fit within 1024 UTF-8 bytes; reject an
+oversized ID during collection with a bounded diagnostic that omits parameter
+contents. Report at most five examples even when many IDs violate the limit.
+
+Exercise the real pytest subprocess both ways: an unlabeled multi-megabyte
+fixture must fail collection without flooding output, and the labeled fixture
+must execute its original assertions successfully. Preserve ordinary test
+failures and the existing watchdog and job deadlines. Fast local tests with
+file-backed logs do not prove that a hosted runner can drain the same output;
+compare the actual hosted log boundary and requalify after changing metadata.
+Do not infer a product parser deadlock from the last visible passing test.
+
+**Evidence:** `tests/conftest.py`, `tests/test_ci_output_budget.py`,
+`tests/test_embedding_provider_identity.py`,
+`tests/test_competitor_benchmark.py`.
+
+## Byte-Stable Catalog Evidence
+
+Digest-bound source readers must agree on the exact UTF-8 bytes, including line
+endings. Disable universal-newline translation when indexing and reading a
+pattern catalog; the protected descriptor-bound read must not normalize bytes
+to accommodate a stale index. LF, CRLF, and CR sources may all be valid, but a
+newline-only edit changes source identity and requires an index refresh. Keep
+strict decoding, byte limits, source authorization, and link checks intact.
+
+Read shipped UTF-8 documentation with an explicit encoding. Qualify opted-in
+readers under both UTF-8 and Windows cp1252 defaults instead of globally forcing
+an encoding that hides portability defects. Use exact byte fixtures on every
+platform, confirm unchanged protected and ordinary reads, then reject newline
+changes and link replacements. Local simulation supplements native CI; it does
+not replace Windows qualification or prove representative task quality.
+
+**Evidence:** `algo_cli/harness.py`, `tests/conftest.py`,
+`tests/test_harness_operational_retrieval.py`,
+`tests/test_pattern_catalog_runtime.py`, `tests/test_grounded_answers.py`.
+
+## Admission-Aware Verification Recovery
+
+Discover only actions composable by the typed program language, intersected
+with the active runtime authority and globally applicable protection rules.
+Discovery does not grant execution authority. Empty discovery must explain the
+unavailable capability instead of prescribing another impossible program.
+
+Reject known policy denials, invalid static plans, and unavailable adapters
+before approval or effect dispatch. Validate every static program step before
+starting the program, and revalidate each step at execution. A pre-dispatch
+denial must not create uncertain-effect evidence. A failed request after
+dispatch remains uncertain when its external effect cannot be reconciled.
+
+Browser opening, navigation, clicking, typing, scrolling, and closing can change
+external state. Require action-time approval and at-most-once semantics; an
+adapter's success string or retry hint is not independent effect verification.
+The unqualified Cobalt browser service is unavailable while Echo is the memory
+authority. This refusal does not implement the missing browser containment,
+identity-bound reconciliation, signing, or M8 external qualification.
+
+After the first withheld unverified final answer, allow at most four recovery
+model rounds within the existing work budget. Count discovery, transformations,
+rereads, and additional writes against that same window. A passing verifier on
+the last recovery round permits only a tool-free final answer. Otherwise retain
+the work and stop as partial. Chat may use the existing tracked-path automatic
+Git verifier; it cannot cover untracked files or uncertain shell scope.
+
+Both chat and Agent Blocks must request permitted verification only. With Echo
+selected, do not seek shell approval or a browser workaround. Discovery and
+source reads are not functional tests; an honest partial result is not a
+representative coding success or evidence of competitive superiority.
+
+**Evidence:** `tests/test_nathan_action_admission.py`,
+`tests/test_nathan_verification_recovery.py`,
+`tests/test_cobalt_browser_service.py`, `tests/test_completion_integrity.py`.
+
+## Bounded Search Execution
+
+Treat model search patterns as data, including leading dashes. Disable inherited
+ripgrep configuration and terminate option parsing before the pattern and path;
+quoting alone does not prevent a positional value from becoming an option.
+Keep native regex and glob behavior for the existing ripgrep path.
+
+Bound output while reading each process pipe, not after capturing it. Apply a
+global matching-line ceiling and a UTF-8 byte ceiling, including diagnostics and
+truncation notices. A single enormous line must not fill agent context. Mark
+partial results explicitly and preserve reported search failures even when a
+limit was also reached. Bound pattern and glob inputs before launching a child.
+Normalize presentation line boundaries after bounded decoding, including CRLF
+and Unicode separators, and reapply the line ceiling to the bounded text. This
+does not normalize source bytes used for identity or protected-read verification.
+
+The Python fallback and direct-file regex path execute in an isolated child
+process with the same deadline and output collector. A catastrophic backtracking
+regex, full output pipe, or closed-pipe sleeping child must not strand the agent.
+Reap children and close all child pipes on normal exit, timeout, output limits, reader
+failure, or cancellation. Specify UTF-8 explicitly for the fallback protocol.
+
+These controls bound matcher execution; they do not establish a filesystem
+containment boundary. Root admission is not descendant read authority. When
+Echo owns memory, use the separate protected-snapshot path below; a passing
+matcher suite alone is not proof of its authorization properties.
+
+**Evidence:** `algo_cli/search_execution.py`, `algo_cli/tools.py`,
+`tests/test_search_execution.py`, `tests/test_tools.py`.
+
+## Protected Descendant Search
+
+Capture the protected-root paths and filesystem identities, including resolved
+deny aliases and migration-residue rules, before a recursive search. Carry this
+immutable policy into the worker and compare a fresh snapshot before releasing
+its result. Refuse if the policy is unavailable or the completed snapshot differs.
+Bind the selected root across the parent-to-worker handoff. Moving a registered
+protected directory under an allowed name must not grant read authority.
+
+On POSIX, open every ancestry edge with directory-relative no-follow descriptors.
+On Windows, use the existing native ancestry pins, reject reparse points and DOS
+short-path aliases, and validate the descriptor's final path before reading.
+For each candidate, authorize its path and identity, require a singly linked
+regular file, and compare descriptor/path identities before and after the bounded
+read. Recheck ancestry before accepting bytes. A race discards the operation;
+it does not authorize a retry or fallback through ordinary path-based reads.
+
+Only these validated in-memory snapshots reach the regex engine. Ripgrep receives
+bytes on stdin, never a real traversal root; returned line numbers map back to
+their source files. Python matching remains in the deadline-isolated worker.
+Bound stdin, stdout, and stderr together, including blocked writers and early
+reader exit. No plaintext staging tree or inherited ripgrep configuration is used.
+
+Use the established `wcmatch` glob and `pathspec` ignore parsers instead of a new
+glob language. Protected mode honors local `.gitignore` and `.ignore` files from
+within the requested root only; it does not consume ancestor/global ignore files.
+Positive explicit globs override those local ignores, not protected-root or
+fixed build-directory exclusions. Parse ignore files through the same protected
+reader. Invalid/oversized ignore policies fail closed. Binary files and aliases
+are omitted. Pattern errors remain distinct from unsafe-path errors.
+
+The worker bounds individual files at 2,000,000 bytes, aggregate source reads at
+32 MiB, reads at 5,000 files, directory entries at 20,000, depth at 64, and brace
+expansion at 256 alternatives, under the existing 20-second deadline. Disclose
+scan-budget incompleteness separately from no matches; do not label a bounded
+prefix as an exhaustive search. Protected timeout results release no partial text.
+
+Synthetic private canaries must test the actual dispatch path, plus links,
+renames, file replacement, policy changes, glob/ignore controls, line numbering,
+Unicode limits, and process cleanup. Local POSIX results do not qualify native
+Windows, other file tools, browser containment, or representative coding quality.
+
+**Evidence:** `algo_cli/irene_search.py`, `algo_cli/irene_memory_path_policy.py`,
+`tests/test_irene_search.py`, `tests/test_search_execution.py`.
+
+## Required Backend And Native Failure Evidence
+
+A green job with an unavailable backend is not evidence for that backend. CI
+installs ripgrep 15.2.0 with its packaged Cargo lock, exposes that runner-local
+binary, and requires its exact version before pytest collection. Local installs
+may still use the Python fallback. Test both explicit backend paths; native skips
+must remain visible and must not be counted as passes or silently repaired by
+substituting another implementation.
+
+Source-bound receipts hash exact bytes. Pin line endings for every bound text
+input, including `uv.lock`, and reproduce checkout conversion with Git's
+`core.autocrlf=true` before changing the verifier. Do not normalize differing
+source bytes inside the digest algorithm or refresh an artifact merely to hide
+an unexplained platform mismatch.
+
+Retain the first failed run, head, log digest, test identity, measured values, and
+unchanged limits. A Windows timing failure triggers a separate, bounded profile
+of the frozen synthetic workload. The profile contains aggregate function names,
+call counts, timings, and source bindings, never model prompts, credentials,
+private memory, argument values, or executable pickle artifacts. Profile overhead
+makes its timings diagnostic only. It cannot overwrite qualification evidence,
+convert the failed job to success, authorize a retry, or establish a cause without
+native measurements. Keep correctness, performance, installation, and external
+authority results distinct.
+
+**Evidence:** `.gitattributes`, `.github/workflows/oliver-ci.yml`,
+`tests/conftest.py`, `scripts/nathan_agent_runtime_profile.py`,
+`tests/test_oliver_ci_backend_coverage.py`, `tests/test_nathan_agent_runtime_profile.py`.
+
+## Static Bindings, Live Security Decisions
+
+Optimize from a source-bound native profile, not from a passing local timing
+sample. Windows identity and ACL validation may reuse fully initialized ctypes
+library wrappers, function signatures, and structure classes in a process-local
+lazy cache. Failed initialization must not publish an entry. Preserve
+`use_last_error=True` and its thread-local error handling. Concurrent first
+callers may construct independent complete bundles; never publish partial setup.
+
+The cache must contain no current-user SID, process token, security descriptor,
+converted SID allocation, path identity, permission result, or authorization
+decision. Reopen the current process token and query the actual named owner and
+DACL on every validation. Keep all native buffers and token handles local to the
+call, with unchanged cleanup on success and failure. Preserve ancestry pins,
+mode-specific rights, locks, rechecks, and durable flushes even when profiling
+shows they are expensive. Static setup reuse does not authorize decision reuse.
+
+Prove freshness after warmup: change identity, owner, permissions, protection
+flags, and validation mode; inject API and partial-allocation failures; verify
+immediate rejection and cleanup, followed by successful recovery when the actual
+condition is repaired. Exercise concurrent native reads and a real DACL mutation
+on Windows. Mocked ABI tests cannot qualify native behavior or latency.
+
+For platform-sensitive text semantics, build fixtures with explicit LF, CRLF,
+and missing-final-newline bytes. Compare the protected path with the native
+engine on only the authorized controls. A CR retained before LF may legitimately
+change an end-anchor match; fix an incorrect fixture expectation rather than
+rewriting source bytes or changing matcher semantics to get a green test.
+
+**Evidence:** `algo_cli/config.py`, `tests/test_oliver_windows_security_api.py`,
+`tests/test_config.py`, `tests/test_irene_search.py`.

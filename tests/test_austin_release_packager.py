@@ -9,7 +9,7 @@ import stat
 
 import pytest
 
-from algo_cli import austin_release_packager as release
+from algo_cli import __version__, austin_release_packager as release
 from algo_cli.austin_release_packager import (
     ADA_RELEASE_EVIDENCE_FILENAME,
     AustinCommandResult,
@@ -47,7 +47,7 @@ def _config(tmp_path: Path) -> AustinReleaseConfig:
         disabled_native_authority_public_key=key,
         disabled_native_authority_public_key_digest=KEY_DIGEST,
         output_directory=tmp_path / "release",
-        version="0.18.0",
+        version=__version__,
         build_number="1800",
     )
 

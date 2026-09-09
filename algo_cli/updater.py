@@ -158,6 +158,22 @@ def update_algo_cli(
             message=f"Algo CLI update could not start: {exc}",
         )
 
+    # Windows entry-point wrappers may strip .exe from argv[0] before calling us.
+    launcher = (sys.argv[0] if sys.argv else "").replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    if sys.platform == "win32" and launcher in {"algo-cli", "algo-cli.exe", "ollama-cli", "ollama-cli.exe"}:
+        command = "& " + " ".join("'" + argument.replace("'", "''") + "'" for argument in plan.command)
+        return UpdateResult(
+            returncode=64,
+            manager=plan.manager,
+            before_version=before,
+            after_version=before,
+            message=(
+                "Algo CLI update cannot replace its running Windows launcher. "
+                "Close other Algo CLI sessions, then run this in PowerShell:"
+            ),
+            details=command,
+        )
+
     try:
         completed = runner(
             list(plan.command),
@@ -200,10 +216,13 @@ def update_algo_cli(
     after = version_getter()
     if before != "unknown" and after != "unknown" and before != after:
         message = f"Updated Algo CLI {before} → {after}. Restart the command to use the new version."
+    elif after == "unknown":
+        message = "The package manager completed, but the installed Algo CLI version could not be verified."
     else:
-        shown = after if after != "unknown" else before
-        suffix = f" at v{shown}" if shown != "unknown" else ""
-        message = f"Algo CLI is up to date{suffix}."
+        message = (
+            f"No newer compatible published package was installed; current version is v{after}. "
+            "This command does not install unpublished GitHub or local source changes."
+        )
     return UpdateResult(
         returncode=0,
         manager=plan.manager,

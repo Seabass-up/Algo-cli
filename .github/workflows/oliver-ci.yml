@@ -14,6 +14,8 @@ jobs:
     name: Runtime quality gates
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      ALGO_TEST_REQUIRE_RIPGREP: "1"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -28,6 +30,11 @@ jobs:
           enable-cache: true
       - name: Install locked project and quality tools
         run: uv sync --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil --reinstall-package algo-cli-runtime --link-mode copy
+      - name: Install locked search backend
+        shell: bash
+        run: |
+          cargo install ripgrep --version 15.2.0 --locked --root "$RUNNER_TEMP/algo-ci-ripgrep"
+          printf '%s\n' "$RUNNER_TEMP/algo-ci-ripgrep/bin" >> "$GITHUB_PATH"
       - name: Installed-source parity (blocking)
         run: uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil python -I scripts/oliver_installed_source_parity.py
       - name: Ruff (blocking)
@@ -58,10 +65,15 @@ jobs:
           algo_cli/main.py
           algo_cli/tools.py
           algo_cli/harness.py
+          algo_cli/embedding_binding.py
           algo_cli/agent_context.py
           algo_cli/agent_pipeline.py
           algo_cli/agent_run_journal.py
           algo_cli/nathan_provider_protocol.py
+          algo_cli/nathan_runtime.py
+          algo_cli/nathan_approval_channel.py
+          algo_cli/nathan_approval_reviewer.py
+          algo_cli/james_dispatch.py
           algo_cli/agent_threads.py
           algo_cli/run_contract.py
           algo_cli/task_router.py
@@ -99,6 +111,8 @@ jobs:
           algo_cli/skills.py
           algo_cli/evals/competitive_harness_rating.py
           algo_cli/evals/nathan_agent_runtime_hardening.py
+          algo_cli/evals/grounded_retrieval.py
+          scripts/grounded_retrieval_qualification.py
           scripts/boron_browser_build_images.py
           scripts/boron_browser_live_session.py
           scripts/arthur_m9_completion_audit.py
@@ -114,6 +128,7 @@ jobs:
           scripts/henry_github_hardening_readiness.py
           scripts/henry_echo_veil_dependency_audit.py
           scripts/nathan_agent_runtime_qualification.py
+          scripts/nathan_agent_runtime_profile.py
           scripts/austin_native_package_audit.py
           --ignore-missing-imports
           --no-strict-optional
@@ -133,6 +148,7 @@ jobs:
           --cov-report=term-missing:skip-covered
           --cov-report=xml:coverage.xml
           --cov-fail-under=57
+          -vv --durations=25 -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true
       - name: Upload coverage evidence
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
@@ -144,6 +160,8 @@ jobs:
     name: Tests (${{ matrix.os }}, Python ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
+    env:
+      ALGO_TEST_REQUIRE_RIPGREP: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -168,10 +186,31 @@ jobs:
           enable-cache: true
       - name: Install locked project
         run: uv sync --frozen --no-editable --extra dev --extra echo-veil --reinstall-package algo-cli-runtime --link-mode copy
+      - name: Install locked search backend
+        shell: bash
+        run: |
+          cargo install ripgrep --version 15.2.0 --locked --root "$RUNNER_TEMP/algo-ci-ripgrep"
+          printf '%s\n' "$RUNNER_TEMP/algo-ci-ripgrep/bin" >> "$GITHUB_PATH"
       - name: Installed-source parity
         run: uv run --frozen --no-editable --extra dev --extra echo-veil python -I scripts/oliver_installed_source_parity.py
       - name: Run full suite
-        run: uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy pytest tests
+        id: full-suite
+        run: >-
+          uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy pytest tests
+          -vv --durations=25 -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true
+      - name: Diagnose failed Windows runtime timing
+        if: ${{ failure() && runner.os == 'Windows' && steps.full-suite.outcome == 'failure' }}
+        timeout-minutes: 3
+        run: >-
+          uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy
+          python scripts/nathan_agent_runtime_profile.py
+      - name: Retain Windows timing diagnostics
+        if: ${{ failure() && runner.os == 'Windows' && steps.full-suite.outcome == 'failure' }}
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: windows-runtime-profile-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/algo-agent-runtime-profile-*.json
+          if-no-files-found: error
 
   native:
     name: Native helper checks
@@ -642,8 +681,33 @@ jobs:
           enable-cache: true
       - name: Install locked build tooling
         run: uv sync --frozen --no-editable --extra release --reinstall-package algo-cli-runtime
-      - name: Build wheel and source distribution
-        run: uv run --frozen --no-editable --extra release python -m build
+      - name: Build and bind reproducible distributions to the exact CI commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="${RUNNER_TEMP}/oliver-ci-release-build"
+          install -d -m 0700 "${state}"
+          helper="${GITHUB_WORKSPACE}/scripts/oliver_release_source_binding.py"
+          python="${GITHUB_WORKSPACE}/.venv/bin/python"
+          revision="$(git rev-parse HEAD)"
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct "${revision}")"
+          "${python}" -I -B -S "${helper}" capture --repository "${GITHUB_WORKSPACE}" --revision "${revision}" --archive "${state}/source.tar" --stage "${state}/source-a" --receipt "${state}/source-receipt.json"
+          "${python}" -I -B -S "${helper}" materialize --archive "${state}/source.tar" --expected-revision "${revision}" --stage "${state}/source-b" --receipt "${state}/source-receipt.json"
+          "${python}" -m build --no-isolation --outdir "${state}/dist-a" "${state}/source-a"
+          "${python}" -m build --no-isolation --outdir "${state}/dist-b" "${state}/source-b"
+          "${python}" -I -B -S "${helper}" bind \
+            --archive "${state}/source.tar" --expected-revision "${revision}" \
+            --stage "${state}/source-a" --rebuild-stage "${state}/source-b" \
+            --receipt "${state}/source-receipt.json" \
+            --dist "${state}/dist-a" --rebuild-dist "${state}/dist-b" \
+            --bound-dist "${state}/bound-dist" --tool-lock "${state}/source-a/uv.lock" \
+            --manifest "${state}/source-binding.json"
+          "${python}" -I -B -S "${helper}" verify-bound \
+            --archive "${state}/source.tar" --expected-revision "${revision}" \
+            --receipt "${state}/source-receipt.json" --bound-dist "${state}/bound-dist" \
+            --manifest "${state}/source-binding.json"
+          install -d -m 0700 "${GITHUB_WORKSPACE}/dist"
+          cp "${state}/bound-dist/"* "${GITHUB_WORKSPACE}/dist/"
       - name: Generate normalized runtime SBOM and checksums
         run: |
           uv export --frozen --no-dev --format cyclonedx1.5 --preview-features sbom-export --output-file "${RUNNER_TEMP}/ada-runtime-sbom.raw.json"
@@ -668,6 +732,13 @@ jobs:
             dist/algo-cli-runtime.lock.cdx.json
             dist/SHA256SUMS
           if-no-files-found: error
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: release-source-binding-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/oliver-ci-release-build/source-receipt.json
+            ${{ runner.temp }}/oliver-ci-release-build/source-binding.json
+          if-no-files-found: error
 
   package-smoke:
     name: Installed wheel (${{ matrix.os }})
@@ -691,3 +762,18 @@ jobs:
           path: dist/
       - name: Install and exercise wheel in an isolated home
         run: python scripts/oliver_smoke_wheel_install.py dist
+      - name: Upgrade public 0.18.0 with pip without changing user state
+        run: python scripts/oliver_smoke_upgrade.py dist --manager pip --report upgrade-smoke-pip.json
+      - name: Upgrade public 0.18.0 with pipx without changing user state
+        run: python scripts/oliver_smoke_upgrade.py dist --manager pipx --report upgrade-smoke-pipx.json
+      - name: Upgrade public 0.18.0 with pipx uv backend without changing user state
+        run: python scripts/oliver_smoke_upgrade.py dist --manager pipx --pipx-backend uv --report upgrade-smoke-pipx-uv.json
+      - name: Upgrade public 0.18.0 with uv without changing user state
+        run: python scripts/oliver_smoke_upgrade.py dist --manager uv --report upgrade-smoke-uv.json
+      - name: Retain upgrade qualification
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: upgrade-smoke-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: upgrade-smoke-*.json
+          if-no-files-found: error

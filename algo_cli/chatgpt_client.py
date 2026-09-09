@@ -6,16 +6,20 @@ ollama.Client.chat()-shaped interface so agent_loop can reuse one provider path.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
+import ssl
 import subprocess
 import tempfile
+import time
 import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import closing
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Generator, Iterator
 
 from . import chatgpt_auth
 from .model_aliases import normalize_codex_model
@@ -28,6 +32,18 @@ except Exception:  # pragma: no cover
 
 class ChatGptOAuthAccessError(RuntimeError):
     """Raised when ChatGPT OAuth access is unavailable."""
+
+
+class CodexResponseStreamError(ChatGptOAuthAccessError):
+    """A response failure, distinct from an OAuth credential failure."""
+
+    def __init__(self, message: str, *, code: str, retryable: bool = False):
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
+
+CODEX_STREAM_RETRY_DELAYS = (1.0, 2.0)
 
 
 CODEX_SUBSCRIPTION_MODELS = {
@@ -203,11 +219,15 @@ def get_codex_models(*, timeout: float = 20.0, _retried: bool = False) -> list[d
         levels = item.get("supported_reasoning_levels")
         if isinstance(levels, list):
             # Ultra requires orchestration semantics this adapter does not implement.
-            metadata["reasoning_efforts"] = tuple(dict.fromkeys(
-                level["effort"] for level in levels
-                if isinstance(level, dict) and isinstance(level.get("effort"), str)
-                and level["effort"] in _REASONING_EFFORT_LEVELS
-            ))
+            metadata["reasoning_efforts"] = tuple(
+                dict.fromkeys(
+                    level["effort"]
+                    for level in levels
+                    if isinstance(level, dict)
+                    and isinstance(level.get("effort"), str)
+                    and level["effort"] in _REASONING_EFFORT_LEVELS
+                )
+            )
         context = item.get("context_window")
         if type(context) is int and context > 0:
             metadata["context_window"] = context
@@ -602,21 +622,29 @@ def _post_codex_responses(payload: dict[str, Any], *, timeout: float = 120.0, _r
     except urllib.error.HTTPError as exc:
         detail = ""
         try:
-            detail = exc.read().decode("utf-8", errors="replace")[:1500].strip()
+            detail = exc.read(1500).decode("utf-8", errors="replace").strip()
         except Exception:
             pass
+        finally:
+            exc.close()
         if exc.code == 401 and _is_token_invalidated_error(detail):
             if not _retried:
                 refreshed = chatgpt_auth.force_refresh_token()
                 if refreshed:
                     return _post_codex_responses(payload, timeout=timeout, _retried=True)
             raise _invalidated_session_error() from exc
+        if exc.code in {408, 500, 502, 503, 504}:
+            raise CodexResponseStreamError(
+                f"ChatGPT Codex Responses request temporarily failed (HTTP {exc.code}).",
+                code=f"http_{exc.code}",
+                retryable=True,
+            ) from exc
         raise ChatGptOAuthAccessError(
             f"ChatGPT Codex Responses request failed ({exc.code}): {detail or '(no body)'}"
         ) from exc
 
 
-def _parse_sse_events(resp: Any) -> Iterator[dict[str, Any]]:
+def _parse_sse_events(resp: Any) -> Generator[dict[str, Any], None, None]:
     try:
         for raw in resp:
             line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
@@ -626,11 +654,14 @@ def _parse_sse_events(resp: Any) -> Iterator[dict[str, Any]]:
             if not data:
                 continue
             if data == "[DONE]":
+                yield {"type": "[DONE]"}
                 return
             try:
-                yield json.loads(data)
+                event = json.loads(data)
             except json.JSONDecodeError:
                 continue
+            if isinstance(event, dict):
+                yield event
     finally:
         try:
             resp.close()
@@ -677,6 +708,8 @@ def _extract_responses_event_text(event: dict[str, Any]) -> str:
         return event["delta"]
     if isinstance(event.get("text"), str):
         return event["text"]
+    if isinstance(event.get("refusal"), str):
+        return event["refusal"]
     if isinstance(event.get("content"), str):
         return event["content"]
     return ""
@@ -699,117 +732,226 @@ def _responses_usage_chunk(event: dict[str, Any]) -> dict[str, Any] | None:
     return chunk
 
 
-def _stream_codex_responses_iter(resp: Any) -> Iterator[dict[str, Any]]:
+def _responses_stream_failure(event: dict[str, Any]) -> CodexResponseStreamError:
+    response = event.get("response")
+    response = response if isinstance(response, dict) else {}
+    error = response.get("error") or event.get("error")
+    error = error if isinstance(error, dict) else {}
+    incomplete = response.get("incomplete_details")
+    incomplete = incomplete if isinstance(incomplete, dict) else {}
+    code = str(error.get("code") or event.get("code") or incomplete.get("reason") or "").strip()
+    detail = str(error.get("message") or event.get("message") or code or "no provider detail").strip()
+    if len(detail) > 500:
+        detail = detail[:497] + "..."
+    label = f" ({code})" if code and code not in detail else ""
+    return CodexResponseStreamError(
+        f"Codex Responses stream ended with {event.get('type')}{label}: {detail}",
+        code=code,
+        retryable=code in {"server_error", "internal_error"},
+    )
+
+
+def _stream_codex_responses_iter(resp: Any) -> Generator[dict[str, Any], None, None]:
     pending_calls: dict[str, dict[str, Any]] = {}
     item_call_ids: dict[str, str] = {}
-    order: list[str] = []
-    emitted_answer = False
+    text_item_ids: dict[int, str] = {}
+    text_parts: dict[tuple[str | int, int], str] = {}
+    terminal_seen = False
 
-    def completed_calls() -> list[dict[str, Any]]:
-        return [
-            pending_calls[call_id]
-            for call_id in order
-            if pending_calls.get(call_id) and str(pending_calls[call_id].get("function", {}).get("name") or "").strip()
-        ]
+    def text_identity(item_id: Any, output_index: int) -> str | int:
+        # Sparse terminal snapshots can move an already streamed message to a
+        # different list position. Its item ID still identifies the same text.
+        if isinstance(item_id, str) and item_id:
+            if output_index not in text_item_ids:
+                text_item_ids[output_index] = item_id
+                for key in list(text_parts):
+                    if key[0] == output_index:
+                        text_parts[(item_id, key[1])] = text_parts.pop(key)
+            return item_id
+        return text_item_ids.get(output_index, output_index)
 
-    for event in _parse_sse_events(resp):
-        event_type = str(event.get("type") or "")
-        if event_type in {"error", "response.failed", "response.incomplete"}:
-            response = event.get("response") if isinstance(event.get("response"), dict) else {}
-            response_error = response.get("error")
-            event_error = event.get("error")
-            error = (
-                response_error
-                if isinstance(response_error, dict)
-                else event_error
-                if isinstance(event_error, dict)
-                else {}
+    def text_chunk(text: str, identity: str | int, content_index: int, *, final: bool) -> Iterator[dict[str, Any]]:
+        key = (identity, content_index)
+        previous = text_parts.get(key, "")
+        if final:
+            if not text.startswith(previous):
+                raise CodexResponseStreamError(
+                    "Codex Responses final text conflicts with streamed text.", code="conflicting_text"
+                )
+            suffix = text[len(previous) :]
+        else:
+            suffix = text
+            text = previous + text
+        text_parts[key] = text
+        if suffix:
+            yield {"message": {"content": suffix}}
+
+    def update_call(item: dict[str, Any], *, delta: bool = False) -> None:
+        item_id = str(item.get("item_id") or item.get("id") or "")
+        call_id = str(item.get("call_id") or item_call_ids.get(item_id, item_id))
+        if not call_id:
+            raise CodexResponseStreamError("Codex Responses function call has no identifier.", code="invalid_tool_call")
+        if item_id:
+            old_id = item_call_ids.get(item_id, item_id)
+            if old_id != call_id and old_id in pending_calls:
+                pending_calls[call_id] = pending_calls.pop(old_id)
+                pending_calls[call_id]["id"] = call_id
+            item_call_ids[item_id] = call_id
+        call = pending_calls.setdefault(
+            call_id, {"id": call_id, "type": "function", "function": {"name": "", "arguments": ""}}
+        )
+        if isinstance(item.get("name"), str):
+            call["function"]["name"] = item["name"]
+        if delta:
+            call["function"]["arguments"] += str(item.get("delta") or "")
+        elif "arguments" in item:
+            call["function"]["arguments"] = item["arguments"]
+
+    def final_item(item: dict[str, Any], output_index: int) -> Iterator[dict[str, Any]]:
+        if item.get("status") not in (None, "completed"):
+            raise CodexResponseStreamError("Codex Responses output item is not completed.", code="incomplete_item")
+        if item.get("type") == "function_call":
+            update_call(item)
+        elif item.get("type") == "message":
+            identity = text_identity(item.get("id"), output_index)
+            parts = item.get("content")
+            if isinstance(parts, list):
+                for index, part in enumerate(parts):
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") not in {"output_text", "refusal"}:
+                        continue
+                    text = part.get("text") if part.get("type") == "output_text" else part.get("refusal")
+                    if isinstance(text, str):
+                        yield from text_chunk(text, identity, index, final=True)
+
+    with closing(_parse_sse_events(resp)) as events:
+        for event in events:
+            event_type = str(event.get("type") or "")
+            if event_type in {"error", "response.failed", "response.incomplete"}:
+                raise _responses_stream_failure(event)
+            if event_type == "[DONE]":
+                terminal_seen = True
+                break
+            if event_type == "response.completed":
+                response = event.get("response")
+                response = response if isinstance(response, dict) else {}
+                if response.get("status") not in (None, "completed"):
+                    raise _responses_stream_failure(event)
+                output = response.get("output")
+                if "output" in response and not isinstance(output, list):
+                    raise CodexResponseStreamError(
+                        "Codex Responses completed output is malformed.", code="invalid_output"
+                    )
+                if isinstance(output, list):
+                    # Responses Lite can send an empty terminal output list
+                    # after complete item events. Reconcile by call ID without
+                    # discarding the streamed calls in that sparse envelope.
+                    for index, item in enumerate(output):
+                        if isinstance(item, dict):
+                            yield from final_item(item, index)
+                usage_chunk = _responses_usage_chunk(event)
+                if usage_chunk is not None:
+                    yield usage_chunk
+                terminal_seen = True
+                break
+            if event_type == "response.reasoning_summary_text.delta":
+                text = _extract_responses_event_text(event)
+                if text:
+                    yield {"message": {"thinking": text}}
+            elif event_type in {
+                "response.output_text.delta",
+                "response.refusal.delta",
+                "response.output_text.done",
+                "response.refusal.done",
+            }:
+                yield from text_chunk(
+                    _extract_responses_event_text(event),
+                    text_identity(event.get("item_id"), event.get("output_index", 0)),
+                    event.get("content_index", 0),
+                    final=event_type.endswith(".done"),
+                )
+            elif event_type in {"response.output_item.added", "response.output_item.done"}:
+                item = event.get("item")
+                if not isinstance(item, dict):
+                    continue
+                if event_type.endswith(".done"):
+                    yield from final_item(item, event.get("output_index", 0))
+                elif item.get("type") == "function_call":
+                    update_call(item)
+                elif item.get("type") == "message":
+                    text_identity(item.get("id"), event.get("output_index", 0))
+            elif event_type in {"response.function_call_arguments.delta", "response.function_call_arguments.done"}:
+                update_call(event, delta=event_type.endswith(".delta"))
+
+    if not terminal_seen:
+        raise CodexResponseStreamError(
+            "Codex Responses stream ended before completion.", code="truncated_stream", retryable=True
+        )
+    for call in pending_calls.values():
+        fn = call["function"]
+        try:
+            valid = bool(fn["name"].strip()) and isinstance(json.loads(fn["arguments"]), dict)
+        except (TypeError, ValueError):
+            valid = False
+        if not valid:
+            raise CodexResponseStreamError(
+                "Codex Responses stream completed without text or a valid tool call (invalid function call).",
+                code="invalid_tool_call",
             )
-            incomplete = (
-                response.get("incomplete_details") if isinstance(response.get("incomplete_details"), dict) else {}
-            )
-            code = str(error.get("code") or event.get("code") or "").strip()
-            detail = str(
-                error.get("message") or event.get("message") or incomplete.get("reason") or code or "no provider detail"
-            ).strip()
-            if len(detail) > 500:
-                detail = detail[:497] + "..."
-            label = f" ({code})" if code and code not in detail else ""
-            raise ChatGptOAuthAccessError(f"Codex Responses stream ended with {event_type}{label}: {detail}")
-        if event_type == "response.completed":
-            usage_chunk = _responses_usage_chunk(event)
-            if usage_chunk is not None:
-                yield usage_chunk
-            continue
-        if event_type == "response.reasoning_summary_text.delta":
-            text = _extract_responses_event_text(event)
-            if text:
-                yield {"message": {"thinking": text}}
-            continue
-        if event_type in {"response.output_text.delta", "response.refusal.delta"}:
-            text = _extract_responses_event_text(event)
-            if text:
-                emitted_answer = True
-                yield {"message": {"content": text}}
-            continue
-        if event_type in {"response.output_text.done", "response.refusal.done"}:
-            text = _extract_responses_event_text(event)
-            if text and not emitted_answer:
-                emitted_answer = True
-                yield {"message": {"content": text}}
-            continue
-        if event_type == "response.output_item.added":
-            item = event.get("item") or {}
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") != "function_call":
-                continue
-            call_id = str(item.get("call_id") or item.get("id") or f"call_{len(order) + 1}")
-            if item.get("id"):
-                item_call_ids[str(item["id"])] = call_id
-            if call_id not in pending_calls:
-                order.append(call_id)
-            pending_calls[call_id] = {
-                "id": call_id,
-                "type": "function",
-                "function": {"name": str(item.get("name", "")), "arguments": str(item.get("arguments") or "")},
+    if pending_calls:
+        yield {"message": {"tool_calls": list(pending_calls.values())}}
+    elif not any(text_parts.values()):
+        raise CodexResponseStreamError(
+            "Codex Responses stream completed without text or a valid tool call.", code="empty_response", retryable=True
+        )
+
+
+def _is_retryable_codex_failure(exc: BaseException) -> bool:
+    if isinstance(exc, CodexResponseStreamError):
+        return exc.retryable
+    if isinstance(exc, urllib.error.HTTPError):
+        return False
+    cause = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    return isinstance(cause, (TimeoutError, ConnectionError, http.client.IncompleteRead, ssl.SSLEOFError))
+
+
+def _stream_codex_responses_with_retry(
+    resp: Any, payload: dict[str, Any], *, initial_error: Exception | None = None
+) -> Iterator[dict[str, Any]]:
+    """Retry only this model request, never the surrounding tool execution loop."""
+    delivered_output = False
+    for attempt in range(len(CODEX_STREAM_RETRY_DELAYS) + 1):
+        try:
+            if attempt == 0 and initial_error is not None:
+                raise initial_error
+            if attempt:
+                resp = _post_codex_responses(payload, timeout=120.0)
+            with closing(_stream_codex_responses_iter(resp)) as chunks:
+                for chunk in chunks:
+                    message = chunk.get("message") or {}
+                    delivered_output |= bool(message.get("content") or message.get("tool_calls"))
+                    yield chunk
+            return
+        except (CodexResponseStreamError, OSError, http.client.IncompleteRead) as exc:
+            if delivered_output or not _is_retryable_codex_failure(exc):
+                raise
+            if attempt == len(CODEX_STREAM_RETRY_DELAYS):
+                raise CodexResponseStreamError(
+                    f"Codex Responses recovery exhausted after {attempt} retries: {exc}",
+                    code="retry_exhausted",
+                ) from exc
+            delay = CODEX_STREAM_RETRY_DELAYS[attempt]
+            yield {
+                "message": {},
+                "response_retry": {
+                    "attempt": attempt + 1,
+                    "max_retries": len(CODEX_STREAM_RETRY_DELAYS),
+                    "delay_seconds": delay,
+                    "reason": exc.code if isinstance(exc, CodexResponseStreamError) else "transport_interrupted",
+                },
             }
-            continue
-        if event_type == "response.function_call_arguments.delta":
-            item_id = str(event.get("item_id") or "")
-            call_id = str(event.get("call_id") or item_call_ids.get(item_id, item_id))
-            if not call_id:
-                continue
-            if call_id not in pending_calls:
-                order.append(call_id)
-                pending_calls[call_id] = {"id": call_id, "type": "function", "function": {"name": "", "arguments": ""}}
-            pending_calls[call_id]["function"]["arguments"] += str(event.get("delta") or "")
-            continue
-        if event_type in {"response.function_call_arguments.done", "response.output_item.done"}:
-            item = event.get("item") or {}
-            if not isinstance(item, dict):
-                continue
-            if event_type == "response.output_item.done" and item.get("type") != "function_call":
-                continue
-            item_id = str(event.get("item_id") or item.get("id") or "")
-            call_id = str(event.get("call_id") or item.get("call_id") or item_call_ids.get(item_id, item_id))
-            if not call_id:
-                continue
-            if call_id not in pending_calls:
-                order.append(call_id)
-                pending_calls[call_id] = {"id": call_id, "type": "function", "function": {"name": "", "arguments": ""}}
-            if item.get("name"):
-                pending_calls[call_id]["function"]["name"] = str(item["name"])
-            if item.get("arguments") is not None:
-                pending_calls[call_id]["function"]["arguments"] = str(item.get("arguments") or "")
-            elif event_type == "response.function_call_arguments.done" and event.get("arguments") is not None:
-                pending_calls[call_id]["function"]["arguments"] = str(event.get("arguments") or "")
-    completed = completed_calls()
-    if completed:
-        emitted_answer = True
-        yield {"message": {"tool_calls": completed}}
-    if not emitted_answer:
-        raise ChatGptOAuthAccessError("Codex Responses stream completed without text or a valid tool call.")
+            time.sleep(delay)
 
 
 def _nonstream_to_chunk(body: dict[str, Any]) -> dict[str, Any]:
@@ -827,18 +969,37 @@ def _nonstream_to_chunk(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def _codex_responses_to_chunk(resp: Any) -> dict[str, Any]:
+    return _collect_codex_responses(_stream_codex_responses_iter(resp))
+
+
+def _sum_responses_usage(total: dict[str, Any], usage: dict[str, Any]) -> None:
+    for key, value in usage.items():
+        if type(value) is int and value >= 0:
+            previous = total.get(key, 0)
+            total[key] = (previous if type(previous) is int else 0) + value
+        elif isinstance(value, dict):
+            nested = total.setdefault(key, {})
+            if isinstance(nested, dict):
+                _sum_responses_usage(nested, value)
+
+
+def _collect_codex_responses(chunks: Iterator[dict[str, Any]]) -> dict[str, Any]:
     content_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
     metrics: dict[str, Any] = {}
-    for chunk in _stream_codex_responses_iter(resp):
+    for chunk in chunks:
         message = chunk.get("message") or {}
         if message.get("content"):
             content_parts.append(str(message["content"]))
         if message.get("tool_calls"):
             tool_calls.extend(message["tool_calls"])
-        for field in ("usage", "prompt_eval_count", "eval_count"):
-            if field in chunk:
-                metrics[field] = chunk[field]
+        usage = chunk.get("usage")
+        if isinstance(usage, dict):
+            _sum_responses_usage(metrics.setdefault("usage", {}), usage)
+        for field in ("prompt_eval_count", "eval_count"):
+            value = chunk.get(field)
+            if type(value) is int and value >= 0:
+                metrics[field] = metrics.get(field, 0) + value
     out_msg: dict[str, Any] = {}
     if content_parts:
         out_msg["content"] = "".join(content_parts)
@@ -905,8 +1066,14 @@ class ChatGptClient:
                         "effort": _normalize_reasoning_effort(effort, codex_model),
                         "summary": "auto",
                     }
+            resp = None
+            initial_error: Exception | None = None
             try:
                 resp = _post_codex_responses(payload, timeout=120.0)
+            except (CodexResponseStreamError, OSError, http.client.IncompleteRead) as exc:
+                if not _is_retryable_codex_failure(exc):
+                    raise
+                initial_error = exc
             except ChatGptOAuthAccessError as exc:
                 if not _is_missing_model_request_scope(exc):
                     raise
@@ -923,9 +1090,10 @@ class ChatGptClient:
                     return iter([chunk])
                 return chunk
             _MODEL_REQUEST_SCOPE_MISSING = False
+            chunks = _stream_codex_responses_with_retry(resp, payload, initial_error=initial_error)
             if stream:
-                return _stream_codex_responses_iter(resp)
-            return _codex_responses_to_chunk(resp)
+                return chunks
+            return _collect_codex_responses(chunks)
 
         openai_payload: dict[str, Any] = {
             "model": model,

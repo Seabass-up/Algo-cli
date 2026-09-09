@@ -8,6 +8,7 @@ executing external tools or reading obvious secret files.
 from __future__ import annotations
 
 import json
+import hashlib
 import fnmatch
 import math
 import os
@@ -16,7 +17,9 @@ import stat
 import subprocess
 import sys
 import time
-from contextlib import contextmanager
+from collections import OrderedDict
+from contextlib import contextmanager, nullcontext
+from threading import RLock
 
 try:
     import numpy as _np
@@ -28,11 +31,12 @@ except ImportError:
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Literal
 
 
 from .cache_admission import WindowTinyLFUCache
-from .config import CONFIG_DIR, _atomic_write_text, _load_json_file
+from . import pattern_catalog
+from .config import CONFIG_DIR, _atomic_write_text, _harness_index_descriptor_payload
 from .retrieval_algorithms import BM25Index, lexical_tokens, repair_mojibake, stable_top_k
 
 
@@ -91,6 +95,7 @@ CURATED_PROJECT_WIKI_DOCS = (
     "reflex-loop-v0.2.md",
     "privacy-and-context.md",
     "runtime-capability-catalog.md",
+    "supervised-action-review.md",
     "echo-veil-security-status.md",
 )
 CURATED_PROJECT_MEMORY_DOCS = (
@@ -117,10 +122,14 @@ except (TypeError, ValueError):
     QUERY_VEC_CACHE_SIZE = _QUERY_VEC_CACHE_SIZE_DEFAULT
 
 EmbedFn = Callable[[list[str]], list[list[float]]]
+# Omitted low-level arguments retain legacy semantics; explicit None binds the
+# model-default request and must not match an explicit numeric request.
+EmbeddingDimensions = int | None | Literal["unbound"]
+_EMBEDDING_FIELDS = ("embedding", "embedding_model", "embedding_dimensions", "embedding_identity")
 
 SECRET_RE = re.compile(
     r"(?:^|[/\\._-])"
-    r"(?:secret|token|credentials?|auth(?:orization)?|password|passwd|api[_-]?key|access[_-]?token|private[_-]?key|\.env)"
+    r"(?:secrets?|tokens?|credentials?|auth(?:orization)?|password|passwd|api[_-]?key|access[_-]?token|private[_-]?key|\.env)"
     r"(?:[/\\._-]|$)",
     re.IGNORECASE,
 )
@@ -163,7 +172,8 @@ _INDEX_CACHE: dict[str, Any] | None = None
 _INDEX_CACHE_SIGNATURE: tuple[str, int, int] | None = None
 _STALE_CHECK_CACHE: tuple[tuple[str, int, int], float, bool] | None = None
 _ID_LOOKUP: dict[str, dict[str, Any]] | None = None
-_QUERY_VEC_CACHE: WindowTinyLFUCache[tuple[str, str], list[float]] = WindowTinyLFUCache(max(1, QUERY_VEC_CACHE_SIZE))
+_PUBLIC_RETRIEVAL_RECORDS: list[dict[str, Any]] | None = None
+_QUERY_VEC_CACHE: WindowTinyLFUCache[tuple[str, EmbeddingDimensions, str | None, str], list[float]] = WindowTinyLFUCache(max(1, QUERY_VEC_CACHE_SIZE))
 
 
 @dataclass(frozen=True)
@@ -175,22 +185,74 @@ class _LexicalCandidateIndex:
     heading_terms: list[set[str]]
 
 
-_BM25_INDEX_CACHE: (
-    tuple[
-        tuple[tuple[str, ...], str, tuple[str, ...], int, int, int],
-        list[dict[str, Any]],
-        _LexicalCandidateIndex,
-    ]
-    | None
-) = None
-_VECTOR_MATRIX_CACHE: (
-    tuple[
-        tuple[str, int, tuple[str, ...], str, tuple[str, ...], int, int, int],
-        list[dict[str, Any]],
-        Any,
-    ]
-    | None
-) = None
+class _RetrievalSliceCache:
+    """Bound derived slices, retaining input rows so identity keys cannot recycle."""
+
+    def __init__(self, max_weight: int, *, max_entries: int = 8, max_rows: int = 4096):
+        self.max_weight = max_weight
+        self.max_entries = max_entries
+        self.max_rows = max_rows
+        self._lock = RLock()
+        self._entries: OrderedDict[tuple, tuple[tuple, tuple, int]] = OrderedDict()
+        self._generation = 0
+        self._weight = 0
+        self._rows = 0
+        self.last: tuple | None = None
+
+    def lookup(self, key: tuple) -> tuple[int, tuple | None]:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is not None:
+                self._entries.move_to_end(key)
+                self.last = entry[0]
+            else:
+                self.last = None
+            return self._generation, entry[0] if entry is not None else None
+
+    def remember(
+        self, generation: int, key: tuple, inputs: list[dict[str, Any]],
+        rows: list[dict[str, Any]], value: Any, *, weight: int,
+    ) -> None:
+        with self._lock:
+            if (
+                generation != self._generation or self.max_entries <= 0
+                or not 0 < weight <= self.max_weight or len(inputs) > self.max_rows
+            ):
+                return
+            previous = self._entries.pop(key, None)
+            if previous is not None:
+                self._weight -= previous[2]
+                self._rows -= len(previous[1])
+            while self._entries and (
+                len(self._entries) >= self.max_entries or self._weight + weight > self.max_weight
+                or self._rows + len(inputs) > self.max_rows
+            ):
+                _, removed = self._entries.popitem(last=False)
+                self._weight -= removed[2]
+                self._rows -= len(removed[1])
+            self.last = (key, rows, value)
+            self._entries[key] = (self.last, tuple(inputs), weight)
+            self._weight += weight
+            self._rows += len(inputs)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._generation += 1
+            self._weight = self._rows = 0
+            self.last = None
+
+    def snapshot(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "slices": len(self._entries), "input_rows": self._rows, "weight": self._weight,
+                "max_slices": self.max_entries, "max_input_rows": self.max_rows,
+                "max_weight": self.max_weight, "last_rows": len(self.last[1]) if self.last else 0,
+            }
+
+
+_BM25_INDEX_CACHE = _RetrievalSliceCache(4096)
+_VECTOR_MATRIX_CACHE = _RetrievalSliceCache(32 * 1024 * 1024)
 
 
 def redact_sensitive_text(text: str) -> str:
@@ -227,6 +289,17 @@ _RESULT_FIELDS: tuple[str, ...] = (
     "snippet",
     "updated",
     "score",
+    "pattern_id",
+    "status",
+    "source_start_line",
+    "source_end_line",
+    "source_digest",
+    "pattern_digest",
+    "applicability",
+    "applicability_valid",
+    "applicability_declared",
+    "source_kind",
+    "source_sha256",
 )
 
 
@@ -355,10 +428,10 @@ def build_index_with_rust(previous: dict[str, Any] | None = None) -> dict[str, A
                     and int(prior.get("file_size", -1)) == int(record.get("file_size", -2))
                     and int(prior.get("file_mtime_ns", -1)) == int(record.get("file_mtime_ns", -2))
                 ):
-                    record["embedding"] = prior["embedding"]
-                    record["embedding_model"] = prior.get("embedding_model")
-            new_index["embeddings"] = _embeddings_summary(new_index.get("records", []))
+                    _copy_record_embedding(prior, record)
+        new_index["embeddings"] = embedding_summary({**previous, "records": new_index.get("records", [])})
     new_index = _merge_runtime_capability_records(new_index, previous=previous)
+    new_index = _merge_pattern_records(new_index, previous=previous)
     new_index["source_policy"] = _source_policy()
     return _normalize_index_records(new_index)
 
@@ -593,7 +666,7 @@ SOURCE_ROOTS: tuple[SourceRoot, ...] = built_in_source_roots()
 def configure_context_sources(*, external: bool, index_compute_lab: bool) -> None:
     """Configure optional local-context roots before loading or refreshing the index."""
     global SOURCE_ROOTS, _EXTERNAL_SOURCES_ENABLED, _INDEX_COMPUTE_LAB_SOURCE_ENABLED
-    global _INDEX_CACHE, _INDEX_CACHE_SIGNATURE, _STALE_CHECK_CACHE, _ID_LOOKUP
+    global _INDEX_CACHE, _INDEX_CACHE_SIGNATURE, _STALE_CHECK_CACHE, _ID_LOOKUP, _PUBLIC_RETRIEVAL_RECORDS
     _EXTERNAL_SOURCES_ENABLED = bool(external)
     _INDEX_COMPUTE_LAB_SOURCE_ENABLED = bool(index_compute_lab)
     SOURCE_ROOTS = built_in_source_roots(include_external=_EXTERNAL_SOURCES_ENABLED)
@@ -601,6 +674,7 @@ def configure_context_sources(*, external: bool, index_compute_lab: bool) -> Non
     _INDEX_CACHE_SIGNATURE = None
     _STALE_CHECK_CACHE = None
     _ID_LOOKUP = None
+    _PUBLIC_RETRIEVAL_RECORDS = None
 
 
 def _protected_memory_source_allowed(root: SourceRoot) -> bool:
@@ -626,6 +700,8 @@ def _protected_memory_source_allowed(root: SourceRoot) -> bool:
 
 def _source_policy() -> dict[str, bool]:
     return {
+        "pattern_records": True,
+        "effective_runtime_capabilities": True,
         "external_agent_stores": _EXTERNAL_SOURCES_ENABLED,
         "index_compute_lab": _INDEX_COMPUTE_LAB_SOURCE_ENABLED,
     }
@@ -691,6 +767,15 @@ def first_heading(text: str) -> str | None:
 
 
 def should_skip(path: Path) -> bool:
+    if _is_reviewed_public_runbook(path):
+        return False
+    relative = _path_relative_to_some_root(path, all_source_roots(), resolve_links=False)
+    if relative is not None:
+        return (
+            ".." in relative.parts
+            or bool(SECRET_RE.search(relative.as_posix()))
+            or any(part in _SKIP_DIRS for part in relative.parts[:-1])
+        )
     if SECRET_RE.search(path.name):
         return True
     return any(part in _SKIP_DIRS for part in path.parts)
@@ -792,6 +877,21 @@ def resolve_record_kind(root: SourceRoot, rel: str) -> str:
     return root.kind
 
 
+def _is_reviewed_public_runbook(path: Path) -> bool:
+    if path.name != "provider-auth-recovery.md":
+        return False
+    expected = _algo_cli_repo_dir() / "docs" / path.name
+    try:
+        return (
+            path.absolute() == expected
+            and not path.is_symlink()
+            and path.resolve(strict=True) == expected
+            and path.stat().st_nlink == 1
+        )
+    except OSError:
+        return False
+
+
 def iter_files(root: SourceRoot) -> list[Path]:
     if not root.root.exists():
         return []
@@ -818,7 +918,11 @@ def iter_files(root: SourceRoot) -> list[Path]:
             # into skipped subdirectories, but checking relative parts catches edge cases.
             # We deliberately do NOT check absolute ancestors so roots under /tmp (e.g.
             # in tests) are not silently excluded.
-            if not matches or SECRET_RE.search(rel):
+            if not matches:
+                continue
+            if SECRET_RE.search(rel) and not (
+                root.harness == "algo-cli" and root.kind == "wiki" and _is_reviewed_public_runbook(path)
+            ):
                 continue
             rel_dirs = Path(rel).parts[:-1]
             if any(part in _SKIP_DIRS for part in rel_dirs):
@@ -965,8 +1069,8 @@ def _normalize_reviewed_algo_record(record: dict[str, Any]) -> dict[str, Any]:
     ).lower()
     if updated.get("search_text") != search_text:
         updated["search_text"] = search_text
-        updated.pop("embedding", None)
-        updated.pop("embedding_model", None)
+        for field in _EMBEDDING_FIELDS:
+            updated.pop(field, None)
     return updated
 
 
@@ -991,22 +1095,16 @@ def _normalize_index_records(index: dict[str, Any]) -> dict[str, Any]:
         changed = True
     if not changed and len(normalized) == len(records):
         return index
-    embedding_meta = index.get("embeddings")
-    active_model = (
-        str(embedding_meta.get("active_model") or DEFAULT_EMBED_MODEL)
-        if isinstance(embedding_meta, dict)
-        else DEFAULT_EMBED_MODEL
-    )
     return {
         **index,
         "record_count": len(normalized),
         "records": normalized,
-        "embeddings": _embeddings_summary([r for r in normalized if isinstance(r, dict)], active_model=active_model),
+        "embeddings": embedding_summary({**index, "records": normalized}),
     }
 
 
-def make_record(root: SourceRoot, path: Path, *, stat_result: Any | None = None) -> dict[str, Any]:
-    raw_text = read_text(path)
+def make_record(root: SourceRoot, path: Path, *, stat_result: Any | None = None, raw_text: str | None = None) -> dict[str, Any]:
+    raw_text = read_text(path) if raw_text is None else raw_text
     json_meta = _json_record_metadata(path, raw_text)
     if _metadata_only_json(path):
         metadata_payload = json.dumps(json_meta, ensure_ascii=False) if json_meta else f"{path.name} metadata"
@@ -1036,7 +1134,7 @@ def make_record(root: SourceRoot, path: Path, *, stat_result: Any | None = None)
     index_text = " ".join(line.strip() for line in text.splitlines() if line.strip() and not line.startswith("---"))[
         :MAX_INDEX_TEXT
     ]
-    heading_text = _markdown_heading_text(path) if root.harness == "algo-cli" and rel == REVIEWED_ALGO_REL else ""
+    heading_text = redact_sensitive_text(_markdown_heading_text(path)) if root.harness == "algo-cli" and rel == REVIEWED_ALGO_REL else ""
     status = str(fm.get("status", "") or "").strip()
     search_text = " ".join(
         str(value)
@@ -1096,7 +1194,7 @@ def _runtime_capability_records(
         if isinstance(record, dict) and record.get("kind") == "runtime_capability"
     }
     records: list[dict[str, Any]] = []
-    for spec in action_registry.list_action_specs(include_archived=True):
+    for spec in action_registry.effective_action_specs(include_archived=True):
         record_id_value = f"algo-cli:runtime_capability:{spec.name}"
         limitations = " ".join(spec.known_limitations) or "No registry limitation recorded."
         prerequisites = " ".join(spec.prerequisites) or "No extra prerequisite recorded."
@@ -1161,12 +1259,9 @@ def _runtime_capability_records(
         if (
             prior
             and prior.get("search_text") == search_text
-            and int(prior.get("file_size", -1)) == file_size
-            and int(prior.get("file_mtime_ns", -1)) == file_mtime_ns
             and prior.get("embedding")
         ):
-            record["embedding"] = prior["embedding"]
-            record["embedding_model"] = prior.get("embedding_model")
+            _copy_record_embedding(prior, record)
         records.append(record)
     return records
 
@@ -1184,17 +1279,11 @@ def _merge_runtime_capability_records(
         else []
     )
     records.extend(_runtime_capability_records(previous))
-    embedding_meta = index.get("embeddings")
-    active_model = (
-        str(embedding_meta.get("active_model") or DEFAULT_EMBED_MODEL)
-        if isinstance(embedding_meta, dict)
-        else DEFAULT_EMBED_MODEL
-    )
     return {
         **index,
         "record_count": len(records),
         "records": records,
-        "embeddings": _embeddings_summary(records, active_model=active_model),
+        "embeddings": embedding_summary({**index, "records": records}),
     }
 
 
@@ -1451,22 +1540,27 @@ def _index_has_missing_sources(index: dict[str, Any] | None) -> bool:
     return False
 
 
-def _path_relative_to_some_root(path: Path, all_roots: tuple[SourceRoot, ...]) -> Path | None:
+def _path_relative_to_some_root(
+    path: Path, all_roots: tuple[SourceRoot, ...], *, resolve_links: bool = True,
+) -> Path | None:
     """If path lives under any configured SourceRoot, return the relative path.
 
     Returns None when no root contains the path (e.g. test fixtures under
     /tmp or stale index records pointing at moved files). The caller decides
     what to do with that â€” for watermark checks we still want to count
     their mtime, but for SKIP_DIRS application we want a relative view.
+
+    Read exclusions use lexical paths so resolving a link or ``..`` cannot
+    erase a forbidden directory component. Watermarks retain resolved identity.
     """
     try:
-        resolved = path.resolve()
+        resolved = path.resolve() if resolve_links else path.absolute()
     except OSError:
         return None
     best: Path | None = None
     for root in all_roots:
         try:
-            root_resolved = root.root.resolve()
+            root_resolved = root.root.resolve() if resolve_links else root.root.absolute()
         except OSError:
             continue
         try:
@@ -1518,7 +1612,7 @@ def _source_watermark_ns(index: dict[str, Any] | None = None) -> int:
             rel = _path_relative_to_some_root(path, all_roots)
             # Skip only if we found a relative view AND a SKIP_DIRS part appears
             # in that relative view. The filename is always checked (secrets).
-            if SECRET_RE.search(path.name):
+            if SECRET_RE.search(path.name) and not _is_reviewed_public_runbook(path):
                 continue
             if rel is not None and any(part in _SKIP_DIRS for part in rel.parts[:-1]):
                 continue
@@ -1552,6 +1646,54 @@ def _source_watermark_ns(index: dict[str, Any] | None = None) -> int:
     return watermark
 
 
+def _merge_pattern_records(index: dict[str, Any], *, previous: dict[str, Any] | None = None) -> dict[str, Any]:
+    records = [row for row in index.get("records", []) if not row.get("pattern_id")]
+    parents = [row for row in records if row.get("id") == "algo-cli:algorithm:ALGO.md"]
+    prior = {row["id"]: row for row in (previous or {}).get("records", []) if row.get("pattern_id") and row.get("id")}
+    count = reused = 0
+    errors: list[str] = []
+    for parent in parents:
+        try:
+            with Path(parent["path"]).open(encoding="utf-8", newline="") as handle:
+                text = handle.read(pattern_catalog.MAX_CATALOG_BYTES + 1)
+            patterns = pattern_catalog.parse_patterns(text)
+        except (OSError, UnicodeError, ValueError) as exc:
+            errors.append(type(exc).__name__)
+            continue
+        for pattern in patterns:
+            body = redact_sensitive_text(pattern["body"][:pattern_catalog.MAX_PATTERN_INDEX_CHARS])
+            title = redact_sensitive_text(pattern["title"])
+            rules = {
+                key: ([redact_sensitive_text(item) for item in value] if isinstance(value, list)
+                      else {redact_sensitive_text(name): cost for name, cost in value.items()} if isinstance(value, dict)
+                      else redact_sensitive_text(value))
+                for key, value in pattern["applicability"].items()
+            }
+            identity = f"{parent['id']}#{pattern['pattern_id']}"
+            search_text = f"{pattern['pattern_id']} {title} {body}".lower()
+            record = {
+                **{key: value for key, value in parent.items() if key not in _EMBEDDING_FIELDS},
+                **{key: value for key, value in pattern.items() if key not in {"body", "title"}},
+                "id": identity, "title": title,
+                "section": redact_sensitive_text(pattern["section"]), "applicability": rules,
+                "relative_path": f"{REVIEWED_ALGO_REL}#{pattern['pattern_id']}",
+                "description": f"Pattern {pattern['pattern_id']}; status {pattern['status']}; reference, not execution authority.",
+                "tags": ["algorithm", "pattern", pattern["pattern_id"]],
+                "summary": body[:SUMMARY_CHARS], "index_text": body,
+                "search_text": search_text, "heading_text": title,
+                "pattern_index_truncated": len(pattern["body"]) > pattern_catalog.MAX_PATTERN_INDEX_CHARS,
+            }
+            old = prior.get(identity, {})
+            if old.get("pattern_digest") == record["pattern_digest"] and old.get("search_text") == search_text and old.get("embedding"):
+                _copy_record_embedding(old, record)
+                reused += 1
+            records.append(record)
+            count += 1
+    return {**index, "records": records, "record_count": len(records),
+            "pattern_stats": {"records": count, "reused_embeddings": reused, "catalog_errors": errors},
+            "embeddings": embedding_summary({**index, "records": records})}
+
+
 def build_index(previous: dict[str, Any] | None = None) -> dict[str, Any]:
     all_roots = all_source_roots()
     if not all_roots and previous:
@@ -1572,13 +1714,13 @@ def build_index(previous: dict[str, Any] | None = None) -> dict[str, Any]:
             },
             "indexer": str(previous.get("indexer") or "python"),
             "source_policy": _source_policy(),
-            "embeddings": _embeddings_summary(prior_records),
+            "embeddings": embedding_summary({**previous, "records": prior_records}),
         }
     records: list[dict[str, Any]] = []
     existing = {
         str(record.get("id")): record
         for record in (previous or {}).get("records", [])
-        if record.get("id") and record.get("kind") != "runtime_capability"
+        if record.get("id") and record.get("kind") != "runtime_capability" and not record.get("pattern_id")
     }
     reused_records = 0
     rebuilt_records = 0
@@ -1608,7 +1750,16 @@ def build_index(previous: dict[str, Any] | None = None) -> dict[str, Any]:
                 records.append(_normalize_reviewed_algo_record(prior))
                 reused_records += 1
                 continue
-            records.append(make_record(root, path, stat_result=stat_result))
+            record = make_record(root, path, stat_result=stat_result)
+            if (
+                prior
+                and prior.get("kind") == kind
+                and prior.get("embedding")
+                and prior.get("embedding_model")
+                and _record_text_for_embed(prior) == _record_text_for_embed(record)
+            ):
+                _copy_record_embedding(prior, record)
+            records.append(record)
             rebuilt_records += 1
     index = {
         "generated": datetime.now().isoformat(timespec="seconds"),
@@ -1624,10 +1775,11 @@ def build_index(previous: dict[str, Any] | None = None) -> dict[str, Any]:
         },
         "indexer": "python",
         "source_policy": _source_policy(),
-        "embeddings": _embeddings_summary(records),
+        "embeddings": embedding_summary({**(previous or {}), "records": records}),
     }
     if any(root.harness == "algo-cli" for root in all_roots):
         index = _merge_runtime_capability_records(index, previous=previous)
+    index = _merge_pattern_records(index, previous=previous)
     return _normalize_index_records(index)
 
 
@@ -1638,7 +1790,7 @@ def _set_index_cache(
     sources_current: bool = False,
 ) -> None:
     global _INDEX_CACHE, _INDEX_CACHE_SIGNATURE, _STALE_CHECK_CACHE, _ID_LOOKUP
-    global _BM25_INDEX_CACHE, _VECTOR_MATRIX_CACHE
+    global _PUBLIC_RETRIEVAL_RECORDS
     if index is not None:
         index = _normalize_index_records(index)
         # Deduplicate records by (kind, relative_path) using harness priority
@@ -1646,17 +1798,11 @@ def _set_index_cache(
         if records:
             deduped = _dedup_records(records)
             if len(deduped) < len(records):
-                embedding_meta = index.get("embeddings")
-                active_model = (
-                    str(embedding_meta.get("active_model") or DEFAULT_EMBED_MODEL)
-                    if isinstance(embedding_meta, dict)
-                    else DEFAULT_EMBED_MODEL
-                )
                 index = {
                     **index,
                     "record_count": len(deduped),
                     "records": deduped,
-                    "embeddings": _embeddings_summary(deduped, active_model=active_model),
+                    "embeddings": embedding_summary({**index, "records": deduped}),
                 }
     _INDEX_CACHE = index
     _INDEX_CACHE_SIGNATURE = _index_file_signature() if index is not None and persisted else None
@@ -1664,8 +1810,10 @@ def _set_index_cache(
     if sources_current and _INDEX_CACHE_SIGNATURE is not None:
         _STALE_CHECK_CACHE = (_INDEX_CACHE_SIGNATURE, time.monotonic(), False)
     _ID_LOOKUP = None  # rebuilt lazily on next get_record call
-    _BM25_INDEX_CACHE = None
-    _VECTOR_MATRIX_CACHE = None
+    _BM25_INDEX_CACHE.clear()
+    _VECTOR_MATRIX_CACHE.clear()
+    _PUBLIC_RETRIEVAL_RECORDS = None
+    _QUERY_VEC_CACHE.clear()
 
 
 def _mark_index_cache_persisted() -> None:
@@ -1730,6 +1878,14 @@ def load_index(refresh: bool = False) -> dict[str, Any]:
         return _load_index_unlocked(refresh=refresh)
 
 
+def _load_protected_index_state() -> dict[str, Any] | None:
+    try:
+        loaded = json.loads(_harness_index_descriptor_payload(INDEX_PATH).decode("utf-8"))
+        return loaded if isinstance(loaded, dict) else None
+    except (OSError, UnicodeError, ValueError):
+        return None
+
+
 def invalidate_user_skill_records() -> int:
     """Remove cached records sourced from mutable user-crystallized skills.
 
@@ -1738,11 +1894,7 @@ def invalidate_user_skill_records() -> int:
     """
 
     with _exclusive_harness_index_lock():
-        loaded = _load_json_file(
-            INDEX_PATH,
-            None,
-            preserve_corrupt=False,
-        )
+        loaded = _load_protected_index_state()
         if not isinstance(loaded, dict):
             try:
                 descriptor = INDEX_PATH.lstat()
@@ -1773,20 +1925,11 @@ def invalidate_user_skill_records() -> int:
         retained = [record for record in records if not from_user_skill(record)]
         removed = len(records) - len(retained)
         if removed:
-            embedding_meta = loaded.get("embeddings")
-            active_model = (
-                str(embedding_meta.get("active_model") or DEFAULT_EMBED_MODEL)
-                if isinstance(embedding_meta, dict)
-                else DEFAULT_EMBED_MODEL
-            )
             loaded = {
                 **loaded,
                 "record_count": len(retained),
                 "records": retained,
-                "embeddings": _embeddings_summary(
-                    [record for record in retained if isinstance(record, dict)],
-                    active_model=active_model,
-                ),
+                "embeddings": embedding_summary({**loaded, "records": retained}),
             }
             _atomic_write_json(INDEX_PATH, loaded)
             _set_index_cache(loaded, persisted=True, sources_current=False)
@@ -1795,7 +1938,11 @@ def invalidate_user_skill_records() -> int:
         return removed
 
 
-def _protected_memory_record_allowed(record: dict[str, Any]) -> bool:
+def _protected_memory_record_allowed(
+    record: dict[str, Any],
+    *,
+    _checked_roots: tuple[SourceRoot, ...] | None = None,
+) -> bool:
     kind = record.get("kind")
     harness_name = record.get("harness")
     if (
@@ -1818,8 +1965,12 @@ def _protected_memory_record_allowed(record: dict[str, Any]) -> bool:
         candidate_path = os.path.abspath(candidate)
     except (OSError, TypeError, ValueError):
         return False
-    for root in built_in_source_roots(include_external=False):
-        if not _protected_memory_source_allowed(root) or root.kind != kind:
+    if _checked_roots is None:
+        _checked_roots = tuple(
+            root for root in built_in_source_roots(include_external=False) if _protected_memory_source_allowed(root)
+        )
+    for root in _checked_roots:
+        if root.kind != kind:
             continue
         root_path = os.path.abspath(os.fspath(root.root))
         try:
@@ -1836,6 +1987,96 @@ def _protected_memory_record_allowed(record: dict[str, Any]) -> bool:
     return False
 
 
+def _read_public_source(path: Path, *, max_bytes: int) -> bytes:
+    """Reuse the descriptor-bound reader without accepting parent-link aliases."""
+    from . import config as config_module
+
+    absolute = path.absolute()
+    guard = (
+        config_module._windows_pinned_directory_chain(absolute.parent)
+        if os.name == "nt"
+        else nullcontext(config_module._directory_chain(absolute.parent))
+    )
+    flags = (
+        os.O_RDONLY
+        | int(getattr(os, "O_CLOEXEC", 0))
+        | int(getattr(os, "O_NOFOLLOW", 0))
+        | int(getattr(os, "O_NONBLOCK", 0))
+    )
+    with guard as ancestry:
+        return config_module._state_payload_from_bound_path(
+            absolute,
+            relative=None,
+            max_bytes=max_bytes,
+            file_flags=flags,
+            ancestry=ancestry,
+            require_single_link=True,
+        )
+
+
+def checked_product_contract(record: dict[str, Any]) -> tuple[dict[str, Any], str] | None:
+    """Reconstruct one exact shipped contract; cached classification grants nothing."""
+    name = record.get("relative_path")
+    if (
+        name not in CURATED_PROJECT_MEMORY_DOCS
+        or record.get("harness") != "algo-cli"
+        or record.get("kind") != "memory"
+        or record.get("id") != f"algo-cli:memory:{name}"
+    ):
+        return None
+    path = _algo_cli_docs_dir().absolute() / str(name)
+    if record.get("path") != str(path):
+        return None
+    try:
+        payload = _read_public_source(path, max_bytes=256 * 1024)
+        text = payload.decode("utf-8", errors="strict")
+        root = SourceRoot("algo-cli", "memory", path.parent, CURATED_PROJECT_MEMORY_DOCS, 3)
+        fresh = make_record(root, path, raw_text=text[:MAX_INDEX_TEXT])
+    except (OSError, UnicodeError, ValueError):
+        return None
+    if record.get("search_text") == fresh["search_text"] and isinstance(record.get("embedding"), list):
+        _copy_record_embedding(record, fresh)
+        fresh["embedding"] = list(record["embedding"])
+    fresh["source_kind"] = "shipped_product_documentation"
+    fresh["source_sha256"] = "sha256:" + hashlib.sha256(payload).hexdigest()
+    return fresh, text
+
+
+def retrieval_index(*, protected_memory: bool = False) -> dict[str, Any]:
+    """One query snapshot with source-verified public contracts under Echo."""
+    global _PUBLIC_RETRIEVAL_RECORDS
+    if protected_memory and not _PROTECTED_MEMORY_AUTHORITY:
+        raise ValueError("protected harness source policy is not prepared")
+    index = load_index()
+    if not protected_memory:
+        return index
+    records = []
+    roots = tuple(
+        root for root in built_in_source_roots(include_external=False) if _protected_memory_source_allowed(root)
+    )
+    capabilities = {row["id"]: row for row in _runtime_capability_records(previous=index)}
+    for record in index.get("records", []):
+        if not isinstance(record, dict) or not _protected_memory_record_allowed(record, _checked_roots=roots):
+            continue
+        if record.get("kind") == "memory":
+            contract = checked_product_contract(record)
+            if contract is not None:
+                records.append(contract[0])
+        elif record.get("kind") == "runtime_capability":
+            current = capabilities.get(record.get("id"))
+            if current is not None:
+                if isinstance(current.get("embedding"), list):
+                    current["embedding"] = list(current["embedding"])
+                records.append(current)
+        else:
+            records.append(record)
+    # Revalidate first, then retain row identities for the existing ranker caches.
+    # A single bounded projection is retained; no source read is skipped on reuse.
+    if records != _PUBLIC_RETRIEVAL_RECORDS:
+        _PUBLIC_RETRIEVAL_RECORDS = records
+    return {**index, "records": _PUBLIC_RETRIEVAL_RECORDS, "record_count": len(records)}
+
+
 def configure_protected_memory_authority(enabled: bool) -> int:
     """Exclude and purge mutable memory roots while Echo owns memory.
 
@@ -1849,11 +2090,7 @@ def configure_protected_memory_authority(enabled: bool) -> int:
     if not _PROTECTED_MEMORY_AUTHORITY:
         return 0
     with _exclusive_harness_index_lock():
-        loaded = _load_json_file(
-            INDEX_PATH,
-            None,
-            preserve_corrupt=False,
-        )
+        loaded = _load_protected_index_state()
         if not isinstance(loaded, dict):
             try:
                 descriptor = INDEX_PATH.lstat()
@@ -1875,20 +2112,11 @@ def configure_protected_memory_authority(enabled: bool) -> int:
         ]
         removed = len(records) - len(retained)
         if removed:
-            embedding_meta = loaded.get("embeddings")
-            active_model = (
-                str(embedding_meta.get("active_model") or DEFAULT_EMBED_MODEL)
-                if isinstance(embedding_meta, dict)
-                else DEFAULT_EMBED_MODEL
-            )
             loaded = {
                 **loaded,
                 "record_count": len(retained),
                 "records": retained,
-                "embeddings": _embeddings_summary(
-                    [record for record in retained if isinstance(record, dict)],
-                    active_model=active_model,
-                ),
+                "embeddings": embedding_summary({**loaded, "records": retained}),
             }
             _atomic_write_json(INDEX_PATH, loaded)
         _set_index_cache(loaded, persisted=True, sources_current=False)
@@ -2072,6 +2300,14 @@ def resolve_embed_model(cfg: Any | None = None) -> str:
     return DEFAULT_EMBED_MODEL
 
 
+def _query_embedding_input(query: str, model: str) -> tuple[str, str]:
+    """Apply the recognized model's retrieval-query format, never to documents."""
+    if model.casefold().split(":", 1)[0] == "qwen3-embedding":
+        instruction = "Given a web search query, retrieve relevant passages that answer the query"
+        return "qwen3-instruct-v1", f"Instruct: {instruction}\nQuery:{query}"
+    return "plain-v1", query
+
+
 def _normalized_excluded_kinds(
     excluded_kinds: set[str] | frozenset[str] | None,
 ) -> frozenset[str]:
@@ -2089,17 +2325,33 @@ def search_index(
     limit: int = 10,
     *,
     excluded_kinds: set[str] | frozenset[str] | None = None,
+    pattern_context: pattern_catalog.PatternContext | None = None,
+    index: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     return [
         _display_record(record)
-        for _score, record in _rank_keyword_records(
+        for _score, record in _rank_keyword_index(
+            load_index() if index is None else index,
             query,
             harness,
             kind,
             limit,
             excluded_kinds=excluded_kinds,
+            pattern_context=pattern_context,
         )
     ]
+
+
+def runtime_pattern_context(*, active_tools: list[Any] | None = None) -> pattern_catalog.PatternContext:
+    """Observed local capabilities only; never infer provider availability or approval."""
+    capabilities = {"lexical-retrieval", "local-files"}
+    if _NUMPY:
+        capabilities.add("numpy")
+    repository = Path(__file__).resolve().parent.parent
+    if (repository / "tests").is_dir() and (repository / "pyproject.toml").is_file():
+        capabilities.add("repository-tests")
+    capabilities.update(f"tool:{tool.__name__}" for tool in (active_tools or []) if callable(tool) and hasattr(tool, "__name__"))
+    return pattern_catalog.PatternContext(capabilities=frozenset(capabilities))
 
 
 def _rank_keyword_records(
@@ -2109,14 +2361,26 @@ def _rank_keyword_records(
     limit: int = 10,
     *,
     excluded_kinds: set[str] | frozenset[str] | None = None,
+    pattern_context: pattern_catalog.PatternContext | None = None,
 ) -> list[tuple[float, dict[str, Any]]]:
     """Rank filtered records with BM25 plus curated title/path/meta boosts."""
-    index = load_index()
+    return _rank_keyword_index(load_index(), query, harness, kind, limit,
+                               excluded_kinds=excluded_kinds, pattern_context=pattern_context)
+
+
+def _rank_keyword_index(
+    index: dict[str, Any], query: str, harness: str | None = None,
+    kind: str | None = None, limit: int = 10, *,
+    excluded_kinds: set[str] | frozenset[str] | None = None,
+    pattern_context: pattern_catalog.PatternContext | None = None,
+) -> list[tuple[float, dict[str, Any]]]:
+    """The runtime ranker with an explicit index for isolated, paired evaluations."""
     terms = lexical_tokens(query)
     if not terms:
         return []
     harness_names = harness_filter_names(harness)
     excluded = _normalized_excluded_kinds(excluded_kinds)
+    pattern_context = pattern_catalog.with_active_conflicts(pattern_context or runtime_pattern_context(), index.get("records", []))
     candidates: list[dict[str, Any]] = []
     for record in index.get("records", []):
         if harness_names and record.get("harness") not in harness_names:
@@ -2126,6 +2390,8 @@ def _rank_keyword_records(
         if str(record.get("kind") or "").casefold() in excluded:
             continue
         if is_excluded_from_retrieval(record):
+            continue
+        if pattern_catalog.exclusion_reasons(record, pattern_context):
             continue
         candidates.append(record)
     lexical_index = _candidate_bm25_index(
@@ -2148,7 +2414,69 @@ def _rank_keyword_records(
         combined = lexical_score + float(curated_score)
         if combined > 0.0:
             scored.append((combined, record))
-    return stable_top_k(scored, limit, score=lambda pair: pair[0])
+    identifiers = frozenset(re.findall(r"[\w.-]+", query.casefold()))
+    preferred = frozenset(str(row["id"]) for _, row in scored if _query_identifies_record(row, identifiers))
+    return _select_pattern_compatible(scored, limit, pattern_context, preferred_ids=preferred)
+
+
+def _query_identifies_record(record: dict[str, Any], identifiers: frozenset[str]) -> bool:
+    """Only exact pattern IDs and code-like capability names express identity."""
+    pattern_id = str(record.get("pattern_id") or "").casefold()
+    if pattern_id and pattern_id in identifiers:
+        return True
+    if record.get("kind") != "runtime_capability":
+        return False
+    # Slim results retain this code-owned namespace without the full ActionSpec.
+    relative = str(record.get("relative_path") or "")
+    name = relative.removeprefix("action-registry/").casefold() if relative.startswith("action-registry/") else ""
+    return bool(name and name in identifiers and any(char in name for char in "_."))
+
+
+_SOURCE_REPEAT_PENALTY = 0.5
+
+
+def _selection_source_key(record: dict[str, Any], preferred_ids: frozenset[str]) -> tuple[str, ...]:
+    identity = str(record.get("id") or "")
+    path = str(record.get("path") or "")
+    if not path or identity in preferred_ids or record.get("kind") == "runtime_capability":
+        return ("record", identity)
+    return ("source", str(record.get("harness") or ""), path)
+
+
+def _select_pattern_compatible(
+    scored: list[tuple[float, dict[str, Any]]], limit: int,
+    context: pattern_catalog.PatternContext | None = None,
+    *, preferred_ids: frozenset[str] = frozenset(), diversify_sources: bool = False,
+) -> list[tuple[float, dict[str, Any]]]:
+    if limit <= 0:
+        return []
+    context = context or pattern_catalog.PatternContext()
+    constrained = bool(context.resource_budgets) or any(row.get("applicability", {}).get("conflicts") for _, row in scored if row.get("pattern_id"))
+    if not constrained and not preferred_ids and not diversify_sources:
+        return stable_top_k(scored, limit, score=lambda pair: pair[0])
+    selected: list[tuple[float, dict[str, Any]]] = []
+    spent: dict[str, float] = {}
+    counts: dict[tuple[str, ...], int] = {}
+    remaining = sorted(scored, key=lambda pair: (pair[1].get("id") in preferred_ids, pair[0]), reverse=True)
+    while remaining and len(selected) < limit:
+        position = 0
+        if diversify_sources:
+            position = max(range(len(remaining)), key=lambda i: (
+                remaining[i][1].get("id") in preferred_ids,
+                remaining[i][0] / (1 + _SOURCE_REPEAT_PENALTY * counts.get(_selection_source_key(remaining[i][1], preferred_ids), 0)),
+            ))
+        score, record = remaining.pop(position)
+        if not pattern_catalog.mutually_compatible(record, [row for _, row in selected]):
+            continue
+        costs = record.get("applicability", {}).get("resource_costs", {}) if record.get("pattern_id") else {}
+        if any(spent.get(key, 0) + cost > context.resource_budgets[key] for key, cost in costs.items() if key in context.resource_budgets):
+            continue
+        selected.append((score, record))
+        source_key = _selection_source_key(record, preferred_ids)
+        counts[source_key] = counts.get(source_key, 0) + 1
+        for key, cost in costs.items():
+            spent[key] = spent.get(key, 0) + cost
+    return selected
 
 
 def _candidate_bm25_index(
@@ -2159,17 +2487,14 @@ def _candidate_bm25_index(
     excluded_kinds: frozenset[str],
 ) -> _LexicalCandidateIndex:
     """Return reusable corpus statistics for one filtered retrieval slice."""
-    global _BM25_INDEX_CACHE
     key = (
         tuple(sorted(harness_names or ())),
         kind or "",
         tuple(sorted(excluded_kinds)),
-        len(candidates),
-        id(candidates[0]) if candidates else 0,
-        id(candidates[-1]) if candidates else 0,
+        tuple(id(record) for record in candidates),
     )
-    cached = _BM25_INDEX_CACHE
-    if cached is not None and cached[0] == key:
+    generation, cached = _BM25_INDEX_CACHE.lookup(key)
+    if cached is not None:
         return cached[2]
     search_texts = [str(record.get("search_text") or "") for record in candidates]
     index = _LexicalCandidateIndex(
@@ -2179,7 +2504,7 @@ def _candidate_bm25_index(
         path_terms=[_field_terms(record.get("relative_path")) for record in candidates],
         heading_terms=[_field_terms(record.get("heading_text")) for record in candidates],
     )
-    _BM25_INDEX_CACHE = (key, candidates, index)
+    _BM25_INDEX_CACHE.remember(generation, key, candidates, candidates, index, weight=len(candidates))
     return index
 
 
@@ -2191,10 +2516,26 @@ def get_record(record_id: str) -> dict[str, Any] | None:
     return _ID_LOOKUP.get(record_id)
 
 
-def read_record(record_id: str, max_chars: int = MAX_READ_TEXT) -> str:
+def read_record(record_id: str, max_chars: int = MAX_READ_TEXT, *, protected_memory: bool = False) -> str:
+    if protected_memory and not _PROTECTED_MEMORY_AUTHORITY:
+        return "Error: protected harness source policy is unavailable; memory is available only through Echo Veil."
     record = get_record(record_id)
     if not record:
         return f"Error: no harness record found for id: {record_id}"
+    if protected_memory and not _protected_memory_record_allowed(record):
+        return "Error: record is not a shipped public source; protected memory is available only through Echo Veil."
+    if protected_memory and record.get("kind") == "memory":
+        contract = checked_product_contract(record)
+        if contract is None:
+            return "Error: contract source could not be verified; protected memory is available only through Echo Veil."
+        current, text = contract
+        return (f"# {current['title']}\n\nSource: algo-cli:{current['relative_path']}\n"
+                f"Shipped documentation; not agent memory | SHA256: {current['source_sha256']}\n\n"
+                f"{redact_sensitive_text(text[:max_chars])}")
+    if protected_memory and record.get("kind") == "runtime_capability":
+        record = next((row for row in _runtime_capability_records() if row["id"] == record_id), None)
+        if record is None:
+            return "Error: no current runtime capability matches this record."
     if str(record.get("kind") or "") == "runtime_capability":
         title = record.get("title", "")
         text = str(record.get("index_text") or record.get("summary") or "")[:max_chars]
@@ -2202,20 +2543,81 @@ def read_record(record_id: str, max_chars: int = MAX_READ_TEXT) -> str:
     path = Path(record["path"])
     if should_skip(path):
         return "Error: record points to a skipped/sensitive path."
-    if _metadata_only_json(path):
+    if record.get("pattern_id"):
+        try:
+            if protected_memory:
+                catalog_text = _read_public_source(path, max_bytes=pattern_catalog.MAX_CATALOG_BYTES).decode("utf-8")
+            else:
+                with path.open(encoding="utf-8", newline="") as handle:
+                    catalog_text = handle.read(pattern_catalog.MAX_CATALOG_BYTES + 1)
+            pattern = next((row for row in pattern_catalog.parse_patterns(catalog_text)
+                            if row["pattern_id"] == record["pattern_id"]), None)
+            if not pattern or pattern["source_digest"] != record.get("source_digest"):
+                return "Error: pattern source changed; refresh the harness index before reading."
+            text = redact_sensitive_text(pattern["body"][:max_chars])
+        except (OSError, UnicodeError, ValueError):
+            return "Error: pattern source could not be validated; refresh the harness index."
+    elif _metadata_only_json(path):
         text = str(record.get("index_text") or record.get("summary") or "metadata only")[:max_chars]
     else:
-        text = redact_sensitive_text(read_text(path, max_chars))
+        if protected_memory:
+            try:
+                text = redact_sensitive_text(_read_public_source(path, max_bytes=4 * 1024 * 1024).decode("utf-8")[:max_chars])
+            except (OSError, UnicodeError, ValueError):
+                return "Error: shipped source could not be read safely."
+        else:
+            text = redact_sensitive_text(read_text(path, max_chars))
     title = record.get("title", "")
     harness = record.get("harness", "")
     kind = record.get("kind", "")
     relative_path = record.get("relative_path") or path.name
-    return f"# {title}\n\nSource: {harness}:{relative_path}\nHarness: {harness} | Kind: {kind}\n\n{text}"
+    location = f" | Lines: {record['source_start_line']}-{record['source_end_line']} | Status: {record.get('status', 'unknown')}" if record.get("pattern_id") else ""
+    return f"# {title}\n\nSource: {harness}:{relative_path}\nHarness: {harness} | Kind: {kind}{location}\n\n{text}"
 
 
 def _is_personal_memory_record(record: dict[str, Any]) -> bool:
     path_parts = {part.casefold() for part in re.split(r"[/\\]+", str(record.get("path") or "")) if part}
     return "personal" in path_parts
+
+
+def _runtime_capability_coverage(records: list[dict[str, Any]]) -> dict[str, Any]:
+    from .action_registry import effective_action_specs
+
+    def metadata_signature(value: Any) -> str | None:
+        # JSON round trips turn tuples into arrays; compare wire values without
+        # conflating numeric values with policy booleans through Python equality.
+        try:
+            return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        except (TypeError, ValueError):
+            return None
+
+    expected = {
+        f"algo-cli:runtime_capability:{spec.name}": metadata_signature(spec.as_dict())
+        for spec in effective_action_specs(include_archived=True)
+    }
+    indexed: dict[str, str | None] = {}
+    duplicates: set[str] = set()
+    for record in records:
+        if record.get("kind") != "runtime_capability":
+            continue
+        record_id_value = str(record.get("id") or "")
+        if record_id_value in indexed:
+            duplicates.add(record_id_value)
+        indexed[record_id_value] = metadata_signature(record.get("capability"))
+    missing = sorted(expected.keys() - indexed.keys())
+    unexpected = sorted(indexed.keys() - expected.keys())
+    stale = sorted(
+        key for key in expected.keys() & indexed.keys() if expected[key] is None or indexed[key] != expected[key]
+    )
+    return {
+        "complete": not (missing or unexpected or stale or duplicates),
+        "expected": len(expected),
+        "indexed": len(indexed),
+        "missing_ids": missing,
+        "unexpected_ids": unexpected,
+        "stale_ids": stale,
+        "duplicate_ids": sorted(duplicates),
+    }
 
 
 def _index_quality_summary(records: list[dict[str, Any]], embeddings: dict[str, Any]) -> dict[str, Any]:
@@ -2248,6 +2650,7 @@ def _index_quality_summary(records: list[dict[str, Any]], embeddings: dict[str, 
     memory_records = len(product_memory_records)
     wiki_records = sum(1 for record in records if str(record.get("kind", "")) == "wiki")
     runtime_capability_records = sum(1 for record in records if str(record.get("kind", "")) == "runtime_capability")
+    capability_coverage = _runtime_capability_coverage(records)
     extension_share = round(extension_records / total, 3) if total else 0.0
     project_share = round(project_specific / total, 3) if total else 0.0
     embedding_complete = bool(embeddings.get("complete"))
@@ -2270,9 +2673,9 @@ def _index_quality_summary(records: list[dict[str, Any]], embeddings: dict[str, 
             )
         if memory_records + wiki_records < 5:
             recommendations.append("Add more project-specific memory/wiki records for richer local context.")
-        if not runtime_capability_records:
+        if not capability_coverage["complete"]:
             status = "degraded"
-            recommendations.append("Refresh the index to add ActionSpec runtime capability records.")
+            recommendations.append("Run /harness refresh to synchronize the complete effective runtime capability catalog.")
     return {
         "status": status,
         "project_specific_records": project_specific,
@@ -2288,12 +2691,15 @@ def _index_quality_summary(records: list[dict[str, Any]], embeddings: dict[str, 
         "missing_product_memory_categories": missing_product_memory_categories,
         "wiki_records": wiki_records,
         "runtime_capability_records": runtime_capability_records,
+        "runtime_capability_coverage": capability_coverage,
         "embedding_complete": embedding_complete,
         "recommendations": recommendations,
     }
 
 
-def stats() -> dict[str, Any]:
+def stats(
+    *, model: str | None = None, dimensions: EmbeddingDimensions = "unbound", embedding_identity: str | None = "unbound"
+) -> dict[str, Any]:
     index = load_index()
     records = [record for record in index.get("records", []) if isinstance(record, dict)]
     counts: dict[str, int] = {}
@@ -2302,13 +2708,7 @@ def stats() -> dict[str, Any]:
         counts[key] = counts.get(key, 0) + 1
     # Recompute this cheap summary so indexes written before value-aware queue
     # telemetry immediately expose current priority coverage in /harness status.
-    persisted_embeddings = index.get("embeddings")
-    active_model = (
-        str(persisted_embeddings.get("active_model") or DEFAULT_EMBED_MODEL)
-        if isinstance(persisted_embeddings, dict)
-        else DEFAULT_EMBED_MODEL
-    )
-    embeddings = _embeddings_summary(records, active_model)
+    embeddings = embedding_summary(index, model=model, dimensions=dimensions, embedding_identity=embedding_identity)
     try:
         from .evals.session_distribution import summarize_session_distribution
 
@@ -2347,6 +2747,8 @@ def stats() -> dict[str, Any]:
             "error_type": type(exc).__name__,
         }
     source_diagnostics = source_roots_diagnostics(records)
+    lexical_cache = _BM25_INDEX_CACHE.snapshot()
+    matrix_cache = _VECTOR_MATRIX_CACHE.snapshot()
     return {
         "index": "config:harness_index.json",
         "generated": index.get("generated", ""),
@@ -2369,10 +2771,12 @@ def stats() -> dict[str, Any]:
         },
         "query_cache": _QUERY_VEC_CACHE.snapshot(),
         "retrieval_caches": {
-            "bm25_ready": _BM25_INDEX_CACHE is not None,
-            "bm25_records": len(_BM25_INDEX_CACHE[1]) if _BM25_INDEX_CACHE is not None else 0,
-            "vector_matrix_ready": _VECTOR_MATRIX_CACHE is not None,
-            "vector_matrix_rows": len(_VECTOR_MATRIX_CACHE[1]) if _VECTOR_MATRIX_CACHE is not None else 0,
+            "bm25_ready": lexical_cache["slices"] > 0,
+            "bm25_records": lexical_cache["last_rows"],
+            "vector_matrix_ready": matrix_cache["slices"] > 0,
+            "vector_matrix_rows": matrix_cache["last_rows"],
+            "bm25_slices": {**lexical_cache, "weight_unit": "candidate_rows"},
+            "vector_matrix_slices": {**matrix_cache, "weight_unit": "matrix_bytes"},
         },
     }
 
@@ -2468,13 +2872,105 @@ def _priority_counts(records: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def resolve_embed_dimensions(cfg: Any) -> int | None:
+    """Normalize the configured request identically for transport and indexing."""
+    value = getattr(cfg, "embed_dimensions", None)
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        dimensions = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return dimensions if dimensions > 0 else None
+
+
+def _validate_embedding_dimensions(dimensions: EmbeddingDimensions) -> None:
+    if dimensions is None or (type(dimensions) is str and dimensions == "unbound"):
+        return
+    if type(dimensions) is not int or dimensions <= 0:
+        raise ValueError("dimensions must be a positive integer or None for model default")
+
+
+def _copy_record_embedding(source: dict[str, Any], target: dict[str, Any]) -> None:
+    target.update({field: source[field] for field in _EMBEDDING_FIELDS if field in source})
+
+
+def embedding_function_identity(embed_fn: EmbedFn) -> str | None:
+    """Legacy callables are unbound; runtime bindings require a fresh check."""
+    identity = getattr(embed_fn, "embedding_identity", "unbound")
+    if identity == "unbound":
+        return "unbound"
+    if type(identity) is not str or re.fullmatch(r"sha256:[a-f0-9]{64}", identity) is None:
+        return None
+    validator = getattr(embed_fn, "validate_embedding_identity", None)
+    try:
+        return identity if callable(validator) and validator() is True else None
+    except Exception:
+        return None
+
+
+def resolve_embed_identity(cfg: Any | None = None) -> str | None:
+    if cfg is None:
+        return "unbound"
+    from .embedding_binding import probe_ollama_identity
+
+    return probe_ollama_identity(getattr(cfg, "host", ""), resolve_embed_model(cfg))
+
+
+def _embedding_matches(
+    record: dict[str, Any], model: str, dimensions: EmbeddingDimensions, embedding_identity: str | None = "unbound"
+) -> bool:
+    if embedding_identity != "unbound" and (
+        type(embedding_identity) is not str or re.fullmatch(r"sha256:[a-f0-9]{64}", embedding_identity) is None
+    ):
+        return False
+    if embedding_identity is None or (
+        embedding_identity != "unbound" and record.get("embedding_identity") != embedding_identity
+    ):
+        return False
+    vector = record.get("embedding")
+    if record.get("embedding_model") != model or not isinstance(vector, list) or not vector:
+        return False
+    if dimensions == "unbound":
+        return True
+    stored = record.get("embedding_dimensions")
+    return (
+        "embedding_dimensions" in record
+        and type(stored) is type(dimensions)
+        and stored == dimensions
+        and (dimensions is None or len(vector) == dimensions)
+    )
+
+
+def embedding_summary(
+    index: dict[str, Any],
+    *,
+    model: str | None = None,
+    dimensions: EmbeddingDimensions = "unbound",
+    embedding_identity: str | None = "unbound",
+) -> dict[str, Any]:
+    """Report requested coverage, or retain the persisted contract during refresh."""
+    if model is None:
+        metadata = index.get("embeddings")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        model = str(metadata.get("active_model") or DEFAULT_EMBED_MODEL)
+        if dimensions == "unbound":
+            dimensions = metadata.get("requested_dimensions", "unbound")
+        if embedding_identity == "unbound":
+            embedding_identity = metadata.get("requested_identity", "unbound")
+    records = [record for record in index.get("records", []) if isinstance(record, dict)]
+    return _embeddings_summary(records, model, dimensions=dimensions, embedding_identity=embedding_identity)
+
+
 def _embedding_priority_progress(
     records: list[dict[str, Any]],
     model: str,
+    dimensions: EmbeddingDimensions = "unbound",
+    embedding_identity: str | None = "unbound",
 ) -> dict[str, Any]:
     """Summarize value-tier coverage for CLI/status/performance telemetry."""
     total_by_priority = _priority_counts(records)
-    matching = [record for record in records if record.get("embedding") and record.get("embedding_model") == model]
+    matching = [record for record in records if _embedding_matches(record, model, dimensions, embedding_identity)]
     embedded_by_priority = _priority_counts(matching)
     pending_by_priority = {tier: total_by_priority[tier] - embedded_by_priority[tier] for tier in EMBED_PRIORITY_TIERS}
     high_value_tiers = EMBED_PRIORITY_TIERS[:2]
@@ -2496,14 +2992,19 @@ def _embedding_priority_progress(
     }
 
 
-def embedding_progress(model: str = DEFAULT_EMBED_MODEL) -> dict[str, Any]:
+def embedding_progress(
+    model: str = DEFAULT_EMBED_MODEL, *, dimensions: EmbeddingDimensions = "unbound", embedding_identity: str | None = "unbound"
+) -> dict[str, Any]:
     """Return live embedding coverage, including value-tier queue progress."""
+    _validate_embedding_dimensions(dimensions)
     records = [record for record in (load_index().get("records", []) or []) if isinstance(record, dict)]
-    priority = _embedding_priority_progress(records, model)
+    priority = _embedding_priority_progress(records, model, dimensions, embedding_identity)
     embedded = sum(priority["embedded_by_priority"].values())
     pending = len(records) - embedded
     return {
         "model": model,
+        "requested_dimensions": dimensions,
+        "requested_identity": embedding_identity,
         "total": len(records),
         "embedded": embedded,
         "pending": pending,
@@ -2512,40 +3013,53 @@ def embedding_progress(model: str = DEFAULT_EMBED_MODEL) -> dict[str, Any]:
     }
 
 
-def embedded_count(model: str = DEFAULT_EMBED_MODEL) -> tuple[int, int]:
-    """Return (records with embeddings matching `model`, total records).
+def embedded_count(
+    model: str = DEFAULT_EMBED_MODEL, *, dimensions: EmbeddingDimensions = "unbound", embedding_identity: str | None = "unbound"
+) -> tuple[int, int]:
+    """Return (records matching the requested embedding contract, total records).
 
     Defaults to DEFAULT_EMBED_MODEL for backward compatibility. Callers that
     select a different local embedding model should pass it explicitly so the
-    "pending" count reflects what would need to be re-embedded.
+    "pending" count reflects what would need to be re-embedded. Runtime callers
+    must also pass dimensions, including None for a model-default request.
     """
+    _validate_embedding_dimensions(dimensions)
     index = load_index()
     records = index.get("records", []) or []
-    matching = sum(1 for r in records if r.get("embedding") and r.get("embedding_model") == model)
+    matching = sum(1 for r in records if _embedding_matches(r, model, dimensions, embedding_identity))
     return matching, len(records)
 
 
-def _embeddings_summary(records: list[dict[str, Any]], active_model: str = DEFAULT_EMBED_MODEL) -> dict[str, Any]:
+def _embeddings_summary(
+    records: list[dict[str, Any]],
+    active_model: str = DEFAULT_EMBED_MODEL,
+    *,
+    dimensions: EmbeddingDimensions = "unbound",
+    embedding_identity: str | None = "unbound",
+) -> dict[str, Any]:
     """Compute the embedding contract block for the top of the index.
 
     `embedded_by` declares the architectural contract: Rust does file walking,
     Python owns embedding (network-bound work). The block is purely informational â€”
-    truth is always the per-record `embedding` / `embedding_model` fields.
+    truth is always the per-record vector, model, and requested dimension mode.
     """
+    _validate_embedding_dimensions(dimensions)
     embedded = 0
     pending = 0
     models_seen: set[str] = set()
     for record in records:
         model = record.get("embedding_model")
-        if record.get("embedding") and model == active_model:
+        if _embedding_matches(record, active_model, dimensions, embedding_identity):
             embedded += 1
         else:
             pending += 1
         if record.get("embedding") and model:
             models_seen.add(str(model))
-    priority = _embedding_priority_progress(records, active_model)
+    priority = _embedding_priority_progress(records, active_model, dimensions, embedding_identity)
     return {
         "active_model": active_model,
+        "requested_dimensions": dimensions,
+        "requested_identity": embedding_identity,
         "embedded_count": embedded,
         "pending_count": pending,
         "complete": pending == 0 and embedded > 0,
@@ -2562,10 +3076,38 @@ def _embeddings_summary(records: list[dict[str, Any]], active_model: str = DEFAU
     }
 
 
+class _EmbeddingBatchError(ValueError):
+    """A backend batch failed the index's all-or-nothing contract."""
+
+
+def _validate_embedding_batch(vectors: Any, count: int, dimensions: int | None) -> int:
+    if not isinstance(vectors, list) or len(vectors) != count:
+        raise _EmbeddingBatchError("embed_count_mismatch")
+    for vector in vectors:
+        try:
+            finite = isinstance(vector, list) and all(
+                type(value) in (int, float) and math.isfinite(value) for value in vector
+            )
+        except OverflowError:
+            finite = False
+        if (
+            not finite or not vector
+            or not any(vector)
+        ):
+            raise _EmbeddingBatchError("invalid_embedding_vector")
+        if dimensions is None:
+            dimensions = len(vector)
+        elif len(vector) != dimensions:
+            raise _EmbeddingBatchError("embedding_dimension_mismatch")
+    assert dimensions is not None
+    return dimensions
+
+
 def _embed_index_records_unlocked(
     embed_fn: EmbedFn,
     model: str = DEFAULT_EMBED_MODEL,
     *,
+    dimensions: EmbeddingDimensions = "unbound",
     batch_size: int = EMBED_BATCH_SIZE,
     max_records: int = 0,
     on_progress: Callable[[int, int], None] | None = None,
@@ -2573,8 +3115,9 @@ def _embed_index_records_unlocked(
 ) -> dict[str, Any]:
     """Embed every record in the loaded index that is missing or has a stale embedding.
 
-    Saves the index to disk after each successful batch so a long build can resume
-    cleanly if interrupted.
+    Checkpoints periodically and on failure/cancellation so a long build can
+    resume without replaying completed batches. Changed sources are never hidden
+    by a newer index timestamp, including during bulk rebuilds.
 
     If `on_perf` is supplied, it receives a timing record per batch
     (`{"event": "batch", "batch_size": N, "wall_ms": X, "model": ...}`) and once
@@ -2582,28 +3125,35 @@ def _embed_index_records_unlocked(
     Both include value-tier queue counts so timing and useful coverage can be
     evaluated together.
     """
+    _validate_embedding_dimensions(dimensions)
+    if type(batch_size) is not int or batch_size <= 0:
+        raise ValueError("batch_size must be a positive integer")
     index = _load_index_unlocked()
+    embedding_identity = embedding_function_identity(embed_fn)
     source_watermark_ns = _source_watermark_ns(index)
     records = index.get("records", []) or []
     all_pending: list[int] = [
-        i for i, r in enumerate(records) if not r.get("embedding") or r.get("embedding_model") != model
+        i for i, r in enumerate(records) if not _embedding_matches(r, model, dimensions, embedding_identity)
     ]
     all_pending.sort(key=lambda index: _embedding_priority_sort_key(records[index]))
     if not all_pending:
-        priority = _embedding_priority_progress(records, model)
+        priority = _embedding_priority_progress(records, model, dimensions, embedding_identity)
         return {
             "embedded": 0,
             "selected": 0,
             "pending_before": 0,
             "pending": 0,
             "total": len(records),
-            "ready": True,
+            "ready": bool(records),
             "model": model,
+            "requested_dimensions": dimensions,
+            "requested_identity": embedding_identity,
             "priority_policy": priority["policy"],
             "selected_by_priority": _empty_priority_counts(),
             "pending_by_priority": priority["pending_by_priority"],
             "next_priority": priority["next_priority"],
             "high_value_pending": priority["high_value_pending"],
+            **({"reason": "empty_index"} if not records else {}),
         }
     pending = all_pending[:max_records] if max_records and max_records > 0 else all_pending
     total = len(pending)
@@ -2618,6 +3168,8 @@ def _embed_index_records_unlocked(
             None,
         )
         return {
+            "requested_dimensions": dimensions,
+            "requested_identity": embedding_identity,
             "selected": total,
             "pending_before": pending_before,
             "pending": sum(remaining_by_priority.values()),
@@ -2628,50 +3180,65 @@ def _embed_index_records_unlocked(
             "high_value_pending": sum(remaining_by_priority[tier] for tier in EMBED_PRIORITY_TIERS[:2]),
         }
 
-    # Bulk embed passes (model migration or catch-up): ignore live wiki mtimes so a
-    # long re-embed is not aborted by background file changes.
-    freeze_source_watermark = len(all_pending) >= 32
+    vector_width = dimensions if type(dimensions) is int else next(
+        (
+            len(record["embedding"])
+            for record in records
+            if _embedding_matches(record, model, dimensions, embedding_identity)
+        ),
+        None,
+    )
     embedded = 0
+    dirty = False
     last_write = time.monotonic()
     run_start = time.perf_counter()
+
+    def checkpoint() -> bool:
+        nonlocal dirty
+        if not dirty:
+            return True
+        if _source_watermark_ns(index) > source_watermark_ns:
+            _set_index_cache(None)
+            return False
+        _atomic_write_json(INDEX_PATH, index)
+        _mark_index_cache_persisted()
+        dirty = False
+        return True
+
     try:
+        if embedding_identity is None:
+            raise _EmbeddingBatchError("embedding_identity_unavailable")
         for start in range(0, total, batch_size):
             batch_indices = pending[start : start + batch_size]
             texts = [_record_text_for_embed(records[i]) for i in batch_indices]
             batch_start = time.perf_counter()
             vectors = embed_fn(texts)
             batch_wall_ms = round((time.perf_counter() - batch_start) * 1000, 2)
-            if len(vectors) != len(batch_indices):
-                return {
-                    "embedded": embedded,
-                    "total": len(records),
-                    "ready": False,
-                    "reason": "embed_count_mismatch",
-                    "model": model,
-                    **_queue_telemetry(),
-                }
+            # Validate the whole batch before making any record look ready.
+            vector_width = _validate_embedding_batch(vectors, len(batch_indices), vector_width)
             for i, vec in zip(batch_indices, vectors):
                 records[i]["embedding"] = vec
                 records[i]["embedding_model"] = model
+                if embedding_identity == "unbound":
+                    records[i].pop("embedding_identity", None)
+                else:
+                    records[i]["embedding_identity"] = embedding_identity
+                if dimensions == "unbound":
+                    records[i].pop("embedding_dimensions", None)
+                else:
+                    records[i]["embedding_dimensions"] = dimensions
                 embedded += 1
                 remaining_by_priority[embedding_priority(records[i])] -= 1
-            index["embeddings"] = _embeddings_summary(records, active_model=model)
+            dirty = True
+            index["embeddings"] = _embeddings_summary(
+                records, active_model=model, dimensions=dimensions, embedding_identity=embedding_identity
+            )
             _set_index_cache(index)
             is_last_batch = (start + batch_size) >= total
             now = time.monotonic()
             if is_last_batch or (now - last_write) >= EMBED_WRITE_INTERVAL_S:
-                if not freeze_source_watermark and _source_watermark_ns(index) > source_watermark_ns:
-                    _set_index_cache(None)
-                    return {
-                        "embedded": embedded,
-                        "total": len(records),
-                        "ready": False,
-                        "reason": "source_changed_during_embedding",
-                        "model": model,
-                        **_queue_telemetry(),
-                    }
-                _atomic_write_json(INDEX_PATH, index)
-                _mark_index_cache_persisted()
+                if not checkpoint():
+                    raise _EmbeddingBatchError("source_changed_during_embedding")
                 last_write = now
             if on_progress is not None:
                 on_progress(embedded, total)
@@ -2684,6 +3251,7 @@ def _embed_index_records_unlocked(
                         "wall_ms": batch_wall_ms,
                         "per_record_ms": round(batch_wall_ms / max(1, len(batch_indices)), 2),
                         "model": model,
+                        "requested_dimensions": dimensions,
                         "priority_policy": EMBED_PRIORITY_POLICY,
                         "batch_by_priority": batch_priority_counts,
                         "queue_completed": embedded,
@@ -2692,25 +3260,33 @@ def _embed_index_records_unlocked(
                         "pending_by_priority": dict(remaining_by_priority),
                     }
                 )
-    except Exception as exc:
-        # Persist whatever progress was made before re-raising the result.
+        if embedding_function_identity(embed_fn) != embedding_identity:
+            raise _EmbeddingBatchError("embedding_identity_changed")
+    except KeyboardInterrupt:
         try:
-            if freeze_source_watermark or _source_watermark_ns(index) <= source_watermark_ns:
-                _atomic_write_json(INDEX_PATH, index)
-                _mark_index_cache_persisted()
-            else:
-                _set_index_cache(None)
+            checkpoint()
         except OSError:
-            pass
+            _set_index_cache(None)
+        raise
+    except Exception as exc:
+        reason = str(exc) if isinstance(exc, _EmbeddingBatchError) else f"embed_error: {exc}"
+        try:
+            if not checkpoint():
+                reason = "source_changed_during_embedding"
+        except OSError:
+            _set_index_cache(None)
+            reason = "index_write_error"
         return {
             "embedded": embedded,
             "total": len(records),
             "ready": False,
-            "reason": f"embed_error: {exc}",
+            "reason": reason,
             "model": model,
             **_queue_telemetry(),
         }
-    _QUERY_VEC_CACHE.clear()
+    finally:
+        if embedded:
+            _QUERY_VEC_CACHE.clear()
     if on_perf is not None:
         total_ms = round((time.perf_counter() - run_start) * 1000, 2)
         on_perf(
@@ -2741,6 +3317,7 @@ def embed_index_records(
     embed_fn: EmbedFn,
     model: str = DEFAULT_EMBED_MODEL,
     *,
+    dimensions: EmbeddingDimensions = "unbound",
     batch_size: int = EMBED_BATCH_SIZE,
     max_records: int = 0,
     on_progress: Callable[[int, int], None] | None = None,
@@ -2750,6 +3327,7 @@ def embed_index_records(
         return _embed_index_records_unlocked(
             embed_fn,
             model,
+            dimensions=dimensions,
             batch_size=batch_size,
             max_records=max_records,
             on_progress=on_progress,
@@ -2762,10 +3340,13 @@ def retrieve_for_query(
     embed_fn: EmbedFn,
     model: str = DEFAULT_EMBED_MODEL,
     *,
+    dimensions: EmbeddingDimensions = "unbound",
     k: int = 3,
     harness: str | None = None,
     kind: str | None = None,
     excluded_kinds: set[str] | frozenset[str] | None = None,
+    pattern_context: pattern_catalog.PatternContext | None = None,
+    index: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Cosine-rank harness records against the query. Returns up to k records as dicts
     with id/harness/kind/title/path/snippet. Empty list if no embeddings ready.
@@ -2774,26 +3355,16 @@ def retrieve_for_query(
     ranking. The authoritative adapter is consumed by context assembly, not by
     mutating a duplicate Oracle from query vectors here.
     """
+    _validate_embedding_dimensions(dimensions)
     query = (query or "").strip()
-    if not query:
+    if not query or k <= 0:
         return []
-    index = load_index()
+    index = load_index() if index is None else index
     records = index.get("records", []) or []
     if not records:
         return []
 
-    cache_key = (model, query)
-    _QUERY_VEC_CACHE.resize(max(1, QUERY_VEC_CACHE_SIZE))
-    qvec = _QUERY_VEC_CACHE.get(cache_key)
-    if qvec is None:
-        try:
-            vecs = embed_fn([query])
-        except Exception:
-            return []
-        if not vecs:
-            return []
-        qvec = vecs[0]
-        _QUERY_VEC_CACHE.put(cache_key, qvec)
+    pattern_context = pattern_catalog.with_active_conflicts(pattern_context or runtime_pattern_context(), records)
 
     harness_names = harness_filter_names(harness)
     excluded = _normalized_excluded_kinds(excluded_kinds)
@@ -2804,10 +3375,37 @@ def retrieve_for_query(
         and (not kind or r.get("kind") == kind)
         and str(r.get("kind") or "").casefold() not in excluded
         and not is_excluded_from_retrieval(r)
-        and r.get("embedding")
-        and r.get("embedding_model") == model
-        and len(r.get("embedding") or []) == len(qvec)
+        and not pattern_catalog.exclusion_reasons(r, pattern_context)
+        and _embedding_matches(r, model, dimensions)
     ]
+    if not candidates:
+        return []
+    embedding_identity = embedding_function_identity(embed_fn)
+    candidates = [r for r in candidates if _embedding_matches(r, model, dimensions, embedding_identity)]
+    if not candidates:
+        return []
+
+    candidate_widths = {len(record["embedding"]) for record in candidates}
+    _profile, embedding_input = _query_embedding_input(query, model)
+    cache_key = (model, dimensions, embedding_identity, embedding_input)
+    _QUERY_VEC_CACHE.resize(max(1, QUERY_VEC_CACHE_SIZE))
+    qvec = _QUERY_VEC_CACHE.get(cache_key)
+    if qvec is None or len(qvec) not in candidate_widths:
+        try:
+            vecs = embed_fn([embedding_input])
+            size = _validate_embedding_batch(vecs, 1, dimensions if type(dimensions) is int else None)
+            if size not in candidate_widths:
+                return []
+            # Own the cached vector and scale before squaring/casting so finite
+            # provider values cannot overflow or underflow cosine normalization.
+            scale = max(abs(value) for value in vecs[0])
+            scaled = [float(value / scale) for value in vecs[0]]
+            norm = math.sqrt(sum(value * value for value in scaled))
+            qvec = [value / norm for value in scaled]
+        except Exception:
+            return []
+        _QUERY_VEC_CACHE.put(cache_key, qvec)
+    candidates = [record for record in candidates if len(record["embedding"]) == len(qvec)]
 
     if _NUMPY and candidates:
         # Cache the normalized matrix. Matrix construction and normalization cost
@@ -2836,7 +3434,9 @@ def retrieve_for_query(
             sim = _cosine(qvec, record["embedding"])
             if sim > 0.0:
                 scored.append((sim, record))
-    top_scored = stable_top_k(scored, k, score=lambda pair: pair[0])
+    top_scored = _select_pattern_compatible(scored, k, pattern_context)
+    if embedding_function_identity(embed_fn) != embedding_identity:
+        return []
     return [{**_slim_record(record), "score": round(float(sim), 4)} for sim, record in top_scored]
 
 
@@ -2850,21 +3450,19 @@ def _normalized_candidate_matrix(
     excluded_kinds: frozenset[str],
 ) -> tuple[list[dict[str, Any]], Any]:
     """Return a cached row-aligned L2-normalized NumPy matrix."""
-    global _VECTOR_MATRIX_CACHE
     key = (
         model,
         dimensions,
         tuple(sorted(harness_names or ())),
         kind or "",
         tuple(sorted(excluded_kinds)),
-        len(candidates),
-        id(candidates[0]) if candidates else 0,
-        id(candidates[-1]) if candidates else 0,
+        tuple(id(record) for record in candidates),
     )
-    cached = _VECTOR_MATRIX_CACHE
-    if cached is not None and cached[0] == key:
+    generation, cached = _VECTOR_MATRIX_CACHE.lookup(key)
+    if cached is not None:
         return cached[1], cached[2]
 
+    inputs = candidates
     mat = _np.asarray([record["embedding"] for record in candidates], dtype=_np.float32)
     norms = _np.linalg.norm(mat, axis=1)
     usable = _np.isfinite(norms) & (norms > 0)
@@ -2874,29 +3472,36 @@ def _normalized_candidate_matrix(
         norms = norms[usable]
     if len(candidates):
         mat = mat / norms[:, None]
-    _VECTOR_MATRIX_CACHE = (key, candidates, mat)
+    _VECTOR_MATRIX_CACHE.remember(generation, key, inputs, candidates, mat, weight=mat.nbytes)
     return candidates, mat
 
 
 def _retrieval_embedding_coverage(
     model: str,
     *,
+    dimensions: EmbeddingDimensions = "unbound",
+    embedding_identity: str | None = "unbound",
     harness: str | None,
     kind: str | None,
     excluded_kinds: set[str] | frozenset[str] | None = None,
+    pattern_context: pattern_catalog.PatternContext | None = None,
+    index: dict[str, Any] | None = None,
 ) -> tuple[int, int]:
     """Return model-matching and total eligible records for a retrieval slice."""
     harness_names = harness_filter_names(harness)
     excluded = _normalized_excluded_kinds(excluded_kinds)
+    all_records = (load_index() if index is None else index).get("records", []) or []
+    pattern_context = pattern_catalog.with_active_conflicts(pattern_context or runtime_pattern_context(), all_records)
     records = [
         record
-        for record in (load_index().get("records", []) or [])
+        for record in all_records
         if (not harness_names or record.get("harness") in harness_names)
         and (not kind or record.get("kind") == kind)
         and str(record.get("kind") or "").casefold() not in excluded
         and not is_excluded_from_retrieval(record)
+        and not pattern_catalog.exclusion_reasons(record, pattern_context)
     ]
-    matching = sum(1 for record in records if record.get("embedding") and record.get("embedding_model") == model)
+    matching = sum(1 for record in records if _embedding_matches(record, model, dimensions, embedding_identity))
     return matching, len(records)
 
 
@@ -2933,11 +3538,14 @@ def hybrid_search(
     embed_fn: EmbedFn,
     model: str = DEFAULT_EMBED_MODEL,
     *,
+    dimensions: EmbeddingDimensions = "unbound",
     k: int = 10,
     harness: str | None = None,
     kind: str | None = None,
     rrf_k: int = 60,
     excluded_kinds: set[str] | frozenset[str] | None = None,
+    pattern_context: pattern_catalog.PatternContext | None = None,
+    index: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Reciprocal Rank Fusion of keyword and vector rankings.
 
@@ -2945,25 +3553,40 @@ def hybrid_search(
     RRF: score(d) = 1/(rrf_k+rank_keyword) + 1/(rrf_k+rank_vector).
     Falls back to keyword-only if embeddings are unavailable.
     """
+    _validate_embedding_dimensions(dimensions)
+    if k <= 0:
+        return []
     pool = k * 3
+    query_profile, _ = _query_embedding_input(query, model)
     excluded = _normalized_excluded_kinds(excluded_kinds)
-    keyword_ranked = _rank_keyword_records(
+    index = load_index() if index is None else index
+    keyword_ranked = _rank_keyword_index(
+        index,
         query,
         harness=harness,
         kind=kind,
         limit=pool,
         excluded_kinds=excluded,
+        pattern_context=pattern_context,
     )
     keyword_results = [record for _score, record in keyword_ranked]
     vector_results = retrieve_for_query(
         query,
         embed_fn,
         model,
+        dimensions=dimensions,
         k=pool,
         harness=harness,
         kind=kind,
         excluded_kinds=excluded,
+        pattern_context=pattern_context,
+        index=index,
     )
+    if not keyword_results and not vector_results:
+        return []
+    embedding_identity = embedding_function_identity(embed_fn)
+    if embedding_identity is None:
+        vector_results = []
 
     raw_scores: dict[str, float] = {}
     ranker_counts: dict[str, int] = {}
@@ -3000,9 +3623,13 @@ def hybrid_search(
 
     embedded, eligible = _retrieval_embedding_coverage(
         model,
+        dimensions=dimensions,
+        embedding_identity=embedding_identity,
         harness=harness,
         kind=kind,
         excluded_kinds=excluded,
+        pattern_context=pattern_context,
+        index=index,
     )
     coverage_complete = eligible > 0 and embedded == eligible
     fusion_mode = "rrf" if coverage_complete else "coverage-neutral-rrf"
@@ -3014,7 +3641,28 @@ def hybrid_search(
         rid: raw_score if coverage_complete else raw_score / max(1, ranker_counts[rid])
         for rid, raw_score in raw_scores.items()
     }
-    ranked_ids = stable_top_k(list(scores), k, score=lambda rid: scores[rid])
+    identifiers = frozenset(re.findall(r"[\w.-]+", query.casefold()))
+    preferred = frozenset(rid for rid, row in id_to_record.items() if _query_identifies_record(row, identifiers))
+    diversify_sources = bool(vector_results) and not kind
+    ranked_ids = [record["id"] for _, record in _select_pattern_compatible(
+        [(score, id_to_record[rid]) for rid, score in scores.items()], k, pattern_context,
+        preferred_ids=preferred, diversify_sources=diversify_sources,
+    )]
+    for rid in preferred:
+        provenance[rid]["selection_reason"] = "explicit-record-identifier"
+    # Self-evaluation needs its canonical reference even when both rankers agree
+    # on generic examples. Keep the RRF scores intact and disclose this policy.
+    canonical_id = next(
+        (
+            record["id"]
+            for _score, record in keyword_ranked
+            if _harness_meta_query_boost(record, lexical_tokens(query)) == 40
+        ),
+        None,
+    )
+    if canonical_id is not None and k > 0:
+        ranked_ids = [canonical_id, *(rid for rid in ranked_ids if rid != canonical_id)][:k]
+        provenance[canonical_id]["selection_reason"] = "canonical-harness-reference"
     results: list[dict[str, Any]] = []
     for rid in ranked_ids:
         detail = provenance.get(rid, {})
@@ -3026,7 +3674,12 @@ def hybrid_search(
                 "rank_sources": sources,
                 "rank_provenance": {
                     **detail,
+                    "selection_policy": "explicit-id-source-decay-v1",
+                    "source_repeat_penalty": _SOURCE_REPEAT_PENALTY if diversify_sources else 0.0,
                     "fusion_mode": fusion_mode,
+                    "query_embedding_profile": query_profile,
+                    "requested_dimensions": dimensions,
+                    "requested_identity": embedding_identity,
                     "embedding_coverage": round(embedded / eligible, 6) if eligible else 0.0,
                     "rrf_raw_score": round(raw_scores[rid], 6),
                     "rrf_score": round(scores[rid], 6),
@@ -3053,6 +3706,11 @@ def format_retrieved_context(retrieved: list[dict[str, Any]]) -> str:
         )
         if meta:
             lines.append(meta)
+        if rec.get("pattern_id"):
+            lines.append(f"Catalog status: {rec.get('status', 'unknown')}; reference only, not activation or verification evidence.")
+            lines.append(f"Source lines: {rec.get('source_start_line')}-{rec.get('source_end_line')}")
+        if rec.get("source_kind") == "shipped_product_documentation":
+            lines.append("Shipped documentation; not agent memory or execution authority.")
         snippet = rec.get("snippet")
         if snippet:
             lines.append(repair_mojibake(str(snippet)))

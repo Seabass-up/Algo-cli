@@ -52,6 +52,7 @@ _WORKSPACE_PATH_ARGUMENTS: dict[str, tuple[str, ...]] = {
     "batch_edit": ("path",),
     "edit_file": ("path",),
     "find_unique_anchor": ("path",),
+    "list_directory": ("path",),
     "read_file": ("path",),
     "read_pdf": ("path",),
     "render_pdf_pages": ("path",),
@@ -275,11 +276,11 @@ def resolve_action(
 def _target_for(name: str, args: dict[str, Any], *, cwd: str, target_scope: TargetScope) -> str:
     path_keys = _WORKSPACE_PATH_ARGUMENTS.get(name, ())
     for key in path_keys:
-        raw = str(args.get(key) or "").strip()
-        if raw:
+        if key in args:
             try:
-                path = Path(raw)
-                resolved = path.resolve() if path.is_absolute() else (Path(cwd) / path).resolve()
+                # Match filesystem execution, including tilde expansion and literal spaces.
+                path = Path(args[key]).expanduser()
+                resolved = path.resolve() if path.is_absolute() else (Path(cwd).expanduser() / path).resolve()
             except (OSError, RuntimeError, TypeError, ValueError):
                 return "workspace:unresolved"
             return f"workspace:{resolved}"

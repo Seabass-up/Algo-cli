@@ -126,7 +126,9 @@ from .dorothy_perf_telemetry import (
     record_perf_event,
 )
 from .nathan_runtime import (
+    MAX_COMPLETION_RECOVERY_ROUNDS,
     ask_approval,
+    completion_recovery_prompt,
     reflection_checkpoint,
     run_tool,
     show_typed_tool_result,
@@ -134,7 +136,9 @@ from .nathan_runtime import (
     tool_runtime_args,
 )
 from .james_dispatch import (
+    DispatchCancellation,
     DispatchDependencies,
+    DispatchInterrupted,
     DispatchResult,
     TRUSTED_ADAPTER_ACTIONS,
     batch_policy_ceiling_codes,
@@ -2129,17 +2133,12 @@ def _terminal_answer_from_tool_calls(tool_calls: list[Any]) -> str | None:
 
 def configured_embed_dimensions(cfg: Config) -> int | None:
     """Return a valid configured vector width, or None for model default."""
-    value = getattr(cfg, "embed_dimensions", None)
-    if value is None:
-        return None
-    try:
-        dimensions = int(value)
-    except (TypeError, ValueError):
-        return None
-    return dimensions if dimensions > 0 else None
+    return harness.resolve_embed_dimensions(cfg)
 
 
-def make_local_embed_fn(cfg: Config, model: str) -> identity.EmbedFn:
+def make_local_embed_fn(
+    cfg: Config, model: str, *, timeout_seconds: float | None = None, bind_identity: bool = False
+) -> identity.EmbedFn:
     """Closure that batches Ollama embed calls.
 
     Prefers the supplemental gateway when it is reachable so batch embedding
@@ -2155,13 +2154,19 @@ def make_local_embed_fn(cfg: Config, model: str) -> identity.EmbedFn:
             return []
         # Prefer the supplemental gateway for batch embedding.
         if tools_module.gateway_ready():
-            response = tools_module.gateway_embed_batch(texts, model, True, dimensions)
+            response = (
+                tools_module.gateway_embed_batch(texts, model, True, dimensions, ollama_host=host)
+                if timeout_seconds is None
+                else tools_module.gateway_embed_batch(
+                    texts, model, True, dimensions, ollama_host=host, timeout_seconds=timeout_seconds
+                )
+            )
             if response is not None:
                 embeddings = get_attr(response, "embeddings", []) or []
                 if embeddings:
                     return [list(vec) for vec in embeddings]
         # Fallback: direct Ollama client.
-        client = Client(host=host)
+        client = Client(host=host, timeout=timeout_seconds, trust_env=False, follow_redirects=False)
         if dimensions is None:
             client_response = client.embed(model=model, input=texts)
         else:
@@ -2169,7 +2174,10 @@ def make_local_embed_fn(cfg: Config, model: str) -> identity.EmbedFn:
         embeddings = get_attr(client_response, "embeddings", []) or []
         return [list(vec) for vec in embeddings]
 
-    return _embed
+    if bind_identity:
+        from .embedding_binding import bind_ollama_embedding
+
+        return bind_ollama_embedding(_embed, host, model)
     return _embed
 
 
@@ -2210,14 +2218,16 @@ def reset_embed_backend_cache() -> None:
     _EMBED_BACKEND_ANNOUNCED.clear()
 
 
-def make_embed_fn(cfg: Config, local_model: str) -> tuple[identity.EmbedFn, str, str]:
+def make_embed_fn(
+    cfg: Config, local_model: str, *, bind_identity: bool = False
+) -> tuple[identity.EmbedFn, str, str]:
     """Backend-aware embed factory. Returns (embed_fn, backend, active_model).
 
     This preserves one routing boundary for future embedding backends while
     selecting only the currently supported local backend.
     """
     backend, _reason = resolve_embed_backend(cfg)
-    return make_local_embed_fn(cfg, local_model), backend, local_model
+    return make_local_embed_fn(cfg, local_model, bind_identity=bind_identity), backend, local_model
 
 
 def make_maintenance_llm_fn(cfg: Config) -> skills.LLMFn:
@@ -2637,15 +2647,17 @@ def maybe_crystallize_skills(
 
 
 def ensure_harness_index(cfg: Config, local_names: list[str] | None = None, *, max_records: int = 0) -> bool:
-    """Embed any harness records missing the embedding for the active model.
+    """Embed records missing the active model and requested dimension mode.
 
-    Returns True if at least some records have embeddings for DEFAULT_EMBED_MODEL.
+    Returns True if at least some records match the active embedding contract.
     Idempotent: cheap when everything is already embedded.
     """
     backend, _reason = resolve_embed_backend(cfg)
     # Resolve the active model up-front so embedded_count reflects the right backend.
-    embed_fn, _backend2, active_model = make_embed_fn(cfg, harness.resolve_embed_model(cfg))
-    matching, total = harness.embedded_count(active_model)
+    embed_fn, _backend2, active_model = make_embed_fn(cfg, harness.resolve_embed_model(cfg), bind_identity=True)
+    dimensions = configured_embed_dimensions(cfg)
+    embedding_identity = harness.embedding_function_identity(embed_fn)
+    matching, total = harness.embedded_count(active_model, dimensions=dimensions, embedding_identity=embedding_identity)
     if total == 0:
         return False
     if matching == total:
@@ -2660,6 +2672,9 @@ def ensure_harness_index(cfg: Config, local_names: list[str] | None = None, *, m
         show_info(f"Pulling embed model {active_model} (first-time setup)…")
         try:
             Client(host=cfg.host).pull(active_model)
+            embed_fn, _backend2, active_model = make_embed_fn(cfg, active_model, bind_identity=True)
+            embedding_identity = harness.embedding_function_identity(embed_fn)
+            matching, total = harness.embedded_count(active_model, dimensions=dimensions, embedding_identity=embedding_identity)
         except Exception as exc:
             show_info(f"Could not auto-pull {active_model}: {exc}. RAG disabled until model is available.")
             return matching > 0
@@ -2668,11 +2683,11 @@ def ensure_harness_index(cfg: Config, local_names: list[str] | None = None, *, m
     # we kick off what may be a long re-embed pass.
     if matching == 0 and any(r.get("embedding") for r in (harness.load_index().get("records") or [])):
         show_info(
-            f"Embedding backend produced a model change to {active_model}; "
-            f"all {total} records will be re-embedded under the new model."
+            f"Embedding provider, model artifact, or dimension setting changed for {active_model}; "
+            f"all {total} records need matching embeddings."
         )
     queue_note = ""
-    queue = harness.embedding_progress(active_model)
+    queue = harness.embedding_progress(active_model, dimensions=dimensions, embedding_identity=embedding_identity)
     if int(queue.get("total", 0)) == total and int(queue.get("high_value_total", 0)) > 0:
         next_priority = str(queue.get("next_priority") or "complete").replace("_", " ")
         queue_note = (
@@ -2697,6 +2712,7 @@ def ensure_harness_index(cfg: Config, local_names: list[str] | None = None, *, m
     result = harness.embed_index_records(
         embed_fn,
         active_model,
+        dimensions=dimensions,
         max_records=max_records or harness.EMBED_PER_TURN_CAP,
         on_progress=_progress,
         on_perf=lambda rec: log_embed_perf(rec, source="ensure_harness_index", backend=backend),
@@ -2873,6 +2889,8 @@ def agent_loop(
     persisted_user_message = user_message
     context_query_message = user_message
     optional_context_blocks: list[OptionalContextBlock] = []
+    system_source_tokens: dict[str, int] = {}
+    optional_source_tokens: dict[str, int] = {}
     broker_omitted_contexts: list[str] = []
     reconciliation_guidance = reconciliation.guidance_for_prompt(user_message)
     if reconciliation_guidance:
@@ -2908,16 +2926,22 @@ def agent_loop(
     # Single memoized embed function shared by both retrieval calls (same model).
     # Saves one Ollama round-trip when both modules embed the same user message.
     _embed_memo: dict[tuple[str, ...], list[list[float]]] = {}
-    _embed_base, _embed_backend, _embed_model = make_embed_fn(cfg, harness.resolve_embed_model(cfg))
+    _embed_base, _embed_backend, _embed_model = make_embed_fn(cfg, harness.resolve_embed_model(cfg), bind_identity=True)
 
     def _shared_embed(texts: list[str]) -> list[list[float]]:
         key = tuple(texts)
         hit = _embed_memo.get(key)
         if hit is not None:
+            if harness.embedding_function_identity(_embed_base) is None:
+                raise ValueError("embedding_identity_unavailable_or_changed")
             return hit
         result = _embed_base(texts)
         _embed_memo[key] = result
         return result
+
+    for binding_field in ("embedding_identity", "validate_embedding_identity"):
+        if hasattr(_embed_base, binding_field):
+            setattr(_shared_embed, binding_field, getattr(_embed_base, binding_field))
 
     # Fetch model metadata once per turn; used to set context window and gate think mode.
     try:
@@ -2974,8 +2998,10 @@ def agent_loop(
             context_query_message,
             _shared_embed,
             _embed_model,
+            dimensions=configured_embed_dimensions(cfg),
             k=HARNESS_TOP_K,
-            excluded_kinds=({"memory"} if echo_memory_authority else None),
+            pattern_context=harness.runtime_pattern_context(active_tools=active_tools),
+            index=harness.retrieval_index(protected_memory=echo_memory_authority),
         )
         context_block = harness.format_retrieved_context(retrieved_context or [])
         if context_block:
@@ -3152,7 +3178,8 @@ def agent_loop(
             "omitted_sources": broker_omitted_contexts,
             "error": type(exc).__name__,
         }
-    cfg.messages.append({"role": "user", "content": persisted_user_message})
+    active_user_message = {"role": "user", "content": persisted_user_message}
+    cfg.messages.append(active_user_message)
     max_iterations = max(1, min(128, int(cfg.max_tool_iterations)))
     # Model-aware params: adapt num_ctx/temperature/reflection cadence to the
     # active model's size + provider, honoring any explicit user overrides.
@@ -3182,6 +3209,8 @@ def agent_loop(
     small_context_ledger: small_context.SmallContextLedger | None = None
     small_context_notified = False
     completion_nudged = False
+    completion_recovery_rounds = 0
+    no_progress_tool_rounds = 0
     next_round_trigger = "initial_plan"
     tool_ms_since_previous_round = 0.0
     loop_state = nathan_provider_protocol.ProviderToolLoopState()
@@ -3204,55 +3233,41 @@ def agent_loop(
     def _round_context_sources(
         request_messages: list[dict[str, Any]],
         system_prompt: str,
-        included_contexts: list[str],
     ) -> dict[str, Any]:
-        """Return content-free token estimates grouped by request source."""
+        """Partition the estimated request without rereading any context source."""
 
         conversation_tokens = 0
         tool_result_tokens = 0
-        verification_tokens = 0
         artifact_referenced_chars = 0
-        verification_tools = {"git_diff", "run_shell", "run_tests"}
         for message in request_messages[1:]:
             tokens = estimate_message_tokens(message)
             if message.get("role") == "tool":
                 tool_result_tokens += tokens
-                tool_name = str(message.get("tool_name") or message.get("name") or "")
-                if tool_name in verification_tools:
-                    verification_tokens += tokens
                 content = str(message.get("content") or "")
                 if "artifact://private/v1/" in content or "receipt://sha256/" in content:
                     artifact_referenced_chars += len(content)
             else:
                 conversation_tokens += tokens
-        optional_tokens = {
-            block.name: estimate_text_tokens(block.body)
-            for block in optional_context_blocks
-            if block.name in included_contexts
-        }
-        identity_tokens = estimate_text_tokens(
-            identity.build_identity_block(
-                retrieved_lessons=retrieved_lessons,
-                protected=echo_memory_authority,
-            )
-        )
-        memory_tokens = (
-            0 if echo_memory_authority else estimate_text_tokens("\n".join(str(item) for item in cfg.memories))
-        )
-        system_tokens = estimate_text_tokens(system_prompt)
+        identity_tokens = system_source_tokens.get("identity", 0)
+        memory_tokens = system_source_tokens.get("memory", 0)
+        system_tokens = estimate_message_tokens({"role": "system", "content": system_prompt})
+        optional_memory_tokens = sum(optional_source_tokens.get(name, 0) for name in ("memory", "intuition"))
         return {
             "identity": identity_tokens,
             "policy_and_runtime": max(0, system_tokens - identity_tokens - memory_tokens),
-            "repository_instructions": optional_tokens.get("code", 0),
-            "tool_schemas": active_schema_tokens,
-            "harness_rag": optional_tokens.get("harness", 0),
-            "memory": memory_tokens,
-            "knowledge_graph": optional_tokens.get("index-compute-lab", 0),
-            "conversation": conversation_tokens,
+            "repository_instructions": optional_source_tokens.get("code", 0),
+            "tool_schemas": 0 if finalization_turn else active_schema_tokens,
+            "harness_rag": optional_source_tokens.get("harness", 0),
+            "memory": memory_tokens + optional_memory_tokens,
+            "knowledge_graph": optional_source_tokens.get("index-compute-lab", 0),
+            "conversation": max(0, conversation_tokens - sum(optional_source_tokens.values())),
             "tool_results": tool_result_tokens,
-            "verification_receipts": verification_tokens,
+            # A shell command's name does not turn its output into verification evidence.
+            "verification_receipts": 0,
             "other_optional": sum(
-                value for name, value in optional_tokens.items() if name not in {"code", "harness", "index-compute-lab"}
+                value
+                for name, value in optional_source_tokens.items()
+                if name not in {"code", "harness", "index-compute-lab", "memory", "intuition"}
             ),
             "artifact_referenced_chars": artifact_referenced_chars,
         }
@@ -3260,6 +3275,8 @@ def agent_loop(
     def _fit_request_user_message(system_prompt: str) -> tuple[str, int, list[str], list[str]]:
         nonlocal small_context_ledger, small_context_notified
         base_used = estimate_usage_with_system_prompt(system_prompt, cfg, tools=active_tools)
+        if not any(message is active_user_message for message in cfg.messages):
+            base_used += estimate_message_tokens(active_user_message)
         _used, _total, _remaining, runtime_cap, _native = context_status(
             cfg,
             client=client,
@@ -3297,6 +3314,7 @@ def agent_loop(
             base_used_tokens=adjusted_base_used,
             runtime_cap=runtime_cap,
             model_info=_active_model_info,
+            source_token_counts=optional_source_tokens,
         )
         omitted = list(
             dict.fromkeys(
@@ -3335,8 +3353,29 @@ def agent_loop(
         # partial solely because its verifier consumed the last work turn.
         for _ in range(max_iterations + 1):
             context_build_started = agent_loop_started if iterations_used == 0 else time.perf_counter()
-            finalization_turn = _ == max_iterations
+            recovery_finalization = completion_nudged and completion_recovery_rounds >= MAX_COMPLETION_RECOVERY_ROUNDS
+            if recovery_finalization and _ < max_iterations:
+                completion = execution_guardrails.completion_decision()
+                if not completion.allowed:
+                    completion = execution_guardrails.auto_verify_working_tree(cfg.cwd)
+                    if completion.allowed:
+                        show_info("Auto-verified the last workspace mutation with git diff --check.")
+                if not completion.allowed:
+                    final_content = ""
+                    show_error(
+                        "Completion blocked: verification recovery exhausted after "
+                        f"{MAX_COMPLETION_RECOVERY_ROUNDS} model rounds. Workspace changes are retained; "
+                        "no successful task completion is claimed."
+                    )
+                    break
+            finalization_turn = _ == max_iterations or recovery_finalization
             if finalization_turn:
+                if no_progress_tool_rounds:
+                    show_error(
+                        f"Max tool iterations reached ({max_iterations}) with actions still blocked "
+                        "before execution. No successful task completion is claimed."
+                    )
+                    break
                 completion = execution_guardrails.completion_decision()
                 if not completion.allowed:
                     show_error(
@@ -3349,29 +3388,29 @@ def agent_loop(
                     {
                         "role": "user",
                         "content": (
-                            "[Internal finalization turn] The configured work-iteration budget is "
-                            "exhausted and the current result is verified. Do not call more tools. "
-                            "Give a concise final answer describing the verified result or any "
-                            "remaining blocker."
+                            "[Internal finalization turn] The "
+                            + ("verification recovery" if recovery_finalization else "configured work-iteration")
+                            + " budget is exhausted. The mutation-completion gate has no outstanding check; "
+                            "this alone does not prove the user's task is complete. Do not call more tools. "
+                            "Describe the observed result, verification actually performed, and remaining blockers. "
+                            "Never describe an unexecuted action as completed."
                         ),
                     }
                 )
+            if completion_nudged and not finalization_turn:
+                completion_recovery_rounds += 1
             iterations_used += 1
             chars_before_prune = sum(len(str(message.get("content") or "")) for message in cfg.messages)
             prune_stale_tool_messages(cfg)
             chars_after_prune = sum(len(str(message.get("content") or "")) for message in cfg.messages)
             superseded_chars = max(0, chars_before_prune - chars_after_prune)
-            last_user = persisted_user_message
-            for msg in reversed(cfg.messages):
-                if msg.get("role") == "user":
-                    last_user = str(msg.get("content") or persisted_user_message)
-                    break
             try:
                 system_prompt = build_system_prompt(
                     cfg,
                     retrieved_lessons=retrieved_lessons,
                     active_model_info=_active_model_info,
-                    user_message=last_user,
+                    user_message=persisted_user_message,
+                    source_token_counts=system_source_tokens,
                 )
             except Exception as exc:
                 if not required_memory_protection:
@@ -3397,7 +3436,8 @@ def agent_loop(
                         cfg,
                         retrieved_lessons=retrieved_lessons,
                         active_model_info=_active_model_info,
-                        user_message=last_user,
+                        user_message=persisted_user_message,
+                        source_token_counts=system_source_tokens,
                     )
                 except Exception as exc:
                     if not required_memory_protection:
@@ -3414,13 +3454,15 @@ def agent_loop(
                     system_prompt
                 )
             request_messages = [{"role": "system", "content": system_prompt}] + cfg.messages
-            if request_user_message != persisted_user_message:
-                for i in range(len(request_messages) - 1, -1, -1):
-                    if request_messages[i].get("role") == "user":
-                        msg = dict(request_messages[i])
-                        msg["content"] = request_user_message
-                        request_messages[i] = msg
-                        break
+            rendered_user_message = {"role": "user", "content": request_user_message}
+            for i, message in enumerate(request_messages):
+                if message is active_user_message:
+                    request_messages[i] = rendered_user_message
+                    break
+            else:
+                # Compaction may drop the active request. Restore it only in the
+                # provider request; runtime nudges and persisted history stay intact.
+                request_messages.insert(1, rendered_user_message)
             if optional_context_blocks and not context_selection_notified and json_sink() is None:
                 if included_contexts:
                     show_info(f"↳ auto context attached: {', '.join(included_contexts)}")
@@ -3491,6 +3533,15 @@ def agent_loop(
                     if status is not None:
                         status.stop()
                         status = None
+                    response_retry = get_attr(chunk, "response_retry", None)
+                    if isinstance(response_retry, dict):
+                        finish_thinking_block()
+                        thinking_text = ""
+                        show_info(
+                            "Codex Responses returned no usable answer; "
+                            f"retrying ({response_retry['attempt']}/{response_retry['max_retries']}) "
+                            f"in {response_retry['delay_seconds']:g}s. No tool actions will be replayed."
+                        )
                     record_chat_metrics(cfg, chunk)
                     for metric_name in (
                         "total_duration",
@@ -3560,7 +3611,6 @@ def agent_loop(
                 context_sources = _round_context_sources(
                     request_messages,
                     system_prompt,
-                    included_contexts,
                 )
                 round_phase = "finalization" if finalization_turn else "execution" if tool_calls else "response"
                 round_receipt = {
@@ -3581,6 +3631,7 @@ def agent_loop(
                     "superseded_chars": superseded_chars,
                     "artifact_referenced_chars": context_sources.pop("artifact_referenced_chars"),
                     "context_sources": context_sources,
+                    "context_accounting_version": 2,
                 }
                 emit_round(**round_receipt)
                 record_perf_event("model_round", model=cfg.model, **round_receipt)
@@ -3594,6 +3645,12 @@ def agent_loop(
                     str(stream_error),
                     timed_out=isinstance(stream_error, TimeoutError),
                 )
+                if (
+                    isinstance(stream_error, chatgpt_client.CodexResponseStreamError)
+                    and stream_error.code == "retry_exhausted"
+                ):
+                    show_error(f"{stream_error} Existing tool results retained; request can be continued.")
+                    break
                 if not (content_text or thinking_text):
                     raise stream_error
             else:
@@ -3634,6 +3691,10 @@ def agent_loop(
 
             if not tool_calls:
                 loop_state.finish_without_tools()
+                if not content_text.strip():
+                    final_content = ""
+                    show_error("Model returned no final answer or valid tool call; completion withheld.")
+                    break
                 completion = execution_guardrails.completion_decision()
                 if completion.allowed:
                     turn_completed_normally = True
@@ -3658,14 +3719,7 @@ def agent_loop(
                     cfg.messages.append(
                         {
                             "role": "user",
-                            "content": (
-                                "[Internal completion gate] Do not claim completion yet. The last "
-                                "workspace mutation has no successful post-mutation verifier. Run one "
-                                "appropriate non-mutating test, lint/type check, or git_diff tool now. "
-                                "Custom verification must fail on mismatch: run a healthcheck/check/verify "
-                                "script, or Python -c with one or more assertions; then give a concise "
-                                "final answer grounded in that result."
-                            ),
+                            "content": completion_recovery_prompt(cfg),
                         }
                     )
                     continue
@@ -3673,9 +3727,7 @@ def agent_loop(
                 if auto_decision.allowed:
                     final_content = ""
                     if auto_decision.verifier_kind == "git_diff":
-                        show_info(
-                            "Auto-verified the last workspace mutation with git diff --check."
-                        )
+                        show_info("Auto-verified the last workspace mutation with git diff --check.")
                     else:
                         show_info(f"{auto_decision.reason}.")
                     turn_completed_normally = True
@@ -3704,6 +3756,32 @@ def agent_loop(
             )
             dependencies = _main_dispatch_dependencies()
             next_round_trigger = "tool_result_requires_interpretation"
+            batch_has_execution = False
+            batch_cancellation = DispatchCancellation()
+
+            def dispatch_in_batch(
+                name: str,
+                args: dict[str, Any],
+                *,
+                tool_call_id: str | None,
+                queue_position: int | None = None,
+                policy_ceiling_code: str = "",
+            ) -> DispatchResult:
+                try:
+                    return dispatch_action(
+                        name,
+                        args,
+                        cfg,
+                        tool_call_id=tool_call_id,
+                        dependencies=dependencies,
+                        render=False,
+                        queue_position=queue_position,
+                        policy_ceiling_code=policy_ceiling_code,
+                        cancellation=batch_cancellation,
+                    )
+                except DispatchInterrupted as exc:
+                    batch_cancellation.cancel("keyboard_interrupt")
+                    return exc.result
 
             def consume_dispatch(
                 name: str,
@@ -3711,8 +3789,15 @@ def agent_loop(
                 tool_call_id: str | None,
                 dispatched: DispatchResult,
             ) -> None:
-                nonlocal tool_ms_since_previous_round, tool_calls_since_reflection
+                nonlocal \
+                    tool_ms_since_previous_round, \
+                    tool_calls_since_reflection, \
+                    batch_has_execution, \
+                    next_round_trigger
 
+                batch_has_execution = batch_has_execution or dispatched.outcome.invoked or dispatched.status == "worked"
+                if dispatched.status == "denied":
+                    next_round_trigger = "policy_or_approval"
                 tool_ms_since_previous_round += dispatched.duration_ms
                 show_typed_tool_result(
                     name,
@@ -3722,7 +3807,10 @@ def agent_loop(
                     call_id=tool_call_id,
                 )
                 cfg.messages.append(dispatched.message)
-                loop_state.record_tool_result(tool_call_id)
+                loop_state.record_tool_result(
+                    tool_call_id,
+                    mutation_outcome_uncertain=dispatched.status == "unknown_outcome",
+                )
                 run_tool_calls.append(
                     {
                         "name": name,
@@ -3754,18 +3842,21 @@ def agent_loop(
                         context = copy_context()
                         future = pool.submit(
                             context.run,
-                            dispatch_action,
+                            dispatch_in_batch,
                             name,
                             args,
-                            cfg,
                             tool_call_id=tool_call_id,
-                            dependencies=dependencies,
-                            render=False,
                             queue_position=queue_position,
                         )
                         future_to_index[future] = batch_index
-                    for future in as_completed(future_to_index):
-                        ordered_results[future_to_index[future]] = future.result()
+                    try:
+                        for future in as_completed(future_to_index):
+                            ordered_results[future_to_index[future]] = future.result()
+                    except KeyboardInterrupt:
+                        # Stop queued actions; retain outcomes from observations already in flight.
+                        batch_cancellation.cancel("keyboard_interrupt")
+                        for future, index in future_to_index.items():
+                            ordered_results[index] = future.result()
 
                 for index, ((name, args), tool_call_id) in enumerate(batch):
                     dispatched = ordered_results[index]
@@ -3780,17 +3871,37 @@ def agent_loop(
                         args,
                         tool_call_id,
                     )
-                    dispatched = dispatch_action(
+                    dispatched = dispatch_in_batch(
                         name,
                         args,
-                        cfg,
                         tool_call_id=tool_call_id,
-                        dependencies=dependencies,
-                        render=False,
                         policy_ceiling_code=batch_ceiling_codes[index],
                     )
                     consume_dispatch(name, args, tool_call_id, dispatched)
             loop_state.finish_tool_batch()
+            if batch_cancellation.cancelled:
+                loop_state.cancel("user interrupted tool dispatch")
+                raise KeyboardInterrupt
+            no_progress_tool_rounds = 0 if batch_has_execution else no_progress_tool_rounds + 1
+            if no_progress_tool_rounds >= 3:
+                final_content = ""
+                show_error(
+                    "Tool progress stopped after 3 consecutive rounds without an executed action. "
+                    "Review the approval or policy blocker before continuing; no task completion is claimed."
+                )
+                break
+            if no_progress_tool_rounds == 1:
+                cfg.messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "[Internal recovery boundary] No requested action executed in the last tool batch. "
+                            "Do not repeat blocked actions or vary their spelling to bypass approval. "
+                            "Choose a permitted alternative that advances the task, or report the blocker. "
+                            "Noninteractive auto mode cannot provide action-time or trusted-handoff approval."
+                        ),
+                    }
+                )
 
             if tool_calls_since_reflection >= reflection_interval:
                 if json_sink() is None:
@@ -4134,8 +4245,11 @@ def print_harness_results(
     if cfg is not None:
         ensure_harness_index(cfg)  # embed any pending records before searching
     if cfg is not None:
-        embed_fn, _backend, active_model = make_embed_fn(cfg, harness.resolve_embed_model(cfg))
-        matching, _total = harness.embedded_count(active_model)
+        embed_fn, _backend, active_model = make_embed_fn(cfg, harness.resolve_embed_model(cfg), bind_identity=True)
+        matching, _total = harness.embedded_count(
+            active_model, dimensions=configured_embed_dimensions(cfg),
+            embedding_identity=harness.embedding_function_identity(embed_fn),
+        )
     else:
         embed_fn = None
         active_model = harness.DEFAULT_EMBED_MODEL
@@ -4148,10 +4262,11 @@ def print_harness_results(
             query,
             embed_fn,
             active_model,
+            dimensions=configured_embed_dimensions(cfg),
             k=12,
             harness=harness_name,
             kind=kind,
-            excluded_kinds=({"memory"} if echo_memory_authority else None),
+            index=harness.retrieval_index(protected_memory=echo_memory_authority),
         )
         if results:
             lines = [f"[dim]hybrid (RRF) results for:[/] {query}", ""]
@@ -4247,9 +4362,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--approval-mode",
-        choices=["never", "auto"],
+        choices=["never", "auto", "interactive"],
         default="never",
-        help="In --oneshot, control how approval-required tools are handled: never (default, deny + tool_denied event) or auto (auto-approve, equivalent to /auto).",
+        help="In --oneshot: never denies protected actions; auto grants session-preapproval only; interactive requires --approval-fd or --review-actions for exact confirmations. Handoff authority remains unavailable.",
+    )
+    review = parser.add_mutually_exclusive_group()
+    review.add_argument(
+        "--approval-fd", type=int, help="Inherited connected Unix socket for one-shot exact-action review."
+    )
+    review.add_argument(
+        "--review-actions",
+        action="store_true",
+        help="Review each exact one-shot action on the controlling terminal; requires interactive approval mode.",
     )
     parser.add_argument(
         "--thinking",
@@ -4263,6 +4387,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Prompt for --oneshot mode. If omitted, read from stdin. Use `update`, `doctor`, `daemon <start|run|status|stop>`, `plugin list`, `credential list`, or `url-scheme <url>` for built-in command surfaces.",
     )
     ns = parser.parse_args(argv)
+    if ns.approval_fd is not None or ns.review_actions or ns.approval_mode == "interactive":
+        if (
+            not ns.oneshot
+            or not ns.json_events
+            or ns.approval_mode != "interactive"
+            or (ns.approval_fd is None and not ns.review_actions)
+        ):
+            parser.error("--approval-fd or --review-actions requires --oneshot --json --approval-mode interactive")
+        if ns.approval_fd is not None and ns.approval_fd < 3:
+            parser.error("--approval-fd must not be a standard input/output descriptor")
     # Normalize nargs="*" list into a single string for downstream code
     if ns.prompt:
         ns.prompt = " ".join(ns.prompt)
@@ -4281,6 +4415,38 @@ def _run_oneshot_entry(args: argparse.Namespace) -> int:
     if not prompt:
         sys.stderr.write("No prompt provided (positional arg empty and stdin empty). Exiting.\n")
         return 64
+    if getattr(args, "review_actions", False):
+        from .nathan_approval_channel import ApprovalChannelError
+        from .nathan_approval_reviewer import run_reviewed_command
+
+        def reviewed_command(descriptor: int) -> list[str]:
+            command = [
+                sys.executable,
+                "-m",
+                "algo_cli",
+                "--oneshot",
+                "--json",
+                "--approval-mode",
+                "interactive",
+                "--approval-fd",
+                str(descriptor),
+                "--thinking",
+                args.thinking,
+            ]
+            for flag, value in (("--model", args.model), ("--host", args.host), ("--cwd", args.cwd)):
+                if value:
+                    command.extend((flag, value))
+            if args.cloud:
+                command.append("--cloud")
+            return [*command, "--", prompt]
+
+        try:
+            return run_reviewed_command(reviewed_command)
+        except (ApprovalChannelError, OSError):
+            sys.stderr.write("Terminal action review is unavailable; no agent was authorized through a fallback.\n")
+            return 64
+        except KeyboardInterrupt:
+            return 130
     overrides: dict[str, Any] = {}
     if args.model:
         overrides["model"] = chatgpt_client.normalize_codex_model(args.model)
@@ -4298,6 +4464,7 @@ def _run_oneshot_entry(args: argparse.Namespace) -> int:
     return _oneshot_module.run_oneshot(
         prompt=prompt,
         approval_mode=args.approval_mode,
+        approval_fd=getattr(args, "approval_fd", None),
         cfg_overrides=overrides or None,
     )
 
@@ -4308,7 +4475,7 @@ def _run_update_entry() -> int:
     style = "green" if result.returncode == 0 else "red"
     console.print(f"[{style}]{result.message}[/{style}]")
     if result.returncode != 0 and result.details:
-        console.print(result.details, markup=False)
+        console.print(result.details, markup=False, soft_wrap=True)
     return result.returncode
 
 
@@ -4446,7 +4613,11 @@ def main() -> None:
     if Path(sys.argv[0]).name.lower().startswith("ollama-cli"):
         console.print("[warning]`ollama-cli` is deprecated; use `algo-cli` instead.[/]")
 
-    # Migration must precede every command surface. In particular, a first
+    # Package recovery must not depend on, inspect, or migrate application state.
+    if len(sys.argv) == 2 and sys.argv[1].strip().casefold() == "update":
+        raise SystemExit(_run_update_entry())
+
+    # Migration precedes application commands. In particular, a first
     # invocation of ``algo-cli config`` must see legacy credentials/settings.
     migrated = False
     if has_legacy_data():
@@ -4494,6 +4665,8 @@ def main() -> None:
         message = "Echo-protected auxiliary state could not be prepared safely; startup stopped."
         if exc.reason_code != "echo_auxiliary_unavailable":
             message += f" Repair code: {exc.reason_code}."
+        if exc.reason_code == "memory_anchor_provisioning_required":
+            message += " Run `algo-cli config memory provision`, then retry."
         show_error(message)
         raise SystemExit(1) from None
     _drop_plaintext_intuition_if_protected(cfg)

@@ -248,6 +248,12 @@ def test_runtime_benchmark_rejects_resigned_protocol_tampering(
         )
 
 
+def test_runtime_benchmark_does_not_infer_current_freeze_state(report) -> None:
+    assert "active freeze" not in report["limitations"]
+    assert "not authorization for public benchmark claims" in report["limitations"]
+    assert report["public_claim_eligible"] is False
+
+
 @pytest.mark.parametrize("field", ["claim", "limitations"])
 @pytest.mark.parametrize("replacement", [None, "", "forged"])
 def test_runtime_benchmark_rejects_resigned_narrative_tampering(

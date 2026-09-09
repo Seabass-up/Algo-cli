@@ -325,7 +325,13 @@ def test_browser_tools_have_curated_policies():
     ):
         policy = policy_for_action(name)
         assert policy.curated, f"{name} should be curated"
-        assert policy.effect_class.value == "observe", f"{name} should be observe-class"
+        if name in {"cobalt_snapshot", "cobalt_screenshot"}:
+            assert policy.effect_class.value == "observe"
+        else:
+            assert policy.effect_class.value == "external_mutation"
+            assert policy.confirmation_mode.value == "action_time"
+            assert policy.idempotency.value == "at_most_once"
+            assert policy.outcome_model.value == "unknown_possible"
 
 
 def test_browser_tools_registered_in_action_specs():

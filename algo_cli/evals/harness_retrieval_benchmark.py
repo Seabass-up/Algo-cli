@@ -287,7 +287,7 @@ def _mean(values: Sequence[float]) -> float:
 
 
 def run_retrieval_quality_benchmark() -> dict[str, Any]:
-    """Run frozen multilingual and complex-query retrieval workloads offline."""
+    """Check a synthetic lexical fixture, including explicit translated aliases."""
     records = [dict(record) for record in QUALITY_RECORDS if not harness.is_excluded_from_retrieval(record)]
     bm25 = BM25Index([_search_text(record) for record in records])
     results: list[dict[str, Any]] = []
@@ -352,7 +352,13 @@ def run_retrieval_quality_benchmark() -> dict[str, Any]:
     )
     return {
         "status": "pass" if passed else "fail",
-        "scope": "frozen offline retrieval; answer generation is not measured",
+        "scope": (
+            "synthetic lexical fixture with translated aliases; production hybrid search, "
+            "representative semantic quality, protected memory, and answer generation are not measured"
+        ),
+        "qualification_scope": "synthetic_lexical_fixture",
+        "semantic_quality_measured": False,
+        "answer_quality_measured": False,
         "metrics": metrics,
         "thresholds": {
             "recall_at_k": MIN_QUALITY_RECALL,

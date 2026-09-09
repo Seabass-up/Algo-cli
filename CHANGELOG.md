@@ -4,9 +4,64 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.19.0] - Release Candidate
+
+This version is being qualified and is not yet published. The stable package
+index still serves 0.18.0 until the approved release workflow succeeds.
+
+### Fixed
+
+- Discover Astra through the signed-in Codex model catalog and preserve provider
+  routing and reasoning settings instead of hiding newer models behind a stale
+  fallback list.
+- Recover from eligible empty/partial Responses streams with bounded retries,
+  retain partial output, and preserve denial, cancellation, and uncertain-effect
+  barriers instead of repeating unsafe work.
+- Repair Echo credential-registry/startup compatibility and protected retrieval;
+  bind descendant reads to authorized roots and reject link, reparse, rename,
+  and stale-evidence races without a plaintext-memory fallback.
+- Preserve saved workspace settings during transient smoke and one-shot runs.
+- Reuse static Windows security API bindings while keeping identity, ownership,
+  ACL, and path authorization checks fresh; preserve explicit CRLF/LF bytes.
+- Bound verification recovery when a permitted verifier is unavailable. Denied
+  tools and model narration cannot establish task completion.
+- Clarify unchanged updates: the command installs compatible published packages,
+  not unpublished GitHub commits, and does not claim the latest version when
+  installed metadata cannot be verified.
+- Stop Windows launchers before unsafe self-replacement and print an exact,
+  quoted PowerShell command for the owning package manager. Published 0.18.0
+  needs this external upgrade path; retrying its active launcher cannot fix
+  WinError 32.
+- Handle bare `algo-cli update` before legacy migration or app-state reads so
+  recovery does not depend on broken or unqualified application state. Keep
+  normal and one-shot startup migration checks intact, and print recovery
+  commands without inserting line breaks into paths.
+
+### Release Operations
+
+- Qualify real source-bound builds in ordinary CI, including standard Hatchling
+  ZIP metadata, its automatically included `.gitignore`, and canonical
+  dependency-range ordering. Accept the versionless local-project lock entry
+  while requiring exact build-tool pins. Reject special-file entries and
+  hidden directory payloads, and retain exact source and reproducibility receipts.
+- Freeze the stability candidate separately from the unfinished contained test
+  runner. No new model-callable contained execution or native browser/computer
+  control is enabled by this release.
+- Add a digest-pinned published-0.18.0 upgrade check alongside clean wheel
+  installation on Linux, Windows, and macOS. Exercise pip, uv, and both pipx
+  backends with synthetic user-state preservation and repeated-update checks.
+  On Windows, exercise the external owning-manager path and verify the new
+  launcher's refusal separately; do not claim the old self-updater works.
+  Explicitly close synthetic SQLite connections and require temporary-state
+  cleanup before recording a passing result.
+- Adopt the owner's explicit single-owner release policy: only Seabass-up may
+  trigger and approve releases, with self-review and administrator bypass of
+  the environment approval wait allowed. Existing protected-source,
+  immutability, browser-evidence, and package-provenance gates remain mandatory.
+
 ### Changed
 
-- Bound the governed memory bridge to Echo Veil's scope-aware 0.7 API, added a
+- Bound the governed memory bridge to Echo Veil's scope-aware 0.8 API, added a
   full-commit-pinned optional extra, and canonicalized Algo's credential-free
   `localhost` Ollama default to an IP-literal loopback before Echo validation.
 - Replaced the duplicate in-memory Echo wrapper with one authoritative bridge

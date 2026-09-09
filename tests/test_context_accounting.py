@@ -5,6 +5,8 @@ while requests ran at min(num_ctx, native) (e.g. 8k) — so Ollama silently
 truncated history long before compaction ever fired.
 """
 
+import pytest
+
 from algo_cli import context_budget, model_info
 from algo_cli.config import Config
 from algo_cli.nathan_runtime import tool_result_message
@@ -174,3 +176,90 @@ def test_tool_result_message_tool_name_contributes_to_token_estimate():
     assert context_budget.estimate_message_tokens(with_tool_name) > context_budget.estimate_message_tokens(
         without_tool_name
     )
+
+
+@pytest.mark.parametrize("protected", [False, True])
+@pytest.mark.parametrize("automated", [False, True])
+@pytest.mark.parametrize("memory", ["", "## Memory\nPRIVATE_MEMORY_CANARY " * 17], ids=["empty", "populated"])
+def test_rendered_system_source_counts_are_content_free_and_do_not_recall_twice(
+    monkeypatch, protected, automated, memory
+):
+    cfg = Config(
+        model="test-model", echo_veil_enabled=protected, echo_veil_protection="required" if protected else "optional"
+    )
+    identity_calls = []
+    memory_calls = []
+    monkeypatch.setattr(context_budget, "json_sink", lambda: object() if automated else None)
+    monkeypatch.setattr(
+        context_budget.identity,
+        "build_identity_block",
+        lambda **kwargs: identity_calls.append(kwargs) or "immutable identity",
+    )
+    monkeypatch.setattr(
+        context_budget, "_memory_prompt_section", lambda _cfg, **_kwargs: memory_calls.append(True) or memory
+    )
+    counts = {"stale": 123}
+
+    prompt = context_budget.build_system_prompt(cfg, source_token_counts=counts)
+
+    assert len(identity_calls) == len(memory_calls) == 1
+    assert set(counts) == {"identity", "memory"}
+    assert counts["identity"] == context_budget.estimate_text_tokens("immutable identity\n\n")
+    if memory:
+        assert memory in prompt
+        assert (
+            context_budget.estimate_text_tokens(memory)
+            <= counts["memory"]
+            <= context_budget.estimate_text_tokens(memory) + 1
+        )
+    else:
+        assert counts["memory"] == 0
+    assert all(type(value) is int and value >= 0 for value in counts.values())
+    assert "PRIVATE_MEMORY_CANARY" not in str(counts)
+
+
+@pytest.mark.parametrize("budget", range(96, 104))
+def test_optional_truncation_includes_separator_in_its_budget(budget):
+    cap = 1024
+    base = "base"
+    fitted, _, _, used = context_budget.fit_optional_context_blocks(
+        base,
+        [context_budget.OptionalContextBlock("harness", "Sources", "word " * 1000)],
+        base_used_tokens=cap - context_budget.context_response_reserve(cap) - budget,
+        runtime_cap=cap,
+    )
+
+    assert used <= budget
+    assert context_budget.estimate_text_tokens(fitted) - context_budget.estimate_text_tokens(base) <= budget
+
+
+@pytest.mark.parametrize("base", ["", "x", "xx", "xxx", "xxxx"])
+def test_optional_source_counts_use_rendered_truncated_text_and_accumulate_names(base):
+    counts = {"stale": 100000}
+    fitted, included, omitted, used = context_budget.fit_optional_context_blocks(
+        base,
+        [
+            context_budget.OptionalContextBlock("harness", "First", "word " * 8),
+            context_budget.OptionalContextBlock("harness", "Second", "word " * 1000),
+            context_budget.OptionalContextBlock("memory", "Empty", ""),
+        ],
+        base_used_tokens=500,
+        runtime_cap=1024,
+        source_token_counts=counts,
+    )
+
+    assert included == ["harness", "harness"]
+    assert omitted == []
+    assert "...[truncated by context budget]" in fitted
+    assert set(counts) == {"harness"}
+    assert counts["harness"] == context_budget.estimate_text_tokens(fitted) - context_budget.estimate_text_tokens(base)
+    assert counts["harness"] <= used <= counts["harness"] + len(included)
+    assert used < context_budget.estimate_text_tokens("word " * 1000)
+    context_budget.fit_optional_context_blocks(
+        base,
+        [],
+        base_used_tokens=500,
+        runtime_cap=1024,
+        source_token_counts=counts,
+    )
+    assert counts == {}

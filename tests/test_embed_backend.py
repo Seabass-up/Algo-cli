@@ -94,7 +94,10 @@ def test_log_embed_perf_includes_backend_field(monkeypatch, tmp_path):
 
 def test_benchmark_arg_parsing_stays_local_model_scoped():
     assert main._parse_benchmark_embed_args("benchmark-embed") == (20, None)
-    assert main._parse_benchmark_embed_args("benchmark-embed --count 5 --model qwen3-embedding") == (5, "qwen3-embedding")
+    assert main._parse_benchmark_embed_args("benchmark-embed --count 5 --model qwen3-embedding") == (
+        5,
+        "qwen3-embedding",
+    )
 
 
 def test_embedded_count_filters_by_passed_model(monkeypatch, tmp_path):
@@ -178,8 +181,9 @@ def test_local_embed_inputs_are_not_capped_for_default_model(monkeypatch):
     captured: dict[str, object] = {}
 
     class _Client:
-        def __init__(self, *, host):
+        def __init__(self, *, host, timeout, trust_env, follow_redirects):
             captured["host"] = host
+            assert timeout is None and not trust_env and not follow_redirects
 
         def embed(self, *, model, input):
             captured["model"] = model
@@ -189,9 +193,7 @@ def test_local_embed_inputs_are_not_capped_for_default_model(monkeypatch):
     monkeypatch.setattr(main, "Client", _Client)
     # Force the fallback path by stubbing the gateway as unavailable.
     monkeypatch.setattr(main.tools_module, "gateway_ready", lambda url=None: False)
-    monkeypatch.setattr(
-        main.tools_module, "gateway_embed_batch", lambda *a, **k: None
-    )
+    monkeypatch.setattr(main.tools_module, "gateway_embed_batch", lambda *a, **k: None)
     embed_fn = main.make_local_embed_fn(Config(), "qwen3-embedding:latest")
 
     embed_fn(["x" * 700])
@@ -203,8 +205,9 @@ def test_local_embed_passes_configured_dimensions_to_direct_client(monkeypatch):
     captured: dict[str, object] = {}
 
     class _Client:
-        def __init__(self, *, host):
+        def __init__(self, *, host, timeout, trust_env, follow_redirects):
             captured["host"] = host
+            assert timeout is None and not trust_env and not follow_redirects
 
         def embed(self, *, model, input, dimensions):
             captured.update(model=model, input=input, dimensions=dimensions)
@@ -219,13 +222,15 @@ def test_local_embed_passes_configured_dimensions_to_direct_client(monkeypatch):
     assert result == [[1.0, 0.0]]
     assert captured["dimensions"] == 2
 
+
 def test_make_local_embed_fn_prefers_gateway_when_available(monkeypatch):
     captured: dict[str, object] = {}
 
-    def _stub_batch(texts, model, truncate, dimensions, url=None):
+    def _stub_batch(texts, model, truncate, dimensions, url=None, *, ollama_host=None):
         captured["via"] = "gateway"
         captured["texts"] = texts
         captured["model"] = model
+        captured["ollama_host"] = ollama_host
         return {"embeddings": [[0.5], [0.25]]}
 
     class _Client:
@@ -246,14 +251,17 @@ def test_make_local_embed_fn_prefers_gateway_when_available(monkeypatch):
 
     assert captured["via"] == "gateway"
     assert captured["texts"] == ["hello", "world"]
+    assert captured["ollama_host"] == Config().host
     assert result == [[0.5], [0.25]]
+
 
 def test_make_local_embed_fn_falls_back_when_gateway_unavailable(monkeypatch):
     captured: dict[str, object] = {}
 
     class _Client:
-        def __init__(self, *, host):
+        def __init__(self, *, host, timeout, trust_env, follow_redirects):
             captured["host"] = host
+            assert timeout is None and not trust_env and not follow_redirects
 
         def embed(self, *, model, input):
             captured["model"] = model
@@ -269,12 +277,14 @@ def test_make_local_embed_fn_falls_back_when_gateway_unavailable(monkeypatch):
     assert captured["input"] == ["a", "b"]
     assert result == [[0.1], [0.2]]
 
+
 def test_make_local_embed_fn_falls_back_when_gateway_returns_none(monkeypatch):
     captured: dict[str, object] = {}
 
     class _Client:
-        def __init__(self, *, host):
+        def __init__(self, *, host, timeout, trust_env, follow_redirects):
             captured["host"] = host
+            assert timeout is None and not trust_env and not follow_redirects
 
         def embed(self, *, model, input):
             captured["model"] = model
@@ -283,9 +293,7 @@ def test_make_local_embed_fn_falls_back_when_gateway_returns_none(monkeypatch):
 
     monkeypatch.setattr(main, "Client", _Client)
     monkeypatch.setattr(main.tools_module, "gateway_ready", lambda url=None: True)
-    monkeypatch.setattr(
-        main.tools_module, "gateway_embed_batch", lambda *a, **k: None
-    )
+    monkeypatch.setattr(main.tools_module, "gateway_embed_batch", lambda *a, **k: None)
     embed_fn = main.make_local_embed_fn(Config(), "qwen3-embedding:latest")
 
     result = embed_fn(["only"])

@@ -15,11 +15,13 @@ from pathlib import Path
 from typing import Any
 
 from .. import harness, memory_candidates
+from ..cache_admission import WindowTinyLFUCache
 from ..retrieval_algorithms import FULL_SORT_THRESHOLD, stable_top_k
+from .diagnostic_graph import DiagnosticNode, run_diagnostic_graph
 
 
-PROBE_SCHEMA_VERSION = 1
-PROBE_NAME = "harness-algorithm-effectiveness-v2"
+PROBE_SCHEMA_VERSION = 2
+PROBE_NAME = "harness-algorithm-effectiveness-v3"
 CANONICAL_ALGO_ID = "algo-cli:algorithm:ALGO.md"
 PROBE_RESULT_LIMIT = 12
 TOP_K_PARITY_COUNT = FULL_SORT_THRESHOLD + 257
@@ -43,31 +45,6 @@ def _check(passed: bool, evidence: dict[str, Any], reason: str = "") -> dict[str
         "required": True,
         "reason": "" if passed else reason,
         "evidence": evidence,
-    }
-
-
-def _terminal_result(status: str, reason: str) -> dict[str, Any]:
-    checks = {
-        name: {
-            "status": status,
-            "required": True,
-            "reason": reason,
-            "evidence": {},
-        }
-        for name in REQUIRED_CHECKS
-    }
-    return {
-        "schema_version": PROBE_SCHEMA_VERSION,
-        "probe": PROBE_NAME,
-        "status": status,
-        "reason": reason,
-        "required_checks": list(REQUIRED_CHECKS),
-        "summary": {
-            "required": len(REQUIRED_CHECKS),
-            "passed": 0,
-            status: len(REQUIRED_CHECKS),
-        },
-        "checks": checks,
     }
 
 
@@ -301,41 +278,9 @@ def _vector_values(canonical: dict[str, Any]) -> tuple[list[float] | None, str]:
     return vector, model
 
 
-def run_algorithm_effectiveness_probe() -> dict[str, Any]:
-    """Run the bounded live probe and return JSON-serializable evidence.
-
-    Missing index/vector/NumPy prerequisites are reported as ``unavailable``;
-    unexpected runtime exceptions are reported as ``error``.  A normal run is
-    ``pass`` only when every required check passes.
-    """
-    try:
-        index = harness.load_index()
-        records = [
-            record
-            for record in (index.get("records", []) or [])
-            if isinstance(record, dict)
-        ]
-    except Exception as exc:
-        return _terminal_result("error", f"harness index load failed: {type(exc).__name__}: {exc}")
-
-    if not records:
-        return _terminal_result("unavailable", "harness index has no records")
-    if not bool(getattr(harness, "_NUMPY", False)):
-        return _terminal_result("unavailable", "NumPy exact-matrix retrieval is unavailable")
-
-    canonical = next(
-        (record for record in records if str(record.get("id") or "") == CANONICAL_ALGO_ID),
-        None,
-    )
-    if canonical is None:
-        return _terminal_result("unavailable", f"canonical record is missing: {CANONICAL_ALGO_ID}")
-    query_vector, model = _vector_values(canonical)
-    if query_vector is None:
-        return _terminal_result(
-            "unavailable",
-            "canonical ALGO record has no valid persisted embedding/model",
-        )
-
+def _hybrid_checks(
+    index: dict[str, Any], canonical: dict[str, Any], query_vector: list[float], model: str,
+) -> dict[str, dict[str, Any]]:
     checks: dict[str, dict[str, Any]] = {}
     embed_calls = 0
 
@@ -354,8 +299,8 @@ def run_algorithm_effectiveness_probe() -> dict[str, Any]:
             model,
             k=PROBE_RESULT_LIMIT,
         )
-        bm25_cache_first = harness._BM25_INDEX_CACHE
-        vector_cache_first = harness._VECTOR_MATRIX_CACHE
+        bm25_cache_first = harness._BM25_INDEX_CACHE.last
+        vector_cache_first = harness._VECTOR_MATRIX_CACHE.last
 
         second_results = harness.hybrid_search(
             query,
@@ -363,8 +308,8 @@ def run_algorithm_effectiveness_probe() -> dict[str, Any]:
             model,
             k=PROBE_RESULT_LIMIT,
         )
-        bm25_cache_second = harness._BM25_INDEX_CACHE
-        vector_cache_second = harness._VECTOR_MATRIX_CACHE
+        bm25_cache_second = harness._BM25_INDEX_CACHE.last
+        vector_cache_second = harness._VECTOR_MATRIX_CACHE.last
         query_cache_after = harness._QUERY_VEC_CACHE.snapshot()
 
         first_canonical = _canonical_result(first_results)
@@ -424,7 +369,8 @@ def run_algorithm_effectiveness_probe() -> dict[str, Any]:
             and matrix_cache_reused
             and matrix_rows > 0
             and matrix_dimensions == len(query_vector)
-            and vector_consistent,
+            and vector_consistent
+            and _query_cache_check(query_cache_before, query_cache_after)["status"] == "pass",
             {
                 "query_vector_source": CANONICAL_ALGO_ID,
                 "model": model,
@@ -437,6 +383,7 @@ def run_algorithm_effectiveness_probe() -> dict[str, Any]:
                 "matrix_dimensions": matrix_dimensions,
                 "repeat_provenance_consistent": vector_consistent,
                 "local_embed_calls": embed_calls,
+                "query_cache": _query_cache_check(query_cache_before, query_cache_after),
             },
             "the canonical self-vector was not exact or the normalized matrix cache was rebuilt",
         )
@@ -497,13 +444,9 @@ def run_algorithm_effectiveness_probe() -> dict[str, Any]:
             "RRF mode/coverage, dual-source provenance, or repeat ordering was inconsistent",
         )
 
-        checks["stable_top_k"] = _top_k_parity_check()
-        checks["window_tinylfu"] = _query_cache_check(query_cache_before, query_cache_after)
-        checks["embedding_priority"] = _embedding_priority_check(model, len(records))
-        checks["memory_admission"] = _memory_admission_check()
     except Exception as exc:
-        reason = f"production-path probe failed: {type(exc).__name__}: {exc}"
-        for name in REQUIRED_CHECKS:
+        reason = f"production-path probe raised {type(exc).__name__}"
+        for name in ("exact_vector", "rrf_fusion"):
             checks.setdefault(
                 name,
                 {
@@ -513,41 +456,108 @@ def run_algorithm_effectiveness_probe() -> dict[str, Any]:
                     "evidence": {},
                 },
             )
-        return {
-            "schema_version": PROBE_SCHEMA_VERSION,
-            "probe": PROBE_NAME,
-            "status": "error",
-            "reason": reason,
-            "required_checks": list(REQUIRED_CHECKS),
-            "summary": {
-                "required": len(REQUIRED_CHECKS),
-                "passed": sum(item.get("status") == "pass" for item in checks.values()),
-                "error": sum(item.get("status") == "error" for item in checks.values()),
-            },
-            "checks": checks,
-        }
+    return checks
 
-    passed = sum(check.get("status") == "pass" for check in checks.values())
-    overall_status = "pass" if passed == len(REQUIRED_CHECKS) else "fail"
+
+def _lexical_check() -> dict[str, Any]:
+    query = f"rate your harness algorithm catalog {CANONICAL_ALGO_ID}"
+    first = harness._rank_keyword_records(query, limit=PROBE_RESULT_LIMIT)
+    cache_first = harness._BM25_INDEX_CACHE.last
+    second = harness._rank_keyword_records(query, limit=PROBE_RESULT_LIMIT)
+    cache_second = harness._BM25_INDEX_CACHE.last
+    canonical = [(rank, score) for rank, (score, row) in enumerate(first, 1) if row.get("id") == CANONICAL_ALGO_ID]
+    rank, score = canonical[0] if canonical else (0, 0.0)
+    reused = cache_first is not None and cache_first is cache_second
+    consistent = [(score, row["id"]) for score, row in first] == [(score, row["id"]) for score, row in second]
+    return _check(
+        rank >= 1 and score > 0 and reused and consistent,
+        {"canonical_id": CANONICAL_ALGO_ID, "keyword_rank": rank, "lexical_score": score,
+         "cache_reused": reused, "cache_rows": _cache_rows(cache_second), "repeat_provenance_consistent": consistent},
+        "canonical lexical result was absent/non-positive or corpus cache was rebuilt",
+    )
+
+
+def _independent_cache_check() -> dict[str, Any]:
+    cache: WindowTinyLFUCache[str, list[float]] = WindowTinyLFUCache(8)
+    before = cache.snapshot()
+    cache.put("bounded-probe", [1.0])
+    value = cache.get("bounded-probe")
+    result = _query_cache_check(before, cache.snapshot())
+    result["evidence"]["scope"] = "isolated production cache implementation; no embedding provider"
+    if value != [1.0]:
+        result.update(status="fail", reason="cache returned a different value")
+    return result
+
+
+def run_algorithm_effectiveness_probe() -> dict[str, Any]:
+    """Run every reachable check; errors/failures cannot hide behind missing inputs."""
+    index: dict[str, Any] = {}
+    records: list[dict[str, Any]] = []
+    canonical: dict[str, Any] = {}
+    vector: list[float] = []
+    model = harness.DEFAULT_EMBED_MODEL
+    hybrid: dict[str, dict[str, Any]] = {}
+
+    def index_ready(_results: Any) -> dict[str, Any]:
+        nonlocal index, records
+        index = harness.load_index()
+        records = [row for row in (index.get("records", []) or []) if isinstance(row, dict)]
+        return {"status": "pass" if records else "unavailable", "reason": "" if records else "harness index has no records"}
+
+    def canonical_ready(_results: Any) -> dict[str, Any]:
+        nonlocal canonical
+        canonical = next((row for row in records if row.get("id") == CANONICAL_ALGO_ID), {})
+        return {"status": "pass" if canonical else "unavailable", "reason": "" if canonical else "canonical record is missing"}
+
+    def vector_ready(_results: Any) -> dict[str, Any]:
+        nonlocal vector, model
+        values, found_model = _vector_values(canonical)
+        if values is None:
+            return {"status": "unavailable", "reason": "canonical ALGO record has no valid persisted embedding/model"}
+        vector, model = values, found_model
+        return {"status": "pass", "reason": ""}
+
+    def hybrid_ready(_results: Any) -> dict[str, Any]:
+        nonlocal hybrid
+        hybrid = _hybrid_checks(index, canonical, vector, model)
+        return {"status": "pass", "reason": ""}
+
+    nodes = [
+        DiagnosticNode("index", (), index_ready),
+        DiagnosticNode("canonical", ("index",), canonical_ready),
+        DiagnosticNode("persisted_vector", ("canonical",), vector_ready),
+        DiagnosticNode("numpy", (), lambda _: {"status": "pass" if harness._NUMPY else "unavailable",
+                                              "reason": "" if harness._NUMPY else "NumPy exact-matrix retrieval is unavailable"}),
+        DiagnosticNode("hybrid", ("persisted_vector", "numpy"), hybrid_ready),
+        DiagnosticNode("bm25_lexical", ("canonical",), lambda _: _lexical_check()),
+        DiagnosticNode("exact_vector", ("hybrid",), lambda _: hybrid["exact_vector"]),
+        DiagnosticNode("rrf_fusion", ("hybrid",), lambda _: hybrid["rrf_fusion"]),
+        DiagnosticNode("stable_top_k", (), lambda _: _top_k_parity_check()),
+        DiagnosticNode("window_tinylfu", (), lambda _: _independent_cache_check()),
+        DiagnosticNode("embedding_priority", ("index",), lambda _: _embedding_priority_check(
+            str(next((row.get("embedding_model") for row in records if row.get("embedding_model")), harness.DEFAULT_EMBED_MODEL)),
+            len(records),
+        )),
+        DiagnosticNode("memory_admission", (), lambda _: _memory_admission_check()),
+    ]
+    results = run_diagnostic_graph(nodes)
+    checks = {name: {**results[name], "required": True} for name in REQUIRED_CHECKS}
+    prerequisites = {name: result for name, result in results.items() if name not in checks}
+    statuses = {result["status"] for result in results.values()}
+    overall = next((state for state in ("error", "fail", "unavailable") if state in statuses), "pass")
+    reasons = list(dict.fromkeys(result.get("reason", "") for result in results.values() if result["status"] != "pass"))
     return {
-        "schema_version": PROBE_SCHEMA_VERSION,
-        "probe": PROBE_NAME,
-        "status": overall_status,
-        "reason": "" if overall_status == "pass" else "one or more required algorithm checks failed",
-        "index": {
-            "generated": str(index.get("generated") or ""),
-            "record_count": len(records),
-            "canonical_id": CANONICAL_ALGO_ID,
-            "embedding_model": model,
-            "embedding_dimensions": len(query_vector),
-        },
-        "required_checks": list(REQUIRED_CHECKS),
-        "summary": {
-            "required": len(REQUIRED_CHECKS),
-            "passed": passed,
-            "failed": len(REQUIRED_CHECKS) - passed,
-        },
-        "checks": checks,
+        "schema_version": PROBE_SCHEMA_VERSION, "probe": PROBE_NAME, "status": overall,
+        "reason": "; ".join(reason for reason in reasons if reason),
+        "index": {"generated": str(index.get("generated") or ""), "record_count": len(records),
+                  "canonical_id": CANONICAL_ALGO_ID, "embedding_model": model, "embedding_dimensions": len(vector)},
+        "required_checks": list(REQUIRED_CHECKS), "checks": checks, "prerequisites": prerequisites,
+        "summary": {"required": len(REQUIRED_CHECKS),
+                    "passed": sum(row["status"] == "pass" for row in checks.values()),
+                    "failed": sum(row["status"] == "fail" for row in checks.values()),
+                    "error": sum(row["status"] == "error" for row in checks.values()),
+                    "unavailable": sum(row["status"] == "unavailable" for row in checks.values()),
+                    "executed": sum(row["executed"] for row in checks.values())},
     }
 
 

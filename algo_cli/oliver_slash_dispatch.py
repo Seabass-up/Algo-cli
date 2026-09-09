@@ -121,6 +121,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/harness embed", "Embed pending harness records"),
     ("/harness score", "Run the ten-gate benchmark and algorithm-effectiveness scorecard"),
     ("/harness compare", "Recompute the external rating and strict leader gates"),
+    ("/harness patterns", "Inspect pattern evidence, explain applicability, verify tests, or compare retrieval"),
     ("/harness external", "Opt in or out of indexing other local agent stores"),
     ("/harness benchmark-embed", "Measure synthetic embed throughput (--count N --model NAME)"),
     ("/harness build-rust", "Build optional Rust indexer"),
@@ -175,10 +176,12 @@ _HARNESS_SUBCOMMANDS = (
     "external",
     "build-rust",
     "benchmark-embed",
+    "patterns",
 )
 _HARNESS_USAGE = (
     "Usage: /harness [status|refresh|embed|score|compare|build-rust] or "
     "/harness external [on|off|status] or "
+    "/harness patterns [status [ID]|explain ID|verify ID|compare] or "
     "/harness benchmark-embed [--count N] [--model NAME]. "
     "Search with /hsearch (alias /hs); read with /hread (alias /hr)."
 )
@@ -1357,12 +1360,19 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         harness_parts = harness_arg.split(maxsplit=1)
         subcommand = harness_parts[0].lower() if harness_parts else ""
         subargs = harness_parts[1] if len(harness_parts) > 1 else ""
-        if subargs and subcommand not in {"benchmark-embed", "external"}:
+        if subargs and subcommand not in {"benchmark-embed", "external", "patterns"}:
             m.show_error(harness_subcommand_error(harness_arg))
+        elif subcommand == "patterns":
+            from .pattern_runtime import run_command
+
+            try:
+                m.console.print(json.dumps(run_command(subargs), indent=2, sort_keys=True), markup=False)
+            except (OSError, ValueError) as exc:
+                m.show_error(str(exc))
         elif subcommand == "refresh":
-            m.console.print(harness_refresh())
+            m.console.print(harness_refresh(cfg=cfg))
         elif subcommand in {"", "status", "stats", "quality"}:
-            m.console.print(harness_stats())
+            m.console.print(harness_stats(cfg=cfg))
         elif subcommand in {"score", "scorecard", "grade", "rating"}:
             m.console.print(harness_scorecard(cfg=cfg))
         elif subcommand in {"compare", "competitive"}:
@@ -1396,14 +1406,16 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             if not m.host_is_local(cfg.host) or not m.ollama_server_ready(cfg.host):
                 m.show_error("Local Ollama is not reachable; cannot embed harness records.")
             else:
-                embed_fn, _backend, active_model = m.make_embed_fn(cfg, harness.resolve_embed_model(cfg))
-                matching, total = harness.embedded_count(active_model)
+                embed_fn, _backend, active_model = m.make_embed_fn(cfg, harness.resolve_embed_model(cfg), bind_identity=True)
+                dimensions = m.configured_embed_dimensions(cfg)
+                embedding_identity = harness.embedding_function_identity(embed_fn)
+                matching, total = harness.embedded_count(active_model, dimensions=dimensions, embedding_identity=embedding_identity)
                 pending = total - matching
                 if matching == 0 and any(r.get("embedding") for r in (harness.load_index().get("records") or [])):
                     m.show_info(
-                        f"Backend/model change detected: all {total} records will be re-embedded under {active_model}."
+                        f"Provider, model artifact, or dimension change detected: all {total} records need matching embeddings for {active_model}."
                     )
-                queue = harness.embedding_progress(active_model)
+                queue = harness.embedding_progress(active_model, dimensions=dimensions, embedding_identity=embedding_identity)
                 high_value = (
                     f" High-value coverage: {queue.get('high_value_embedded', 0)}/"
                     f"{queue.get('high_value_total', 0)}; next tier: "
@@ -1423,6 +1435,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 result = harness.embed_index_records(
                     embed_fn,
                     active_model,
+                    dimensions=dimensions,
                     on_progress=_prog,
                     on_perf=lambda rec: m.log_embed_perf(rec, source="harness_embed_command", backend=backend),
                 )
@@ -1445,7 +1458,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
     elif command == "/actions":
         from .tools import available_actions
 
-        m.console.print(available_actions(arg or None))
+        m.console.print(available_actions(arg or None, cfg=cfg))
     elif command == "/doctor":
         from .action_registry import build_doctor_report, render_doctor
 
@@ -1456,7 +1469,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         from .kernels.manifest import audit_kernels, render_kernel_audit
         from .dorothy_perf_telemetry import render_runtime_quality_snapshot
 
-        m.console.print(harness_stats())
+        m.console.print(harness_stats(cfg=cfg))
         m.console.print()
         m.console.print(render_action_registry_runtime_audit(audit_action_registry_runtime()))
         m.console.print()
@@ -1464,7 +1477,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         m.console.print()
         m.console.print(render_runtime_quality_snapshot(cfg))
         m.console.print()
-        m.console.print(available_actions("harness"))
+        m.console.print(available_actions("harness", cfg=cfg))
         m.console.print()
         for query in (
             "index-compute-lab",

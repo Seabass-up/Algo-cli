@@ -16,6 +16,7 @@ from types import ModuleType
 from typing import Any
 import zipfile
 
+from packaging.requirements import Requirement
 import pytest
 
 
@@ -41,6 +42,33 @@ def _load_module() -> ModuleType:
 
 
 BINDING = _load_module()
+
+
+def test_project_requirements_match_build_backend_canonical_spelling() -> None:
+    project = BINDING._toml((ROOT / "pyproject.toml").read_bytes(), stage="pyproject")
+    metadata = project["project"]
+    requirements = list(metadata["dependencies"])
+    for extra in metadata["optional-dependencies"].values():
+        requirements.extend(extra)
+    for requirement in requirements:
+        assert BINDING._canonical_requirement(requirement) == BINDING._canonical_requirement(
+            str(Requirement(requirement))
+        )
+    assert "/.gitignore" in project["tool"]["hatch"]["build"]["targets"]["sdist"]["include"]
+
+
+def test_ci_exercises_real_reproducible_binding_before_installed_wheel_checks() -> None:
+    workflow = (ROOT / ".github/workflows/oliver-ci.yml").read_text(encoding="utf-8")
+    package = workflow.split("  package:\n", 1)[1].split("  package-smoke:\n", 1)[0]
+    assert 'revision="$(git rev-parse HEAD)"' in package
+    assert "SOURCE_DATE_EPOCH=" in package
+    for stage in ("a", "b"):
+        assert f'--outdir "${{state}}/dist-{stage}" "${{state}}/source-{stage}"' in package
+    assert '"${helper}" capture' in package
+    assert '"${helper}" bind' in package
+    assert '"${helper}" verify-bound' in package
+    assert 'cp "${state}/bound-dist/"* "${GITHUB_WORKSPACE}/dist/"' in package
+    assert package.index('"${helper}" verify-bound') < package.index("Validate metadata and public contents")
 
 
 def test_release_source_binding_platform_boundary_is_fail_closed() -> None:
@@ -110,6 +138,10 @@ include = [
 def _lock_toml(*, hatchling_version: str = "1.31.0") -> str:
     return f"""\
 version = 1
+
+[[package]]
+name = "algo-cli-runtime"
+source = {{ editable = "." }}
 
 [[package]]
 name = "build"
@@ -228,6 +260,8 @@ def _zip_blob(files: dict[str, bytes], *, stored: bool = False, fifo_path: str |
             info.compress_type = compression
             info.create_system = 3
             file_type = stat.S_IFIFO if relative == fifo_path else stat.S_IFREG
+            if ".dist-info/" in relative and relative != fifo_path:
+                file_type = 0
             info.external_attr = (file_type | 0o644) << 16
             archive.writestr(info, payload)
     return stream.getvalue()
@@ -802,6 +836,39 @@ def test_bind_rejects_non_regular_wheel_members(tmp_path: Path) -> None:
         _bind(paths)
 
 
+@pytest.mark.parametrize("file_type", [0, stat.S_IFREG])
+def test_wheel_accepts_permission_only_regular_entries(tmp_path: Path, file_type: int) -> None:
+    path = tmp_path / "metadata.whl"
+    with zipfile.ZipFile(path, "w") as archive:
+        info = zipfile.ZipInfo("package.dist-info/METADATA")
+        info.external_attr = (file_type | 0o644) << 16
+        archive.writestr(info, b"Name: package\n")
+    observed, _, _ = BINDING._safe_wheel(path)
+    assert observed == {"package.dist-info/METADATA": b"Name: package\n"}
+
+
+@pytest.mark.parametrize("file_type", [stat.S_IFLNK, stat.S_IFIFO, stat.S_IFSOCK, stat.S_IFCHR, stat.S_IFBLK])
+@pytest.mark.parametrize("name", ["package.dist-info/METADATA", "package.dist-info/"])
+def test_wheel_still_rejects_explicit_special_types(tmp_path: Path, file_type: int, name: str) -> None:
+    path = tmp_path / "special.whl"
+    with zipfile.ZipFile(path, "w") as archive:
+        info = zipfile.ZipInfo(name)
+        info.external_attr = (file_type | 0o644) << 16
+        archive.writestr(info, b"")
+    with pytest.raises(BINDING.SourceBindingRejected, match="wheel_type"):
+        BINDING._safe_wheel(path)
+
+
+def test_wheel_rejects_payload_hidden_in_directory_member(tmp_path: Path) -> None:
+    path = tmp_path / "directory.whl"
+    with zipfile.ZipFile(path, "w") as archive:
+        info = zipfile.ZipInfo("package/")
+        info.external_attr = (stat.S_IFDIR | 0o755) << 16
+        archive.writestr(info, b"unexpected hidden payload")
+    with pytest.raises(BINDING.SourceBindingRejected, match="wheel_type"):
+        BINDING._safe_wheel(path)
+
+
 def test_bind_rejects_tool_lock_not_pinned_in_captured_source(tmp_path: Path) -> None:
     repository, revision = _repository(tmp_path, hatchling_version="1.30.0")
     paths = _paths(tmp_path)
@@ -811,6 +878,24 @@ def test_bind_rejects_tool_lock_not_pinned_in_captured_source(tmp_path: Path) ->
 
     with pytest.raises(BINDING.SourceBindingRejected, match="tool_lock_versions"):
         _bind(paths)
+
+
+def test_real_lock_accepts_dynamic_project_without_unpinning_build_tools() -> None:
+    assert BINDING._tool_versions((ROOT / "uv.lock").read_bytes()) == ("build==1.5.0", "hatchling==1.31.0")
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        '[[package]]\nname="build"\nsource={editable="."}\n',
+        '[[package]]\nname="other"\nsource={editable="."}\n',
+        '[[package]]\nname="algo-cli-runtime"\nsource={editable="elsewhere"}\n',
+        '[[package]]\nname="algo-cli-runtime"\nsource={editable="."}\n',
+    ],
+)
+def test_lock_rejects_ambiguous_or_other_unversioned_packages(extra: str) -> None:
+    with pytest.raises(BINDING.SourceBindingRejected, match="tool_lock"):
+        BINDING._tool_versions((_lock_toml() + extra).encode())
 
 
 def test_verify_rejects_manifest_and_distribution_mutation(tmp_path: Path) -> None:
