@@ -3879,6 +3879,15 @@
           "timestamp": "2026-09-09T21:11:29Z",
           "scope": "source digest sha256:c2907425968d9c3acd7fbf092440c0a44b85fcd55a1b1dac48e836250eba55a3 binds termination at the first navigation result within coalesced pipe reads, all four terminal-state regressions, malformed-frame rejection, and cleanup",
           "limitations": "CI 34401850330 failed hosted_browser_entry_navigation_machine_terminal on 70b2195. Four coalesced terminal cases reproduce the defect in the immutable 0.19.0 runner; all pass with the repair. The old tag remains untouched and unpublished. Fresh 0.19.1 hosted qualification is required; no retry hides the failure and HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json generated after the authorized 0.19.1 release preflight repair",
+          "digest": "sha256:ce7f78214e34cebc68ec161e40d4a38c26bcc8725de00a2ed8963e2560159ab6",
+          "result": "9 local metrics pass, 5 broader external metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-09T21:59:18Z",
+          "scope": "source digest sha256:595c5d6a235743fcfd04429a3541380438ed49f51f06b275b44d1a03fa23f1f9 binds readiness from the GitHub vars context, live environment policy validation, and recovery limited to unchanged tag v0.19.1 at 57a4740ab73a79244413a64396ee9e9f2285b738",
+          "limitations": "Tagged source passed all 16 jobs in CI 34407105830, including five attested browser sessions. Release run 34408440047 failed environment authority before publication. Corrected publisher qualification remains pending; broader M8/M9 completion is not established and HARD-080 remains in progress"
         }
       ]
     },
@@ -5768,6 +5777,15 @@
           "timestamp": "2026-09-09T21:11:29Z",
           "scope": "source digest sha256:c2907425968d9c3acd7fbf092440c0a44b85fcd55a1b1dac48e836250eba55a3 binds unchanged performance thresholds, security restrictions, and bounded terminal-state handling for the replacement candidate",
           "limitations": "Earlier 0.19.0 and 70b2195 platform results cannot qualify the new 0.19.1 source. Browser qualification on 70b2195 failed and remains failed. M8/M9 completion and public performance claims remain blocked; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json generated after the authorized 0.19.1 release preflight repair",
+          "digest": "sha256:ce7f78214e34cebc68ec161e40d4a38c26bcc8725de00a2ed8963e2560159ab6",
+          "result": "9 local metrics pass, 5 broader external metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-09T21:59:18Z",
+          "scope": "source digest sha256:595c5d6a235743fcfd04429a3541380438ed49f51f06b275b44d1a03fa23f1f9 binds the publisher repair without changing tagged package bytes, runtime limits, or browser security restrictions",
+          "limitations": "All three native latency reports and all 12 upgrade paths passed for tagged source 57a4740 in CI 34407105830. These are source-bound results, not comparative performance claims or qualification of the corrective publisher. M8/M9 completion remains blocked; HARD-081 remains in progress"
         }
       ]
     },
