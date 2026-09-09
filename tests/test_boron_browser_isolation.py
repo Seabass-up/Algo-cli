@@ -1312,3 +1312,59 @@ def test_live_error_reporting_never_echoes_untrusted_reason_text() -> None:
     assert module._browser_terminal_failure_reason("navigation_failed") == "browser_navigation_failed"
     assert module._reported_failure_reason(module.BuildRejected("private_token_value")) == "browser_build_rejected"
     assert "private_token_value" not in module._reported_failure_reason(module.BoronPipeRejected("private_token_value"))
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "ca_ca_import",
+        "ca_ca_write",
+        "ca_install_digest",
+        "navigation_browser_disconnected",
+        "navigation_browser_launch",
+        "navigation_json_float",
+        "navigation_navigation_timeout",
+    ],
+)
+def test_browser_entry_failure_preserves_closed_operation_code(reason: str) -> None:
+    module = _live_module()
+    expected = "browser_entry_" + reason
+    row = {
+        "schema_version": module.BORON_ENTRY_SCHEMA_VERSION,
+        "protocol_version": module.BORON_ENTRY_PROTOCOL_VERSION,
+        "type": "boron.error",
+        "reason_code": reason,
+    }
+    with pytest.raises(module.LiveSessionRejected) as caught:
+        module._reject_browser_entry_error(row)
+    assert caught.value.reason_code == expected
+    assert module._normalized_live_reason(expected) == expected
+    assert module._cleanup_failure_reason(caught.value) == expected + "_and_cleanup_incomplete"
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [None, "", "private_token", "navigation_private_token", "ca_ca_import\nprivate_token", 1, {}],
+)
+def test_browser_entry_failure_does_not_echo_unknown_or_malformed_reason(reason) -> None:
+    module = _live_module()
+    with pytest.raises(module.LiveSessionRejected) as caught:
+        module._reject_browser_entry_error({"reason_code": reason})
+    expected = "browser_entry_rejected" if type(reason) is str and reason else "browser_error_shape"
+    assert caught.value.reason_code == expected
+
+
+def test_browser_entry_failure_does_not_coerce_untrusted_objects() -> None:
+    module = _live_module()
+
+    class PrivateString(str):
+        def __hash__(self):
+            pytest.fail("string subclasses must not reach diagnostic lookup")
+
+    class PrivateObject:
+        def __str__(self):
+            pytest.fail("diagnostics must not stringify untrusted values")
+
+    for reason in (PrivateString("ca_ca_import"), PrivateObject()):
+        with pytest.raises(module.LiveSessionRejected, match="^browser_error_shape$"):
+            module._reject_browser_entry_error({"reason_code": reason})

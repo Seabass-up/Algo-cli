@@ -118,6 +118,79 @@ _BROWSER_TERMINAL_REASONS = frozenset(
         "websocket_denied",
     }
 )
+_BROWSER_ENTRY_REASONS = frozenset(
+    {"ca_install_digest", "entry_config", "navigation_evidence"}
+    | {
+        "ca_" + reason
+        for reason in (
+            "ca_size",
+            "ca_clock",
+            "profile_path",
+            "certutil_path",
+            "ca_certificate",
+            "ca_constraints",
+            "ca_validity",
+            "ca_write",
+            "ca_import",
+            "ca_readback",
+        )
+    }
+    | {
+        "navigation_" + reason
+        for reason in (
+            "browser_context",
+            "browser_disconnected",
+            "browser_identity",
+            "browser_kill",
+            "browser_launch",
+            "browser_platform_unsupported",
+            "browser_process_identity",
+            "browser_terminate",
+            "browser_version_skew",
+            "browser_wait_timeout",
+            "cdp_event",
+            "cdp_event_schema",
+            "cdp_message_kind",
+            "cdp_method",
+            "cdp_params",
+            "cdp_response_id",
+            "cdp_response_schema",
+            "cdp_result",
+            "cdp_result_method",
+            "cdp_session",
+            "command_id",
+            "evidence_not_terminal",
+            "frame_event",
+            "json_constant",
+            "json_depth",
+            "json_duplicate_key",
+            "json_float",
+            "json_items",
+            "json_string",
+            "json_type",
+            "lifecycle_identity",
+            "machine_started",
+            "machine_terminal",
+            "navigation_identity",
+            "navigation_plan",
+            "navigation_timeout",
+            "navigation_url",
+            "navigation_numeric_host",
+            "pipe_buffer_size",
+            "pipe_feed_type",
+            "pipe_frame_json",
+            "pipe_frame_size",
+            "pipe_frame_truncated",
+            "pipe_frame_utf8",
+            "pipe_message_object",
+            "pipe_read",
+            "pipe_write",
+            "same_document_event",
+            "target_id",
+            "terminal_transition",
+        )
+    }
+)
 _LIVE_STATIC_REASON_CODES = frozenset(
     {
         "browser_build_evidence_digest",
@@ -182,6 +255,7 @@ _LIVE_WAIT_STAGES = frozenset({"broker_attach_exit", "browser_exit"})
 _LIVE_BASE_REASON_CODES = frozenset(
     _LIVE_STATIC_REASON_CODES
     | {"browser_" + reason for reason in _BROWSER_TERMINAL_REASONS}
+    | {"browser_entry_" + reason for reason in _BROWSER_ENTRY_REASONS}
     | {stage + suffix for stage in _LIVE_RUN_STAGES for suffix in ("_failed", "_unavailable")}
     | {stage + suffix for stage in _LIVE_DRIVER_STAGES for suffix in ("_pipes", "_setup_failed", "_unavailable")}
     | {
@@ -255,6 +329,15 @@ def _browser_terminal_failure_reason(value: Any) -> str:
     if type(value) is str and value in _BROWSER_TERMINAL_REASONS:
         return "browser_" + value
     return "browser_terminal_rejected"
+
+
+def _reject_browser_entry_error(row: Mapping[str, Any]) -> NoReturn:
+    reason = row.get("reason_code")
+    if type(reason) is not str or not reason:
+        _reject("browser_error_shape")
+    if reason in _BROWSER_ENTRY_REASONS:
+        _reject("browser_entry_" + reason)
+    _reject("browser_entry_rejected")
 
 
 class LiveSessionRejected(RuntimeError):
@@ -1407,10 +1490,7 @@ def run_live_session(
             browser_process.read(deadline=time.monotonic() + 90, stage="browser_result")
         )
         if browser_result.get("type") == "boron.error":
-            reason = browser_result.get("reason_code")
-            if type(reason) is not str or not reason:
-                _reject("browser_error_shape")
-            _reject("browser_entry_rejected")
+            _reject_browser_entry_error(browser_result)
         if browser_result.get("type") != "boron.result":
             _reject("browser_result_type")
         if browser_result.get("state") != "verified":
