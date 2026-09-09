@@ -1000,7 +1000,8 @@ def test_ci_runs_repeated_cell_and_attests_push_evidence() -> None:
     assert "sha256sum --" in browser_job
     assert "48af8a397ebd60178778bf63611dbcebe5f5e7a9be90eb9147b24b9587455778" in browser_job
     assert ("github.com/docker/buildx v0.36.1 1d8dde89b8aba914e05e45366770736fea1fd690") in browser_job
-    assert "BuildKit:[[:space:]]+v0\\.32\\.2" in browser_job
+    assert 'docker buildx inspect --bootstrap --builder "${HENRY_BUILDX_NAME}"' in browser_job
+    assert "BuildKit version:[[:space:]]+v0\\.32\\.2" in browser_job
     assert "id: henry-docker-authority" in browser_job
     assert 'buildx_container_name="buildx_buildkit_${HENRY_BUILDX_NAME}0"' in browser_job
     assert "docker container inspect --format '{{.Id}}'" in browser_job
@@ -1047,6 +1048,41 @@ def test_ci_runs_repeated_cell_and_attests_push_evidence() -> None:
     assert "run:" not in attestation_job
     assert "subject-name: grace-boron-hosted-qualification.json" in attestation_job
     assert "subject-digest: ${{ needs.browser-evidence-validation.outputs.report-digest }}" in (attestation_job)
+
+
+@pytest.mark.parametrize(
+    ("identity", "accepted"),
+    [
+        ("BuildKit version:      v0.32.2", True),
+        ("BuildKit version:\tv0.32.2", True),
+        ("BuildKit version:      v0.32.1", False),
+        ("BuildKit version:      v0.32.20", False),
+        ("BuildKit version:      v0.32.2-dev", False),
+        ("BuildKit daemon flags: v0.32.2", False),
+        ("BuildKit:              v0.32.2", False),
+        ("", False),
+    ],
+)
+def test_ci_buildkit_version_gate_executes_pinned_inspect_output(identity: str, accepted: bool, tmp_path: Path) -> None:
+    workflow = (ROOT / ".github/workflows/oliver-ci.yml").read_text(encoding="utf-8")
+    version_gate = next(
+        line.strip()
+        for line in workflow.splitlines()
+        if line.strip().startswith("grep -Eq ") and '"${buildkit_identity}"' in line
+    )
+    result = subprocess.run(
+        ["/bin/bash", "-c", "set -euo pipefail\n" + version_gate],
+        cwd=tmp_path,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "buildkit_identity": "Name: builder-test\nNodes:\nStatus: running\n" + identity,
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert (result.returncode == 0) is accepted
 
 
 def test_verify_report_reconstructs_exact_evidence_and_rejects_blocked_or_tampered(
