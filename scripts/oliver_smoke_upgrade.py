@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 from email.parser import BytesParser
 import hashlib
 import json
@@ -108,7 +109,7 @@ def seed_state(home: Path, workspace: Path) -> None:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         path.write_bytes(payload)
         path.chmod(0o600)
-    with sqlite3.connect(config / "memory-fixture.sqlite3") as db:
+    with closing(sqlite3.connect(config / "memory-fixture.sqlite3")) as db, db:
         db.execute("CREATE TABLE preserved (id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
         db.execute("INSERT INTO preserved VALUES (?, ?)", (1, "synthetic database preservation"))
     (config / "memory-fixture.sqlite3").chmod(0o600)
@@ -119,7 +120,7 @@ def seed_state(home: Path, workspace: Path) -> None:
 
 
 def state_manifest(home: Path, workspace: Path) -> dict[str, dict[str, object]]:
-    result = {}
+    result: dict[str, dict[str, object]] = {}
     for label, root in (("config", home / ".algo_cli"), ("legacy", home / ".ollama_cli"), ("workspace", workspace)):
         for path in (root, *sorted(root.rglob("*"))):
             if path.is_symlink():
@@ -161,6 +162,34 @@ def installed_identity(
         raise ValueError("upgrade smoke imported outside its isolated installation")
 
 
+def upgrade_command(python: Path, cli: Path, env: dict[str, str], work: Path) -> list[str]:
+    if sys.platform != "win32":
+        return [str(cli), "update"]
+    # Published 0.18.0 cannot uninstall its own active Windows .exe wrapper.
+    output = run(
+        [
+            str(python), "-I", "-c",
+            "import json; from algo_cli.updater import build_update_plan; "
+            "print(json.dumps(list(build_update_plan().command)))",
+        ],
+        env=env,
+        cwd=work,
+    )
+    command = json.loads(output)
+    if type(command) is not list or not command or any(type(argument) is not str or not argument for argument in command):
+        raise ValueError("published updater returned an invalid owning-manager command")
+    return command
+
+
+def verify_windows_launcher_guard(cli: Path, env: dict[str, str], work: Path) -> None:
+    result = subprocess.run(
+        [str(cli), "update"], env=env, cwd=work, capture_output=True,
+        text=True, encoding="utf-8", errors="replace", timeout=30, check=False,
+    )
+    if result.returncode != 64 or "running Windows launcher" not in result.stdout or "PowerShell" not in result.stdout:
+        raise ValueError("candidate Windows launcher did not refuse unsafe self-replacement")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("wheel")
@@ -183,6 +212,9 @@ def main(argv: list[str] | None = None) -> int:
         "pipx_backend": args.pipx_backend if args.manager == "pipx" else None,
         "real_credentials_used": False,
         "os_keychain_qualified": False,
+        "update_entrypoint": "owning-manager" if sys.platform == "win32" else "published-cli",
+        "published_updater_exercised": sys.platform != "win32",
+        "windows_launcher_guard_verified": False,
     }
     try:
         with tempfile.TemporaryDirectory(prefix="algo-cli-upgrade-smoke-") as raw:
@@ -265,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
                 python = env_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
                 cli = app_bin / ("algo-cli.exe" if os.name == "nt" else "algo-cli")
             installed_identity(python, env_dir, BASELINE_VERSION, update_env, work, args.manager)
+            command = upgrade_command(python, cli, update_env, work)
             if args.manager == "pipx":
                 metadata = json.loads((env_dir / "pipx_metadata.json").read_text(encoding="utf-8"))
                 if metadata["backend"] != args.pipx_backend:
@@ -287,25 +320,27 @@ def main(argv: list[str] | None = None) -> int:
             )
             if not (wheelhouse / wheel.name).exists():
                 shutil.copy2(wheel, wheelhouse / wheel.name)
-            # This invokes the real updater shipped in the pinned public wheel.
-            run([str(cli), "update"], env=update_env, cwd=work)
+            run(command, env=update_env, cwd=work)
             installed_identity(python, env_dir, expected, update_env, work, args.manager)
             if state_manifest(home, workspace) != before:
                 raise ValueError("update changed synthetic configuration, credentials, memory, or workspace")
-            run([str(cli), "update"], env=update_env, cwd=work)
+            if sys.platform == "win32":
+                verify_windows_launcher_guard(cli, update_env, work)
+                report["windows_launcher_guard_verified"] = True
+            run(command, env=update_env, cwd=work)
             installed_identity(python, env_dir, expected, update_env, work, args.manager)
             if state_manifest(home, workspace) != before:
                 raise ValueError("repeat update changed synthetic user state")
-            with sqlite3.connect(home / ".algo_cli" / "memory-fixture.sqlite3") as db:
+            with closing(sqlite3.connect(home / ".algo_cli" / "memory-fixture.sqlite3")) as db:
                 if db.execute("PRAGMA integrity_check").fetchone() != ("ok",):
                     raise ValueError("retained SQLite state failed integrity check")
-            report.update(
-                status="passed",
-                upgrade_verified=True,
-                repeat_update_verified=True,
-                retained_files=sum(row["kind"] == "file" for row in before.values()),
-                state_preserved=True,
-            )
+        report.update(
+            status="passed",
+            upgrade_verified=True,
+            repeat_update_verified=True,
+            retained_files=sum(row["kind"] == "file" for row in before.values()),
+            state_preserved=True,
+        )
     finally:
         if args.report:
             args.report.parent.mkdir(parents=True, exist_ok=True)

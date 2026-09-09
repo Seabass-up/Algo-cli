@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 from algo_cli import updater
 
 
@@ -141,3 +143,50 @@ def test_update_rejects_invalid_manager_override_without_running_command():
 
     assert result.returncode == 64
     assert "Unsupported update manager" in result.message
+
+
+@pytest.mark.parametrize("launcher", ["algo-cli", "ALGO-CLI.EXE", "ollama-cli", "ollama-cli.exe"])
+@pytest.mark.parametrize("manager", ["pip", "pipx", "uv"])
+def test_windows_launcher_refuses_update_before_starting_package_manager(monkeypatch, launcher, manager):
+    monkeypatch.setattr(updater.sys, "platform", "win32")
+    monkeypatch.setattr(updater.sys, "argv", [rf"C:\Tools\{launcher}", "update"])
+    result = updater.update_algo_cli(
+        env={"ALGO_CLI_UPDATE_MANAGER": manager},
+        executable=r"C:\Tools\Python's $env\python.exe",
+        which=lambda name: rf"C:\Tools\{name}.exe",
+        runner=lambda *_args, **_kwargs: pytest.fail("unsafe package-manager invocation"),
+        version_getter=lambda: "0.19.0",
+    )
+    assert result.returncode == 64
+    assert not result.changed
+    assert result.after_version == result.before_version == "0.19.0"
+    assert "running Windows launcher" in result.message
+    assert "PowerShell" in result.message
+    assert result.details.startswith("& '")
+    if manager == "pip":
+        assert "Python''s $env" in result.details
+        assert "'-m' 'pip' 'install'" in result.details
+    else:
+        assert rf"C:\Tools\{manager}.exe" in result.details
+
+
+@pytest.mark.parametrize(
+    ("platform", "launcher"),
+    [("linux", "/bin/algo-cli"), ("darwin", "/bin/algo-cli"), ("win32", r"C:\pkg\algo_cli\__main__.py")],
+)
+def test_non_launcher_updates_still_run(monkeypatch, platform, launcher):
+    monkeypatch.setattr(updater.sys, "platform", platform)
+    monkeypatch.setattr(updater.sys, "argv", [launcher, "update"])
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    result = updater.update_algo_cli(
+        env={"ALGO_CLI_UPDATE_MANAGER": "pip"},
+        runner=runner,
+        version_getter=lambda: "0.19.0",
+    )
+    assert result.returncode == 0
+    assert len(calls) == 1

@@ -28,6 +28,10 @@ index still serves 0.18.0 until the approved release workflow succeeds.
 - Clarify unchanged updates: the command installs compatible published packages,
   not unpublished GitHub commits, and does not claim the latest version when
   installed metadata cannot be verified.
+- Stop Windows launchers before unsafe self-replacement and print an exact,
+  quoted PowerShell command for the owning package manager. Published 0.18.0
+  needs this external upgrade path; retrying its active launcher cannot fix
+  WinError 32.
 
 ### Release Operations
 
@@ -42,6 +46,10 @@ index still serves 0.18.0 until the approved release workflow succeeds.
 - Add a digest-pinned published-0.18.0 upgrade check alongside clean wheel
   installation on Linux, Windows, and macOS. Exercise pip, uv, and both pipx
   backends with synthetic user-state preservation and repeated-update checks.
+  On Windows, exercise the external owning-manager path and verify the new
+  launcher's refusal separately; do not claim the old self-updater works.
+  Explicitly close synthetic SQLite connections and require temporary-state
+  cleanup before recording a passing result.
 - Adopt the owner's explicit single-owner release policy: only Seabass-up may
   trigger and approve releases, with self-review and administrator bypass of
   the environment approval wait allowed. Existing protected-source,

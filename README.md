@@ -35,6 +35,14 @@ It leaves configuration, credentials, memory, and other files under
 `~/.algo_cli` untouched. Set `ALGO_CLI_UPDATE_MANAGER=pipx`, `uv`, or `pip`
 only when automatic installation detection needs an explicit override.
 
+On Windows, close Algo CLI sessions and run the owning manager directly:
+`pipx upgrade algo-cli-runtime`, `uv tool upgrade --no-sources algo-cli-runtime`,
+or `python -m pip install --upgrade algo-cli-runtime` using the Python environment
+where Algo is installed. Published `0.18.0` cannot replace its active `.exe`
+launcher. The new `algo-cli update` guard stops before changing packages and
+prints the exact PowerShell command for the current installation. Retrying
+inside the running launcher does not release that Windows file lock.
+
 To install a reviewed source checkout instead, clone the repository and run
 `pipx install .` from its root.
 

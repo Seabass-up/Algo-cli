@@ -43,6 +43,10 @@ because native control functionality remains disabled.
   before publication; this is not a claim that PyPI serves the candidate.
   Test pip, uv, pipx with pip, and pipx with uv explicitly; automatic backend
   selection must not make an offline test silently resolve from public PyPI.
+  Windows 0.18.0 has a reproduced active-launcher WinError 32 failure. Qualify
+  the external owning-manager command from that installation instead, and
+  separately require the candidate launcher to refuse unsafe self-replacement.
+  Windows receipts must not claim the published self-updater was exercised.
   Require fresh-process version/import identity, a repeated no-change update,
   and byte/permission/mtime preservation of synthetic configuration,
   credential files, saved memory, SQLite state, conversations, legacy state,
@@ -56,6 +60,12 @@ because native control functionality remains disabled.
 The filesystem upgrade test does not qualify OS Keychain or Echo key migration.
 Those authorities remain subject to their separate contracts. A green feature
 branch with skipped protected-main jobs is not a fully qualified release.
+
+Candidate run 34303669767 passed source-bound packaging and all four Linux and
+macOS upgrade paths, but Windows upgrade qualification found the real 0.18.0
+launcher lock and a synthetic SQLite connection cleanup defect. Preserve that
+failed run as diagnostic evidence; the corrected Windows path requires a new
+exact-commit qualification, not a relabeling of the prior failure.
 
 Pre-commit macOS validation passed 5,421 tests with 35 platform/optional skips
 and 69.37% branch-inclusive coverage against the unchanged 57% floor. Ruff,

@@ -158,6 +158,22 @@ def update_algo_cli(
             message=f"Algo CLI update could not start: {exc}",
         )
 
+    # Windows entry-point wrappers may strip .exe from argv[0] before calling us.
+    launcher = (sys.argv[0] if sys.argv else "").replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    if sys.platform == "win32" and launcher in {"algo-cli", "algo-cli.exe", "ollama-cli", "ollama-cli.exe"}:
+        command = "& " + " ".join("'" + argument.replace("'", "''") + "'" for argument in plan.command)
+        return UpdateResult(
+            returncode=64,
+            manager=plan.manager,
+            before_version=before,
+            after_version=before,
+            message=(
+                "Algo CLI update cannot replace its running Windows launcher. "
+                "Close other Algo CLI sessions, then run this in PowerShell:"
+            ),
+            details=command,
+        )
+
     try:
         completed = runner(
             list(plan.command),
