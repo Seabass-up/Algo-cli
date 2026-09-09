@@ -41,3 +41,34 @@ added, and a failed session cannot produce passing evidence.
 
 No 0.19.0 package bytes or browser qualification may be relabeled as 0.19.1.
 The protected release workflow rejects the retired v0.19.0 input before checkout.
+
+## Authorized Fixed-Tag Workflow Repair
+
+On 2026-09-09 the owner explicitly renewed normal delegated environment
+approvals and authorized publication only after every required gate passes.
+That delegation was recorded in PR 48 comment 5609055435 and is limited to
+0.19.1, without administrator bypass or independent-review claims.
+
+Source 57a4740ab73a79244413a64396ee9e9f2285b738 passed all 16 protected-main
+jobs in CI 34407105830, including five browser sessions, separate validation
+and attestation, all 12 upgrade paths, and three native latency checks.
+Tag v0.19.1 and draft 385866827 were then created at that exact source.
+Publishing run 34408440047 failed closed in environment authority before
+uploading any assets. The failed run remains failed and the draft remains empty.
+
+The preflight queried repository variables with an actions-read job token;
+that endpoint requires Variables-read authority unavailable in that job.
+The repair reads the exact readiness flag from GitHub's workflow vars context,
+like the browser gate, while retaining fresh environment-policy validation.
+No timestamp or JSON API response is fabricated. Missing or non-true readiness,
+missing credentials, HTTP rejection, and policy drift remain blocking.
+Closed HTTP-status diagnostics distinguish transport failures without exposing
+response bodies, tokens, or arbitrary exception text.
+
+The owner separately authorized repairing this workflow and publishing the
+unchanged qualified v0.19.1 tag from corrected protected main. Initial ancestor
+draft recovery is restricted to that exact tag, source SHA, and draft ID.
+Both package-source and corrected-publisher CI must pass; ancestry and the
+real publisher certificate are verified independently of the unchanged package
+bytes. The previous v0.19.0 recovery exception is replaced, not broadened.
+The retired v0.19.0 tag and draft remain untouched and unpublished.

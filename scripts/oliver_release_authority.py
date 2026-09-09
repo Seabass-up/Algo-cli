@@ -854,9 +854,9 @@ def validate_authority(
     if tag_revision != branch_revision:
         # Explicit owner authorization for this immutable, qualified draft only.
         if initial_recovery and (
-            release_tag != "v0.19.0"
-            or tag_revision != "088d7753852a9e237979a76c254626c7482ea8ae"
-            or release_id != 385795143
+            release_tag != "v0.19.1"
+            or tag_revision != "57a4740ab73a79244413a64396ee9e9f2285b738"
+            or release_id != 385866827
             or release["target_commitish"] != tag_revision
         ):
             _reject("release_tag_not_default_head")
@@ -984,8 +984,8 @@ def _validate_authority_receipt(value: Any) -> dict[str, Any]:
             type(publisher) is not dict or set(publisher) != {"revision", "identity"}
             or publisher["identity"] != RELEASE_WORKFLOW_IDENTITY
             or type(source) is not dict or type(release) is not dict
-            or source.get("revision") != "088d7753852a9e237979a76c254626c7482ea8ae"
-            or release != {"id": 385795143, "tag": "v0.19.0"}
+            or source.get("revision") != "57a4740ab73a79244413a64396ee9e9f2285b738"
+            or release != {"id": 385866827, "tag": "v0.19.1"}
             or publisher["revision"] == source["revision"]
         ):
             _reject("release_authority_publisher")

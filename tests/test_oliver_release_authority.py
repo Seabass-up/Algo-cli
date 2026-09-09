@@ -32,7 +32,7 @@ sys.modules[SPEC.name] = SCRIPT
 SPEC.loader.exec_module(SCRIPT)
 
 REVISION = "a" * 40
-TAG = "v0.19.0"
+TAG = "v0.19.1"
 REPORT_DIGEST = "sha256:" + "b" * 64
 RULESET_ID = 701
 
@@ -526,7 +526,7 @@ def test_draft_discovery_uses_id_and_rejects_changed_identity() -> None:
         documents[f"repos/{SCRIPT.REPOSITORY}/releases/301"] = original
 
 
-RECOVERY_SOURCE = "088d7753852a9e237979a76c254626c7482ea8ae"
+RECOVERY_SOURCE = "57a4740ab73a79244413a64396ee9e9f2285b738"
 RECOVERY_HEAD = "f" * 40
 
 
@@ -536,9 +536,9 @@ def _ci_query(revision: str) -> str:
 
 
 def _recovery_documents() -> dict[str, Any]:
-    rows = _api_documents(revision=RECOVERY_SOURCE, release_id=385795143)
+    rows = _api_documents(revision=RECOVERY_SOURCE, release_id=385866827)
     rows[f"repos/{SCRIPT.REPOSITORY}/branches/main"]["commit"]["sha"] = RECOVERY_HEAD
-    rows[f"repos/{SCRIPT.REPOSITORY}/releases/385795143"]["target_commitish"] = RECOVERY_SOURCE
+    rows[f"repos/{SCRIPT.REPOSITORY}/releases/385866827"]["target_commitish"] = RECOVERY_SOURCE
     rows[f"repos/{SCRIPT.REPOSITORY}/compare/{RECOVERY_SOURCE}...{RECOVERY_HEAD}"] = {
         "status": "ahead", "ahead_by": 2, "behind_by": 0,
         "base_commit": {"sha": RECOVERY_SOURCE}, "merge_base_commit": {"sha": RECOVERY_SOURCE},
@@ -590,7 +590,7 @@ def test_recovery_requires_proven_ancestry(change: dict[str, Any]) -> None:
 def test_recovery_exception_does_not_authorize_a_replacement_draft() -> None:
     rows = _recovery_documents()
     rows[f"repos/{SCRIPT.REPOSITORY}/releases?per_page=100"][0]["id"] = 301
-    release = rows.pop(f"repos/{SCRIPT.REPOSITORY}/releases/385795143")
+    release = rows.pop(f"repos/{SCRIPT.REPOSITORY}/releases/385866827")
     release["id"] = 301
     rows[f"repos/{SCRIPT.REPOSITORY}/releases/301"] = release
     with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_tag_not_default_head"):
@@ -1047,8 +1047,8 @@ def test_atomic_output_removes_partial_file_after_post_stat_failure(tmp_path: Pa
 def _write_distributions(directory: Path) -> dict[str, bytes]:
     directory.mkdir()
     payloads = {
-        "algo_cli_runtime-0.19.0-py3-none-any.whl": b"wheel",
-        "algo_cli_runtime-0.19.0.tar.gz": b"sdist",
+        "algo_cli_runtime-0.19.1-py3-none-any.whl": b"wheel",
+        "algo_cli_runtime-0.19.1.tar.gz": b"sdist",
     }
     for name, payload in payloads.items():
         (directory / name).write_bytes(payload)
@@ -1058,7 +1058,7 @@ def _write_distributions(directory: Path) -> dict[str, bytes]:
 def _pypi_document(payloads: dict[str, bytes]) -> bytes:
     return json.dumps(
         {
-            "info": {"name": "algo-cli-runtime", "version": "0.19.0"},
+            "info": {"name": "algo-cli-runtime", "version": "0.19.1"},
             "urls": [
                 {
                     "filename": name,
@@ -1205,7 +1205,7 @@ def test_fixed_tag_retry_retains_original_publisher_and_all_core_authority(tmp_p
     rows = _recovery_documents()
     retained = _recovery_authority(rows)
     assets, authority, policy, release = _durable_asset_fixture(tmp_path, retained)
-    rows[f"repos/{SCRIPT.REPOSITORY}/releases/385795143"]["assets"] = release["assets"]
+    rows[f"repos/{SCRIPT.REPOSITORY}/releases/385866827"]["assets"] = release["assets"]
     current, state = SCRIPT.validate_authority(
         tag=TAG, environment=_environment(GITHUB_SHA=RECOVERY_HEAD, GITHUB_WORKFLOW_SHA=RECOVERY_HEAD),
         checkout_revision=RECOVERY_HEAD, policy_receipt=_repository_policy(),
@@ -1214,7 +1214,7 @@ def test_fixed_tag_retry_retains_original_publisher_and_all_core_authority(tmp_p
     assert state == "draft-exact" and current["schema_version"] == 1
     authority.write_bytes(SCRIPT._canonical(current) + b"\n")
     arguments = dict(
-        tag=TAG, release_id=385795143, release_state="draft-exact", source_revision=RECOVERY_SOURCE,
+        tag=TAG, release_id=385866827, release_state="draft-exact", source_revision=RECOVERY_SOURCE,
         release=release, directory=assets, authority_path=authority, policy_path=policy,
         report_path=assets / SCRIPT.BORON_REPORT_NAME,
         boron_bundle_path=assets / "grace-boron-hosted-qualification.sigstore.jsonl",
@@ -1437,7 +1437,7 @@ def test_recovery_attestations_bind_new_signer_without_changing_package_source(t
     dist, assets, verifications = (tmp_path / name for name in ("dist", "assets", "verifications"))
     for directory in (dist, assets, verifications):
         directory.mkdir()
-    for name in ("algo_cli_runtime-0.19.0-py3-none-any.whl", "algo_cli_runtime-0.19.0.tar.gz"):
+    for name in ("algo_cli_runtime-0.19.1-py3-none-any.whl", "algo_cli_runtime-0.19.1.tar.gz"):
         (dist / name).write_bytes(b"unchanged tagged distribution")
     distributions = SCRIPT._local_distributions(dist, TAG)
     specifications = (
@@ -1476,8 +1476,8 @@ def test_recovery_attestations_bind_new_signer_without_changing_package_source(t
 
 def test_release_bundle_verification_binds_subject_predicate_bundle_and_run(tmp_path: Path) -> None:
     distributions = {
-        "algo_cli_runtime-0.19.0-py3-none-any.whl": {"digest": "a" * 64, "size": 1},
-        "algo_cli_runtime-0.19.0.tar.gz": {"digest": "b" * 64, "size": 1},
+        "algo_cli_runtime-0.19.1-py3-none-any.whl": {"digest": "a" * 64, "size": 1},
+        "algo_cli_runtime-0.19.1.tar.gz": {"digest": "b" * 64, "size": 1},
     }
     predicate = {"source": REVISION}
     verification, bundle = _release_verification_fixture(
@@ -1887,8 +1887,8 @@ def test_immediate_pypi_validator_handles_exact_partial_absent_and_yanked(tmp_pa
     dist.mkdir()
     state.mkdir()
     payloads = {
-        "algo_cli_runtime-0.19.0-py3-none-any.whl": b"wheel\n",
-        "algo_cli_runtime-0.19.0.tar.gz": b"sdist\n",
+        "algo_cli_runtime-0.19.1-py3-none-any.whl": b"wheel\n",
+        "algo_cli_runtime-0.19.1.tar.gz": b"sdist\n",
     }
     for name, payload in payloads.items():
         (dist / name).write_bytes(payload)
@@ -1932,8 +1932,8 @@ def test_final_before_and_after_pypi_validator_rejects_every_nonexact_index_shap
     stage = tmp_path / "stage"
     stage.mkdir()
     payloads = {
-        "algo_cli_runtime-0.19.0-py3-none-any.whl": b"wheel\n",
-        "algo_cli_runtime-0.19.0.tar.gz": b"sdist\n",
+        "algo_cli_runtime-0.19.1-py3-none-any.whl": b"wheel\n",
+        "algo_cli_runtime-0.19.1.tar.gz": b"sdist\n",
     }
     for name, payload in payloads.items():
         (stage / name).write_bytes(payload)
@@ -2033,17 +2033,11 @@ def test_exact_environment_authority_requires_only_the_approved_owner(tmp_path: 
             {"type": "branch_policy"},
         ],
     }
-    readiness = {
-        "name": "ALGO_RELEASE_AUTHORITY_READY",
-        "value": "true",
-        "updated_at": "2026-08-09T00:00:00Z",
-    }
     environment = os.environ.copy()
-    environment.update({"STATE": str(state), "ACTOR_ID": "184999458"})
+    environment.update({"STATE": str(state), "ACTOR_ID": "184999458", "RELEASE_AUTHORITY_READY": "true"})
 
-    def validate(document: dict[str, Any], marker: dict[str, Any] = readiness) -> subprocess.CompletedProcess[str]:
+    def validate(document: dict[str, Any]) -> subprocess.CompletedProcess[str]:
         (state / "environment.json").write_text(json.dumps(document), encoding="utf-8")
-        (state / "readiness.json").write_text(json.dumps(marker), encoding="utf-8")
         return subprocess.run(
             [sys.executable, "-I", "-B", "-S", "-"],
             input=validator,
@@ -2089,8 +2083,85 @@ def test_exact_environment_authority_requires_only_the_approved_owner(tmp_path: 
     unexpected_rule = copy.deepcopy(valid_environment)
     unexpected_rule["protection_rules"][1] = {"type": "wait_timer", "wait_timer": 1}
     assert validate(unexpected_rule).returncode != 0
-    not_ready = dict(readiness, value="false")
-    assert validate(valid_environment, not_ready).returncode != 0
+    for marker in ("false", "", "True", "true\n"):
+        environment["RELEASE_AUTHORITY_READY"] = marker
+        assert validate(valid_environment).returncode != 0
+    del environment["RELEASE_AUTHORITY_READY"]
+    assert validate(valid_environment).returncode != 0
+
+
+@pytest.mark.parametrize(
+    ("ready", "token", "http_status", "expected"),
+    [
+        ("true", "synthetic-token", "200", 0),
+        ("false", "synthetic-token", "200", 2),
+        ("", "synthetic-token", "200", 2),
+        ("true\n", "synthetic-token", "200", 2),
+        ("true", "", "200", 2),
+        ("true", "synthetic-token", "403", 2),
+        ("true", "synthetic-token", "302", 2),
+        ("true", "synthetic-token", "000", 2),
+    ],
+)
+@pytest.mark.skipif(sys.platform == "win32", reason="Release preflight runs in POSIX Bash on Ubuntu")
+def test_environment_preflight_real_shell_uses_context_and_only_environment_api(
+    tmp_path: Path, ready: str, token: str, http_status: str, expected: int,
+) -> None:
+    workflow = (ROOT / ".github/workflows/oliver-release.yml").read_text(encoding="utf-8")
+    job = _workflow_job_bodies(workflow)["environment-authority"]
+    assert "RELEASE_AUTHORITY_READY: ${{ vars.ALGO_RELEASE_AUTHORITY_READY }}" in job
+    assert "actions/variables" not in job and "readiness.json" not in job
+    assert "actions: read" in job and "secrets." not in job and "write" not in job.split("steps:", 1)[0]
+    shell = textwrap.dedent(job.split("        run: |\n", 1)[1])
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    curl = binary / "curl"
+    curl.write_text(
+        f"#!{sys.executable}\n" + textwrap.dedent('''\
+        import json, os, pathlib, sys
+        args = sys.argv[1:]
+        assert args[-1] == "https://api.github.com/repos/Seabass-up/Algo-cli/environments/release-authority"
+        assert "Authorization: Bearer synthetic-token" in args
+        assert "--location" not in args and "-L" not in args
+        pathlib.Path(os.environ["CALL_MARKER"]).write_text("called")
+        document = {
+            "name": "release-authority",
+            "deployment_branch_policy": {"protected_branches": True, "custom_branch_policies": False},
+            "can_admins_bypass": True,
+            "protection_rules": [
+                {"type": "required_reviewers", "prevent_self_review": False,
+                 "reviewers": [{"type": "User", "reviewer": {"id": 184999458, "login": "Seabass-up"}}]},
+                {"type": "branch_policy"},
+            ],
+        }
+        status = os.environ["TEST_HTTP_STATUS"]
+        pathlib.Path(args[args.index("--output") + 1]).write_text(
+            json.dumps(document) if status == "200" else "private-response-canary"
+        )
+        print(status, end="")
+        sys.exit(0 if status in {"200", "302"} else 22)
+        '''),
+        encoding="utf-8",
+    )
+    curl.chmod(0o700)
+    (binary / "python").symlink_to(sys.executable)
+    marker = tmp_path / "called"
+    result = subprocess.run(
+        ["/bin/bash", "-c", shell],
+        env={
+            "PATH": f"{binary}:/usr/bin:/bin", "RUNNER_TEMP": str(tmp_path),
+            "RELEASE_AUTHORITY_READY": ready, "AUTHORITY_TOKEN": token,
+            "GITHUB_ACTOR_ID": "184999458", "TEST_HTTP_STATUS": http_status,
+            "CALL_MARKER": str(marker),
+        },
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    assert result.returncode == expected, result.stderr
+    assert marker.exists() == (ready == "true" and bool(token))
+    assert "private-response-canary" not in result.stdout + result.stderr
+    assert "synthetic-token" not in result.stdout + result.stderr
+    if http_status in {"403", "000"}:
+        assert f"release_environment_http_{http_status}" in result.stderr
 
 
 def test_exact_post_publish_validator_rejects_tag_move(tmp_path: Path) -> None:
