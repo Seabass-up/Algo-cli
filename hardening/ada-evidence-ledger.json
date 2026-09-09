@@ -15,6 +15,7 @@
     ".github/workflows/henry-hardening-freeze.yml",
     ".github/workflows/oliver-ci.yml",
     ".github/workflows/oliver-release.yml",
+    ".github/workflows/oliver-draft-capture.yml",
     ".github/workflows/release.yml",
     ".gitignore",
     "CHANGELOG.md",
@@ -366,6 +367,7 @@
     "tests/test_oliver_installed_source_parity.py",
     "tests/test_oliver_oneshot.py",
     "tests/test_oliver_release_authority.py",
+    "tests/test_oliver_draft_capture.py",
     "tests/test_oliver_release_source_binding.py",
     "tests/test_oliver_slash_dispatch_owners.py",
     "tests/test_oliver_slash_unknown.py",
@@ -3888,6 +3890,15 @@
           "timestamp": "2026-09-09T21:59:18Z",
           "scope": "source digest sha256:595c5d6a235743fcfd04429a3541380438ed49f51f06b275b44d1a03fa23f1f9 binds readiness from the GitHub vars context, live environment policy validation, and recovery limited to unchanged tag v0.19.1 at 57a4740ab73a79244413a64396ee9e9f2285b738",
           "limitations": "Tagged source passed all 16 jobs in CI 34407105830, including five attested browser sessions. Release run 34408440047 failed environment authority before publication. Corrected publisher qualification remains pending; broader M8/M9 completion is not established and HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json generated for conditionally authorized isolated draft capture",
+          "digest": "sha256:7d0ae338c89e9be730c33520c09adbf88b136aac4059de0d0687e6a065aa0a6a",
+          "result": "9 local metrics pass, 5 broader external metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-09T23:30:30Z",
+          "scope": "source digest sha256:ae56ad550ce116d5fc84bafcb493e7f8cfcd9c543714054f4b867ec252037603 binds gated no-checkout draft GET capture, read-only validators, immutable same-run receipts, and fail-closed pre-upload freshness",
+          "limitations": "Publisher bc47bfe passed all 16 CI jobs in 34411488729 but release run 34412552866 failed draft discovery. Read-only diagnostic 34416286079 observed missing draft listings and direct draft/assets HTTP 403. The new capture path requires fresh protected-main and release qualification; no publication or broader M8/M9 completion is claimed. HARD-080 remains in progress"
         }
       ]
     },
@@ -5786,6 +5797,15 @@
           "timestamp": "2026-09-09T21:59:18Z",
           "scope": "source digest sha256:595c5d6a235743fcfd04429a3541380438ed49f51f06b275b44d1a03fa23f1f9 binds the publisher repair without changing tagged package bytes, runtime limits, or browser security restrictions",
           "limitations": "All three native latency reports and all 12 upgrade paths passed for tagged source 57a4740 in CI 34407105830. These are source-bound results, not comparative performance claims or qualification of the corrective publisher. M8/M9 completion remains blocked; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json generated for conditionally authorized isolated draft capture",
+          "digest": "sha256:7d0ae338c89e9be730c33520c09adbf88b136aac4059de0d0687e6a065aa0a6a",
+          "result": "9 local metrics pass, 5 broader external metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-09T23:30:30Z",
+          "scope": "source digest sha256:ae56ad550ce116d5fc84bafcb493e7f8cfcd9c543714054f4b867ec252037603 binds unchanged package bytes and runtime limits plus bounded draft snapshot freshness without claiming comparative performance",
+          "limitations": "Tagged source and prior publisher have native latency and upgrade evidence, but their passing results cannot qualify this new workflow. Live permission diagnostics establish API behavior only, not release eligibility. Broader M8/M9 completion remains blocked; HARD-081 remains in progress"
         }
       ]
     },

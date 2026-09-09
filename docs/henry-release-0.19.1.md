@@ -72,3 +72,41 @@ Both package-source and corrected-publisher CI must pass; ancestry and the
 real publisher certificate are verified independently of the unchanged package
 bytes. The previous v0.19.0 recovery exception is replaced, not broadened.
 The retired v0.19.0 tag and draft remain untouched and unpublished.
+
+## Isolated Draft Access
+
+Corrected publisher bc47bfeb97775efca12129140ddc50e553a7b48c passed all
+16 jobs in CI 34411488729, including fresh browser qualification and attestation.
+Release run 34412552866 passed environment and repository-policy authority, then
+failed release_discovery_count without uploading anything. The owner approved
+an isolated draft-fetch repair, conditional on passing qualification.
+
+Read-only diagnostic run 34416286079 executed no checkout, publishing, or
+privileged steps. Its actual Actions token listed five published releases but
+omitted the draft; direct draft and draft-assets GET requests both returned 403.
+The diagnostic branch is not release code and must not be merged into main.
+The same permission assumption affected initial discovery, durable retry, and
+the immediate pre-PyPI draft check, so all three paths are addressed together.
+
+The reusable draft-capture job has normal release-authority approval and the
+Contents-write permission GitHub requires for draft visibility, but executes
+only fixed GETs. It never checks out or executes repository/downloaded code,
+never receives PyPI OIDC authority, and never lends its token to a verifier.
+It is restricted to the authorized 0.19.1 tag, source and draft ID. Redirects
+are denied except signed asset GETs on release-assets.githubusercontent.com;
+those receive no API credentials. Exact allowlisted asset names, IDs, bounded
+sizes and digests are checked, and release identity is read again after capture.
+
+Read-only validation consumes the same-run, attempt-bound, publisher-bound
+artifact ID. Initial discovery expires after ten minutes. A second protected
+capture occurs after package and repository-policy checks, immediately before
+the PyPI job. Its snapshot must be at most 120 seconds old after the PyPI
+environment approval and again immediately before invoking the upload action.
+Approval delays or changed/missing evidence stop publication, never silently
+refresh a receipt or bypass a check. Policy, protected-source and tag checks
+still run live after the final approval; the exact draft/asset check uses this
+explicitly bounded snapshot instead of an impossible read-only draft request.
+This is a bounded observation window, not an atomic lock against owner changes.
+
+No package, tag, test, approval, attestation or immutable-release requirement is
+waived. A passing diagnostic or local fixture is not release qualification.

@@ -1759,6 +1759,43 @@ def verify_pypi_state(
     return "partial-exact"
 
 
+def draft_snapshot_api(path: Path, *, environment: Mapping[str, str], api_get: ApiGet) -> ApiGet:
+    """Bind captured private release data without lending write authority to validators."""
+    value = _json_bytes(
+        _read_regular(path, maximum=MAX_API_BYTES, reason_code="release_draft_snapshot"),
+        maximum=MAX_API_BYTES, reason_code="release_draft_snapshot",
+    )
+    if (
+        type(value) is not dict
+        or set(value) != {"schema_version", "phase", "tag", "release_id", "publisher", "source",
+                          "run_id", "run_attempt", "captured_at", "listing", "release"}
+        or value.get("schema_version") != 1 or value.get("phase") != "initial"
+        or value.get("tag") != "v0.19.1" or value.get("release_id") != 385866827
+        or value.get("publisher") != environment.get("GITHUB_SHA")
+        or value.get("source") != "57a4740ab73a79244413a64396ee9e9f2285b738"
+        or value.get("run_id") != environment.get("GITHUB_RUN_ID")
+        or value.get("run_attempt") != environment.get("GITHUB_RUN_ATTEMPT")
+        or type(value.get("captured_at")) is not int
+        or not 0 <= datetime.now(timezone.utc).timestamp() - value["captured_at"] <= 600
+        or type(value.get("release")) is not dict
+        or value["release"].get("id") != value["release_id"]
+        or value["release"].get("tag_name") != value["tag"]
+        or value["release"].get("target_commitish") != value["source"]
+    ):
+        _reject("release_draft_snapshot")
+
+    def get(endpoint: str) -> Any:
+        if endpoint == f"repos/{REPOSITORY}/releases?per_page=100":
+            return value["listing"]
+        if endpoint == f"repos/{REPOSITORY}/releases/385866827":
+            return value["release"]
+        if endpoint.startswith(f"repos/{REPOSITORY}/releases"):
+            _reject("release_draft_snapshot_endpoint")
+        return api_get(endpoint)
+
+    return get
+
+
 def _gh_api(endpoint: str) -> Any:
     if type(endpoint) is not str or not endpoint.startswith(f"repos/{REPOSITORY}"):
         _reject("release_api_endpoint")
@@ -2000,6 +2037,7 @@ def main(argv: list[str] | None = None) -> int:
     authority = modes.add_parser("authority")
     authority.add_argument("--tag", required=True)
     authority.add_argument("--policy", type=Path, required=True)
+    authority.add_argument("--draft-snapshot", type=Path)
     authority.add_argument("--output", type=Path, required=True)
     authority.add_argument("--github-output", type=Path, required=True)
 
@@ -2067,12 +2105,15 @@ def main(argv: list[str] | None = None) -> int:
             _atomic_write(arguments.output, _canonical(policy_receipt) + b"\n")
             print(json.dumps({"status": "passed"}, sort_keys=True))
         elif arguments.mode == "authority":
+            api_get: ApiGet = _gh_api
+            if arguments.draft_snapshot is not None:
+                api_get = draft_snapshot_api(arguments.draft_snapshot, environment=dict(os.environ), api_get=api_get)
             receipt, release_state = validate_authority(
                 tag=arguments.tag,
                 environment=dict(os.environ),
                 checkout_revision=_git_head(),
                 policy_receipt=_load_policy_receipt(arguments.policy),
-                api_get=_gh_api,
+                api_get=api_get,
             )
             _atomic_write(arguments.output, _canonical(receipt) + b"\n")
             _append_outputs(arguments.github_output, _receipt_outputs(receipt, release_state=release_state))

@@ -1,0 +1,183 @@
+name: Capture protected draft evidence
+
+on:
+  workflow_call:
+    inputs:
+      phase:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+    outputs:
+      artifact-id:
+        value: ${{ jobs.capture.outputs.artifact-id }}
+
+permissions: {}
+
+jobs:
+  capture:
+    if: github.repository == 'Seabass-up/Algo-cli' && github.actor_id == '184999458' && github.ref == 'refs/heads/main' && github.ref_protected
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: release-authority
+    permissions:
+      contents: write
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Capture only the authorized draft through fixed GET requests
+        env:
+          CAPTURE_TOKEN: ${{ github.token }}
+          CAPTURE_PHASE: ${{ inputs.phase }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python -I -B -S - <<'PY'
+          import hashlib, json, os, pathlib, re, time, urllib.error, urllib.parse, urllib.request
+
+          def fail():
+              raise SystemExit('{"reason_code":"release_draft_capture","status":"blocked"}')
+
+          def pairs(rows):
+              result = {}
+              for key, value in rows:
+                  if key in result:
+                      fail()
+                  result[key] = value
+              return result
+
+          def canonical(value):
+              return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args, **kwargs):
+                  return None
+
+          opener = urllib.request.build_opener(NoRedirect())
+          phase, tag = os.environ['CAPTURE_PHASE'], os.environ['RELEASE_TAG']
+          if phase not in {'initial', 'before-pypi'} or tag != 'v0.19.1':
+              fail()
+          if (os.environ['GITHUB_REPOSITORY'] != 'Seabass-up/Algo-cli'
+              or os.environ['GITHUB_ACTOR_ID'] != '184999458'
+              or os.environ['GITHUB_REF'] != 'refs/heads/main'
+              or os.environ['GITHUB_REF_PROTECTED'] != 'true'
+              or os.environ['GITHUB_EVENT_NAME'] != 'workflow_dispatch'
+              or os.environ['GITHUB_RUN_ATTEMPT'] != '1'
+              or re.fullmatch('[0-9a-f]{40}', os.environ['GITHUB_SHA']) is None):
+              fail()
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'draft-capture'
+          root.mkdir(mode=0o700)
+          assets_dir = root / 'assets'
+          assets_dir.mkdir(mode=0o700)
+          release_id = 385866827
+          source = '57a4740ab73a79244413a64396ee9e9f2285b738'
+          expected = {
+              'algo_cli_runtime-0.19.1-py3-none-any.whl', 'algo_cli_runtime-0.19.1.tar.gz',
+              'algo-cli-runtime.lock.cdx.json', 'SHA256SUMS',
+              'grace-boron-hosted-qualification.json', 'grace-boron-hosted-qualification.sigstore.jsonl',
+              'algo-cli-release-provenance.sigstore.jsonl',
+              'algo-cli-release-sbom.sigstore.jsonl', 'grace-boron-release-qualification.sigstore.jsonl',
+              'oliver-release-source-binding.sigstore.jsonl', 'oliver-release-authority.json',
+              'oliver-release-source.tar', 'oliver-release-source-receipt.json',
+              'oliver-release-source-binding.json', 'oliver-release-repository-policy.json',
+              'algo-cli-release-auditable-requirements.txt', 'grace-release-evidence-SHA256SUMS',
+          }
+          allowed_assets = set()
+
+          def fetch(endpoint, binary=False):
+              if endpoint not in {'releases?per_page=100', 'releases/385866827'} and endpoint not in allowed_assets:
+                  fail()
+              headers = {'Authorization': 'Bearer ' + os.environ['CAPTURE_TOKEN'],
+                         'Accept': 'application/octet-stream' if binary else 'application/vnd.github+json',
+                         'X-GitHub-Api-Version': '2026-03-10'}
+              request = urllib.request.Request('https://api.github.com/repos/Seabass-up/Algo-cli/' + endpoint,
+                                               headers=headers, method='GET')
+              limit = 67108864 if binary else 8388608
+              try:
+                  response = opener.open(request, timeout=30)
+              except urllib.error.HTTPError as error:
+                  if not binary or error.code != 302:
+                      fail()
+                  location = error.headers.get('Location', '')
+                  parsed = urllib.parse.urlsplit(location)
+                  if (parsed.scheme != 'https' or parsed.hostname != 'release-assets.githubusercontent.com'
+                      or parsed.port not in (None, 443) or parsed.username or parsed.password or parsed.fragment):
+                      fail()
+                  # Never forward API credentials to the signed asset download host.
+                  response = opener.open(urllib.request.Request(location, method='GET'), timeout=30)
+              with response:
+                  if response.status != 200:
+                      fail()
+                  payload = response.read(limit + 1)
+              if not 1 <= len(payload) <= limit:
+                  fail()
+              return payload if binary else json.loads(payload, object_pairs_hook=pairs)
+
+          def identity(document):
+              if (type(document) is not dict or document.get('id') != release_id or document.get('tag_name') != tag
+                  or document.get('target_commitish') != source or document.get('prerelease') is not False
+                  or not ((document.get('draft') is True and document.get('immutable') is False and document.get('published_at') is None)
+                          or (phase == 'initial' and document.get('draft') is False and document.get('immutable') is True
+                              and type(document.get('published_at')) is str))):
+                  fail()
+              rows = document.get('assets')
+              if type(rows) is not list or len(rows) > len(expected):
+                  fail()
+              result, ids = {}, set()
+              for row in rows:
+                  if type(row) is not dict:
+                      fail()
+                  name, identifier, size, digest = (row.get(k) for k in ('name', 'id', 'size', 'digest'))
+                  if (name not in expected or name in result or type(identifier) is not int or identifier < 1
+                      or identifier in ids or type(size) is not int or not 1 <= size <= 67108864
+                      or row.get('state') != 'uploaded' or type(digest) is not str
+                      or re.fullmatch('sha256:[0-9a-f]{64}', digest) is None):
+                      fail()
+                  result[name] = {'id': identifier, 'size': size, 'digest': digest}
+                  ids.add(identifier)
+              if (result and set(result) != expected) or ((phase == 'before-pypi' or document['draft'] is False) and set(result) != expected):
+                  fail()
+              if sum(row['size'] for row in result.values()) > 536870912:
+                  fail()
+              return {key: document.get(key) for key in ('id', 'tag_name', 'target_commitish', 'draft', 'immutable', 'published_at')}, result
+
+          try:
+              listing = fetch('releases?per_page=100')
+              if type(listing) is not list or len(listing) >= 100:
+                  fail()
+              matches = [r for r in listing if type(r) is dict and r.get('tag_name') == tag]
+              if len(matches) != 1 or matches[0].get('id') != release_id:
+                  fail()
+              first = fetch('releases/385866827')
+              first_identity, assets = identity(first)
+              if phase == 'initial':
+                  for name, row in assets.items():
+                      endpoint = 'releases/assets/' + str(row['id'])
+                      allowed_assets.add(endpoint)
+                      payload = fetch(endpoint, binary=True)
+                      if len(payload) != row['size'] or 'sha256:' + hashlib.sha256(payload).hexdigest() != row['digest']:
+                          fail()
+                      (assets_dir / name).write_bytes(payload)
+              final = fetch('releases/385866827')
+              if identity(final) != (first_identity, assets):
+                  fail()
+              receipt = {'schema_version': 1, 'phase': phase, 'tag': tag, 'release_id': release_id,
+                         'publisher': os.environ['GITHUB_SHA'], 'source': source,
+                         'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+                         'captured_at': int(time.time()), 'listing': listing, 'release': final}
+              payload = canonical(receipt) + b'\n'
+              if len(payload) > 8388608:
+                  fail()
+              (root / 'snapshot.json').write_bytes(payload)
+          except (OSError, ValueError, TypeError, KeyError, urllib.error.URLError):
+              fail()
+          print('{"status":"passed"}')
+          PY
+      - name: Retain the same-run immutable draft snapshot
+        id: upload
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: oliver-draft-${{ inputs.phase }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/draft-capture
+          if-no-files-found: error
+          retention-days: 90
