@@ -415,9 +415,9 @@ jobs:
           docker version
           buildx_version="$(docker buildx version)"
           test "${buildx_version}" = "github.com/docker/buildx v0.36.1 1d8dde89b8aba914e05e45366770736fea1fd690"
-          buildkit_identity="$(docker buildx inspect --bootstrap)"
-          grep -Eq '^[[:space:]]*BuildKit:[[:space:]]+v0\.32\.2$' <<< "${buildkit_identity}"
           [[ "${HENRY_BUILDX_NAME}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]]
+          buildkit_identity="$(docker buildx inspect --bootstrap --builder "${HENRY_BUILDX_NAME}")"
+          grep -Eq '^[[:space:]]*BuildKit version:[[:space:]]+v0\.32\.2$' <<< "${buildkit_identity}"
           buildx_container_name="buildx_buildkit_${HENRY_BUILDX_NAME}0"
           buildx_container_id="$(timeout --signal=TERM --kill-after=5s 15s docker container inspect --format '{{.Id}}' "${buildx_container_name}")"
           [[ "${buildx_container_id}" =~ ^[0-9a-f]{64}$ ]]
