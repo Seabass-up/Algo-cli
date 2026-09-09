@@ -243,6 +243,22 @@ def test_plan_is_canonical_https_only_and_chrome_argv_has_no_escape_surface() ->
     assert argv[-1] == "about:blank"
 
 
+def test_plan_suppresses_unrelated_background_services_without_security_overrides() -> None:
+    argv = _plan().chrome_argv()
+    assert "--disable-background-networking" in argv
+    feature_flags = [item for item in argv if item.startswith("--disable-features=")]
+    assert feature_flags == [
+        "--disable-features=AimEnabled,NetworkTimeServiceQuerying,OptimizationHints,PreconnectToSearch"
+    ]
+    assert not any(
+        forbidden in item.lower()
+        for item in argv
+        for forbidden in ("safebrowsing", "safe-browsing", "ignore-certificate", "disable-web-security", "no-sandbox")
+    )
+    assert "--proxy-server=http://xenon-egress:3128" in argv
+    assert "--proxy-bypass-list=<-loopback>" in argv
+
+
 @pytest.mark.parametrize(
     "url",
     [
