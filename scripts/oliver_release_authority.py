@@ -625,7 +625,22 @@ def validate_durable_assets(
         reason_code="release_reconcile_policy_file",
     )
     if payloads["oliver-release-authority.json"] != current_authority:
-        _reject("release_reconcile_authority")
+        try:
+            retained = _validate_authority_receipt(_json_bytes(
+                payloads["oliver-release-authority.json"], maximum=MAX_API_BYTES, reason_code="release_reconcile_authority",
+            ))
+            current = _validate_authority_receipt(_json_bytes(
+                current_authority, maximum=MAX_API_BYTES, reason_code="release_reconcile_authority",
+            ))
+        except ReleaseAuthorityRejected:
+            _reject("release_reconcile_authority")
+        # Keep the original signed publisher when resuming the authorized fixed tag.
+        excluded = {"schema_version", "publisher", "authority_digest"}
+        if retained["schema_version"] != 2 or (
+            {key: value for key, value in retained.items() if key not in excluded}
+            != {key: value for key, value in current.items() if key not in excluded}
+        ):
+            _reject("release_reconcile_authority")
     if payloads["oliver-release-repository-policy.json"] != current_policy:
         _reject("release_reconcile_policy")
     current_report = _read_regular(
@@ -682,6 +697,65 @@ def _require_ancestor(api_get: ApiGet, *, source_revision: str, head_revision: s
         _reject("release_source_ancestry")
 
 
+def _discover_release(api_get: ApiGet, tag: str) -> dict[str, Any]:
+    # The tag endpoint only exposes published releases, not drafts.
+    rows = api_get(f"repos/{REPOSITORY}/releases?per_page=100")
+    if type(rows) is not list or len(rows) >= 100:
+        _reject("release_discovery_shape")
+    matches = []
+    seen: set[int] = set()
+    for row in rows:
+        candidate = _exact_mapping(row, {"id", "tag_name"}, "release_discovery_shape")
+        identifier = _positive_integer(candidate["id"], "release_discovery_id")
+        if identifier in seen or type(candidate["tag_name"]) is not str:
+            _reject("release_discovery_shape")
+        seen.add(identifier)
+        if candidate["tag_name"] == tag:
+            matches.append(identifier)
+    if len(matches) != 1:
+        _reject("release_discovery_count")
+    release = api_get(f"repos/{REPOSITORY}/releases/{matches[0]}")
+    if type(release) is not dict or release.get("id") != matches[0] or release.get("tag_name") != tag:
+        _reject("release_discovery_identity")
+    return release
+
+
+def _qualified_ci_run(api_get: ApiGet, revision: str, workflow_id: int) -> dict[str, Any]:
+    query = (
+        f"repos/{REPOSITORY}/actions/workflows/{CI_WORKFLOW_PATH}/runs"
+        f"?branch={DEFAULT_BRANCH}&event=push&head_sha={revision}"
+        "&status=success&per_page=100"
+    )
+    document = _exact_mapping(api_get(query), {"total_count", "workflow_runs"}, "release_ci_runs")
+    runs = document["workflow_runs"]
+    if type(document["total_count"]) is not int or document["total_count"] != 1 or type(runs) is not list or len(runs) != 1:
+        _reject("release_ci_run_count")
+    run = _exact_mapping(
+        runs[0],
+        {
+            "id", "run_attempt", "workflow_id", "path", "head_branch", "head_sha", "event",
+            "status", "conclusion", "run_started_at", "updated_at", "repository", "head_repository",
+        },
+        "release_ci_run",
+    )
+    _positive_integer(run["id"], "release_ci_run_id")
+    _positive_integer(run["run_attempt"], "release_ci_run_attempt")
+    started = _timestamp(run["run_started_at"], github=True, reason_code="release_ci_run_time")
+    completed = _timestamp(run["updated_at"], github=True, reason_code="release_ci_run_time")
+    repository = _exact_mapping(run["repository"], {"id", "full_name"}, "release_ci_run_repository")
+    head_repository = _exact_mapping(run["head_repository"], {"id", "full_name"}, "release_ci_run_repository")
+    if (
+        run["workflow_id"] != workflow_id or run["path"] != CI_WORKFLOW_PATH
+        or run["head_branch"] != DEFAULT_BRANCH or run["head_sha"] != revision
+        or run["event"] != "push" or run["status"] != "completed" or run["conclusion"] != "success"
+        or completed < started
+        or repository != {"id": REPOSITORY_ID, "full_name": REPOSITORY}
+        or head_repository != {"id": REPOSITORY_ID, "full_name": REPOSITORY}
+    ):
+        _reject("release_ci_run")
+    return run
+
+
 def validate_authority(
     *,
     tag: str,
@@ -730,7 +804,7 @@ def validate_authority(
     tag_revision = _resolve_tag(api_get, release_tag)
 
     release = _exact_mapping(
-        api_get(f"repos/{REPOSITORY}/releases/tags/{quote(release_tag, safe='')}"),
+        _discover_release(api_get, release_tag),
         {
             "id",
             "tag_name",
@@ -776,8 +850,15 @@ def validate_authority(
         release_state = "published-exact"
     else:
         _reject("release_draft")
+    initial_recovery = tag_revision != branch_revision and not assets
     if tag_revision != branch_revision:
-        if not assets:
+        # Explicit owner authorization for this immutable, qualified draft only.
+        if initial_recovery and (
+            release_tag != "v0.19.0"
+            or tag_revision != "088d7753852a9e237979a76c254626c7482ea8ae"
+            or release_id != 385795143
+            or release["target_commitish"] != tag_revision
+        ):
             _reject("release_tag_not_default_head")
         _require_ancestor(api_get, source_revision=tag_revision, head_revision=branch_revision)
 
@@ -790,57 +871,11 @@ def validate_authority(
     if workflow["name"] != "CI" or workflow["path"] != CI_WORKFLOW_PATH or workflow["state"] != "active":
         _reject("release_ci_workflow")
 
-    query = (
-        f"repos/{REPOSITORY}/actions/workflows/{CI_WORKFLOW_PATH}/runs"
-        f"?branch={DEFAULT_BRANCH}&event=push&head_sha={tag_revision}"
-        "&status=success&per_page=100"
-    )
-    runs_document = _exact_mapping(
-        api_get(query),
-        {"total_count", "workflow_runs"},
-        "release_ci_runs",
-    )
-    runs = runs_document["workflow_runs"]
-    if runs_document["total_count"] != 1 or type(runs) is not list or len(runs) != 1:
-        _reject("release_ci_run_count")
-    run = _exact_mapping(
-        runs[0],
-        {
-            "id",
-            "run_attempt",
-            "workflow_id",
-            "path",
-            "head_branch",
-            "head_sha",
-            "event",
-            "status",
-            "conclusion",
-            "run_started_at",
-            "updated_at",
-            "repository",
-            "head_repository",
-        },
-        "release_ci_run",
-    )
-    run_repository = _exact_mapping(run["repository"], {"id", "full_name"}, "release_ci_run_repository")
-    head_repository = _exact_mapping(run["head_repository"], {"id", "full_name"}, "release_ci_run_repository")
+    if initial_recovery:
+        _qualified_ci_run(api_get, branch_revision, workflow_id)
+    run = _qualified_ci_run(api_get, tag_revision, workflow_id)
     run_id = _positive_integer(run["id"], "release_ci_run_id")
     run_attempt = _positive_integer(run["run_attempt"], "release_ci_run_attempt")
-    run_started_at = _timestamp(run["run_started_at"], github=True, reason_code="release_ci_run_time")
-    run_completed_at = _timestamp(run["updated_at"], github=True, reason_code="release_ci_run_time")
-    if (
-        run["workflow_id"] != workflow_id
-        or run["path"] != CI_WORKFLOW_PATH
-        or run["head_branch"] != DEFAULT_BRANCH
-        or run["head_sha"] != tag_revision
-        or run["event"] != "push"
-        or run["status"] != "completed"
-        or run["conclusion"] != "success"
-        or run_completed_at < run_started_at
-        or run_repository != {"id": REPOSITORY_ID, "full_name": REPOSITORY}
-        or head_repository != {"id": REPOSITORY_ID, "full_name": REPOSITORY}
-    ):
-        _reject("release_ci_run")
 
     artifact_name = boron_artifact_name(run_attempt)
     artifacts_document = _exact_mapping(
@@ -917,12 +952,18 @@ def validate_authority(
             "workflow_path": CI_WORKFLOW_PATH,
         },
     }
+    if initial_recovery:
+        receipt["schema_version"] = 2
+        receipt["publisher"] = {"revision": context.source_revision, "identity": RELEASE_WORKFLOW_IDENTITY}
     receipt["authority_digest"] = "sha256:" + hashlib.sha256(_canonical(receipt)).hexdigest()
     return receipt, release_state
 
 
 def _validate_authority_receipt(value: Any) -> dict[str, Any]:
-    if type(value) is not dict or set(value) != {
+    if type(value) is not dict:
+        _reject("release_authority_receipt")
+    version = value.get("schema_version")
+    fields = {
         "schema_version",
         "status",
         "repository",
@@ -931,18 +972,62 @@ def _validate_authority_receipt(value: Any) -> dict[str, Any]:
         "source",
         "boron",
         "authority_digest",
-    }:
+    }
+    if version == 2:
+        fields.add("publisher")
+    if set(value) != fields or type(version) is not int or version not in {1, 2}:
         _reject("release_authority_receipt")
+    if version == 2:
+        publisher = value["publisher"]
+        source, release = value["source"], value["release"]
+        if (
+            type(publisher) is not dict or set(publisher) != {"revision", "identity"}
+            or publisher["identity"] != RELEASE_WORKFLOW_IDENTITY
+            or type(source) is not dict or type(release) is not dict
+            or source.get("revision") != "088d7753852a9e237979a76c254626c7482ea8ae"
+            or release != {"id": 385795143, "tag": "v0.19.0"}
+            or publisher["revision"] == source["revision"]
+        ):
+            _reject("release_authority_publisher")
+        _revision(publisher["revision"], "release_authority_publisher")
     digest = value["authority_digest"]
     unsigned = dict(value)
     del unsigned["authority_digest"]
     if (
-        value["schema_version"] != 1
-        or value["status"] != "passed"
+        value["status"] != "passed"
         or digest != "sha256:" + hashlib.sha256(_canonical(unsigned)).hexdigest()
     ):
         _reject("release_authority_receipt")
     return value
+
+
+def _publisher_revision(authority: Mapping[str, Any]) -> str:
+    section = authority["publisher"] if authority["schema_version"] == 2 else authority["source"]
+    publisher = _exact_mapping(section, {"revision"}, "release_authority_publisher")
+    return _revision(publisher["revision"], "release_authority_publisher")
+
+
+def verify_publisher(
+    authority: Mapping[str, Any], *, environment: Mapping[str, str], api_get: ApiGet,
+) -> str:
+    """Requalify the exact signing revision before accepting retained certificates."""
+    validated = _validate_authority_receipt(authority)
+    context = DispatchContext.from_environment(environment)
+    branch = _exact_mapping(api_get(f"repos/{REPOSITORY}/branches/{DEFAULT_BRANCH}"), {"protected", "commit"}, "release_default_branch")
+    commit = _exact_mapping(branch["commit"], {"sha"}, "release_default_branch")
+    if branch["protected"] is not True or commit["sha"] != context.source_revision:
+        _reject("release_default_branch")
+    publisher = _publisher_revision(validated)
+    source = _revision(validated["source"]["revision"], "release_authority_publisher")
+    if publisher != source:
+        _require_ancestor(api_get, source_revision=source, head_revision=publisher)
+    if publisher != context.source_revision:
+        _require_ancestor(api_get, source_revision=publisher, head_revision=context.source_revision)
+    workflow = _exact_mapping(api_get(f"repos/{REPOSITORY}/actions/workflows/{CI_WORKFLOW_PATH}"), {"id", "name", "path", "state"}, "release_ci_workflow")
+    if workflow["name"] != "CI" or workflow["path"] != CI_WORKFLOW_PATH or workflow["state"] != "active":
+        _reject("release_ci_workflow")
+    _qualified_ci_run(api_get, publisher, _positive_integer(workflow["id"], "release_ci_workflow_id"))
+    return publisher
 
 
 def _stable_file_identity(info: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
@@ -1504,7 +1589,7 @@ def validate_release_attestations(
     """Require all durable release bundles to verify the exact bound distributions."""
 
     authority = _load_authority(authority_path)
-    source_revision = authority["source"]["revision"]
+    publisher_revision = _publisher_revision(authority)
     tag = authority["release"]["tag"]
     distributions = _local_distributions(dist_directory, tag)
     predicates = {
@@ -1567,7 +1652,7 @@ def validate_release_attestations(
                 distributions=distributions,
                 predicate_type=predicate_type,
                 predicate=predicate,
-                source_revision=source_revision,
+                source_revision=publisher_revision,
             )
             if observed_run is None:
                 observed_run = run_uri
@@ -1918,6 +2003,9 @@ def main(argv: list[str] | None = None) -> int:
     authority.add_argument("--output", type=Path, required=True)
     authority.add_argument("--github-output", type=Path, required=True)
 
+    publisher = modes.add_parser("publisher")
+    publisher.add_argument("--authority", type=Path, required=True)
+
     report = modes.add_parser("report")
     report.add_argument("--authority", type=Path, required=True)
     report.add_argument("--report", type=Path, required=True)
@@ -1989,6 +2077,8 @@ def main(argv: list[str] | None = None) -> int:
             _atomic_write(arguments.output, _canonical(receipt) + b"\n")
             _append_outputs(arguments.github_output, _receipt_outputs(receipt, release_state=release_state))
             print(json.dumps({"status": "passed"}, sort_keys=True))
+        elif arguments.mode == "publisher":
+            print(verify_publisher(_load_authority(arguments.authority), environment=dict(os.environ), api_get=_gh_api))
         elif arguments.mode == "report":
             authority_receipt = _load_authority(arguments.authority)
             report_digest = verify_report(authority_receipt, arguments.report)

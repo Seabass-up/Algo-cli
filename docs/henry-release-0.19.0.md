@@ -155,3 +155,33 @@ credentials, PyPI Trusted Publishing, and all artifact/evidence checks.
 Readiness markers may be set only after the corresponding live controls have
 been read back and verified. Missing external authority is a blocker, not a
 reason to disable a check.
+
+### Fixed-Tag Draft Recovery
+
+On 2026-09-09 the owner explicitly authorized repairing draft discovery and
+publishing the already-qualified immutable `v0.19.0` tag from a corrected
+protected-main workflow, without moving the tag or bypassing tests, approvals,
+or artifact checks. The exception is limited to draft ID `385795143` at source
+`088d7753852a9e237979a76c254626c7482ea8ae`. Its original protected-main CI
+`34392276784` passed all 16 jobs, including five browser sessions, separate
+evidence validation and attestation, and all three native platforms.
+
+GitHub's published-release-by-tag endpoint returned 404 for the real draft.
+Discovery now uses a bounded authenticated release listing, requires one exact
+tag match, and rereads by numeric ID with identity validation. Missing,
+ambiguous, malformed, truncated, or changed identities fail closed.
+
+An empty ancestor draft remains forbidden outside the exact authorized tuple.
+Recovery requires proven ancestry and successful exact-source CI for both the
+immutable package source and the corrected publishing workflow. Schema 2 of
+the authority receipt records the publisher revision separately. Package
+capture, reproducible builds, installed-source tests, browser evidence, and
+source-binding predicates remain tied to the original tag. Release certificate
+verification binds to the real qualified publisher revision instead of falsely
+claiming the old source signed the new run. Publisher CI and ancestry are
+rechecked before accepting fresh or retained release certificates. Existing
+schema-1 evidence remains bound to its original same-source signer.
+
+This authorization does not permit moving/deleting the tag, publishing a draft
+early, seeding assets to evade a gate, changing release ownership, expanding
+write permissions, or claiming publication before final public readback.
