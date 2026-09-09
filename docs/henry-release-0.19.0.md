@@ -128,6 +128,18 @@ qualification, tag rewrites, or a later release. It expires when 0.19.0 is
 published or the owner revokes it. Any remaining technical failure blocks
 publication regardless of this authorization.
 
+On 2026-09-09 the owner separately approved one explicit qualification-rule
+change: a verified approved navigation may pass when every unauthorized
+request was demonstrably blocked and none was forwarded, with all denial
+records and security restrictions retained. The implementation is narrower:
+only pre-upstream origin denials can qualify, using complete disjoint
+connection-ID accounting and fully verified request counts. Broker `blocked`
+dispositions remain recorded. Missing, active, overlapping, incomplete, or
+incompatible evidence still fails. This does not authorize other gate changes,
+expanded egress, disabled Safe Browsing, or bypassed publication approval.
+Protected-main run 34381514356 remains a failed pre-change observation, not a
+passing run to relabel; fresh exact-source qualification is required.
+
 Keep immutable releases, exact no-bypass `refs/tags/v*` update/deletion
 protection, protected-main source binding, short-lived scoped policy-audit
 credentials, PyPI Trusted Publishing, and all artifact/evidence checks.

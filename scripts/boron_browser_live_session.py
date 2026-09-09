@@ -50,6 +50,7 @@ from algo_cli.xenon_browser_broker import (
     XENON_BROKER_SCHEMA_VERSION,
     XenonBrokerRejected,
     issue_xenon_broker_permit,
+    validate_xenon_broker_accounting,
 )
 from algo_cli.xenon_browser_entry import XenonEntryRejected, read_xenon_entry_frame
 from boron_browser_build_images import (
@@ -314,6 +315,7 @@ _LIVE_STATIC_REASON_CODES = frozenset(
         "broker_ca_identity",
         "broker_ready_identity",
         "broker_result_counters",
+        "broker_result_accounting",
         "broker_result_invariant",
         "broker_result_type",
         "broker_stop_failed",
@@ -459,7 +461,18 @@ def _reject_browser_entry_error(row: Mapping[str, Any]) -> NoReturn:
 def _validate_broker_result(row: Mapping[str, Any], *, ca_certificate_digest: str) -> None:
     if row.get("type") != "xenon.result":
         _reject("broker_result_type")
-    if row.get("disposition") != "verified":
+    accounting_valid = True
+    try:
+        validate_xenon_broker_accounting(
+            row.get("accounting"),
+            connection_count=row.get("connection_count"),
+            request_count=row.get("request_count"),
+            disposition=row.get("disposition"),
+            reason_code=row.get("reason_code"),
+        )
+    except XenonBrokerRejected:
+        accounting_valid = False
+    if row.get("disposition") != "verified" and not accounting_valid:
         reason = row.get("reason_code")
         if type(reason) is str and reason in _BROKER_TERMINAL_REASONS:
             _reject("broker_" + reason)
@@ -471,6 +484,8 @@ def _validate_broker_result(row: Mapping[str, Any], *, ca_certificate_digest: st
         _reject("broker_result_counters")
     if row.get("ca_certificate_digest") != ca_certificate_digest:
         _reject("broker_ca_identity")
+    if not accounting_valid:
+        _reject("broker_result_accounting")
 
 
 class LiveSessionRejected(RuntimeError):
@@ -1660,7 +1675,7 @@ def run_live_session(
         broker_attach.wait(timeout=15, stage="broker_attach_exit")
         _validate_broker_result(broker_result, ca_certificate_digest=ready.get("ca_certificate_digest"))
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "platform": live_platform,
             "qualification_source_digest": build["qualification_source_digest"],
             "browser_index_digest": browser_image.digest,
@@ -1688,6 +1703,8 @@ def run_live_session(
             "browser_command_count": browser_result["command_count"],
             "browser_event_count": browser_result["event_count"],
             "broker_disposition": broker_result["disposition"],
+            "broker_reason_code": broker_result["reason_code"],
+            "broker_accounting": broker_result["accounting"],
             "broker_connection_count": broker_result["connection_count"],
             "broker_request_count": broker_result["request_count"],
             "broker_redirect_count": broker_result["redirect_count"],

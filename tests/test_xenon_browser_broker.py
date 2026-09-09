@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
 import os
 import socket
 import ssl
@@ -422,12 +423,12 @@ def test_session_enforces_active_total_byte_expiry_and_redirect_budgets() -> Non
         maximum_redirects=1,
     )
     session = _verified_session(permit=permit)
-    session.begin_connection()
+    first = session.begin_connection()
     with pytest.raises(XenonBrokerRejected, match="active_connection_limit"):
         session.begin_connection()
-    session.finish_connection()
-    session.begin_connection()
-    session.finish_connection()
+    session.finish_connection(first)
+    second = session.begin_connection()
+    session.finish_connection(second)
     with pytest.raises(XenonBrokerRejected, match="connection_limit"):
         session.begin_connection()
     session.add_bytes(20)
@@ -469,13 +470,15 @@ def _read_all(connection: ssl.SSLSocket) -> bytes:
         result.extend(chunk)
 
 
-def _run_double_tls(response_bytes: bytes) -> tuple[bytes, XenonBrokerSession, list[BaseException]]:
+def _run_double_tls(
+    response_bytes: bytes, *, session: XenonBrokerSession | None = None,
+) -> tuple[bytes, XenonBrokerSession, list[BaseException]]:
     tls_now_ms = int(time.time() * 1000)
     permit = _permit(
         issued_at_ms=tls_now_ms,
         expires_at_ms=tls_now_ms + 120_000,
     )
-    session = _verified_session(permit=permit, now_ms=tls_now_ms + 1)
+    session = session or _verified_session(permit=permit, now_ms=tls_now_ms + 1)
     server_context = session.ca.server_context("example.com", now_ms=tls_now_ms + 1)
     client_context = ssl.create_default_context(cadata=session.ca.certificate_pem.decode("ascii"))
     client_context.set_alpn_protocols(["http/1.1"])
@@ -546,6 +549,110 @@ def test_double_tls_broker_handles_coalesced_early_hints_and_fixed_body() -> Non
     assert evidence.connection_count == 1
     assert evidence.request_count == 1
     assert evidence.bytes_to_browser > 4
+
+
+def _rejected_connection(session, host, connector) -> tuple[bytes, str]:
+    browser, broker = socket.socketpair()
+    errors = []
+
+    def serve():
+        try:
+            handle_xenon_connection(broker, session, connector=connector)
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    try:
+        browser.settimeout(5)
+        browser.sendall(f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n".encode("ascii"))
+        response = _read_all(browser)
+    finally:
+        browser.close()
+        thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert len(errors) == 1 and isinstance(errors[0], XenonBrokerRejected)
+    return response, str(errors[0])
+
+
+def _qualify_accounting(session) -> None:
+    evidence = session.evidence()
+    broker_module.validate_xenon_broker_accounting(
+        evidence.accounting, connection_count=evidence.connection_count,
+        request_count=evidence.request_count, disposition=evidence.disposition.value,
+        reason_code=evidence.reason_code,
+    )
+
+
+def test_concurrent_denials_preserve_zero_upstream_access_and_later_verified_requests(monkeypatch) -> None:
+    response = b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\npong"
+    output, session, errors = _run_double_tls(response)
+    assert output.endswith(b"pong") and errors == []
+    calls = []
+    barrier = threading.Barrier(8)
+    begin = session.begin_connection
+
+    def synchronized_begin():
+        connection_id = begin()
+        barrier.wait(timeout=5)
+        return connection_id
+
+    def forbidden_connector(*args):
+        calls.append(args)
+        raise AssertionError("off-origin connector invocation")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(session, "begin_connection", synchronized_begin)
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(
+                lambda index: _rejected_connection(session, f"private-{index}.example", forbidden_connector),
+                range(8),
+            ))
+    assert calls == []
+    assert all(raw.startswith(b"HTTP/1.1 403 Forbidden") and reason == "connect_origin" for raw, reason in results)
+    output, session, errors = _run_double_tls(response, session=session)
+    assert output.endswith(b"pong") and errors == []
+    evidence = session.evidence()
+    assert evidence.disposition is XenonBrokerDisposition.BLOCKED
+    assert evidence.accounting == {
+        "schema_version": 1, "complete": True, "active_connection_count": 0,
+        "verified_request_count": 2, "upstream_connection_ids": [1, 10],
+        "denials": [[index, "connect_origin"] for index in range(2, 10)],
+    }
+    assert "private-" not in repr(evidence)
+    _qualify_accounting(session)
+
+
+def test_connector_cannot_disguise_an_upstream_attempt_as_a_pre_upstream_denial() -> None:
+    _output, session, errors = _run_double_tls(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\npong")
+    assert errors == []
+    calls = []
+
+    def failed_connector(*args):
+        calls.append(args)
+        raise XenonBrokerRejected("connect_origin")
+
+    response, reason = _rejected_connection(session, "example.com", failed_connector)
+    assert response.startswith(b"HTTP/1.1 403 Forbidden")
+    assert reason == "connect_origin" and len(calls) == 1
+    evidence = session.evidence()
+    assert evidence.accounting["upstream_connection_ids"] == [1, 2]
+    assert evidence.accounting["denials"] == [[2, "connect_origin"]]
+    with pytest.raises(XenonBrokerRejected, match="^broker_accounting$"):
+        _qualify_accounting(session)
+
+
+def test_unfinished_or_unrecorded_connection_prevents_qualification() -> None:
+    _output, session, errors = _run_double_tls(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\npong")
+    assert errors == []
+    connection_id = session.begin_connection()
+    assert session.evidence().accounting["complete"] is False
+    with pytest.raises(XenonBrokerRejected, match="^broker_accounting$"):
+        _qualify_accounting(session)
+    session.finish_connection(connection_id)
+    assert session.evidence().accounting["complete"] is False
+    with pytest.raises(XenonBrokerRejected, match="^broker_accounting$"):
+        _qualify_accounting(session)
 
 
 def test_double_tls_broker_relays_valid_chunked_body() -> None:

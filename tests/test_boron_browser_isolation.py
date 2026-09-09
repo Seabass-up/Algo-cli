@@ -1406,6 +1406,10 @@ def test_broker_result_validation_preserves_success_and_separates_invariants() -
         "bytes_to_browser": 1,
         "ca_certificate_digest": digest,
         "reason_code": "request_verified",
+        "accounting": {
+            "schema_version": 1, "complete": True, "active_connection_count": 0,
+            "verified_request_count": 1, "upstream_connection_ids": [1], "denials": [],
+        },
     }
     assert module._validate_broker_result(row, ca_certificate_digest=digest) is None
     for field, value, reason in (
@@ -1420,6 +1424,37 @@ def test_broker_result_validation_preserves_success_and_separates_invariants() -
     ):
         with pytest.raises(module.LiveSessionRejected, match="^" + reason + "$"):
             module._validate_broker_result({**row, field: value}, ca_certificate_digest=digest)
+
+
+def test_broker_result_accepts_proven_origin_denials_without_erasing_them() -> None:
+    module = _live_module()
+    digest = "sha256:" + "a" * 64
+    row = {
+        "type": "xenon.result", "disposition": "blocked", "reason_code": "connect_origin",
+        "connection_count": 3, "request_count": 1, "bytes_to_browser": 1,
+        "ca_certificate_digest": digest,
+        "accounting": {
+            "schema_version": 1, "complete": True, "active_connection_count": 0,
+            "verified_request_count": 1, "upstream_connection_ids": [2],
+            "denials": [[1, "connect_origin"], [3, "connect_origin_static_service"]],
+        },
+    }
+    assert module._validate_broker_result(row, ca_certificate_digest=digest) is None
+    assert row["disposition"] == "blocked"
+    assert len(row["accounting"]["denials"]) == 2
+    for field, value in (
+        ("complete", False), ("active_connection_count", 1),
+        ("upstream_connection_ids", [1]), ("denials", []),
+        ("verified_request_count", 0),
+    ):
+        with pytest.raises(module.LiveSessionRejected, match="^broker_connect_origin$"):
+            module._validate_broker_result(
+                {**row, "accounting": {**row["accounting"], field: value}}, ca_certificate_digest=digest,
+            )
+    with pytest.raises(module.LiveSessionRejected, match="^broker_ca_identity$"):
+        module._validate_broker_result(row, ca_certificate_digest="sha256:" + "b" * 64)
+    with pytest.raises(module.LiveSessionRejected, match="^broker_result_accounting$"):
+        module._validate_broker_result({**row, "disposition": "verified"}, ca_certificate_digest=digest)
 
 
 @pytest.mark.parametrize(
