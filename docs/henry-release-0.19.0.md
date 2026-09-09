@@ -68,6 +68,22 @@ The filesystem upgrade test does not qualify OS Keychain or Echo key migration.
 Those authorities remain subject to their separate contracts. A green feature
 branch with skipped protected-main jobs is not a fully qualified release.
 
+Report-contract unit tests use a scoped synthetic stopwatch; their fixture
+timings must never be treated as host performance evidence. Each native OS CI
+job separately runs the real benchmark in a fresh process with the unchanged
+latency limits, 101 contract/context samples, 31 checkpoint/workload samples,
+and five warmups. Both passing and failing reports are retained by OS and run
+attempt; a failed benchmark exits nonzero and blocks the platform job. The
+diagnostic profiler cannot replace that result. This separates serialization
+and tamper checks from performance qualification without removing either gate.
+
+PR run 34376553975 observed Windows workload-total p95 of 7373.073 ms against
+3500 ms and time-to-first-action p95 of 2808.8928 ms against 1000 ms. Its
+20-sample, zero-warmup report fixture caused four test failures despite all
+17 correctness probes passing. The subsequent five-sample diagnostic profile
+is not replacement qualification. Retain this failure and require fresh
+source-bound native measurements; do not raise the limits or relabel it green.
+
 Candidate run 34303669767 passed source-bound packaging and all four Linux and
 macOS upgrade paths, but Windows upgrade qualification found the real 0.18.0
 launcher lock and a synthetic SQLite connection cleanup defect. Preserve that

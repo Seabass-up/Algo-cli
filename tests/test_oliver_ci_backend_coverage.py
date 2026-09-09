@@ -118,9 +118,34 @@ def test_windows_profile_cannot_override_the_failed_job() -> None:
     workflow = (ROOT / ".github/workflows/oliver-ci.yml").read_text(encoding="utf-8")
     diagnostic = workflow.split("      - name: Diagnose failed Windows runtime timing\n", 1)[1]
     diagnostic = diagnostic.split("\n  native:", 1)[0]
-    condition = "if: ${{ failure() && runner.os == 'Windows' && steps.full-suite.outcome == 'failure' }}"
+    condition = (
+        "if: ${{ failure() && runner.os == 'Windows' && "
+        "(steps.full-suite.outcome == 'failure' || steps.runtime-timing.outcome == 'failure') }}"
+    )
     assert diagnostic.count(condition) == 2
     assert "        timeout-minutes: 3\n" in diagnostic
     assert "python scripts/nathan_agent_runtime_profile.py" in diagnostic
     assert "if-no-files-found: error" in diagnostic
     assert "continue-on-error" not in diagnostic
+
+
+def test_native_runtime_timing_is_a_separate_blocking_process_on_every_platform() -> None:
+    workflow = (ROOT / ".github/workflows/oliver-ci.yml").read_text(encoding="utf-8")
+    job = workflow.split("\n  test:\n", 1)[1].split("\n  native:\n", 1)[0]
+    measurement = job.split("      - name: Measure native runtime latency (blocking)\n", 1)[1]
+    measurement = measurement.split("      - name: Retain native runtime latency evidence\n", 1)[0]
+    assert "        id: runtime-timing\n" in measurement
+    assert "        shell: bash\n" in measurement
+    assert "          set -euo pipefail\n" in measurement
+    assert "python -m algo_cli.evals.nathan_agent_runtime_hardening" in measurement
+    assert '> "${RUNNER_TEMP}/nathan-agent-runtime-live.json"' in measurement
+    assert "if:" not in measurement
+    assert "pytest" not in measurement
+    for flag in ("--warmups", "--contract-repetitions", "--context-repetitions", "--checkpoint-repetitions"):
+        assert flag not in measurement
+    assert "continue-on-error" not in job
+    retention = job.split("      - name: Retain native runtime latency evidence\n", 1)[1]
+    retention = retention.split("      - name: Diagnose failed Windows runtime timing\n", 1)[0]
+    assert "steps.runtime-timing.outcome == 'success' || steps.runtime-timing.outcome == 'failure'" in retention
+    assert "runtime-latency-${{ matrix.os }}-attempt-${{ github.run_attempt }}" in retention
+    assert "if-no-files-found: error" in retention
