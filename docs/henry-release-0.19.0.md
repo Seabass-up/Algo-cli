@@ -140,6 +140,15 @@ expanded egress, disabled Safe Browsing, or bypassed publication approval.
 Protected-main run 34381514356 remains a failed pre-change observation, not a
 passing run to relabel; fresh exact-source qualification is required.
 
+The first main run of that change, 34387741713, did not reach the browser:
+the anonymous GitHub environment GET returned HTTP 403 before policy
+validation. Live environment readback remains compatible, but the runner's
+missing response body prevents attributing its 403 to rate limiting. The
+corrective preflight uses the existing job token with only `actions: read`,
+fails on missing credentials or HTTP rejection without fallback, and leaves
+all environment predicates and normal approval requirements unchanged. This
+transport repair requires fresh qualification; the failed run stays failed.
+
 Keep immutable releases, exact no-bypass `refs/tags/v*` update/deletion
 protection, protected-main source binding, short-lived scoped policy-audit
 credentials, PyPI Trusted Publishing, and all artifact/evidence checks.

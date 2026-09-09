@@ -69,6 +69,7 @@ HOSTED_BUILD_CONTEXT_PATHS = (
     "tests/test_boron_browser_images.py",
     "tests/test_boron_browser_isolation.py",
     "tests/test_boron_browser_wrapper.py",
+    "tests/test_boron_environment_authority.py",
     "tests/test_henry_boron_hosted_qualification.py",
     "tests/test_xenon_browser_broker.py",
     "tests/test_xenon_broker_accounting.py",
