@@ -1340,3 +1340,65 @@ def test_build_diagnostics_do_not_stringify_objects_or_multiple_arguments() -> N
         ("browser_build_failed", "private_token_material"),
     ):
         assert SCRIPT._normalized_rejection_reason(SCRIPT.BuildRejected(*arguments)) == "hosted_build_failed"
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "container_inspect_timeout",
+        "broker_ready_eof",
+        "browser_entry_rejected",
+        "browser_navigation_failed",
+        "browser_result_timeout_and_cleanup_incomplete",
+        "live_internal_error",
+    ],
+)
+def test_main_preserves_closed_live_failure_codes_without_writing_passed_evidence(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    reason: str,
+) -> None:
+    source = tmp_path / "source.py"
+    source.write_text("pass\n", encoding="utf-8")
+    monkeypatch.setattr(SCRIPT, "ROOT", tmp_path)
+    monkeypatch.setattr(SCRIPT, "SOURCE_PATHS", ("source.py",))
+    for key, value in _environment().items():
+        monkeypatch.setenv(key, value)
+
+    def fail_live(**_kwargs):
+        raise SCRIPT.LiveSessionRejected(reason)
+
+    monkeypatch.setattr(SCRIPT, "run_hosted_qualification", fail_live)
+    monkeypatch.setattr(SCRIPT, "_verified_revision_payloads", _accept_test_revision)
+
+    report = tmp_path / "blocked-report.json"
+    assert SCRIPT.main(["--repetitions", "5", "--output-report", str(report)]) == 2
+    assert not report.exists()
+    assert json.loads(capsys.readouterr().out) == {
+        "reason_code": "hosted_" + reason,
+        "status": "blocked",
+    }
+
+
+def test_live_diagnostics_reject_untrusted_exception_arguments() -> None:
+    class PrivateObject:
+        def __str__(self):
+            raise AssertionError("exception arguments must not be stringified")
+
+    class PrivateString(str):
+        def __eq__(self, _other):
+            raise AssertionError("string subclasses must not reach the allowlist")
+
+    for arguments in (
+        (),
+        (PrivateObject(),),
+        (PrivateString("browser_entry_rejected"),),
+        ("private_token_material",),
+        ("private_token_material_and_cleanup_incomplete",),
+        ("browser_entry_rejected\nprivate_token_material",),
+        ("browser_entry_rejected", "private_token_material"),
+    ):
+        error = SCRIPT.LiveSessionRejected("browser_entry_rejected")
+        error.args = arguments
+        assert SCRIPT._normalized_rejection_reason(error) == "hosted_live_failed"
