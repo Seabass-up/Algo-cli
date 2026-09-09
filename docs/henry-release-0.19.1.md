@@ -110,3 +110,10 @@ This is a bounded observation window, not an atomic lock against owner changes.
 
 No package, tag, test, approval, attestation or immutable-release requirement is
 waived. A passing diagnostic or local fixture is not release qualification.
+
+The first PR qualification (34417571345) failed 12 new Windows snapshot tests
+because they directly invoked the POSIX-only secure file reader. Capture and
+transport cases passed. Snapshot binding is now validated as parsed data on all
+platforms; the Ubuntu release CLI still loads it through the unchanged secure
+reader before validation. No tests are skipped and no file protections are
+removed to address this test-boundary error. A fresh full qualification is required.

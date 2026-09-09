@@ -178,7 +178,7 @@ def test_capture_closes_transport_and_drift_failures(
 def test_draft_snapshot_routes_only_bound_release_data(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     receipt, _ = execute(monkeypatch, tmp_path)
     requests: list[str] = []
-    api = AUTHORITY.draft_snapshot_api(tmp_path / "draft-capture/snapshot.json", environment=os.environ,
+    api = AUTHORITY.draft_snapshot_api(receipt, environment=os.environ,
                                        api_get=lambda endpoint: requests.append(endpoint) or "live")
     assert api("repos/Seabass-up/Algo-cli/releases?per_page=100") == receipt["listing"]
     assert api("repos/Seabass-up/Algo-cli/releases/385866827") == receipt["release"]
@@ -218,10 +218,8 @@ def test_draft_snapshot_rejects_stale_or_misbound_receipts(
 ) -> None:
     receipt, _ = execute(monkeypatch, tmp_path)
     receipt[key] = value
-    path = tmp_path / "draft-capture/snapshot.json"
-    path.write_text(json.dumps(receipt), encoding="utf-8")
     with pytest.raises(AUTHORITY.ReleaseAuthorityRejected, match="release_draft_snapshot"):
-        AUTHORITY.draft_snapshot_api(path, environment=os.environ, api_get=lambda _: pytest.fail("unexpected API"))
+        AUTHORITY.draft_snapshot_api(receipt, environment=os.environ, api_get=lambda _: pytest.fail("unexpected API"))
 
 
 @pytest.mark.parametrize("age,passed", [(0, True), (119, True), (121, False), (-10, False)])

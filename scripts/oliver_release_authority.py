@@ -1759,12 +1759,8 @@ def verify_pypi_state(
     return "partial-exact"
 
 
-def draft_snapshot_api(path: Path, *, environment: Mapping[str, str], api_get: ApiGet) -> ApiGet:
+def draft_snapshot_api(value: Any, *, environment: Mapping[str, str], api_get: ApiGet) -> ApiGet:
     """Bind captured private release data without lending write authority to validators."""
-    value = _json_bytes(
-        _read_regular(path, maximum=MAX_API_BYTES, reason_code="release_draft_snapshot"),
-        maximum=MAX_API_BYTES, reason_code="release_draft_snapshot",
-    )
     if (
         type(value) is not dict
         or set(value) != {"schema_version", "phase", "tag", "release_id", "publisher", "source",
@@ -2107,7 +2103,11 @@ def main(argv: list[str] | None = None) -> int:
         elif arguments.mode == "authority":
             api_get: ApiGet = _gh_api
             if arguments.draft_snapshot is not None:
-                api_get = draft_snapshot_api(arguments.draft_snapshot, environment=dict(os.environ), api_get=api_get)
+                snapshot = _json_bytes(
+                    _read_regular(arguments.draft_snapshot, maximum=MAX_API_BYTES, reason_code="release_draft_snapshot"),
+                    maximum=MAX_API_BYTES, reason_code="release_draft_snapshot",
+                )
+                api_get = draft_snapshot_api(snapshot, environment=dict(os.environ), api_get=api_get)
             receipt, release_state = validate_authority(
                 tag=arguments.tag,
                 environment=dict(os.environ),
