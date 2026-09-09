@@ -57,8 +57,10 @@ Install the wheel in an empty virtual environment and empty home directory. Veri
   policy with an administrative override, not mandatory or independent review;
   owner account compromise remains a trusted-authority risk. Set the repository
   Actions variable `ALGO_RELEASE_AUTHORITY_READY` to the exact value `true` only after
-  those exact controls have been read back and verified. The agent must not
-  approve or bypass a pending release job on the owner's behalf. Administrative
+  those exact controls have been read back and verified. Agent approval requires
+  the exact owner's explicit, release-scoped delegation and an accurate audit
+  comment; the [0.19.0 delegation](henry-release-0.19.0.md#owner-delegation-for-0190)
+  is not permission for a later release or administrator bypass. Administrative
   approval bypass does not relax tag, source, artifact, or browser evidence gates.
 - Install a repository-scoped policy-audit GitHub App for `Seabass-up/Algo-cli`.
   The App needs Administration write capability because GitHub otherwise omits

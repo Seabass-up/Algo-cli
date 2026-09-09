@@ -39,6 +39,12 @@ index still serves 0.18.0 until the approved release workflow succeeds.
 
 ### Release Operations
 
+- Obtain GHCR's exact pull challenge before exchanging the isolated Docker
+  login for a Bearer token. Do not send Basic credentials to blob endpoints;
+  keep exact realm, service, scope, size, digest, and redirect checks intact.
+- Record the owner's explicit one-release delegation for 0.19.0 environment
+  approvals. Delegated approval is not independent human review and cannot
+  bypass failed checks or authorize later releases.
 - Correct browser-build evidence validation for pinned Buildx/BuildKit output:
   accept finite provenance resource samples, bind the uploaded source archive
   and nested frontend request, and resolve image-config identity from the

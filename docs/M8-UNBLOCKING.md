@@ -27,8 +27,11 @@ At the initial investigation, the workflow changes were local and the repository
 readiness marker was unset. Land the reviewed changes on protected main,
 read back the environment policy again, then set
 `BORON_HARDENING_ENVIRONMENT_READY=true`. The owner must trigger the run and
-manually approve its environment jobs. Do not use the marker as an M8 pass or
-automatically approve a run on the owner's behalf.
+manually approve its environment jobs by default. Do not use the marker as an
+M8 pass. The owner's explicit 2026-09-09 delegation is a bounded exception for
+the 0.19.0 qualification and publication only; follow its audit requirements in
+[the release policy](henry-release-0.19.0.md#owner-delegation-for-0190).
+It changes neither technical qualification nor environment protection settings.
 
 GitHub supports this self-approval configuration through the
 [deployment environment policy](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments).
