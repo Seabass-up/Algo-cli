@@ -338,6 +338,7 @@ FOCUSED_TESTS = (
     "tests/test_boron_browser_wrapper.py",
     "tests/test_henry_boron_hosted_qualification.py",
     "tests/test_xenon_browser_broker.py",
+    "tests/test_xenon_broker_accounting.py",
     "tests/test_xenon_browser_egress.py",
     "tests/test_xenon_browser_entry.py",
     "tests/test_carbon_browser_binding.py",

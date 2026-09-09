@@ -71,6 +71,7 @@ _CONNECT_ORIGIN_DIAGNOSTICS = {
     "www.gstatic.com": "connect_origin_static_service",
     "www.google.com": "connect_origin_search_service",
 }
+XENON_PRE_UPSTREAM_ORIGIN_DENIALS = frozenset({"connect_origin", *_CONNECT_ORIGIN_DIAGNOSTICS.values()})
 
 _REQUEST_HOP_HEADERS = frozenset(
     {
@@ -883,9 +884,67 @@ class XenonBrokerEvidence:
     request_count: int
     redirect_count: int
     bytes_to_browser: int
+    accounting: dict[str, Any]
     target_decision_digest: str
     ca_digest: str
     reason_code: str
+
+
+def validate_xenon_broker_accounting(
+    accounting: Any,
+    *,
+    connection_count: Any,
+    request_count: Any,
+    disposition: Any,
+    reason_code: Any,
+) -> None:
+    """Require complete, disjoint upstream/denial accounting, not a zero claim."""
+
+    fields = {
+        "schema_version", "complete", "active_connection_count", "verified_request_count",
+        "upstream_connection_ids", "denials",
+    }
+    if type(accounting) is not dict or set(accounting) != fields:
+        _reject("broker_accounting")
+    if (
+        type(connection_count) is not int or not 1 <= connection_count <= XENON_MAX_CONNECTIONS
+        or type(request_count) is not int or not 1 <= request_count <= connection_count
+        or type(accounting["schema_version"]) is not int or accounting["schema_version"] != 1
+        or accounting["complete"] is not True
+        or type(accounting["active_connection_count"]) is not int or accounting["active_connection_count"] != 0
+        or type(accounting["verified_request_count"]) is not int
+        or accounting["verified_request_count"] != request_count
+        or type(disposition) is not str or type(reason_code) is not str
+    ):
+        _reject("broker_accounting")
+    upstream = accounting["upstream_connection_ids"]
+    denials = accounting["denials"]
+    if (
+        type(upstream) is not list or type(denials) is not list
+        or len(upstream) != request_count or len(denials) > connection_count
+        or any(type(item) is not int or not 1 <= item <= connection_count for item in upstream)
+        or upstream != sorted(set(upstream))
+    ):
+        _reject("broker_accounting")
+    denied_ids: list[int] = []
+    reasons: set[str] = set()
+    for row in denials:
+        if (
+            type(row) is not list or len(row) != 2
+            or type(row[0]) is not int or not 1 <= row[0] <= connection_count
+            or type(row[1]) is not str or row[1] not in XENON_PRE_UPSTREAM_ORIGIN_DENIALS
+        ):
+            _reject("broker_accounting")
+        denied_ids.append(row[0])
+        reasons.add(row[1])
+    if (
+        denied_ids != sorted(set(denied_ids))
+        or set(upstream) & set(denied_ids)
+        or sorted(upstream + denied_ids) != list(range(1, connection_count + 1))
+        or (denials and (disposition != "blocked" or reason_code not in reasons))
+        or (not denials and (disposition != "verified" or reason_code != "request_verified"))
+    ):
+        _reject("broker_accounting")
 
 
 class XenonBrokerSession:
@@ -915,9 +974,13 @@ class XenonBrokerSession:
         self._clock_ms = clock_ms
         self._lock = threading.Lock()
         self._connections = 0
-        self._active = 0
+        self._active_connections: set[int] = set()
         self._active_peak = 0
-        self._requests = 0
+        self._upstream_connections: set[int] = set()
+        self._requests: set[int] = set()
+        self._verified_requests: set[int] = set()
+        self._denials: dict[int, str] = {}
+        self._accounting_complete = True
         self._redirects = 0
         self._bytes = 0
         self._disposition = XenonBrokerDisposition.VERIFIED
@@ -930,27 +993,72 @@ class XenonBrokerSession:
         if now >= self.permit.expires_at_ms:
             _reject("broker_expired")
 
-    def begin_connection(self) -> None:
+    def begin_connection(self) -> int:
         self.assert_live()
         with self._lock:
             if self._connections >= self.permit.maximum_connections:
                 _reject("connection_limit")
-            if self._active >= self.permit.maximum_active_connections:
+            if len(self._active_connections) >= self.permit.maximum_active_connections:
                 _reject("active_connection_limit")
             self._connections += 1
-            self._active += 1
-            self._active_peak = max(self._active_peak, self._active)
+            self._active_connections.add(self._connections)
+            self._active_peak = max(self._active_peak, len(self._active_connections))
+            return self._connections
 
-    def finish_connection(self) -> None:
+    def finish_connection(self, connection_id: int) -> None:
         with self._lock:
-            if self._active <= 0:
+            if type(connection_id) is not int or connection_id not in self._active_connections:
                 _reject("connection_accounting")
-            self._active -= 1
+            self._active_connections.remove(connection_id)
 
-    def add_request(self) -> None:
+    def record_upstream(self, connection_id: int, request: XenonConnectRequest) -> None:
         self.assert_live()
         with self._lock:
-            self._requests += 1
+            if (
+                type(connection_id) is not int or connection_id not in self._active_connections
+                or connection_id in self._upstream_connections or connection_id in self._denials
+                or type(request) is not XenonConnectRequest
+                or type(request.host) is not str or type(request.port) is not int
+                or (request.host, request.port) != (self.target.host, self.target.port)
+            ):
+                _reject("connection_accounting")
+            # Record the attempt before invoking any connector, including a failing one.
+            self._upstream_connections.add(connection_id)
+
+    def record_denial(self, connection_id: int | None, reason_code: str) -> None:
+        with self._lock:
+            if (
+                type(connection_id) is not int or connection_id not in self._active_connections
+                or connection_id in self._denials
+            ):
+                self._accounting_complete = False
+                return
+            self._denials[connection_id] = (
+                reason_code if type(reason_code) is str and reason_code in XENON_PRE_UPSTREAM_ORIGIN_DENIALS
+                else "other_rejection"
+            )
+
+    def add_request(self, connection_id: int) -> None:
+        self.assert_live()
+        with self._lock:
+            if (
+                type(connection_id) is not int
+                or connection_id not in self._active_connections or connection_id not in self._upstream_connections
+                or connection_id in self._requests or connection_id in self._denials
+            ):
+                _reject("connection_accounting")
+            self._requests.add(connection_id)
+
+    def verify_request(self, connection_id: int) -> None:
+        with self._lock:
+            if (
+                type(connection_id) is not int
+                or connection_id not in self._active_connections or connection_id not in self._requests
+                or connection_id in self._verified_requests or connection_id in self._denials
+            ):
+                _reject("connection_accounting")
+            self._verified_requests.add(connection_id)
+        self.mark(XenonBrokerDisposition.VERIFIED, "request_verified")
 
     def add_bytes(self, amount: int) -> None:
         value = _integer(amount, "response_bytes", 0, self.permit.maximum_response_bytes)
@@ -993,9 +1101,20 @@ class XenonBrokerSession:
                 disposition=self._disposition,
                 connection_count=self._connections,
                 active_peak=self._active_peak,
-                request_count=self._requests,
+                request_count=len(self._requests),
                 redirect_count=self._redirects,
                 bytes_to_browser=self._bytes,
+                accounting={
+                    "schema_version": 1,
+                    "complete": (
+                        self._accounting_complete and not self._active_connections
+                        and self._upstream_connections | self._denials.keys() == set(range(1, self._connections + 1))
+                    ),
+                    "active_connection_count": len(self._active_connections),
+                    "verified_request_count": len(self._verified_requests),
+                    "upstream_connection_ids": sorted(self._upstream_connections),
+                    "denials": [[key, self._denials[key]] for key in sorted(self._denials)],
+                },
                 target_decision_digest=self.target.decision_digest,
                 ca_digest=self.ca.certificate_digest,
                 reason_code=self._reason,
@@ -1174,15 +1293,15 @@ def handle_xenon_connection(
         _reject("connection_type")
     upstream: ssl.SSLSocket | None = None
     browser_tls: ssl.SSLSocket | None = None
-    begun = False
+    connection_id: int | None = None
     try:
-        session.begin_connection()
-        begun = True
+        connection_id = session.begin_connection()
         client.settimeout(XENON_SOCKET_TIMEOUT_SECONDS)
         connect_head, connect_extra = _read_head(client)
         if connect_extra:
             _reject("connect_pipelining")
-        parse_xenon_connect_request(connect_head, expected_host=session.target.host)
+        connect_request = parse_xenon_connect_request(connect_head, expected_host=session.target.host)
+        session.record_upstream(connection_id, connect_request)
         try:
             upstream = connector(session.target, session.egress)
         except TypeError:
@@ -1206,7 +1325,7 @@ def handle_xenon_connection(
             expected_origin=session.target.origin,
             expected_host=session.target.host,
         )
-        session.add_request()
+        session.add_request(connection_id)
         upstream.sendall(request.upstream_head)
         response_head, response_extra = _read_head(upstream)
         response = parse_xenon_http_response(response_head)
@@ -1233,13 +1352,15 @@ def handle_xenon_connection(
             )
         else:
             _relay_to_eof(upstream, browser_tls, initial=response_extra, session=session)
-        session.mark(XenonBrokerDisposition.VERIFIED, "request_verified")
+        session.verify_request(connection_id)
     except XenonBrokerRejected as error:
+        session.record_denial(connection_id, error.reason_code)
         session.mark(_error_disposition(error.reason_code), error.reason_code)
         if browser_tls is None:
             _send_error(client, 403)
         raise
     except (OSError, ssl.SSLError):
+        session.record_denial(connection_id, "connection_unknown")
         session.mark(XenonBrokerDisposition.UNKNOWN, "connection_unknown")
         raise XenonBrokerRejected("connection_unknown") from None
     finally:
@@ -1249,8 +1370,8 @@ def handle_xenon_connection(
             browser_tls.close()
         else:
             client.close()
-        if begun:
-            session.finish_connection()
+        if connection_id is not None:
+            session.finish_connection(connection_id)
 
 
 class XenonBrokerServer:
@@ -1338,6 +1459,7 @@ __all__ = [
     "XENON_BROKER_PROTOCOL_VERSION",
     "XENON_BROKER_SCHEMA_VERSION",
     "XENON_MAX_HEADER_BYTES",
+    "XENON_PRE_UPSTREAM_ORIGIN_DENIALS",
     "XenonBrokerDisposition",
     "XenonBrokerEvidence",
     "XenonBrokerPermit",
@@ -1355,4 +1477,5 @@ __all__ = [
     "parse_xenon_http_request",
     "parse_xenon_http_response",
     "verify_xenon_broker_permit",
+    "validate_xenon_broker_accounting",
 ]

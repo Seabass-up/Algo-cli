@@ -136,6 +136,7 @@ def main() -> int:
         "request_count": evidence.request_count,
         "redirect_count": evidence.redirect_count,
         "bytes_to_browser": evidence.bytes_to_browser,
+        "accounting": evidence.accounting,
         "target_decision_digest": evidence.target_decision_digest,
         "ca_digest": evidence.ca_digest,
         "reason_code": evidence.reason_code,

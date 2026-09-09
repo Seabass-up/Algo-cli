@@ -86,8 +86,30 @@ Off-origin CONNECT diagnostics distinguish the exact public hosts
 These labels identify a rejected host, not its initiating browser component or
 URL path. No request host, path, query, header, or body is copied into output.
 All three codes remain blocked before any upstream connection. A later allowed
-request cannot clear that disposition, and no failed session produces passed
-hosted evidence.
+request cannot clear that disposition. On 2026-09-09 the owner explicitly
+authorized qualifying a verified approved navigation despite these denials,
+but only with complete evidence of zero unauthorized forwarding.
+
+Live evidence schema 3 retains the original broker disposition and reason plus
+a schema-1 accounting record. Every accepted connection receives a unique,
+bounded integer ID. The broker records an authorized upstream attempt before
+calling its connector, separately counts fully verified requests, and retains
+each denial as `[connection_id, closed_reason_code]`, without destination data.
+Only the three pre-upstream origin-denial codes above can coexist with a
+passing navigation. Other rejections are recorded as `other_rejection` and
+remain ineligible; arbitrary reason text never enters the denial ledger.
+
+Qualification requires no active connections, complete accounting, canonical
+unique ID lists, and an exact partition of all connection IDs into upstream
+attempts and denied connections. Those sets must not overlap, and upstream
+attempts, parsed requests, and fully verified requests must have equal positive
+counts. The broker must remain `blocked` when denials exist, not be relabeled
+`verified`. A missing record, unaccounted attempt, partial response, legacy
+schema, handoff, failure, unknown result, other rejection, or incomplete cleanup
+still fails qualification. Every retained denial is included in the repeated
+hosted report and its evidence digest. A bare asserted zero counter is not
+proof. Network policy, TLS checks, sandboxing, Safe Browsing, permit budgets,
+and approval requirements are unchanged.
 
 Cleanup failures retain a two-digit lowercase hexadecimal suffix from `01`
 through `3f`, appended to `cleanup_incomplete` or

@@ -71,6 +71,7 @@ HOSTED_BUILD_CONTEXT_PATHS = (
     "tests/test_boron_browser_wrapper.py",
     "tests/test_henry_boron_hosted_qualification.py",
     "tests/test_xenon_browser_broker.py",
+    "tests/test_xenon_broker_accounting.py",
     "tests/test_xenon_browser_egress.py",
     "tests/test_xenon_browser_entry.py",
 )
@@ -189,6 +190,8 @@ _LIVE_EVIDENCE_KEYS = frozenset(
         "browser_command_count",
         "browser_event_count",
         "broker_disposition",
+        "broker_reason_code",
+        "broker_accounting",
         "broker_connection_count",
         "broker_request_count",
         "broker_redirect_count",
@@ -1569,11 +1572,10 @@ def _validated_live_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
     evidence = dict(value)
     if (
         type(evidence["schema_version"]) is not int
-        or evidence["schema_version"] != 2
+        or evidence["schema_version"] != 3
         or evidence["platform"] != "linux/amd64"
         or evidence["internal_participant_count"] != 2
         or evidence["browser_state"] != "verified"
-        or evidence["broker_disposition"] != "verified"
     ):
         _reject("hosted_live_evidence_identity")
     for field in (
@@ -1608,6 +1610,17 @@ def _validated_live_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
     )
     if any(type(evidence[field]) is not int or not 1 <= evidence[field] <= (1 << 53) - 1 for field in exact_positive):
         _reject("hosted_live_evidence_count")
+    live_runtime = _runtime().live_module
+    try:
+        live_runtime.validate_xenon_broker_accounting(
+            evidence["broker_accounting"],
+            connection_count=evidence["broker_connection_count"],
+            request_count=evidence["broker_request_count"],
+            disposition=evidence["broker_disposition"],
+            reason_code=evidence["broker_reason_code"],
+        )
+    except live_runtime.XenonBrokerRejected:
+        _reject("hosted_live_evidence_broker_accounting")
     if evidence["browser_major"] != int(CHROME_VERSION.split(".", 1)[0]):
         _reject("hosted_browser_major")
     lag = evidence["browser_security_update_lag_ms"]
