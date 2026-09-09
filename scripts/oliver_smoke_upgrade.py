@@ -187,7 +187,12 @@ def verify_windows_launcher_guard(cli: Path, env: dict[str, str], work: Path) ->
         text=True, encoding="utf-8", errors="replace", timeout=30, check=False,
     )
     if result.returncode != 64 or "running Windows launcher" not in result.stdout or "PowerShell" not in result.stdout:
-        raise ValueError("candidate Windows launcher did not refuse unsafe self-replacement")
+        diagnostic = json.dumps({
+            "returncode": result.returncode,
+            "stdout": result.stdout[-4000:],
+            "stderr": result.stderr[-4000:],
+        }, ensure_ascii=True)
+        raise ValueError(f"candidate Windows launcher did not refuse unsafe self-replacement: {diagnostic}")
 
 
 def main(argv: list[str] | None = None) -> int:

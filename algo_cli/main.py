@@ -4475,7 +4475,7 @@ def _run_update_entry() -> int:
     style = "green" if result.returncode == 0 else "red"
     console.print(f"[{style}]{result.message}[/{style}]")
     if result.returncode != 0 and result.details:
-        console.print(result.details, markup=False)
+        console.print(result.details, markup=False, soft_wrap=True)
     return result.returncode
 
 
@@ -4613,7 +4613,11 @@ def main() -> None:
     if Path(sys.argv[0]).name.lower().startswith("ollama-cli"):
         console.print("[warning]`ollama-cli` is deprecated; use `algo-cli` instead.[/]")
 
-    # Migration must precede every command surface. In particular, a first
+    # Package recovery must not depend on, inspect, or migrate application state.
+    if len(sys.argv) == 2 and sys.argv[1].strip().casefold() == "update":
+        raise SystemExit(_run_update_entry())
+
+    # Migration precedes application commands. In particular, a first
     # invocation of ``algo-cli config`` must see legacy credentials/settings.
     migrated = False
     if has_legacy_data():

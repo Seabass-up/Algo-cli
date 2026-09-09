@@ -32,6 +32,10 @@ index still serves 0.18.0 until the approved release workflow succeeds.
   quoted PowerShell command for the owning package manager. Published 0.18.0
   needs this external upgrade path; retrying its active launcher cannot fix
   WinError 32.
+- Handle bare `algo-cli update` before legacy migration or app-state reads so
+  recovery does not depend on broken or unqualified application state. Keep
+  normal and one-shot startup migration checks intact, and print recovery
+  commands without inserting line breaks into paths.
 
 ### Release Operations
 

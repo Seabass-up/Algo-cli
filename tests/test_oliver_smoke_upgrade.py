@@ -141,6 +141,17 @@ def test_windows_launcher_probe_requires_the_specific_guard(tmp_path, monkeypatc
             smoke.verify_windows_launcher_guard(Path("algo-cli.exe"), {}, tmp_path)
 
 
+def test_windows_launcher_probe_retains_bounded_failure_diagnostics(tmp_path, monkeypatch):
+    monkeypatch.setattr(smoke.subprocess, "run", lambda command, **kwargs: subprocess.CompletedProcess(
+        command, 1, stdout="x" * 9000, stderr="migration blocked",
+    ))
+    with pytest.raises(ValueError) as exc:
+        smoke.verify_windows_launcher_guard(Path("algo-cli.exe"), {}, tmp_path)
+    assert '"returncode": 1' in str(exc.value)
+    assert "migration blocked" in str(exc.value)
+    assert len(str(exc.value)) < 4500
+
+
 def test_ci_requires_upgrade_on_every_installed_platform():
     workflow = (smoke.ROOT / ".github/workflows/oliver-ci.yml").read_text(encoding="utf-8")
     job = workflow.split("  package-smoke:\n", 1)[1]

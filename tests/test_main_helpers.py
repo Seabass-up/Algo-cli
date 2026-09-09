@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from io import StringIO
 import os
 import stat
 import subprocess
@@ -12,6 +13,7 @@ import time
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 
 from algo_cli.config import CODE_RAG_CONSENT_VERSION, Config
 from algo_cli import main
@@ -79,6 +81,40 @@ def test_update_command_exits_before_runtime_state_initialization(monkeypatch):
 
     assert exc.value.code == 0
     assert "0.15.0 → 0.16.0" in rendered[0]
+
+
+@pytest.mark.parametrize("command", ["update", "UPDATE", " update "])
+def test_bare_update_does_not_inspect_or_migrate_existing_user_state(monkeypatch, command):
+    monkeypatch.setattr(main.sys, "argv", ["algo-cli", command])
+    monkeypatch.setattr(main, "_force_utf8_console", lambda: None)
+    for name in ("has_legacy_data", "perform_legacy_migration", "migrate_legacy_sidecar_files", "load_runtime_env"):
+        monkeypatch.setattr(main, name, lambda *args, **kwargs: pytest.fail("update must not touch user state"))
+    monkeypatch.setattr(main, "_run_update_entry", lambda: 64)
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 64
+
+
+def test_update_keeps_the_recovery_command_copyable_in_a_narrow_terminal(monkeypatch):
+    output = StringIO()
+    command = "& 'C:\\Long Path With Spaces\\python.exe' '-m' 'pip' 'install' '--upgrade' 'algo-cli-runtime'"
+    monkeypatch.setattr(main, "console", Console(file=output, width=20, color_system=None))
+    monkeypatch.setattr(main.updater, "update_algo_cli", lambda: updater.UpdateResult(
+        returncode=64, manager="pip", before_version="0.19.0", after_version="0.19.0",
+        message="Run this command from PowerShell", details=command,
+    ))
+    assert main._run_update_entry() == 64
+    assert command + "\n" in output.getvalue()
+
+
+def test_oneshot_update_prompt_still_requires_normal_migration_checks(monkeypatch):
+    monkeypatch.setattr(main.sys, "argv", ["algo-cli", "--oneshot", "update"])
+    monkeypatch.setattr(main, "has_legacy_data", lambda: True)
+    monkeypatch.setattr(main, "perform_legacy_migration", lambda: (_ for _ in ()).throw(main.LegacyMigrationError("blocked")))
+    monkeypatch.setattr(main, "_run_update_entry", lambda: pytest.fail("one-shot prompt is not package recovery"))
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 1
 
 
 def test_model_name_classifiers():
