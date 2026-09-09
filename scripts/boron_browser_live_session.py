@@ -132,6 +132,8 @@ _BROKER_TERMINAL_REASONS = frozenset(
         "connect_host",
         "connect_method",
         "connect_origin",
+        "connect_origin_static_service",
+        "connect_origin_search_service",
         "connect_pipelining",
         "connect_port",
         "connection_limit",

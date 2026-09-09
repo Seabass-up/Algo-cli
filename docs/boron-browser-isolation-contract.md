@@ -79,6 +79,16 @@ The closed vocabulary includes DNS-pin and redirect rejection codes emitted
 with the broker's `upstream_` and `redirect_` prefixes. Unknown suffixes are
 still rejected; prefixes alone never authorize diagnostic text.
 
+Off-origin CONNECT diagnostics distinguish the exact public hosts
+`www.gstatic.com` (`connect_origin_static_service`) and `www.google.com`
+(`connect_origin_search_service`). Every other destination retains the generic
+`connect_origin` code; suffix lookalikes do not receive a known-service label.
+These labels identify a rejected host, not its initiating browser component or
+URL path. No request host, path, query, header, or body is copied into output.
+All three codes remain blocked before any upstream connection. A later allowed
+request cannot clear that disposition, and no failed session produces passed
+hosted evidence.
+
 Cleanup failures retain a two-digit lowercase hexadecimal suffix from `01`
 through `3f`, appended to `cleanup_incomplete` or
 `<primary>_and_cleanup_incomplete`. Bits identify the browser driver (`01`),

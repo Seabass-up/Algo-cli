@@ -53,7 +53,13 @@ because native control functionality remains disabled.
   and workspace edits. No real secrets or operator configuration may be used.
 - Pending: protected-main browser qualification at the exact release source,
   owner approval, retained attestation, and package-bound evidence.
-- In progress: verified publication configuration and PyPI authority inventory.
+- Complete as of 2026-09-09: signed-in PyPI authority inventory. The only
+  project collaborator is Owner `seabass-up` with 2FA; the account has no API
+  tokens, no organizations, and no pending publishers. The only active trusted
+  publisher is `Seabass-up/Algo-cli` + `oliver-release.yml` +
+  `release-authority`. No authority was changed during this read-only audit.
+  Recheck time-sensitive authority before publication; this is not evidence
+  that the candidate has been published or its browser gate has passed.
 - Authorized on 2026-09-09: qualify and publish 0.19.0 under the bounded owner
   delegation below. This does not establish readiness or authorize publication
   while any required qualification remains failed or missing.
@@ -61,6 +67,22 @@ because native control functionality remains disabled.
 The filesystem upgrade test does not qualify OS Keychain or Echo key migration.
 Those authorities remain subject to their separate contracts. A green feature
 branch with skipped protected-main jobs is not a fully qualified release.
+
+Report-contract unit tests use a scoped synthetic stopwatch; their fixture
+timings must never be treated as host performance evidence. Each native OS CI
+job separately runs the real benchmark in a fresh process with the unchanged
+latency limits, 101 contract/context samples, 31 checkpoint/workload samples,
+and five warmups. Both passing and failing reports are retained by OS and run
+attempt; a failed benchmark exits nonzero and blocks the platform job. The
+diagnostic profiler cannot replace that result. This separates serialization
+and tamper checks from performance qualification without removing either gate.
+
+PR run 34376553975 observed Windows workload-total p95 of 7373.073 ms against
+3500 ms and time-to-first-action p95 of 2808.8928 ms against 1000 ms. Its
+20-sample, zero-warmup report fixture caused four test failures despite all
+17 correctness probes passing. The subsequent five-sample diagnostic profile
+is not replacement qualification. Retain this failure and require fresh
+source-bound native measurements; do not raise the limits or relabel it green.
 
 Candidate run 34303669767 passed source-bound packaging and all four Linux and
 macOS upgrade paths, but Windows upgrade qualification found the real 0.18.0

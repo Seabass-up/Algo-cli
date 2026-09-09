@@ -198,14 +198,29 @@ jobs:
         run: >-
           uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy pytest tests
           -vv --durations=25 -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true
+      - name: Measure native runtime latency (blocking)
+        id: runtime-timing
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy \
+            python -m algo_cli.evals.nathan_agent_runtime_hardening \
+            > "${RUNNER_TEMP}/nathan-agent-runtime-live.json"
+      - name: Retain native runtime latency evidence
+        if: ${{ !cancelled() && (steps.runtime-timing.outcome == 'success' || steps.runtime-timing.outcome == 'failure') }}
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: runtime-latency-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/nathan-agent-runtime-live.json
+          if-no-files-found: error
       - name: Diagnose failed Windows runtime timing
-        if: ${{ failure() && runner.os == 'Windows' && steps.full-suite.outcome == 'failure' }}
+        if: ${{ failure() && runner.os == 'Windows' && (steps.full-suite.outcome == 'failure' || steps.runtime-timing.outcome == 'failure') }}
         timeout-minutes: 3
         run: >-
           uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy
           python scripts/nathan_agent_runtime_profile.py
       - name: Retain Windows timing diagnostics
-        if: ${{ failure() && runner.os == 'Windows' && steps.full-suite.outcome == 'failure' }}
+        if: ${{ failure() && runner.os == 'Windows' && (steps.full-suite.outcome == 'failure' || steps.runtime-timing.outcome == 'failure') }}
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: windows-runtime-profile-attempt-${{ github.run_attempt }}

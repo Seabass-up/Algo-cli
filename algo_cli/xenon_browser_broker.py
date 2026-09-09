@@ -66,6 +66,11 @@ _KEY_ID_RE = re.compile(r"^hmac-sha256:[0-9a-f]{64}$")
 _SIGNATURE_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 _TOKEN_RE = re.compile(rb"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 _HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")
+# Diagnostic labels only; these exact public hosts remain denied off-origin.
+_CONNECT_ORIGIN_DIAGNOSTICS = {
+    "www.gstatic.com": "connect_origin_static_service",
+    "www.google.com": "connect_origin_search_service",
+}
 
 _REQUEST_HOP_HEADERS = frozenset(
     {
@@ -611,7 +616,7 @@ def parse_xenon_connect_request(raw: bytes, *, expected_host: str) -> XenonConne
         _reject("connect_method")
     host, port = _authority(parts[1])
     if host != expected_host:
-        _reject("connect_origin")
+        _reject(_CONNECT_ORIGIN_DIAGNOSTICS.get(host, "connect_origin"))
     mapped = _header_map(headers)
     if set(mapped) - {"host", "proxy-connection", "user-agent"}:
         _reject("connect_header")
@@ -1002,6 +1007,8 @@ def _error_disposition(reason_code: str) -> XenonBrokerDisposition:
         return XenonBrokerDisposition.HANDOFF
     if reason_code in {
         "connect_origin",
+        "connect_origin_static_service",
+        "connect_origin_search_service",
         "connect_port",
         "request_method",
         "request_body",

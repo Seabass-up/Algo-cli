@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from copy import deepcopy
 import importlib.util
+from itertools import count
+import json
 import os
 from pathlib import Path
 import stat
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -27,17 +30,52 @@ SPEC.loader.exec_module(SCRIPT)
 
 @pytest.fixture(scope="module")
 def report() -> dict[str, object]:
-    # Tamper tests exercise the report contract, not the currency of the
-    # repository evidence file. Build one small, valid report in memory so a
-    # stale stored artifact cannot turn every contract test into a setup error.
-    return benchmark.run_benchmark(
-        contract_repetitions=benchmark.MIN_LATENCY_SAMPLES,
-        context_repetitions=benchmark.MIN_LATENCY_SAMPLES,
-        checkpoint_repetitions=benchmark.MIN_LATENCY_SAMPLES,
-        workload_repetitions=benchmark.MIN_LATENCY_SAMPLES,
-        warmups=0,
-        generated_at="2026-08-23T00:00:00Z",
-    )
+    return _synthetic_contract_report()
+
+
+def _synthetic_contract_report() -> dict[str, object]:
+    # Only report-contract timing is synthetic. Real workload/probe execution
+    # remains, and CI qualifies host latency in a separate unpatched process.
+    ticks = count(step=1_000_000)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(benchmark, "time", SimpleNamespace(perf_counter_ns=lambda: next(ticks)))
+        return benchmark.run_benchmark(
+            contract_repetitions=benchmark.MIN_LATENCY_SAMPLES,
+            context_repetitions=benchmark.MIN_LATENCY_SAMPLES,
+            checkpoint_repetitions=benchmark.MIN_LATENCY_SAMPLES,
+            workload_repetitions=benchmark.MIN_LATENCY_SAMPLES,
+            warmups=0,
+            generated_at="2026-08-23T00:00:00Z",
+        )
+
+
+def test_contract_report_clock_is_synthetic_and_restored(report) -> None:
+    assert benchmark.time is time
+    assert report["public_claim_eligible"] is False
+    for name, row in report["performance"].items():
+        expected = 2.0 if name == "agent_workload_total" else 1.0
+        assert row["p50_ms"] == row["p95_ms"] == row["max_ms"] == expected
+
+
+@pytest.mark.parametrize(("status", "exit_code"), [("pass", 0), ("fail", 1)])
+def test_live_benchmark_cli_retains_the_report_and_failure_exit(monkeypatch, capsys, status, exit_code) -> None:
+    calls = []
+    synthetic = {"status": status, "test_fixture": True}
+    assert benchmark.run_benchmark.__kwdefaults__["workload_repetitions"] == 31
+
+    def run(**kwargs):
+        calls.append(kwargs)
+        return synthetic
+
+    monkeypatch.setattr(benchmark, "run_benchmark", run)
+    assert benchmark.main([]) == exit_code
+    assert json.loads(capsys.readouterr().out) == synthetic
+    assert calls == [{
+        "contract_repetitions": 101,
+        "context_repetitions": 101,
+        "checkpoint_repetitions": 31,
+        "warmups": 5,
+    }]
 
 
 def test_stored_runtime_qualification_artifact_is_current() -> None:
