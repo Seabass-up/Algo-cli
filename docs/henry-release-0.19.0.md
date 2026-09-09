@@ -53,7 +53,13 @@ because native control functionality remains disabled.
   and workspace edits. No real secrets or operator configuration may be used.
 - Pending: protected-main browser qualification at the exact release source,
   owner approval, retained attestation, and package-bound evidence.
-- In progress: verified publication configuration and PyPI authority inventory.
+- Complete as of 2026-09-09: signed-in PyPI authority inventory. The only
+  project collaborator is Owner `seabass-up` with 2FA; the account has no API
+  tokens, no organizations, and no pending publishers. The only active trusted
+  publisher is `Seabass-up/Algo-cli` + `oliver-release.yml` +
+  `release-authority`. No authority was changed during this read-only audit.
+  Recheck time-sensitive authority before publication; this is not evidence
+  that the candidate has been published or its browser gate has passed.
 - Authorized on 2026-09-09: qualify and publish 0.19.0 under the bounded owner
   delegation below. This does not establish readiness or authorize publication
   while any required qualification remains failed or missing.

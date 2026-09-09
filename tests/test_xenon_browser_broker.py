@@ -263,6 +263,67 @@ def test_connect_parser_rejects_tunnel_expansion(raw: bytes, reason: str) -> Non
         parse_xenon_connect_request(raw, expected_host="example.com")
 
 
+@pytest.mark.parametrize(
+    ("host", "reason"),
+    [
+        ("www.gstatic.com", "connect_origin_static_service"),
+        ("WWW.GSTATIC.COM.", "connect_origin_static_service"),
+        ("www.google.com", "connect_origin_search_service"),
+        ("private-canary.example", "connect_origin"),
+        ("www.gstatic.com.private-canary.example", "connect_origin"),
+        ("private-canary.gstatic.com", "connect_origin"),
+        ("www.google.com.private-canary.example", "connect_origin"),
+    ],
+)
+def test_origin_diagnostics_retain_denial_without_upstream_access(host: str, reason: str) -> None:
+    session = _verified_session()
+    browser, broker = socket.socketpair()
+    errors: list[BaseException] = []
+    upstream_calls: list[object] = []
+
+    def forbidden_connector(*args):
+        upstream_calls.append(args)
+        raise AssertionError("denied origin must not reach the upstream connector")
+
+    def serve() -> None:
+        try:
+            handle_xenon_connection(broker, session, connector=forbidden_connector)
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    try:
+        browser.settimeout(2)
+        browser.sendall(f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n".encode("ascii"))
+        response = _read_all(browser)
+    finally:
+        browser.close()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert upstream_calls == []
+    assert len(errors) == 1 and isinstance(errors[0], XenonBrokerRejected)
+    assert str(errors[0]) == reason
+    assert response.startswith(b"HTTP/1.1 403 Forbidden\r\n")
+    assert host.encode("ascii") not in response
+    session.mark(XenonBrokerDisposition.VERIFIED, "request_verified")
+    evidence = session.evidence()
+    assert evidence.disposition is XenonBrokerDisposition.BLOCKED
+    assert evidence.reason_code == reason
+    assert evidence.connection_count == 1
+    assert evidence.request_count == 0
+    assert evidence.bytes_to_browser == 0
+
+
+@pytest.mark.parametrize("host", ["www.gstatic.com", "www.google.com"])
+def test_origin_diagnostic_labels_do_not_change_the_exact_approved_target(host: str) -> None:
+    request = parse_xenon_connect_request(
+        f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n".encode("ascii"),
+        expected_host=host,
+    )
+    assert request.host == host
+
+
 def test_http_request_parser_strips_hop_headers_and_forces_close() -> None:
     request = parse_xenon_http_request(
         b"GET /path?q=1 HTTP/1.1\r\n"

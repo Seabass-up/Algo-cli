@@ -1423,7 +1423,16 @@ def test_broker_result_validation_preserves_success_and_separates_invariants() -
 
 
 @pytest.mark.parametrize(
-    "reason", ["socket_eof", "browser_tls", "connection_unknown", "connect_origin", "response_truncated"]
+    "reason",
+    [
+        "socket_eof",
+        "browser_tls",
+        "connection_unknown",
+        "connect_origin",
+        "connect_origin_static_service",
+        "connect_origin_search_service",
+        "response_truncated",
+    ],
 )
 @pytest.mark.parametrize("disposition", ["blocked", "handoff", "failed", "unknown"])
 def test_broker_terminal_diagnostics_never_turn_a_failure_into_success(reason: str, disposition: str) -> None:
@@ -1444,6 +1453,8 @@ def test_broker_terminal_diagnostics_never_turn_a_failure_into_success(reason: s
         "socket_eof private_token",
         "upstream_private_token",
         "redirect_private_token",
+        "connect_origin_private_token",
+        "connect_origin_static_service_private_token",
         True,
         {},
     ],
