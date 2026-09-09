@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing non-prerelease draft release tag (for example v0.19.0)
+        description: Existing non-prerelease draft release tag (for example v0.19.1)
         required: true
         type: string
 
@@ -29,6 +29,7 @@ jobs:
           EXPECTED_REPOSITORY: Seabass-up/Algo-cli
           EXPECTED_REPOSITORY_ID: "1297752684"
           EXPECTED_WORKFLOW_REF: Seabass-up/Algo-cli/.github/workflows/oliver-release.yml@refs/heads/main
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           fail() { printf '%s\n' '{"reason_code":"release_dispatch_authority","status":"blocked"}' >&2; exit 2; }
@@ -45,6 +46,7 @@ jobs:
           [[ "${GITHUB_WORKFLOW_SHA}" == "${GITHUB_SHA}" ]] || fail
           [[ "${RUNNER_ENVIRONMENT}" == "github-hosted" && "${RUNNER_OS}" == "Linux" && "${RUNNER_ARCH}" == "X64" ]] || fail
           [[ "${GITHUB_SHA}" =~ ^[0-9a-f]{40}$ ]] || fail
+          [[ "${RELEASE_TAG}" != "v0.19.0" ]] || fail
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false

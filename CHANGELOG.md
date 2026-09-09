@@ -4,13 +4,19 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
-## [0.19.0] - Release Candidate
+## [0.19.1] - Release Candidate
 
 This version is being qualified and is not yet published. The stable package
 index still serves 0.18.0 until the approved release workflow succeeds.
+It supersedes the unpublished 0.19.0 candidate, whose existing tag and draft
+are retained unchanged but must not be published.
 
 ### Fixed
 
+- Stop browser event processing at the first terminal navigation result even
+  when Chrome coalesces later events into the same pipe read. Preserve verified,
+  failed, handoff, and unknown outcomes and mandatory browser cleanup; do not
+  retry a rejected session or treat failure as success.
 - Discover Astra through the signed-in Codex model catalog and preserve provider
   routing and reasoning settings instead of hiding newer models behind a stale
   fallback list.

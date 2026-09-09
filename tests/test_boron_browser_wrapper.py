@@ -127,6 +127,84 @@ def _load_event(*, frame: str = "frame-a", loader: str = "loader-a") -> dict:
     }
 
 
+@pytest.mark.parametrize("coalesced", [False, True])
+@pytest.mark.parametrize(
+    ("terminal_method", "expected_state", "expected_reason"),
+    [
+        (None, BoronNavigationState.VERIFIED, "verified"),
+        ("Network.webSocketCreated", BoronNavigationState.FAILED, "websocket_denied"),
+        ("Page.javascriptDialogOpening", BoronNavigationState.HANDOFF, "dialog_handoff"),
+        ("Inspector.targetCrashed", BoronNavigationState.UNKNOWN, "target_crashed"),
+    ],
+)
+def test_runner_terminal_result_is_independent_of_receive_batching(
+    monkeypatch, coalesced, terminal_method, expected_state, expected_reason,
+) -> None:
+    browser = _ScriptedBrowser(terminal_method=terminal_method, coalesced=coalesced)
+    monkeypatch.setattr(wrapper_module, "launch_boron_chrome", lambda _plan: browser)
+
+    evidence = wrapper_module.run_boron_navigation(_plan())
+
+    assert evidence.state is expected_state
+    assert evidence.reason_code == expected_reason
+    assert browser.closed
+    assert browser.sent[-1]["method"] == (
+        "Page.navigate" if terminal_method is None else "Page.stopLoading"
+    )
+    assert evidence.event_count == (2 if terminal_method is None else 1)
+
+
+class _ScriptedBrowser:
+    def __init__(self, *, terminal_method=None, coalesced=True, malformed=False):
+        self.queue = []
+        self.sent = []
+        self.closed = False
+        self.terminal_method = terminal_method
+        self.coalesced = coalesced
+        self.malformed = malformed
+
+    def send(self, command):
+        self.sent.append(command)
+        result = {
+            "Browser.getVersion": {"product": f"Chrome/{VERSION}", "protocolVersion": "1.3"},
+            "Target.createBrowserContext": {"browserContextId": "context-a"},
+            "Target.createTarget": {"targetId": "target-a"},
+            "Target.attachToTarget": {"sessionId": "session-a"},
+            "Page.navigate": {"frameId": "frame-a", "loaderId": "loader-a"},
+        }.get(command["method"], {})
+        self.queue.append(_response(command, result))
+        if command["method"] == "Page.navigate":
+            if self.terminal_method is None:
+                self.queue.extend([_frame_event(), _load_event()])
+            else:
+                self.queue.append({
+                    "method": self.terminal_method, "sessionId": "session-a", "params": {},
+                })
+            self.queue.append({"method": "Page.loadEventFired", "sessionId": "session-a", "params": {}})
+
+    def receive(self, decoder, *, deadline):
+        assert self.queue
+        batch = self.queue if self.coalesced else self.queue[:1]
+        self.queue = [] if self.coalesced else self.queue[1:]
+        payload = b"".join(json.dumps(row).encode("ascii") + b"\x00" for row in batch)
+        if self.malformed and any(row.get("method") == "Page.loadEventFired" for row in batch):
+            payload += b'{"id":1,"id":2}\x00'
+        return decoder.feed(payload)
+
+    def close(self):
+        self.closed = True
+
+
+def test_runner_still_rejects_malformed_coalesced_input_and_closes(monkeypatch) -> None:
+    browser = _ScriptedBrowser(malformed=True)
+    monkeypatch.setattr(wrapper_module, "launch_boron_chrome", lambda _plan: browser)
+
+    with pytest.raises(BoronPipeRejected, match="^json_duplicate_key$"):
+        wrapper_module.run_boron_navigation(_plan())
+
+    assert browser.closed
+
+
 def _ca(now: datetime) -> tuple[bytes, x509.Certificate]:
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Algo Xenon Session CA")])

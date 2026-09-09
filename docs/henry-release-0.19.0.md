@@ -1,5 +1,11 @@
 # 0.19.0 Release Scope
 
+Superseded on 2026-09-09 by [0.19.1](henry-release-0.19.1.md) after a
+deterministically reproduced browser event-batching failure. This file retains
+the historical scope and authorization records below. The existing v0.19.0 tag
+and draft must remain untouched and unpublished; its recovery authorization
+does not authorize publication after this newly discovered defect.
+
 State: frozen stability candidate, not published. The candidate version is
 `0.19.0`; the published upgrade baseline is `0.18.0`. Do not reuse a published
 version for changed development builds. After publication, reopen feature

@@ -631,6 +631,13 @@ def test_workflow_keeps_tagged_payload_and_current_publisher_verification_separa
     assert '[[ "${publisher_sha}" == "${GITHUB_SHA}" ]]' in jobs["attestation-verification"]
 
 
+def test_workflow_rejects_retired_candidate_before_checkout() -> None:
+    jobs = _workflow_job_bodies((ROOT / ".github/workflows/oliver-release.yml").read_text(encoding="utf-8"))
+    dispatch = jobs["dispatch-authority"]
+    assert "RELEASE_TAG: ${{ inputs.tag }}" in dispatch
+    assert dispatch.index('[[ "${RELEASE_TAG}" != "v0.19.0" ]] || fail') < dispatch.index("actions/checkout@")
+
+
 @pytest.mark.parametrize(
     ("mutate", "reason"),
     [

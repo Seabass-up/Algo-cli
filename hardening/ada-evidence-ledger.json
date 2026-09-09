@@ -3870,6 +3870,15 @@
           "timestamp": "2026-09-09T20:12:59Z",
           "scope": "source digest sha256:d5818097be96189c5b4ec2ffb27d174d1543b3075b37b95a5d3298d33f7a1a5b binds bounded draft discovery, the exact authorized immutable v0.19.0 source and draft ID, independent publisher qualification, retained retry evidence, and unchanged package-source and approval gates",
           "limitations": "Tagged source 088d775 passed all 16 jobs in protected-main CI 34392276784, including five hosted sessions retaining ten origin denials and zero denied upstream connections. That evidence does not qualify this new publishing workflow or complete M8/M9. Fresh corrective-source CI and protected publication remain required; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json generated for the 0.19.1 browser terminal-batch repair",
+          "digest": "sha256:30d89be75f2016a3e16d340773c243fd5a95cbaa7cee94ab7f672d62db42f110",
+          "result": "9 local metrics pass, 5 broader external metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-09T21:11:29Z",
+          "scope": "source digest sha256:c2907425968d9c3acd7fbf092440c0a44b85fcd55a1b1dac48e836250eba55a3 binds termination at the first navigation result within coalesced pipe reads, all four terminal-state regressions, malformed-frame rejection, and cleanup",
+          "limitations": "CI 34401850330 failed hosted_browser_entry_navigation_machine_terminal on 70b2195. Four coalesced terminal cases reproduce the defect in the immutable 0.19.0 runner; all pass with the repair. The old tag remains untouched and unpublished. Fresh 0.19.1 hosted qualification is required; no retry hides the failure and HARD-080 remains in progress"
         }
       ]
     },
@@ -5750,6 +5759,15 @@
           "timestamp": "2026-09-09T20:12:59Z",
           "scope": "source digest sha256:d5818097be96189c5b4ec2ffb27d174d1543b3075b37b95a5d3298d33f7a1a5b binds the corrected publishing workflow without changing runtime performance limits, tagged package bytes, browser security restrictions, or normal approval requirements",
           "limitations": "All three real native latency reports for tagged source 088d775 passed the original limits in CI 34392276784. Those measurements remain source-bound and are not comparative performance evidence or qualification of a new workflow. M8/M9 completion and public performance claims remain blocked; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json generated for the 0.19.1 browser terminal-batch repair",
+          "digest": "sha256:30d89be75f2016a3e16d340773c243fd5a95cbaa7cee94ab7f672d62db42f110",
+          "result": "9 local metrics pass, 5 broader external metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-09T21:11:29Z",
+          "scope": "source digest sha256:c2907425968d9c3acd7fbf092440c0a44b85fcd55a1b1dac48e836250eba55a3 binds unchanged performance thresholds, security restrictions, and bounded terminal-state handling for the replacement candidate",
+          "limitations": "Earlier 0.19.0 and 70b2195 platform results cannot qualify the new 0.19.1 source. Browser qualification on 70b2195 failed and remains failed. M8/M9 completion and public performance claims remain blocked; HARD-081 remains in progress"
         }
       ]
     },
