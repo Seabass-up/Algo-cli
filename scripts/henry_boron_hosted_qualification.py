@@ -2038,6 +2038,12 @@ def _normalized_rejection_reason(error: BaseException) -> str:
             return "hosted_" + reason
         return "hosted_build_failed"
     if runtime is not None and isinstance(error, runtime.live_module.LiveSessionRejected):
+        if (
+            len(error.args) == 1
+            and type(reason := error.args[0]) is str
+            and reason == runtime.live_module._normalized_live_reason(reason)
+        ):
+            return "hosted_" + reason
         return "hosted_live_failed"
     return "hosted_dependency_failed"
 

@@ -39,6 +39,9 @@ index still serves 0.18.0 until the approved release workflow succeeds.
 
 ### Release Operations
 
+- Preserve the live browser driver's closed failure codes in hosted diagnostics,
+  including cleanup failures. Unknown exception text remains redacted, failed
+  runs remain blocked, and no passing evidence is written after a rejection.
 - Obtain GHCR's exact pull challenge before exchanging the isolated Docker
   login for a Bearer token. Do not send Basic credentials to blob endpoints;
   keep exact realm, service, scope, size, digest, and redirect checks intact.
