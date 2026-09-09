@@ -1354,13 +1354,13 @@ def _safe_wheel(path: Path) -> tuple[dict[str, bytes], bytes, dict[str, zipfile.
                 name = info.filename.rstrip("/")
                 if name:
                     _safe_relative(name, stage="wheel_path")
+                # Hatchling metadata may carry permission bits without Unix type bits.
+                unix_type = stat.S_IFMT(info.external_attr >> 16)
                 if info.filename.endswith("/"):
-                    unix_mode = info.external_attr >> 16
-                    if unix_mode and not stat.S_ISDIR(unix_mode):
+                    if unix_type not in (0, stat.S_IFDIR) or info.file_size or info.flag_bits & 0x1:
                         raise SourceBindingRejected("wheel_type")
                     continue
-                unix_mode = info.external_attr >> 16
-                if (unix_mode and not stat.S_ISREG(unix_mode)) or info.flag_bits & 0x1 or name in observed:
+                if unix_type not in (0, stat.S_IFREG) or info.flag_bits & 0x1 or name in observed:
                     raise SourceBindingRejected("wheel_type")
                 if not 0 <= info.file_size <= MAX_FILE_BYTES:
                     raise SourceBindingRejected("wheel_size")
@@ -1579,8 +1579,20 @@ def _tool_versions(lock_payload: bytes) -> tuple[str, str]:
     if type(packages) is not list:
         raise SourceBindingRejected("tool_lock")
     versions: dict[str, list[str]] = {}
+    dynamic_project_seen = False
     for package in packages:
-        if type(package) is not dict or type(package.get("name")) is not str or type(package.get("version")) is not str:
+        if type(package) is not dict or type(package.get("name")) is not str:
+            raise SourceBindingRejected("tool_lock")
+        if (
+            package["name"] == "algo-cli-runtime"
+            and "version" not in package
+            and package.get("source") == {"editable": "."}
+        ):
+            if dynamic_project_seen:
+                raise SourceBindingRejected("tool_lock")
+            dynamic_project_seen = True
+            continue
+        if type(package.get("version")) is not str:
             raise SourceBindingRejected("tool_lock")
         versions.setdefault(package["name"], []).append(package["version"])
     if versions.get("build") != ["1.5.0"] or versions.get("hatchling") != ["1.31.0"]:

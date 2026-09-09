@@ -29,8 +29,8 @@ dependencies = [
     "numpy>=1.20",
     "cryptography>=44.0",
     "keyring>=25.0",
-    "pathspec>=1.1.1,<2",
-    "wcmatch>=10.2.1,<11",
+    "pathspec<2,>=1.1.1",
+    "wcmatch<11,>=10.2.1",
     'tomli>=2.0; python_version < "3.11"',
 ]
 
@@ -131,6 +131,7 @@ allow-direct-references = true
 exclude = ["/website/"]
 skip-excluded-dirs = true
 include = [
+    "/.gitignore",
     "/README.md",
     "/CHANGELOG.md",
     "/LICENSE",

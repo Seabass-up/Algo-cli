@@ -681,8 +681,33 @@ jobs:
           enable-cache: true
       - name: Install locked build tooling
         run: uv sync --frozen --no-editable --extra release --reinstall-package algo-cli-runtime
-      - name: Build wheel and source distribution
-        run: uv run --frozen --no-editable --extra release python -m build
+      - name: Build and bind reproducible distributions to the exact CI commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="${RUNNER_TEMP}/oliver-ci-release-build"
+          install -d -m 0700 "${state}"
+          helper="${GITHUB_WORKSPACE}/scripts/oliver_release_source_binding.py"
+          python="${GITHUB_WORKSPACE}/.venv/bin/python"
+          revision="$(git rev-parse HEAD)"
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct "${revision}")"
+          "${python}" -I -B -S "${helper}" capture --repository "${GITHUB_WORKSPACE}" --revision "${revision}" --archive "${state}/source.tar" --stage "${state}/source-a" --receipt "${state}/source-receipt.json"
+          "${python}" -I -B -S "${helper}" materialize --archive "${state}/source.tar" --expected-revision "${revision}" --stage "${state}/source-b" --receipt "${state}/source-receipt.json"
+          "${python}" -m build --no-isolation --outdir "${state}/dist-a" "${state}/source-a"
+          "${python}" -m build --no-isolation --outdir "${state}/dist-b" "${state}/source-b"
+          "${python}" -I -B -S "${helper}" bind \
+            --archive "${state}/source.tar" --expected-revision "${revision}" \
+            --stage "${state}/source-a" --rebuild-stage "${state}/source-b" \
+            --receipt "${state}/source-receipt.json" \
+            --dist "${state}/dist-a" --rebuild-dist "${state}/dist-b" \
+            --bound-dist "${state}/bound-dist" --tool-lock "${state}/source-a/uv.lock" \
+            --manifest "${state}/source-binding.json"
+          "${python}" -I -B -S "${helper}" verify-bound \
+            --archive "${state}/source.tar" --expected-revision "${revision}" \
+            --receipt "${state}/source-receipt.json" --bound-dist "${state}/bound-dist" \
+            --manifest "${state}/source-binding.json"
+          install -d -m 0700 "${GITHUB_WORKSPACE}/dist"
+          cp "${state}/bound-dist/"* "${GITHUB_WORKSPACE}/dist/"
       - name: Generate normalized runtime SBOM and checksums
         run: |
           uv export --frozen --no-dev --format cyclonedx1.5 --preview-features sbom-export --output-file "${RUNNER_TEMP}/ada-runtime-sbom.raw.json"
@@ -706,6 +731,13 @@ jobs:
           path: |
             dist/algo-cli-runtime.lock.cdx.json
             dist/SHA256SUMS
+          if-no-files-found: error
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: release-source-binding-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/oliver-ci-release-build/source-receipt.json
+            ${{ runner.temp }}/oliver-ci-release-build/source-binding.json
           if-no-files-found: error
 
   package-smoke:

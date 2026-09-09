@@ -3688,6 +3688,15 @@
           "timestamp": "2026-09-09T01:58:57Z",
           "scope": "source digest sha256:7fd3d849cc4e4e12da703ae88992e96368a33870209959f5c00e62cd873fd0f1 binds release version and version-aware packaging fixtures; existing qualification thresholds are unchanged",
           "limitations": "Local qualification does not establish the final candidate's hosted browser, selected-Chrome, signed native, OS Keychain, or publication eligibility. HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": ".venv/bin/python scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json after actual release-build compatibility repairs",
+          "digest": "sha256:98d7194e9d90581398927cf389a123db26e7184734f898f83fac1c78aa17586e",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-09T02:22:21Z",
+          "scope": "source digest sha256:4475d6315d5c004844acb2c7a8735ffa3fb4cc16928a10707dc9d6d9e39521ae binds ZIP member validation, versionless local lock entries, exact sdist declarations, and ordinary CI reproducibility checks",
+          "limitations": "First candidate CI exposed a stale pre-final-edit M8 receipt on Linux and macOS; Windows tests passed. These refreshed local fixtures do not qualify final hosted artifacts, external browsers, native signing, or publication. HARD-080 remains in progress"
         }
       ]
     },
@@ -5343,6 +5352,24 @@
           "timestamp": "2026-09-09T01:58:57Z",
           "scope": "source digest sha256:7fd3d849cc4e4e12da703ae88992e96368a33870209959f5c00e62cd873fd0f1 binds release version and version-aware packaging fixtures; existing qualification thresholds are unchanged",
           "limitations": "Finite local efficiency samples do not qualify live browser performance, representative model quality, production Echo, or competitive superiority. HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": ".venv/bin/python scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json after actual release-build compatibility repairs",
+          "digest": "sha256:98d7194e9d90581398927cf389a123db26e7184734f898f83fac1c78aa17586e",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-09T02:22:21Z",
+          "scope": "source digest sha256:4475d6315d5c004844acb2c7a8735ffa3fb4cc16928a10707dc9d6d9e39521ae binds the current release preparation; existing local efficiency thresholds are unchanged",
+          "limitations": "No external-browser performance, representative model quality, production Echo, or competitive superiority claim follows. HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json verified by .venv/bin/python scripts/nathan_agent_runtime_qualification.py --refresh after release metadata canonicalization",
+          "digest": "sha256:1a9d19046c91165b028d195080674427767f28e6efd6a1eb29e4bf29de559dcb",
+          "result": "status pass: 17 existing correctness probes and all local deterministic runtime gates pass; public_claim_eligible is false",
+          "timestamp": "2026-09-09T02:18:08Z",
+          "scope": "source digest sha256:cbfa50f68578bbacda5683f518d0c6a47cb9f54a96cf22f24ef0a6f500a36188 and report digest sha256:948f06635e5ed19419e84744534497e547444d3dc1e12a885df00d4440b85963 bind the current local release candidate",
+          "limitations": "Release metadata spelling changed, not dependency ranges or runtime efficiency ceilings. The new exact-commit hosted delivery matrix remains pending; no live model or production browser claim follows. HARD-081 remains in progress"
         }
       ]
     },

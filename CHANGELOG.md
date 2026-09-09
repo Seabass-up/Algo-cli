@@ -31,6 +31,11 @@ index still serves 0.18.0 until the approved release workflow succeeds.
 
 ### Release Operations
 
+- Qualify real source-bound builds in ordinary CI, including standard Hatchling
+  ZIP metadata, its automatically included `.gitignore`, and canonical
+  dependency-range ordering. Accept the versionless local-project lock entry
+  while requiring exact build-tool pins. Reject special-file entries and
+  hidden directory payloads, and retain exact source and reproducibility receipts.
 - Freeze the stability candidate separately from the unfinished contained test
   runner. No new model-callable contained execution or native browser/computer
   control is enabled by this release.
