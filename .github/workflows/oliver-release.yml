@@ -353,6 +353,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
+      actions: read
       attestations: read
       contents: read
     outputs:
@@ -448,6 +449,8 @@ jobs:
           bound="${RUNNER_TEMP}/durable-bound-dist"
           verifications="${RUNNER_TEMP}/release-verifications"
           install -d -m 0700 "${verifications}"
+          publisher_sha="$(python -I -B -S scripts/oliver_release_authority.py publisher --authority "${stage}/oliver-release-authority.json")"
+          [[ "${publisher_sha}" =~ ^[0-9a-f]{40}$ ]]
           mapfile -t wheels < <(find "${bound}" -maxdepth 1 -type f -name '*.whl' -print)
           mapfile -t sdists < <(find "${bound}" -maxdepth 1 -type f -name '*.tar.gz' -print)
           test "${#wheels[@]}" -eq 1 && test "${#sdists[@]}" -eq 1
@@ -455,7 +458,7 @@ jobs:
             local label="$1" predicate="$2" bundle="$3" kind="$4" artifact="$5"
             gh attestation verify "${artifact}" --bundle "${stage}/${bundle}" --repo Seabass-up/Algo-cli \
               --cert-identity "https://github.com/Seabass-up/Algo-cli/.github/workflows/oliver-release.yml@refs/heads/main" \
-              --source-digest "${SOURCE_SHA}" --source-ref refs/heads/main --signer-digest "${SOURCE_SHA}" \
+              --source-digest "${publisher_sha}" --source-ref refs/heads/main --signer-digest "${publisher_sha}" \
               --deny-self-hosted-runners --predicate-type "${predicate}" --format json \
               > "${verifications}/${label}-${kind}.json"
           }
@@ -860,6 +863,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
+      actions: read
       attestations: read
       contents: read
     env:
@@ -870,7 +874,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-          ref: ${{ needs.release-authority.outputs.source-sha }}
+          ref: ${{ github.sha }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
@@ -958,6 +962,9 @@ jobs:
           bound="${RUNNER_TEMP}/downloads/package/bound-dist"
           verifications="${RUNNER_TEMP}/release-verifications"
           install -d -m 0700 "${verifications}"
+          publisher_sha="$(python -I -B -S scripts/oliver_release_authority.py publisher --authority "${stage}/oliver-release-authority.json")"
+          [[ "${publisher_sha}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${publisher_sha}" == "${GITHUB_SHA}" ]]
           mapfile -t wheels < <(find "${bound}" -maxdepth 1 -type f -name '*.whl' -print)
           mapfile -t sdists < <(find "${bound}" -maxdepth 1 -type f -name '*.tar.gz' -print)
           test "${#wheels[@]}" -eq 1 && test "${#sdists[@]}" -eq 1
@@ -965,7 +972,7 @@ jobs:
             local label="$1" predicate="$2" bundle="$3" kind="$4" artifact="$5"
             gh attestation verify "${artifact}" --bundle "${stage}/${bundle}" --repo Seabass-up/Algo-cli \
               --cert-identity "https://github.com/Seabass-up/Algo-cli/.github/workflows/oliver-release.yml@refs/heads/main" \
-              --source-digest "${SOURCE_SHA}" --source-ref refs/heads/main --signer-digest "${SOURCE_SHA}" \
+              --source-digest "${publisher_sha}" --source-ref refs/heads/main --signer-digest "${publisher_sha}" \
               --deny-self-hosted-runners --predicate-type "${predicate}" --format json \
               > "${verifications}/${label}-${kind}.json"
           }

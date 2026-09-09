@@ -3861,6 +3861,15 @@
           "timestamp": "2026-09-09T18:36:30Z",
           "scope": "source digest sha256:f621525202428e7fdf9317b28110dd33224cd384749f58bc664e464ac93b2699 binds the existing owner-policy and initiator tests together with real-shell authenticated transport cases; the valid-owner fixture now supplies a synthetic token while absent and empty tokens remain explicitly rejected",
           "limitations": "The first full local suite after the transport change exposed one old valid-owner fixture without the required token; that failed log is retained and the focused source set now includes that module. No runtime gate was weakened to fix the fixture, and protected-main run 34387741713 remains failed. Fresh hosted execution remains required; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json generated after owner-authorized fixed-tag draft recovery",
+          "digest": "sha256:1d36674e00d4fd2120f1300f0b2334ad81ddc0b146c25409170551d1e91402d6",
+          "result": "9 local metrics pass, 5 broader external metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-09T20:12:59Z",
+          "scope": "source digest sha256:d5818097be96189c5b4ec2ffb27d174d1543b3075b37b95a5d3298d33f7a1a5b binds bounded draft discovery, the exact authorized immutable v0.19.0 source and draft ID, independent publisher qualification, retained retry evidence, and unchanged package-source and approval gates",
+          "limitations": "Tagged source 088d775 passed all 16 jobs in protected-main CI 34392276784, including five hosted sessions retaining ten origin denials and zero denied upstream connections. That evidence does not qualify this new publishing workflow or complete M8/M9. Fresh corrective-source CI and protected publication remain required; HARD-080 remains in progress"
         }
       ]
     },
@@ -5732,6 +5741,15 @@
           "timestamp": "2026-09-09T18:36:30Z",
           "scope": "source digest sha256:f621525202428e7fdf9317b28110dd33224cd384749f58bc664e464ac93b2699 binds expanded preflight regression coverage with unchanged browser denial accounting, latency thresholds, and approval requirements",
           "limitations": "The fixture correction and source-list expansion are local test evidence only. All platform, latency, build, and upgrade jobs passed on old main 04e10ec, but its anonymous environment GET failed and no browser ran. That old source does not qualify the corrective token path or establish public performance; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json generated after owner-authorized fixed-tag draft recovery",
+          "digest": "sha256:1d36674e00d4fd2120f1300f0b2334ad81ddc0b146c25409170551d1e91402d6",
+          "result": "9 local metrics pass, 5 broader external metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-09T20:12:59Z",
+          "scope": "source digest sha256:d5818097be96189c5b4ec2ffb27d174d1543b3075b37b95a5d3298d33f7a1a5b binds the corrected publishing workflow without changing runtime performance limits, tagged package bytes, browser security restrictions, or normal approval requirements",
+          "limitations": "All three real native latency reports for tagged source 088d775 passed the original limits in CI 34392276784. Those measurements remain source-bound and are not comparative performance evidence or qualification of a new workflow. M8/M9 completion and public performance claims remain blocked; HARD-081 remains in progress"
         }
       ]
     },

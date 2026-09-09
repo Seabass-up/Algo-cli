@@ -177,10 +177,10 @@ def _environment(**overrides: str) -> dict[str, str]:
     return values
 
 
-def _api_documents() -> dict[str, Any]:
+def _api_documents(*, revision: str = REVISION, release_id: int = 301) -> dict[str, Any]:
     workflow_runs = (
         f"repos/{SCRIPT.REPOSITORY}/actions/workflows/{SCRIPT.CI_WORKFLOW_PATH}/runs"
-        f"?branch={SCRIPT.DEFAULT_BRANCH}&event=push&head_sha={REVISION}"
+        f"?branch={SCRIPT.DEFAULT_BRANCH}&event=push&head_sha={revision}"
         "&status=success&per_page=100"
     )
     return {
@@ -194,14 +194,15 @@ def _api_documents() -> dict[str, Any]:
         f"repos/{SCRIPT.REPOSITORY}/branches/{SCRIPT.DEFAULT_BRANCH}": {
             "name": SCRIPT.DEFAULT_BRANCH,
             "protected": True,
-            "commit": {"sha": REVISION},
+            "commit": {"sha": revision},
         },
         f"repos/{SCRIPT.REPOSITORY}/git/ref/tags/{TAG}": {
             "ref": f"refs/tags/{TAG}",
-            "object": {"sha": REVISION, "type": "commit"},
+            "object": {"sha": revision, "type": "commit"},
         },
-        f"repos/{SCRIPT.REPOSITORY}/releases/tags/{TAG}": {
-            "id": 301,
+        f"repos/{SCRIPT.REPOSITORY}/releases?per_page=100": [{"id": release_id, "tag_name": TAG}],
+        f"repos/{SCRIPT.REPOSITORY}/releases/{release_id}": {
+            "id": release_id,
             "tag_name": TAG,
             "target_commitish": SCRIPT.DEFAULT_BRANCH,
             "draft": True,
@@ -225,7 +226,7 @@ def _api_documents() -> dict[str, Any]:
                     "workflow_id": 401,
                     "path": SCRIPT.CI_WORKFLOW_PATH,
                     "head_branch": SCRIPT.DEFAULT_BRANCH,
-                    "head_sha": REVISION,
+                    "head_sha": revision,
                     "event": "push",
                     "status": "completed",
                     "conclusion": "success",
@@ -256,7 +257,7 @@ def _api_documents() -> dict[str, Any]:
                         "repository_id": SCRIPT.REPOSITORY_ID,
                         "head_repository_id": SCRIPT.REPOSITORY_ID,
                         "head_branch": SCRIPT.DEFAULT_BRANCH,
-                        "head_sha": REVISION,
+                        "head_sha": revision,
                     },
                 }
             ],
@@ -436,7 +437,7 @@ def test_authority_resolves_one_annotated_tag() -> None:
 def test_authority_accepts_only_a_complete_immutable_published_retry() -> None:
     documents = _api_documents()
     draft_receipt = _authority(documents)
-    release = documents[f"repos/{SCRIPT.REPOSITORY}/releases/tags/{TAG}"]
+    release = documents[f"repos/{SCRIPT.REPOSITORY}/releases/301"]
     release.update(
         draft=False,
         immutable=True,
@@ -456,7 +457,7 @@ def test_authority_allows_only_asset_backed_ancestor_recovery_after_main_advance
     head = "f" * 40
     documents = _api_documents()
     documents[f"repos/{SCRIPT.REPOSITORY}/branches/{SCRIPT.DEFAULT_BRANCH}"]["commit"]["sha"] = head
-    documents[f"repos/{SCRIPT.REPOSITORY}/releases/tags/{TAG}"]["assets"] = _release_assets()
+    documents[f"repos/{SCRIPT.REPOSITORY}/releases/301"]["assets"] = _release_assets()
     documents[f"repos/{SCRIPT.REPOSITORY}/compare/{REVISION}...{head}"] = {
         "status": "ahead",
         "ahead_by": 2,
@@ -474,7 +475,7 @@ def test_authority_allows_only_asset_backed_ancestor_recovery_after_main_advance
     assert state == "draft-exact"
     assert receipt["source"]["revision"] == REVISION
 
-    documents[f"repos/{SCRIPT.REPOSITORY}/releases/tags/{TAG}"]["assets"] = []
+    documents[f"repos/{SCRIPT.REPOSITORY}/releases/301"]["assets"] = []
     with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_tag_not_default_head"):
         SCRIPT.validate_authority(
             tag=TAG,
@@ -487,9 +488,147 @@ def test_authority_allows_only_asset_backed_ancestor_recovery_after_main_advance
 
 def test_authority_rejects_a_partial_draft_asset_set_on_fresh_dispatch() -> None:
     documents = _api_documents()
-    documents[f"repos/{SCRIPT.REPOSITORY}/releases/tags/{TAG}"]["assets"] = _release_assets()[:-1]
+    documents[f"repos/{SCRIPT.REPOSITORY}/releases/301"]["assets"] = _release_assets()[:-1]
     with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_draft_asset_set"):
         _authority(documents)
+
+
+@pytest.mark.parametrize("rows", [
+    None, {}, [], [{"id": True, "tag_name": TAG}],
+    [{"id": 301, "tag_name": TAG}] * 2,
+    [{"id": 301, "tag_name": TAG}, {"id": 302, "tag_name": TAG}],
+    [{"id": 301, "tag_name": "v0.18.0"}],
+    [{"id": number + 1, "tag_name": f"v0.0.{number}"} for number in range(100)],
+])
+def test_draft_discovery_rejects_missing_ambiguous_or_truncated_listing(rows: Any) -> None:
+    documents = _api_documents()
+    documents[f"repos/{SCRIPT.REPOSITORY}/releases?per_page=100"] = rows
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_discovery"):
+        _authority(documents)
+
+
+def test_draft_discovery_uses_id_and_rejects_changed_identity() -> None:
+    documents = _api_documents()
+    calls = []
+
+    def get(endpoint: str) -> Any:
+        calls.append(endpoint)
+        assert "/releases/tags/" not in endpoint
+        return copy.deepcopy(documents[endpoint])
+
+    assert SCRIPT._discover_release(get, TAG)["id"] == 301
+    assert calls == [f"repos/{SCRIPT.REPOSITORY}/releases?per_page=100", f"repos/{SCRIPT.REPOSITORY}/releases/301"]
+    for change in ({"id": 302}, {"tag_name": "v0.18.0"}):
+        original = copy.deepcopy(documents[f"repos/{SCRIPT.REPOSITORY}/releases/301"])
+        documents[f"repos/{SCRIPT.REPOSITORY}/releases/301"].update(change)
+        with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_discovery_identity"):
+            SCRIPT._discover_release(get, TAG)
+        documents[f"repos/{SCRIPT.REPOSITORY}/releases/301"] = original
+
+
+RECOVERY_SOURCE = "088d7753852a9e237979a76c254626c7482ea8ae"
+RECOVERY_HEAD = "f" * 40
+
+
+def _ci_query(revision: str) -> str:
+    return (f"repos/{SCRIPT.REPOSITORY}/actions/workflows/{SCRIPT.CI_WORKFLOW_PATH}/runs"
+            f"?branch=main&event=push&head_sha={revision}&status=success&per_page=100")
+
+
+def _recovery_documents() -> dict[str, Any]:
+    rows = _api_documents(revision=RECOVERY_SOURCE, release_id=385795143)
+    rows[f"repos/{SCRIPT.REPOSITORY}/branches/main"]["commit"]["sha"] = RECOVERY_HEAD
+    rows[f"repos/{SCRIPT.REPOSITORY}/releases/385795143"]["target_commitish"] = RECOVERY_SOURCE
+    rows[f"repos/{SCRIPT.REPOSITORY}/compare/{RECOVERY_SOURCE}...{RECOVERY_HEAD}"] = {
+        "status": "ahead", "ahead_by": 2, "behind_by": 0,
+        "base_commit": {"sha": RECOVERY_SOURCE}, "merge_base_commit": {"sha": RECOVERY_SOURCE},
+    }
+    rows[_ci_query(RECOVERY_HEAD)] = copy.deepcopy(rows[_ci_query(RECOVERY_SOURCE)])
+    rows[_ci_query(RECOVERY_HEAD)]["workflow_runs"][0].update(id=502, head_sha=RECOVERY_HEAD)
+    return rows
+
+
+def _recovery_authority(rows: dict[str, Any]) -> dict[str, Any]:
+    receipt, state = SCRIPT.validate_authority(
+        tag=TAG, environment=_environment(GITHUB_SHA=RECOVERY_HEAD, GITHUB_WORKFLOW_SHA=RECOVERY_HEAD),
+        checkout_revision=RECOVERY_HEAD, policy_receipt=_repository_policy(),
+        api_get=lambda endpoint: copy.deepcopy(rows[endpoint]),
+    )
+    assert state == "draft"
+    return receipt
+
+
+def test_authorized_recovery_binds_unchanged_source_and_qualified_publisher() -> None:
+    rows = _recovery_documents()
+    receipt = _recovery_authority(rows)
+    assert receipt["schema_version"] == 2
+    assert receipt["source"]["revision"] == RECOVERY_SOURCE
+    assert receipt["publisher"] == {"revision": RECOVERY_HEAD, "identity": SCRIPT.RELEASE_WORKFLOW_IDENTITY}
+    assert SCRIPT.verify_publisher(
+        receipt, environment=_environment(GITHUB_SHA=RECOVERY_HEAD, GITHUB_WORKFLOW_SHA=RECOVERY_HEAD),
+        api_get=lambda endpoint: copy.deepcopy(rows[endpoint]),
+    ) == RECOVERY_HEAD
+
+
+@pytest.mark.parametrize("revision", [RECOVERY_SOURCE, RECOVERY_HEAD])
+@pytest.mark.parametrize("change", [{"conclusion": "failure"}, {"event": "pull_request"}, {"head_sha": "e" * 40}])
+def test_recovery_rejects_unqualified_source_or_publisher(revision: str, change: dict[str, Any]) -> None:
+    rows = _recovery_documents()
+    rows[_ci_query(revision)]["workflow_runs"][0].update(change)
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_ci_run"):
+        _recovery_authority(rows)
+
+
+@pytest.mark.parametrize("change", [{"status": "diverged"}, {"behind_by": 1}, {"merge_base_commit": {"sha": "e" * 40}}])
+def test_recovery_requires_proven_ancestry(change: dict[str, Any]) -> None:
+    rows = _recovery_documents()
+    rows[f"repos/{SCRIPT.REPOSITORY}/compare/{RECOVERY_SOURCE}...{RECOVERY_HEAD}"].update(change)
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_source_ancestry"):
+        _recovery_authority(rows)
+
+
+def test_recovery_exception_does_not_authorize_a_replacement_draft() -> None:
+    rows = _recovery_documents()
+    rows[f"repos/{SCRIPT.REPOSITORY}/releases?per_page=100"][0]["id"] = 301
+    release = rows.pop(f"repos/{SCRIPT.REPOSITORY}/releases/385795143")
+    release["id"] = 301
+    rows[f"repos/{SCRIPT.REPOSITORY}/releases/301"] = release
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_tag_not_default_head"):
+        _recovery_authority(rows)
+
+
+def test_publisher_receipt_rejects_rehashed_unapproved_identity() -> None:
+    receipt = _recovery_authority(_recovery_documents())
+    receipt["publisher"]["identity"] = "https://github.com/other/repo/workflow"
+    unsigned = {key: value for key, value in receipt.items() if key != "authority_digest"}
+    receipt["authority_digest"] = "sha256:" + hashlib.sha256(SCRIPT._canonical(unsigned)).hexdigest()
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_authority_publisher"):
+        SCRIPT._validate_authority_receipt(receipt)
+
+
+def test_publisher_rechecks_ci_instead_of_trusting_a_cached_receipt() -> None:
+    rows = _recovery_documents()
+    receipt = _recovery_authority(rows)
+    rows[_ci_query(RECOVERY_HEAD)] = {"total_count": 0, "workflow_runs": []}
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_ci_run_count"):
+        SCRIPT.verify_publisher(
+            receipt, environment=_environment(GITHUB_SHA=RECOVERY_HEAD, GITHUB_WORKFLOW_SHA=RECOVERY_HEAD),
+            api_get=lambda endpoint: copy.deepcopy(rows[endpoint]),
+        )
+
+
+def test_workflow_keeps_tagged_payload_and_current_publisher_verification_separate() -> None:
+    jobs = _workflow_job_bodies((ROOT / ".github/workflows/oliver-release.yml").read_text(encoding="utf-8"))
+    for name in ("source-capture", "verify", "evidence"):
+        assert "ref: ${{ needs.release-authority.outputs.source-sha }}" in jobs[name]
+    for name in ("durable-reconcile", "attestation-verification"):
+        body = jobs[name]
+        assert "ref: ${{ github.sha }}" in body
+        assert "actions: read" in body and "contents: write" not in body
+        assert body.index("oliver_release_authority.py publisher") < body.index("gh attestation verify")
+        assert '--source-digest "${publisher_sha}" --source-ref refs/heads/main --signer-digest "${publisher_sha}"' in body
+        assert '--expected-revision "${SOURCE_SHA}"' in body
+    assert '[[ "${publisher_sha}" == "${GITHUB_SHA}" ]]' in jobs["attestation-verification"]
 
 
 @pytest.mark.parametrize(
@@ -504,11 +643,11 @@ def test_authority_rejects_a_partial_draft_asset_set_on_fresh_dispatch() -> None
             "release_tag_not_default_head",
         ),
         (
-            lambda rows: rows[f"repos/{SCRIPT.REPOSITORY}/releases/tags/{TAG}"].update(draft=False),
+            lambda rows: rows[f"repos/{SCRIPT.REPOSITORY}/releases/301"].update(draft=False),
             "release_draft",
         ),
         (
-            lambda rows: rows[f"repos/{SCRIPT.REPOSITORY}/releases/tags/{TAG}"].update(prerelease=True),
+            lambda rows: rows[f"repos/{SCRIPT.REPOSITORY}/releases/301"].update(prerelease=True),
             "release_draft",
         ),
         (
@@ -597,7 +736,7 @@ def test_authority_rejects_ambiguous_run_and_unexpected_release_asset() -> None:
         _authority(documents)
 
     documents = _api_documents()
-    documents[f"repos/{SCRIPT.REPOSITORY}/releases/tags/{TAG}"]["assets"] = [
+    documents[f"repos/{SCRIPT.REPOSITORY}/releases/301"]["assets"] = [
         {
             "id": 1,
             "name": "unreviewed.bin",
@@ -1000,10 +1139,13 @@ def test_pypi_retry_state_supports_partial_exact_and_rejects_conflicts(tmp_path:
         )
 
 
-def _durable_asset_fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
+def _durable_asset_fixture(
+    tmp_path: Path, authority_receipt: dict[str, Any] | None = None,
+) -> tuple[Path, Path, Path, dict[str, Any]]:
     assets = tmp_path / "assets"
     assets.mkdir(parents=True)
-    authority = SCRIPT._canonical(_authority()) + b"\n"
+    receipt = _authority() if authority_receipt is None else authority_receipt
+    authority = SCRIPT._canonical(receipt) + b"\n"
     policy = SCRIPT._canonical(_repository_policy()) + b"\n"
     checksum_names = {"SHA256SUMS", "grace-release-evidence-SHA256SUMS"}
     for name in SCRIPT.expected_release_assets(TAG) - checksum_names:
@@ -1031,9 +1173,9 @@ def _durable_asset_fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, 
     current_authority.write_bytes(authority)
     current_policy.write_bytes(policy)
     release = {
-        "id": 301,
+        "id": receipt["release"]["id"],
         "tag_name": TAG,
-        "target_commitish": REVISION,
+        "target_commitish": receipt["source"]["revision"],
         "draft": True,
         "prerelease": False,
         "immutable": False,
@@ -1050,6 +1192,34 @@ def _durable_asset_fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, 
         ],
     }
     return assets, current_authority, current_policy, release
+
+
+def test_fixed_tag_retry_retains_original_publisher_and_all_core_authority(tmp_path: Path) -> None:
+    rows = _recovery_documents()
+    retained = _recovery_authority(rows)
+    assets, authority, policy, release = _durable_asset_fixture(tmp_path, retained)
+    rows[f"repos/{SCRIPT.REPOSITORY}/releases/385795143"]["assets"] = release["assets"]
+    current, state = SCRIPT.validate_authority(
+        tag=TAG, environment=_environment(GITHUB_SHA=RECOVERY_HEAD, GITHUB_WORKFLOW_SHA=RECOVERY_HEAD),
+        checkout_revision=RECOVERY_HEAD, policy_receipt=_repository_policy(),
+        api_get=lambda endpoint: copy.deepcopy(rows[endpoint]),
+    )
+    assert state == "draft-exact" and current["schema_version"] == 1
+    authority.write_bytes(SCRIPT._canonical(current) + b"\n")
+    arguments = dict(
+        tag=TAG, release_id=385795143, release_state="draft-exact", source_revision=RECOVERY_SOURCE,
+        release=release, directory=assets, authority_path=authority, policy_path=policy,
+        report_path=assets / SCRIPT.BORON_REPORT_NAME,
+        boron_bundle_path=assets / "grace-boron-hosted-qualification.sigstore.jsonl",
+    )
+    assert SCRIPT.validate_durable_assets(**arguments)["source_revision"] == RECOVERY_SOURCE
+    assert SCRIPT._load_authority(assets / "oliver-release-authority.json") == retained
+    current["boron"]["run_id"] += 1
+    unsigned = {key: value for key, value in current.items() if key != "authority_digest"}
+    current["authority_digest"] = "sha256:" + hashlib.sha256(SCRIPT._canonical(unsigned)).hexdigest()
+    authority.write_bytes(SCRIPT._canonical(current) + b"\n")
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_reconcile_authority"):
+        SCRIPT.validate_durable_assets(**arguments)
 
 
 def test_durable_asset_reconciliation_binds_api_checksums_and_stable_receipts(tmp_path: Path) -> None:
@@ -1251,6 +1421,50 @@ def _release_verification_fixture(
         }
     ]
     return verification, bundle
+
+
+def test_recovery_attestations_bind_new_signer_without_changing_package_source(tmp_path: Path) -> None:
+    authority = _recovery_authority(_recovery_documents())
+    authority_path = tmp_path / "authority.json"
+    authority_path.write_text(json.dumps(authority), encoding="utf-8")
+    dist, assets, verifications = (tmp_path / name for name in ("dist", "assets", "verifications"))
+    for directory in (dist, assets, verifications):
+        directory.mkdir()
+    for name in ("algo_cli_runtime-0.19.0-py3-none-any.whl", "algo_cli_runtime-0.19.0.tar.gz"):
+        (dist / name).write_bytes(b"unchanged tagged distribution")
+    distributions = SCRIPT._local_distributions(dist, TAG)
+    specifications = (
+        ("provenance", SCRIPT.SLSA_PROVENANCE_V1, "algo-cli-release-provenance.sigstore.jsonl", None),
+        ("sbom", SCRIPT.CYCLONEDX_PREDICATE, "algo-cli-release-sbom.sigstore.jsonl", "algo-cli-runtime.lock.cdx.json"),
+        ("boron", SCRIPT.BORON_RELEASE_PREDICATE, "grace-boron-release-qualification.sigstore.jsonl", SCRIPT.BORON_REPORT_NAME),
+        ("source-binding", SCRIPT.SOURCE_BINDING_PREDICATE, "oliver-release-source-binding.sigstore.jsonl", "oliver-release-source-binding.json"),
+    )
+    for label, predicate_type, bundle_name, predicate_name in specifications:
+        predicate = {"source": RECOVERY_SOURCE}
+        if predicate_name:
+            (assets / predicate_name).write_text(json.dumps(predicate), encoding="utf-8")
+        verification, bundle = _release_verification_fixture(
+            predicate_type=predicate_type, predicate=predicate, distributions=distributions,
+        )
+        verification[0]["verificationResult"]["signature"]["certificate"].update(
+            buildSignerDigest=RECOVERY_HEAD, sourceRepositoryDigest=RECOVERY_HEAD,
+        )
+        (assets / bundle_name).write_bytes(SCRIPT._canonical(bundle) + b"\n")
+        for kind in ("wheel", "sdist"):
+            (verifications / f"{label}-{kind}.json").write_text(json.dumps(verification), encoding="utf-8")
+    arguments = dict(authority_path=authority_path, dist_directory=dist, asset_directory=assets, verification_directory=verifications)
+    SCRIPT.validate_release_attestations(**arguments)
+    path = verifications / "source-binding-wheel.json"
+    original = json.loads(path.read_text(encoding="utf-8"))
+    changed = copy.deepcopy(original)
+    changed[0]["verificationResult"]["signature"]["certificate"]["buildSignerDigest"] = RECOVERY_SOURCE
+    path.write_text(json.dumps(changed), encoding="utf-8")
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_bundle_certificate"):
+        SCRIPT.validate_release_attestations(**arguments)
+    path.write_text(json.dumps(original), encoding="utf-8")
+    (assets / "oliver-release-source-binding.json").write_text(json.dumps({"source": RECOVERY_HEAD}), encoding="utf-8")
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_bundle_predicate"):
+        SCRIPT.validate_release_attestations(**arguments)
 
 
 def test_release_bundle_verification_binds_subject_predicate_bundle_and_run(tmp_path: Path) -> None:
