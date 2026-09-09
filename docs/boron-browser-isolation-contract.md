@@ -111,6 +111,14 @@ hosted report and its evidence digest. A bare asserted zero counter is not
 proof. Network policy, TLS checks, sandboxing, Safe Browsing, permit budgets,
 and approval requirements are unchanged.
 
+The protected-environment preflight reads GitHub metadata with the job's
+short-lived token and only `actions: read`. It uses a fixed HTTPS endpoint,
+does not follow redirects or retry denied requests, and removes the token
+before running the unchanged policy validator. An absent token, HTTP failure,
+or incompatible environment policy still blocks qualification. Protected-main
+run 34387741713 received HTTP 403 from the former anonymous lookup; the
+response body was not retained, so rate limiting is not a proven cause.
+
 Cleanup failures retain a two-digit lowercase hexadecimal suffix from `01`
 through `3f`, appended to `cleanup_incomplete` or
 `<primary>_and_cleanup_incomplete`. Bits identify the browser driver (`01`),

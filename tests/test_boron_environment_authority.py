@@ -138,6 +138,7 @@ def test_authority_rejects_other_initiators(actor_id: str, triggering_actor: str
             "HENRY_SOURCE_SHA": "a" * 40,
             "HENRY_WORKFLOW_SHA": "a" * 40,
             "BORON_HARDENING_ENVIRONMENT_READY": "true",
+            "HENRY_AUTHORITY_TOKEN": "synthetic-ci-authority-token",
             "HENRY_ACTOR_ID": actor_id,
             "HENRY_TRIGGERING_ACTOR": triggering_actor,
         },
@@ -147,3 +148,69 @@ def test_authority_rejects_other_initiators(actor_id: str, triggering_actor: str
         timeout=10,
     )
     assert (result.returncode == 0) is allowed
+
+
+@pytest.mark.skipif(os.name != "posix", reason="GitHub authority runs on Linux")
+@pytest.mark.parametrize(
+    ("token", "curl_status", "valid_policy", "expected_calls", "success"),
+    [
+        ("synthetic-ci-authority-token", 0, True, 1, True),
+        ("", 0, True, 0, False),
+        (None, 0, True, 0, False),
+        ("synthetic-ci-authority-token", 22, True, 1, False),
+        ("synthetic-ci-authority-token", 0, False, 1, False),
+    ],
+)
+def test_ci_authority_requires_scoped_authentication_without_fallback(
+    tmp_path, token, curl_status, valid_policy, expected_calls, success,
+) -> None:
+    script = textwrap.dedent(_authority_job().split("        run: |\n", 1)[1])
+    response = tmp_path / "response.json"
+    document = _environment()
+    document["can_admins_bypass"] = not valid_policy
+    response.write_text(json.dumps(document), encoding="utf-8")
+    calls = tmp_path / "calls.txt"
+    environment = {
+        "PATH": os.environ.get("PATH", ""), "RUNNER_TEMP": str(tmp_path),
+        "HENRY_REPOSITORY_ID": "1297752684", "HENRY_REF_PROTECTED": "true",
+        "HENRY_SOURCE_SHA": "a" * 40, "HENRY_WORKFLOW_SHA": "a" * 40,
+        "HENRY_ACTOR_ID": "184999458", "HENRY_TRIGGERING_ACTOR": "Seabass-up",
+        "BORON_HARDENING_ENVIRONMENT_READY": "true", "TEST_CALLS": str(calls),
+        "TEST_CURL_STATUS": str(curl_status), "TEST_RESPONSE": str(response),
+        "TEST_PYTHON": sys.executable,
+    }
+    if token is not None:
+        environment["HENRY_AUTHORITY_TOKEN"] = token
+    prelude = r'''
+curl() {
+  printf 'called\n' >> "${TEST_CALLS}"
+  local authenticated=0 output=''
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --header)
+        if [ "$2" = 'Authorization: Bearer synthetic-ci-authority-token' ]; then authenticated=1; fi
+        shift ;;
+      --output) output="$2"; shift ;;
+    esac
+    shift
+  done
+  test "${authenticated}" = 1 || return 61
+  test "${TEST_CURL_STATUS}" = 0 || return "${TEST_CURL_STATUS}"
+  command cp "${TEST_RESPONSE}" "${output}"
+}
+python3() {
+  test -z "${HENRY_AUTHORITY_TOKEN+x}" || return 62
+  "${TEST_PYTHON}" "$@"
+}
+'''
+    completed = subprocess.run(
+        ["bash", "-c", prelude + script], env=environment, cwd=tmp_path,
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20,
+    )
+    assert (completed.returncode == 0) is success
+    assert (len(calls.read_text().splitlines()) if calls.exists() else 0) == expected_calls
+    assert "synthetic-ci-authority-token" not in completed.stdout + completed.stderr
+    if curl_status:
+        assert completed.returncode == curl_status
+    if not valid_policy:
+        assert "Boron environment authority verification failed" in completed.stderr

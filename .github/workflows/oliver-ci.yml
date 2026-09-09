@@ -289,6 +289,8 @@ jobs:
     needs: browser-contracts
     runs-on: ubuntu-24.04
     timeout-minutes: 2
+    permissions:
+      actions: read
     steps:
       - name: Require owner-approved Boron environment readiness
         env:
@@ -299,6 +301,7 @@ jobs:
           HENRY_WORKFLOW_SHA: ${{ github.workflow_sha }}
           HENRY_ACTOR_ID: ${{ github.actor_id }}
           HENRY_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          HENRY_AUTHORITY_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           test "${HENRY_REPOSITORY_ID}" = "1297752684"
@@ -307,14 +310,17 @@ jobs:
           test "${HENRY_ACTOR_ID}" = "184999458"
           test "${HENRY_TRIGGERING_ACTOR}" = "Seabass-up"
           test "${BORON_HARDENING_ENVIRONMENT_READY}" = "true"
+          test -n "${HENRY_AUTHORITY_TOKEN}"
           response="${RUNNER_TEMP}/henry-boron-environment.json"
           umask 077
           curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
             --max-time 20 --max-filesize 65536 \
             --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${HENRY_AUTHORITY_TOKEN}" \
             --header 'X-GitHub-Api-Version: 2022-11-28' \
             --output "${response}" \
             https://api.github.com/repos/Seabass-up/Algo-cli/environments/browser-hardening
+          unset HENRY_AUTHORITY_TOKEN
           python3 -I - "${response}" <<'PY'
           import json
           from pathlib import Path

@@ -1056,6 +1056,14 @@ def test_ci_runs_repeated_cell_and_attests_push_evidence() -> None:
     assert 'test "${HENRY_TRIGGERING_ACTOR}" = "Seabass-up"' in authority_job
     assert "HENRY_ACTOR_ID: ${{ github.actor_id }}" in authority_job
     assert "HENRY_TRIGGERING_ACTOR: ${{ github.triggering_actor }}" in authority_job
+    assert "    permissions:\n      actions: read\n" in authority_job
+    assert "HENRY_AUTHORITY_TOKEN: ${{ github.token }}" in authority_job
+    assert 'test -n "${HENRY_AUTHORITY_TOKEN}"' in authority_job
+    assert '--header "Authorization: Bearer ${HENRY_AUTHORITY_TOKEN}"' in authority_job
+    assert authority_job.index("unset HENRY_AUTHORITY_TOKEN") < authority_job.index('python3 -I - "${response}"')
+    assert "--location" not in authority_job
+    assert "--retry" not in authority_job
+    assert "write" not in authority_job
     assert "Boron environment authority verification failed" in authority_job
     assert "secrets." not in authority_job
     assert "actions/checkout" not in authority_job
