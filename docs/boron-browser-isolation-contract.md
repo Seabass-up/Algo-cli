@@ -49,6 +49,26 @@ linked NSS path components are rejected before import. Certificate verification
 stays enabled. Successful `certutil` readback is not browser qualification:
 the exact hosted Chrome process must complete the broker navigation as well.
 
+### Background services
+
+`--disable-background-networking` does not suppress every Chrome service.
+The fixed command additionally disables `AimEnabled`,
+`NetworkTimeServiceQuerying`, `OptimizationHints`, and `PreconnectToSearch`.
+These features are unrelated to the single approved navigation. This is a
+closed list, not a user-supplied flag override or an additional egress grant.
+[Chromium's AI-eligibility implementation](https://chromium.googlesource.com/experimental/chromium/src/%2B/f5a84a77798b6edd58b9ff74c1850bc8e9874a92/components/omnibox/browser/aim_eligibility_service.cc)
+gates service initialization on `AimEnabled`; merely disabling its AI-mode
+policy does not prevent eligibility fetches.
+
+A disposable macOS Chrome 152 rejecting-proxy diagnostic reproduced an HTTP
+network-time GET before navigation. The fixed command removed time, search,
+AI-eligibility, and optimization traffic in that bounded diagnostic, but a
+Safe Browsing key request remained. Safe Browsing, certificate verification,
+the sandbox, and the broker's exact-origin enforcement stay unchanged. The
+diagnostic forwarded no requests and deliberately failed navigation; it is
+not native-amd64 browser qualification or proof that every background request
+is suppressed. Any remaining broker rejection still blocks qualification.
+
 ### Failure diagnostics
 
 Broker result failures retain only allowlisted `broker_*` reason codes. Unknown

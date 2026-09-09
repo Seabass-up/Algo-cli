@@ -326,6 +326,8 @@ class BoronNavigationPlan:
             "--proxy-bypass-list=<-loopback>",
             "--disable-quic",
             "--disable-background-networking",
+            # Background-networking alone leaves these unrelated services active.
+            "--disable-features=AimEnabled,NetworkTimeServiceQuerying,OptimizationHints,PreconnectToSearch",
             "--disable-background-mode",
             "--disable-component-update",
             "--disable-default-apps",
