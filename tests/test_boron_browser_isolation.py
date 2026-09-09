@@ -1314,6 +1314,18 @@ def test_live_error_reporting_never_echoes_untrusted_reason_text() -> None:
     assert "private_token_value" not in module._reported_failure_reason(module.BoronPipeRejected("private_token_value"))
 
 
+def test_navigation_network_reasons_survive_live_and_cleanup_diagnostics() -> None:
+    from algo_cli.boron_browser_wrapper import BORON_NAVIGATION_FAILURE_REASONS
+
+    module = _live_module()
+    for reason in BORON_NAVIGATION_FAILURE_REASONS:
+        expected = "browser_" + reason
+        assert module._browser_terminal_failure_reason(reason) == expected
+        error = module.LiveSessionRejected(expected)
+        assert error.reason_code == expected
+        assert module._cleanup_failure_reason(error) == expected + "_and_cleanup_incomplete"
+
+
 @pytest.mark.parametrize(
     "reason",
     [

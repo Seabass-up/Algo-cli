@@ -43,11 +43,29 @@ def test_ci_timeout_contract_remains_blocking(job_name: str) -> None:
 
 
 @pytest.mark.parametrize("job_name", ["quality", "test"])
+@pytest.mark.parametrize("phase", ["normal", "failure"])
+def test_nonstalling_controls_keep_the_configured_watchdog(tmp_path, monkeypatch, job_name, phase) -> None:
+    _job, settings = _test_job(job_name)
+
+    def run(command, **kwargs):
+        assert f"faulthandler_timeout={settings['faulthandler_timeout']}" in command
+        assert "faulthandler_exit_on_timeout=true" in command
+        assert kwargs["timeout"] == 20
+        return subprocess.CompletedProcess(
+            command, 0 if phase == "normal" else 1, "1 passed" if phase == "normal" else "1 failed", ""
+        )
+
+    monkeypatch.setattr(subprocess, "run", run)
+    test_ci_watchdog_covers_the_whole_test_protocol(tmp_path, job_name, phase)
+
+
+@pytest.mark.parametrize("job_name", ["quality", "test"])
 @pytest.mark.parametrize("phase", ["setup", "call", "teardown", "normal", "failure"])
 def test_ci_watchdog_covers_the_whole_test_protocol(tmp_path: Path, job_name: str, phase: str) -> None:
     _job, settings = _test_job(job_name)
     assert float(settings["faulthandler_timeout"]) > 0
-    settings["faulthandler_timeout"] = "0.25"
+    if phase in {"setup", "call", "teardown"}:
+        settings["faulthandler_timeout"] = "0.25"
     configuration = tmp_path / "pytest.ini"
     configuration.write_text("[pytest]\n", encoding="utf-8")
     probe = tmp_path / "test_deadline_probe.py"

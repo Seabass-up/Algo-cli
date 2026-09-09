@@ -38,6 +38,17 @@ Docker inspect evidence rather than trusting launch arguments.
 `algo_cli/xenon_browser_egress.py` owns URL, DNS, redirect, rebinding, and peer
 policy. Neither module is imported by the normal action registry.
 
+### Ephemeral TLS trust
+
+The Chrome child pins `XDG_DATA_HOME=/algo-profile`; its session CA is imported
+and fingerprint-checked in `sql:/algo-profile/pki/nssdb`. This follows
+[Chromium's Linux NSS lookup](https://chromium.googlesource.com/chromium/src/%2B/master/docs/linux/cert_management.md)
+since M146. A `--user-data-dir` alone does not select the NSS trust database.
+The profile and home are fresh private tmpfs mounts, never host trust stores;
+linked NSS path components are rejected before import. Certificate verification
+stays enabled. Successful `certutil` readback is not browser qualification:
+the exact hosted Chrome process must complete the broker navigation as well.
+
 ### Freshness semantics
 
 The public gate measures **security update lag**, not the age of the current

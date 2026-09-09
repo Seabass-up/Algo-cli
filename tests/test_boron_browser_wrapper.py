@@ -381,7 +381,67 @@ def test_ephemeral_ca_import_is_exact_read_back_and_pem_is_removed(tmp_path: Pat
     )
     assert digest == "sha256:" + certificate.fingerprint(hashes.SHA256()).hex()
     assert [call[1] for call in calls] == ["-N", "-A", "-L"]
+    database = tmp_path / "profile" / "pki" / "nssdb"
+    assert all(call[call.index("-d") + 1] == f"sql:{database}" for call in calls)
+    assert database.is_dir()
+    directories = (database, database.parent, database.parent.parent)
+    assert all(directory.stat().st_mode & 0o077 == 0 for directory in directories)
     assert not (tmp_path / "profile" / "xenon-session-ca.pem").exists()
+
+
+@pytest.mark.parametrize("component", [".", "pki", "pki/nssdb"])
+def test_ca_import_rejects_linked_nss_ancestry_before_trust_mutation(tmp_path: Path, component: str) -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    pem, _certificate = _ca(now)
+    profile = tmp_path / "profile"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    alias = profile / component
+    alias.parent.mkdir(parents=True, exist_ok=True)
+    alias.symlink_to(outside, target_is_directory=True)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("certutil must not run through linked profile ancestry")
+
+    with pytest.raises(BoronPipeRejected, match="profile_path"):
+        install_ephemeral_xenon_ca(
+            pem,
+            now_ms=int(now.timestamp() * 1000),
+            profile_path=profile,
+            runner=forbidden,
+        )
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("error_text", "reason"),
+    [
+        ("net::ERR_CERT_AUTHORITY_INVALID", "navigation_certificate_untrusted"),
+        ("net::ERR_CERT_COMMON_NAME_INVALID", "navigation_certificate_name"),
+        ("net::ERR_CERT_DATE_INVALID", "navigation_certificate_validity"),
+        ("net::ERR_PROXY_CONNECTION_FAILED", "navigation_proxy_unavailable"),
+        ("net::ERR_TUNNEL_CONNECTION_FAILED", "navigation_proxy_tunnel"),
+        ("net::ERR_NAME_NOT_RESOLVED", "navigation_dns"),
+        ("net::ERR_CONNECTION_REFUSED", "navigation_connection_refused"),
+        ("net::ERR_CONNECTION_CLOSED", "navigation_connection_closed"),
+        ("net::ERR_CONNECTION_RESET", "navigation_connection_reset"),
+        ("net::ERR_TIMED_OUT", "navigation_timeout"),
+        ("net::ERR_CONNECTION_TIMED_OUT", "navigation_timeout"),
+        ("net::ERR_ABORTED", "navigation_aborted"),
+        ("private-canary", "navigation_failed"),
+        ("net::ERR_CERT_AUTHORITY_INVALID private-canary", "navigation_failed"),
+        ({"private-canary": True}, "navigation_failed"),
+        (True, "navigation_failed"),
+    ],
+)
+def test_navigation_errors_remain_failed_and_only_emit_closed_reasons(error_text, reason) -> None:
+    machine = BoronNavigationMachine(_plan())
+    command = _bootstrap(machine)
+    assert machine.handle(_response(command, {"errorText": error_text})) == ()
+    evidence = machine.evidence()
+    assert evidence.state is BoronNavigationState.FAILED
+    assert evidence.reason_code == reason
+    assert "private-canary" not in repr(evidence)
 
 
 def test_ca_rejects_non_ca_expired_and_readback_mismatch(tmp_path: Path) -> None:
@@ -446,6 +506,7 @@ def test_launch_uses_only_fixed_argv_and_fd_pipe_transport(monkeypatch) -> None:
         assert captured["argv"] == list(_plan().chrome_argv())
         assert captured["environment"] == {
             "HOME": "/home/algo",
+            "XDG_DATA_HOME": "/algo-profile",
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
             "PATH": "/usr/bin:/bin",
