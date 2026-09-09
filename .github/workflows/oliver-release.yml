@@ -34,6 +34,9 @@ jobs:
           fail() { printf '%s\n' '{"reason_code":"release_dispatch_authority","status":"blocked"}' >&2; exit 2; }
           [[ "${GITHUB_ACTIONS}" == "true" ]] || fail
           [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]] || fail
+          [[ "${GITHUB_ACTOR_ID}" == "184999458" ]] || fail
+          [[ "${GITHUB_ACTOR}" == "Seabass-up" ]] || fail
+          [[ "${GITHUB_TRIGGERING_ACTOR}" == "Seabass-up" ]] || fail
           [[ "${GITHUB_REPOSITORY}" == "${EXPECTED_REPOSITORY}" ]] || fail
           [[ "${GITHUB_REPOSITORY_ID}" == "${EXPECTED_REPOSITORY_ID}" ]] || fail
           [[ "${GITHUB_REF}" == "refs/heads/main" ]] || fail
@@ -104,7 +107,7 @@ jobs:
           policy = environment.get("deployment_branch_policy")
           if policy != {"protected_branches": True, "custom_branch_policies": False}:
               fail()
-          if environment.get("can_admins_bypass") is not False:
+          if environment.get("can_admins_bypass") is not True:
               fail()
           rules = environment.get("protection_rules")
           if type(rules) is not list or len(rules) != 2:
@@ -121,25 +124,21 @@ jobs:
               fail()
           rule = rules_by_type["required_reviewers"]
           reviewers = rule.get("reviewers")
-          if rule.get("prevent_self_review") is not True:
+          if rule.get("prevent_self_review") is not False or actor_id != 184999458:
               fail()
-          if type(reviewers) is not list or not reviewers:
+          if type(reviewers) is not list or len(reviewers) != 1:
               fail()
-          external = False
-          seen = set()
           for row in reviewers:
-              if type(row) is not dict or row.get("type") not in {"User", "Team"}:
+              if type(row) is not dict or row.get("type") != "User":
                   fail()
               reviewer = row.get("reviewer")
-              if type(reviewer) is not dict or type(reviewer.get("id")) is not int or reviewer["id"] < 1:
+              if (
+                  type(reviewer) is not dict
+                  or type(reviewer.get("id")) is not int
+                  or reviewer["id"] != 184999458
+                  or reviewer.get("login") != "Seabass-up"
+              ):
                   fail()
-              identity = (row["type"], reviewer["id"])
-              if identity in seen:
-                  fail()
-              seen.add(identity)
-              external = external or row["type"] == "Team" or reviewer["id"] != actor_id
-          if not external:
-              fail()
           if (
               type(readiness) is not dict
               or readiness.get("name") != "ALGO_RELEASE_AUTHORITY_READY"

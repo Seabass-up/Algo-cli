@@ -421,6 +421,12 @@ class DispatchContext:
             _reject("release_environment")
         if environment.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
             _reject("release_event")
+        if (
+            environment.get("GITHUB_ACTOR_ID") != "184999458"
+            or environment.get("GITHUB_ACTOR") != "Seabass-up"
+            or environment.get("GITHUB_TRIGGERING_ACTOR") != "Seabass-up"
+        ):
+            _reject("release_owner")
         if environment.get("GITHUB_REPOSITORY") != REPOSITORY or environment.get("GITHUB_REPOSITORY_ID") != str(
             REPOSITORY_ID
         ):

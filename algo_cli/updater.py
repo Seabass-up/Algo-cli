@@ -200,10 +200,13 @@ def update_algo_cli(
     after = version_getter()
     if before != "unknown" and after != "unknown" and before != after:
         message = f"Updated Algo CLI {before} → {after}. Restart the command to use the new version."
+    elif after == "unknown":
+        message = "The package manager completed, but the installed Algo CLI version could not be verified."
     else:
-        shown = after if after != "unknown" else before
-        suffix = f" at v{shown}" if shown != "unknown" else ""
-        message = f"Algo CLI is up to date{suffix}."
+        message = (
+            f"No newer compatible published package was installed; current version is v{after}. "
+            "This command does not install unpublished GitHub or local source changes."
+        )
     return UpdateResult(
         returncode=0,
         manager=plan.manager,

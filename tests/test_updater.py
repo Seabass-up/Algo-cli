@@ -96,7 +96,22 @@ def test_update_reports_already_current():
 
     assert result.returncode == 0
     assert result.changed is False
-    assert result.message == "Algo CLI is up to date at v0.15.0."
+    assert "No newer compatible published package was installed" in result.message
+    assert "v0.15.0" in result.message
+    assert "GitHub" in result.message
+
+
+def test_update_does_not_claim_latest_when_version_cannot_be_verified():
+    result = updater.update_algo_cli(
+        env={"ALGO_CLI_UPDATE_MANAGER": "pip"},
+        runner=lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="", stderr=""),
+        version_getter=lambda: "unknown",
+    )
+
+    assert result.returncode == 0
+    assert result.changed is False
+    assert "could not be verified" in result.message
+    assert "up to date" not in result.message
 
 
 def test_update_surfaces_bounded_package_manager_failure():

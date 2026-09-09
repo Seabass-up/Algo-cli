@@ -730,3 +730,18 @@ jobs:
           path: dist/
       - name: Install and exercise wheel in an isolated home
         run: python scripts/oliver_smoke_wheel_install.py dist
+      - name: Upgrade public 0.18.0 with pip without changing user state
+        run: python scripts/oliver_smoke_upgrade.py dist --manager pip --report upgrade-smoke-pip.json
+      - name: Upgrade public 0.18.0 with pipx without changing user state
+        run: python scripts/oliver_smoke_upgrade.py dist --manager pipx --report upgrade-smoke-pipx.json
+      - name: Upgrade public 0.18.0 with pipx uv backend without changing user state
+        run: python scripts/oliver_smoke_upgrade.py dist --manager pipx --pipx-backend uv --report upgrade-smoke-pipx-uv.json
+      - name: Upgrade public 0.18.0 with uv without changing user state
+        run: python scripts/oliver_smoke_upgrade.py dist --manager uv --report upgrade-smoke-uv.json
+      - name: Retain upgrade qualification
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: upgrade-smoke-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: upgrade-smoke-*.json
+          if-no-files-found: error

@@ -3679,6 +3679,15 @@
           "timestamp": "2026-09-08T22:14:56Z",
           "scope": "updated source digest sha256:9d1d09fc81728e3696b0526fbd6a7d24e42fadb14b411af6a37b0ef35708df0b binds static Win32 API/type reuse, uncached identity and DACL queries, warm mutation/failure controls, concurrent native controls, and explicit LF/CRLF/no-final-newline native regex oracles; local coverage remains non-exhaustive",
           "limitations": "Hosted run 34280924721 failed on Windows workload latency and an implicit CRLF test expectation; all other executed jobs and all installed-wheel jobs passed. The preserved native profile measured repeated ctypes setup; this candidate does not cache authorization decisions or weaken checks, and native improvement is not yet qualified. This report does not qualify other file tools, external browsers, representative model quality, or competitive superiority; the requirement remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": ".venv/bin/python scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json after frozen 0.19.0 release preparation",
+          "digest": "sha256:e6c19a3ee1dbdf55ad86222ea44a6c5168279fee79df3147f3a8628e71d312c9",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-09T01:58:57Z",
+          "scope": "source digest sha256:7fd3d849cc4e4e12da703ae88992e96368a33870209959f5c00e62cd873fd0f1 binds release version and version-aware packaging fixtures; existing qualification thresholds are unchanged",
+          "limitations": "Local qualification does not establish the final candidate's hosted browser, selected-Chrome, signed native, OS Keychain, or publication eligibility. HARD-080 remains in progress"
         }
       ]
     },
@@ -5325,6 +5334,15 @@
           "timestamp": "2026-09-08T22:14:56Z",
           "scope": "source digest sha256:e69daed94e200e31ba5fda4b37ca35d02e22ed18ee4934150266240268e8f2d0 and report digest sha256:7b2b61f701851cc5c8107bf6b3d31ad175d7b2767ad606045e5dcd144ac6cd21 bind the current local candidate",
           "limitations": "All 15 installed smokes passed for delivered commit 2d7c2bd, but the new Windows binding repair is not natively qualified. Windows run 34280924721 retained its 4527.6351 ms workload p95 failure against the unchanged 3500 ms ceiling. Its bounded profile is diagnostic only, not passing evidence or an isolated cost estimate. No live model task quality or production browser claim follows. HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": ".venv/bin/python scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json after frozen 0.19.0 release preparation",
+          "digest": "sha256:e6c19a3ee1dbdf55ad86222ea44a6c5168279fee79df3147f3a8628e71d312c9",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-09T01:58:57Z",
+          "scope": "source digest sha256:7fd3d849cc4e4e12da703ae88992e96368a33870209959f5c00e62cd873fd0f1 binds release version and version-aware packaging fixtures; existing qualification thresholds are unchanged",
+          "limitations": "Finite local efficiency samples do not qualify live browser performance, representative model quality, production Echo, or competitive superiority. HARD-081 remains in progress"
         }
       ]
     },

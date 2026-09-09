@@ -19,7 +19,34 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _run(command: list[str], *, env: dict[str, str], cwd: Path) -> None:
-    subprocess.run(command, check=True, cwd=cwd, env=env)
+    subprocess.run(command, check=True, cwd=cwd, env=env, timeout=600)
+
+
+def _isolated_environment(home: Path, bin_dir: Path) -> dict[str, str]:
+    allowed = {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "TMPDIR"}
+    env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
+    env.update(
+        {
+            "PATH": str(bin_dir) + os.pathsep + env.get("PATH", ""),
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "APPDATA": str(home / "AppData" / "Roaming"),
+            "LOCALAPPDATA": str(home / "AppData" / "Local"),
+            "XDG_CONFIG_HOME": str(home / ".config"),
+            "XDG_CACHE_HOME": str(home / ".cache"),
+            "XDG_DATA_HOME": str(home / ".local" / "share"),
+            "ALGO_CLI_CONFIG_DIR": str(home / ".algo_cli"),
+            "PYTHON_KEYRING_BACKEND": "keyring.backends.null.Keyring",
+            "PYTHONUTF8": "1",
+            "OLLAMA_HOST": "http://127.0.0.1:9",
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_INDEX_URL": "https://pypi.org/simple",
+            "PIP_NO_INPUT": "1",
+            "PIP_NO_CACHE_DIR": "1",
+        }
+    )
+    return env
 
 
 def _wheel_from(value: str) -> Path:
@@ -99,26 +126,11 @@ def main(argv: list[str] | None = None) -> int:
         python, install_command = _create_isolated_environment(env_dir)
         cli = bin_dir / ("algo-cli.exe" if os.name == "nt" else "algo-cli")
         control_uninstall = bin_dir / (
-            "algo-cli-control-uninstall.exe"
-            if os.name == "nt"
-            else "algo-cli-control-uninstall"
+            "algo-cli-control-uninstall.exe" if os.name == "nt" else "algo-cli-control-uninstall"
         )
-        control_install = bin_dir / (
-            "algo-cli-control-install.exe"
-            if os.name == "nt"
-            else "algo-cli-control-install"
-        )
+        control_install = bin_dir / ("algo-cli-control-install.exe" if os.name == "nt" else "algo-cli-control-install")
         config_dir = home / ".algo_cli"
-        run_env = os.environ.copy()
-        run_env.update(
-            {
-                "HOME": str(home),
-                "USERPROFILE": str(home),
-                "ALGO_CLI_CONFIG_DIR": str(config_dir),
-                "PYTHONUTF8": "1",
-            }
-        )
-        run_env.pop("OLLAMA_CLI_CONFIG_DIR", None)
+        run_env = _isolated_environment(home, bin_dir)
 
         _run(
             [*install_command, str(wheel)],
@@ -139,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
             stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
+            timeout=30,
         )
         try:
             uninstall_payload = json.loads(uninstall_probe.stdout)

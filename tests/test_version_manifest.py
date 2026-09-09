@@ -6,13 +6,13 @@ import json
 from pathlib import Path
 
 from algo_cli import argon_extensions_manifest as extensions_manifest
-from algo_cli import tools, version_manifest
+from algo_cli import __version__, tools, version_manifest
 
 
 class TestVersionManifest:
     def test_build_manifest_has_cli_version(self):
         m = version_manifest.build_manifest()
-        assert m.cli_version == "0.18.0"
+        assert m.cli_version == __version__
 
     def test_build_manifest_has_python_version(self):
         m = version_manifest.build_manifest()

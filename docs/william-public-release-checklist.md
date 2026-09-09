@@ -50,10 +50,16 @@ Install the wheel in an empty virtual environment and empty home directory. Veri
   include pattern `refs/tags/v*`, no exclusions, no bypass actors, and both
   update and deletion prevention. Creation remains allowed.
 - Create a protected GitHub environment named `release-authority`. Require
-  protected branches, at least one external required reviewer, self-review
-  prevention, and disabled administrator bypass. Set the repository Actions
-  variable `ALGO_RELEASE_AUTHORITY_READY` to the exact value `true` only after
-  those controls have been independently reviewed.
+  protected branches, exactly one required User reviewer `Seabass-up` (GitHub
+  account ID `184999458`), permitted self-review, and permitted administrator
+  bypass of the environment approval wait. Only that exact owner may dispatch
+  or re-run publication. This is the owner's explicitly approved single-owner
+  policy with an administrative override, not mandatory or independent review;
+  owner account compromise remains a trusted-authority risk. Set the repository
+  Actions variable `ALGO_RELEASE_AUTHORITY_READY` to the exact value `true` only after
+  those exact controls have been read back and verified. The agent must not
+  approve or bypass a pending release job on the owner's behalf. Administrative
+  approval bypass does not relax tag, source, artifact, or browser evidence gates.
 - Install a repository-scoped policy-audit GitHub App for `Seabass-up/Algo-cli`.
   The App needs Administration write capability because GitHub otherwise omits
   `bypass_actors` from detailed ruleset responses, but the release workflow is

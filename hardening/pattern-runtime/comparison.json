@@ -1,6 +1,6 @@
 {
   "accuracy_interaction": 0.25,
-  "artifact_digest": "sha256:55fc0385c175f82e080d003241e100ca320e730d13708674c09c830ac6ad4d94",
+  "artifact_digest": "sha256:917b31e0f332ae508e12feb5c11c5b090e30aace50c52096e4de4c6c8c873949",
   "budget": {
     "context_chars": 2000,
     "provider_tokens": 0,
@@ -11,7 +11,7 @@
       "accuracy": 0,
       "count": 40,
       "mean_estimated_context_tokens": 407.25,
-      "median_latency_ms": 0.015188,
+      "median_latency_ms": 0.0127295,
       "policy_violations": 0,
       "provider_tokens": 0
     },
@@ -19,7 +19,7 @@
       "accuracy": 0,
       "count": 40,
       "mean_estimated_context_tokens": 407.25,
-      "median_latency_ms": 0.0159165,
+      "median_latency_ms": 0.011979,
       "policy_violations": 0,
       "provider_tokens": 0
     },
@@ -27,7 +27,7 @@
       "accuracy": 0.75,
       "count": 40,
       "mean_estimated_context_tokens": 231.625,
-      "median_latency_ms": 1.95425,
+      "median_latency_ms": 1.564729,
       "policy_violations": 10,
       "provider_tokens": 0
     },
@@ -35,20 +35,20 @@
       "accuracy": 1,
       "count": 40,
       "mean_estimated_context_tokens": 229.25,
-      "median_latency_ms": 1.9774794999999998,
+      "median_latency_ms": 1.6030419999999999,
       "policy_violations": 0,
       "provider_tokens": 0
     }
   },
   "checker": "exact-top1-pattern-id-and-original-applicability-v1",
-  "created_at": "2026-09-08T22:15:07.517939+00:00",
+  "created_at": "2026-09-09T02:04:49.313048+00:00",
   "fixture_digest": "sha256:138f542882b09fc2e423994d7c5dd201d6249054fa85d4be6dc8255dbab19a4c",
   "model": "none:production-lexical-ranker",
   "paired_deltas": [
     {
       "correctness_delta": 1,
       "estimated_token_delta": -176,
-      "latency_delta_ms": 43.254707999999994,
+      "latency_delta_ms": 41.71875,
       "policy_violation_delta": 0,
       "repetition": 0,
       "task_id": 0
@@ -56,7 +56,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -176,
-      "latency_delta_ms": 2.029626,
+      "latency_delta_ms": 1.599542,
       "policy_violation_delta": 0,
       "repetition": 1,
       "task_id": 0
@@ -64,7 +64,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -176,
-      "latency_delta_ms": 1.971458,
+      "latency_delta_ms": 1.552251,
       "policy_violation_delta": 0,
       "repetition": 2,
       "task_id": 0
@@ -72,7 +72,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -176,
-      "latency_delta_ms": 1.979625,
+      "latency_delta_ms": 1.739417,
       "policy_violation_delta": 0,
       "repetition": 3,
       "task_id": 0
@@ -80,7 +80,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -176,
-      "latency_delta_ms": 1.9534589999999998,
+      "latency_delta_ms": 1.593084,
       "policy_violation_delta": 0,
       "repetition": 4,
       "task_id": 0
@@ -88,7 +88,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -268,
-      "latency_delta_ms": 2.12,
+      "latency_delta_ms": 1.736292,
       "policy_violation_delta": 0,
       "repetition": 0,
       "task_id": 1
@@ -96,7 +96,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -268,
-      "latency_delta_ms": 1.9705,
+      "latency_delta_ms": 1.678709,
       "policy_violation_delta": 0,
       "repetition": 1,
       "task_id": 1
@@ -104,7 +104,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -268,
-      "latency_delta_ms": 2.013166,
+      "latency_delta_ms": 1.4926249999999999,
       "policy_violation_delta": 0,
       "repetition": 2,
       "task_id": 1
@@ -112,7 +112,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -268,
-      "latency_delta_ms": 1.984791,
+      "latency_delta_ms": 1.533001,
       "policy_violation_delta": 0,
       "repetition": 3,
       "task_id": 1
@@ -120,7 +120,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -268,
-      "latency_delta_ms": 1.942999,
+      "latency_delta_ms": 1.563874,
       "policy_violation_delta": 0,
       "repetition": 4,
       "task_id": 1
@@ -128,7 +128,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -175,
-      "latency_delta_ms": 1.998542,
+      "latency_delta_ms": 1.77175,
       "policy_violation_delta": 0,
       "repetition": 0,
       "task_id": 2
@@ -136,7 +136,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -175,
-      "latency_delta_ms": 2.059291,
+      "latency_delta_ms": 1.707166,
       "policy_violation_delta": 0,
       "repetition": 1,
       "task_id": 2
@@ -144,7 +144,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -175,
-      "latency_delta_ms": 1.943583,
+      "latency_delta_ms": 1.7460419999999999,
       "policy_violation_delta": 0,
       "repetition": 2,
       "task_id": 2
@@ -152,7 +152,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -175,
-      "latency_delta_ms": 1.969084,
+      "latency_delta_ms": 1.5885829999999999,
       "policy_violation_delta": 0,
       "repetition": 3,
       "task_id": 2
@@ -160,7 +160,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -175,
-      "latency_delta_ms": 1.9256669999999998,
+      "latency_delta_ms": 1.550916,
       "policy_violation_delta": 0,
       "repetition": 4,
       "task_id": 2
@@ -168,7 +168,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -88,
-      "latency_delta_ms": 1.9509159999999999,
+      "latency_delta_ms": 1.562584,
       "policy_violation_delta": 0,
       "repetition": 0,
       "task_id": 3
@@ -176,7 +176,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -88,
-      "latency_delta_ms": 1.941417,
+      "latency_delta_ms": 1.4804579999999998,
       "policy_violation_delta": 0,
       "repetition": 1,
       "task_id": 3
@@ -184,7 +184,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -88,
-      "latency_delta_ms": 1.8739169999999998,
+      "latency_delta_ms": 1.509709,
       "policy_violation_delta": 0,
       "repetition": 2,
       "task_id": 3
@@ -192,7 +192,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -88,
-      "latency_delta_ms": 1.912376,
+      "latency_delta_ms": 1.764417,
       "policy_violation_delta": 0,
       "repetition": 3,
       "task_id": 3
@@ -200,7 +200,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -88,
-      "latency_delta_ms": 1.944833,
+      "latency_delta_ms": 1.522875,
       "policy_violation_delta": 0,
       "repetition": 4,
       "task_id": 3
@@ -208,7 +208,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -195,
-      "latency_delta_ms": 2.312458,
+      "latency_delta_ms": 1.913208,
       "policy_violation_delta": 0,
       "repetition": 0,
       "task_id": 4
@@ -216,7 +216,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -195,
-      "latency_delta_ms": 2.169125,
+      "latency_delta_ms": 1.691792,
       "policy_violation_delta": 0,
       "repetition": 1,
       "task_id": 4
@@ -224,7 +224,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -195,
-      "latency_delta_ms": 2.2286669999999997,
+      "latency_delta_ms": 1.816791,
       "policy_violation_delta": 0,
       "repetition": 2,
       "task_id": 4
@@ -232,7 +232,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -195,
-      "latency_delta_ms": 2.139208,
+      "latency_delta_ms": 1.710459,
       "policy_violation_delta": 0,
       "repetition": 3,
       "task_id": 4
@@ -240,7 +240,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -195,
-      "latency_delta_ms": 2.13375,
+      "latency_delta_ms": 1.7820010000000002,
       "policy_violation_delta": 0,
       "repetition": 4,
       "task_id": 4
@@ -248,7 +248,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -315,
-      "latency_delta_ms": 2.0240419999999997,
+      "latency_delta_ms": 1.69925,
       "policy_violation_delta": 0,
       "repetition": 0,
       "task_id": 5
@@ -256,7 +256,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -315,
-      "latency_delta_ms": 1.9359169999999999,
+      "latency_delta_ms": 1.64075,
       "policy_violation_delta": 0,
       "repetition": 1,
       "task_id": 5
@@ -264,7 +264,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -315,
-      "latency_delta_ms": 1.978583,
+      "latency_delta_ms": 1.687375,
       "policy_violation_delta": 0,
       "repetition": 2,
       "task_id": 5
@@ -272,7 +272,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -315,
-      "latency_delta_ms": 2.052333,
+      "latency_delta_ms": 1.6404169999999998,
       "policy_violation_delta": 0,
       "repetition": 3,
       "task_id": 5
@@ -280,7 +280,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -315,
-      "latency_delta_ms": 2.056334,
+      "latency_delta_ms": 1.6631250000000002,
       "policy_violation_delta": 0,
       "repetition": 4,
       "task_id": 5
@@ -288,7 +288,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -105,
-      "latency_delta_ms": 0.03854200000000001,
+      "latency_delta_ms": 0.03504099999999999,
       "policy_violation_delta": 0,
       "repetition": 0,
       "task_id": 6
@@ -296,7 +296,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -105,
-      "latency_delta_ms": 0.022083000000000002,
+      "latency_delta_ms": 0.022957,
       "policy_violation_delta": 0,
       "repetition": 1,
       "task_id": 6
@@ -304,7 +304,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -105,
-      "latency_delta_ms": 0.011083,
+      "latency_delta_ms": 0.009958,
       "policy_violation_delta": 0,
       "repetition": 2,
       "task_id": 6
@@ -312,7 +312,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -105,
-      "latency_delta_ms": 0.018167000000000003,
+      "latency_delta_ms": 0.0027919999999999993,
       "policy_violation_delta": 0,
       "repetition": 3,
       "task_id": 6
@@ -320,7 +320,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -105,
-      "latency_delta_ms": 0.017292000000000002,
+      "latency_delta_ms": 0.014709,
       "policy_violation_delta": 0,
       "repetition": 4,
       "task_id": 6
@@ -328,7 +328,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -102,
-      "latency_delta_ms": 0.017666,
+      "latency_delta_ms": 0.014875,
       "policy_violation_delta": 0,
       "repetition": 0,
       "task_id": 7
@@ -336,7 +336,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -102,
-      "latency_delta_ms": 0.014958,
+      "latency_delta_ms": 0.011459,
       "policy_violation_delta": 0,
       "repetition": 1,
       "task_id": 7
@@ -344,7 +344,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -102,
-      "latency_delta_ms": 0.0145,
+      "latency_delta_ms": 0.011042000000000001,
       "policy_violation_delta": 0,
       "repetition": 2,
       "task_id": 7
@@ -352,7 +352,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -102,
-      "latency_delta_ms": 0.014751000000000002,
+      "latency_delta_ms": 0.015501,
       "policy_violation_delta": 0,
       "repetition": 3,
       "task_id": 7
@@ -360,7 +360,7 @@
     {
       "correctness_delta": 1,
       "estimated_token_delta": -102,
-      "latency_delta_ms": 0.014792000000000001,
+      "latency_delta_ms": 0.013083,
       "policy_violation_delta": 0,
       "repetition": 4,
       "task_id": 7
@@ -375,7 +375,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O1",
-      "latency_ms": 5.336375,
+      "latency_ms": 5.417,
       "order": 0,
       "pattern_records": false,
       "policy_violations": 0,
@@ -393,7 +393,7 @@
       "correct": true,
       "estimated_context_tokens": 324,
       "expected_pattern": "O1",
-      "latency_ms": 49.434792,
+      "latency_ms": 49.061208,
       "order": 1,
       "pattern_records": true,
       "policy_violations": 0,
@@ -411,7 +411,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O1",
-      "latency_ms": 5.204875,
+      "latency_ms": 5.217584,
       "order": 2,
       "pattern_records": false,
       "policy_violations": 0,
@@ -429,7 +429,7 @@
       "correct": true,
       "estimated_context_tokens": 324,
       "expected_pattern": "O1",
-      "latency_ms": 48.591083,
+      "latency_ms": 47.13575,
       "order": 3,
       "pattern_records": true,
       "policy_violations": 0,
@@ -447,7 +447,7 @@
       "correct": true,
       "estimated_context_tokens": 232,
       "expected_pattern": "O2",
-      "latency_ms": 2.279584,
+      "latency_ms": 1.781708,
       "order": 0,
       "pattern_records": true,
       "policy_violations": 0,
@@ -465,7 +465,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O2",
-      "latency_ms": 0.025792,
+      "latency_ms": 0.01525,
       "order": 1,
       "pattern_records": false,
       "policy_violations": 0,
@@ -483,7 +483,7 @@
       "correct": true,
       "estimated_context_tokens": 232,
       "expected_pattern": "O2",
-      "latency_ms": 2.138625,
+      "latency_ms": 1.750792,
       "order": 2,
       "pattern_records": true,
       "policy_violations": 0,
@@ -501,7 +501,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O2",
-      "latency_ms": 0.018625,
+      "latency_ms": 0.0145,
       "order": 3,
       "pattern_records": false,
       "policy_violations": 0,
@@ -519,7 +519,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O3",
-      "latency_ms": 0.015125,
+      "latency_ms": 0.01175,
       "order": 0,
       "pattern_records": false,
       "policy_violations": 0,
@@ -537,7 +537,7 @@
       "correct": true,
       "estimated_context_tokens": 325,
       "expected_pattern": "O3",
-      "latency_ms": 2.015917,
+      "latency_ms": 1.791334,
       "order": 1,
       "pattern_records": true,
       "policy_violations": 0,
@@ -555,7 +555,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O3",
-      "latency_ms": 0.017375,
+      "latency_ms": 0.019584,
       "order": 2,
       "pattern_records": false,
       "policy_violations": 0,
@@ -573,7 +573,7 @@
       "correct": true,
       "estimated_context_tokens": 325,
       "expected_pattern": "O3",
-      "latency_ms": 2.195958,
+      "latency_ms": 1.691291,
       "order": 3,
       "pattern_records": true,
       "policy_violations": 0,
@@ -591,7 +591,7 @@
       "correct": true,
       "estimated_context_tokens": 412,
       "expected_pattern": "O4",
-      "latency_ms": 1.96975,
+      "latency_ms": 1.575334,
       "order": 0,
       "pattern_records": true,
       "policy_violations": 0,
@@ -609,7 +609,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O4",
-      "latency_ms": 0.018834,
+      "latency_ms": 0.01275,
       "order": 1,
       "pattern_records": false,
       "policy_violations": 0,
@@ -627,7 +627,7 @@
       "correct": true,
       "estimated_context_tokens": 412,
       "expected_pattern": "O4",
-      "latency_ms": 1.982667,
+      "latency_ms": 1.676209,
       "order": 2,
       "pattern_records": true,
       "policy_violations": 0,
@@ -645,7 +645,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O4",
-      "latency_ms": 0.022583,
+      "latency_ms": 0.018958,
       "order": 3,
       "pattern_records": false,
       "policy_violations": 0,
@@ -663,7 +663,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "L9",
-      "latency_ms": 0.019625,
+      "latency_ms": 0.016875,
       "order": 0,
       "pattern_records": false,
       "policy_violations": 0,
@@ -681,7 +681,7 @@
       "correct": true,
       "estimated_context_tokens": 305,
       "expected_pattern": "L9",
-      "latency_ms": 2.23475,
+      "latency_ms": 1.890833,
       "order": 1,
       "pattern_records": true,
       "policy_violations": 0,
@@ -699,7 +699,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "L9",
-      "latency_ms": 0.019708,
+      "latency_ms": 0.016125,
       "order": 2,
       "pattern_records": false,
       "policy_violations": 0,
@@ -717,7 +717,7 @@
       "correct": true,
       "estimated_context_tokens": 305,
       "expected_pattern": "L9",
-      "latency_ms": 2.332083,
+      "latency_ms": 1.930083,
       "order": 3,
       "pattern_records": true,
       "policy_violations": 0,
@@ -735,7 +735,7 @@
       "correct": true,
       "estimated_context_tokens": 185,
       "expected_pattern": "B471",
-      "latency_ms": 2.214708,
+      "latency_ms": 1.860875,
       "order": 0,
       "pattern_records": true,
       "policy_violations": 0,
@@ -753,7 +753,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "B471",
-      "latency_ms": 0.020958,
+      "latency_ms": 0.015917,
       "order": 1,
       "pattern_records": false,
       "policy_violations": 0,
@@ -771,7 +771,7 @@
       "correct": true,
       "estimated_context_tokens": 185,
       "expected_pattern": "B471",
-      "latency_ms": 2.040958,
+      "latency_ms": 1.712917,
       "order": 2,
       "pattern_records": true,
       "policy_violations": 0,
@@ -789,7 +789,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "B471",
-      "latency_ms": 0.016916,
+      "latency_ms": 0.013667,
       "order": 3,
       "pattern_records": false,
       "policy_violations": 0,
@@ -807,7 +807,7 @@
       "correct": false,
       "estimated_context_tokens": 129,
       "expected_pattern": "O902",
-      "latency_ms": 0.101167,
+      "latency_ms": 0.095958,
       "order": 0,
       "pattern_records": false,
       "policy_violations": 0,
@@ -825,7 +825,7 @@
       "correct": true,
       "estimated_context_tokens": 24,
       "expected_pattern": "O902",
-      "latency_ms": 0.1105,
+      "latency_ms": 0.102458,
       "order": 1,
       "pattern_records": true,
       "policy_violations": 0,
@@ -843,7 +843,7 @@
       "correct": false,
       "estimated_context_tokens": 129,
       "expected_pattern": "O902",
-      "latency_ms": 0.071958,
+      "latency_ms": 0.067417,
       "order": 2,
       "pattern_records": false,
       "policy_violations": 0,
@@ -861,7 +861,7 @@
       "correct": false,
       "estimated_context_tokens": 34,
       "expected_pattern": "O902",
-      "latency_ms": 0.127917,
+      "latency_ms": 0.114791,
       "order": 3,
       "pattern_records": true,
       "policy_violations": 1,
@@ -879,7 +879,7 @@
       "correct": true,
       "estimated_context_tokens": 27,
       "expected_pattern": "O904",
-      "latency_ms": 0.027666,
+      "latency_ms": 0.022167,
       "order": 0,
       "pattern_records": true,
       "policy_violations": 0,
@@ -897,7 +897,7 @@
       "correct": false,
       "estimated_context_tokens": 129,
       "expected_pattern": "O904",
-      "latency_ms": 0.01,
+      "latency_ms": 0.007292,
       "order": 1,
       "pattern_records": false,
       "policy_violations": 0,
@@ -915,7 +915,7 @@
       "correct": false,
       "estimated_context_tokens": 36,
       "expected_pattern": "O904",
-      "latency_ms": 0.026333,
+      "latency_ms": 0.01975,
       "order": 2,
       "pattern_records": true,
       "policy_violations": 1,
@@ -933,241 +933,241 @@
       "correct": false,
       "estimated_context_tokens": 129,
       "expected_pattern": "O904",
+      "latency_ms": 0.006791,
+      "order": 3,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 0,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 7
+    },
+    {
+      "applicability": false,
+      "context_chars": 1294,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 324,
+      "expected_pattern": "O1",
+      "latency_ms": 1.761,
+      "order": 0,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O1"
+      ],
+      "task_id": 0
+    },
+    {
+      "applicability": true,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "O1",
+      "latency_ms": 0.018791,
+      "order": 1,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 0
+    },
+    {
+      "applicability": true,
+      "context_chars": 1294,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 324,
+      "expected_pattern": "O1",
+      "latency_ms": 1.613875,
+      "order": 2,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O1"
+      ],
+      "task_id": 0
+    },
+    {
+      "applicability": false,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "O1",
+      "latency_ms": 0.014333,
+      "order": 3,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 0
+    },
+    {
+      "applicability": true,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "O2",
+      "latency_ms": 0.010209,
+      "order": 0,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 1
+    },
+    {
+      "applicability": true,
+      "context_chars": 927,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 232,
+      "expected_pattern": "O2",
+      "latency_ms": 1.693,
+      "order": 1,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O2"
+      ],
+      "task_id": 1
+    },
+    {
+      "applicability": false,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "O2",
+      "latency_ms": 0.014291,
+      "order": 2,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 1
+    },
+    {
+      "applicability": false,
+      "context_chars": 927,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 232,
+      "expected_pattern": "O2",
+      "latency_ms": 1.64375,
+      "order": 3,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O2"
+      ],
+      "task_id": 1
+    },
+    {
+      "applicability": true,
+      "context_chars": 1299,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 325,
+      "expected_pattern": "O3",
+      "latency_ms": 1.720833,
+      "order": 0,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O3"
+      ],
+      "task_id": 2
+    },
+    {
+      "applicability": false,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "O3",
+      "latency_ms": 0.013667,
+      "order": 1,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 2
+    },
+    {
+      "applicability": false,
+      "context_chars": 1299,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 325,
+      "expected_pattern": "O3",
+      "latency_ms": 1.531,
+      "order": 2,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O3"
+      ],
+      "task_id": 2
+    },
+    {
+      "applicability": true,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "O3",
+      "latency_ms": 0.012667,
+      "order": 3,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 2
+    },
+    {
+      "applicability": false,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "O4",
       "latency_ms": 0.009667,
-      "order": 3,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 0,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 7
-    },
-    {
-      "applicability": false,
-      "context_chars": 1294,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 324,
-      "expected_pattern": "O1",
-      "latency_ms": 2.112041,
-      "order": 0,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O1"
-      ],
-      "task_id": 0
-    },
-    {
-      "applicability": true,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "O1",
-      "latency_ms": 0.016959,
-      "order": 1,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 0
-    },
-    {
-      "applicability": true,
-      "context_chars": 1294,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 324,
-      "expected_pattern": "O1",
-      "latency_ms": 2.046167,
-      "order": 2,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O1"
-      ],
-      "task_id": 0
-    },
-    {
-      "applicability": false,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "O1",
-      "latency_ms": 0.016541,
-      "order": 3,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 0
-    },
-    {
-      "applicability": true,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "O2",
-      "latency_ms": 0.013125,
-      "order": 0,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 1
-    },
-    {
-      "applicability": true,
-      "context_chars": 927,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 232,
-      "expected_pattern": "O2",
-      "latency_ms": 1.98525,
-      "order": 1,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O2"
-      ],
-      "task_id": 1
-    },
-    {
-      "applicability": false,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "O2",
-      "latency_ms": 0.01475,
-      "order": 2,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 1
-    },
-    {
-      "applicability": false,
-      "context_chars": 927,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 232,
-      "expected_pattern": "O2",
-      "latency_ms": 1.999,
-      "order": 3,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O2"
-      ],
-      "task_id": 1
-    },
-    {
-      "applicability": true,
-      "context_chars": 1299,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 325,
-      "expected_pattern": "O3",
-      "latency_ms": 2.076958,
-      "order": 0,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O3"
-      ],
-      "task_id": 2
-    },
-    {
-      "applicability": false,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "O3",
-      "latency_ms": 0.017667,
-      "order": 1,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 2
-    },
-    {
-      "applicability": false,
-      "context_chars": 1299,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 325,
-      "expected_pattern": "O3",
-      "latency_ms": 1.9455,
-      "order": 2,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O3"
-      ],
-      "task_id": 2
-    },
-    {
-      "applicability": true,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "O3",
-      "latency_ms": 0.015958,
-      "order": 3,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 2
-    },
-    {
-      "applicability": false,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "O4",
-      "latency_ms": 0.014041,
       "order": 0,
       "pattern_records": false,
       "policy_violations": 0,
@@ -1185,7 +1185,7 @@
       "correct": true,
       "estimated_context_tokens": 412,
       "expected_pattern": "O4",
-      "latency_ms": 1.917042,
+      "latency_ms": 1.482625,
       "order": 1,
       "pattern_records": true,
       "policy_violations": 0,
@@ -1203,7 +1203,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O4",
-      "latency_ms": 0.015167,
+      "latency_ms": 0.0165,
       "order": 2,
       "pattern_records": false,
       "policy_violations": 0,
@@ -1221,7 +1221,7 @@
       "correct": true,
       "estimated_context_tokens": 412,
       "expected_pattern": "O4",
-      "latency_ms": 1.955458,
+      "latency_ms": 1.490125,
       "order": 3,
       "pattern_records": true,
       "policy_violations": 0,
@@ -1239,7 +1239,7 @@
       "correct": true,
       "estimated_context_tokens": 305,
       "expected_pattern": "L9",
-      "latency_ms": 2.184166,
+      "latency_ms": 1.707542,
       "order": 0,
       "pattern_records": true,
       "policy_violations": 0,
@@ -1257,875 +1257,875 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "L9",
-      "latency_ms": 0.025542,
-      "order": 1,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 4
-    },
-    {
-      "applicability": true,
-      "context_chars": 1217,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 305,
-      "expected_pattern": "L9",
-      "latency_ms": 2.19775,
-      "order": 2,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#L9"
-      ],
-      "task_id": 4
-    },
-    {
-      "applicability": false,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "L9",
-      "latency_ms": 0.028625,
-      "order": 3,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 4
-    },
-    {
-      "applicability": true,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "B471",
-      "latency_ms": 0.017166,
-      "order": 0,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 5
-    },
-    {
-      "applicability": true,
-      "context_chars": 740,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 185,
-      "expected_pattern": "B471",
-      "latency_ms": 1.953584,
-      "order": 1,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#B471"
-      ],
-      "task_id": 5
-    },
-    {
-      "applicability": false,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "B471",
-      "latency_ms": 0.017667,
-      "order": 2,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 5
-    },
-    {
-      "applicability": false,
-      "context_chars": 740,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 185,
-      "expected_pattern": "B471",
-      "latency_ms": 1.995042,
-      "order": 3,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#B471"
-      ],
-      "task_id": 5
-    },
-    {
-      "applicability": true,
-      "context_chars": 96,
-      "corpus": "applicability",
-      "correct": true,
-      "estimated_context_tokens": 24,
-      "expected_pattern": "O902",
-      "latency_ms": 0.033875,
-      "order": 0,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O902"
-      ],
-      "task_id": 6
-    },
-    {
-      "applicability": false,
-      "context_chars": 513,
-      "corpus": "applicability",
-      "correct": false,
-      "estimated_context_tokens": 129,
-      "expected_pattern": "O902",
-      "latency_ms": 0.011792,
-      "order": 1,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 6
-    },
-    {
-      "applicability": false,
-      "context_chars": 133,
-      "corpus": "applicability",
-      "correct": false,
-      "estimated_context_tokens": 34,
-      "expected_pattern": "O902",
-      "latency_ms": 0.030708,
-      "order": 2,
-      "pattern_records": true,
-      "policy_violations": 1,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O901"
-      ],
-      "task_id": 6
-    },
-    {
-      "applicability": true,
-      "context_chars": 513,
-      "corpus": "applicability",
-      "correct": false,
-      "estimated_context_tokens": 129,
-      "expected_pattern": "O902",
-      "latency_ms": 0.010666,
-      "order": 3,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 6
-    },
-    {
-      "applicability": false,
-      "context_chars": 513,
-      "corpus": "applicability",
-      "correct": false,
-      "estimated_context_tokens": 129,
-      "expected_pattern": "O904",
-      "latency_ms": 0.009542,
-      "order": 0,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 7
-    },
-    {
-      "applicability": false,
-      "context_chars": 144,
-      "corpus": "applicability",
-      "correct": false,
-      "estimated_context_tokens": 36,
-      "expected_pattern": "O904",
-      "latency_ms": 0.026167,
-      "order": 1,
-      "pattern_records": true,
-      "policy_violations": 1,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O903"
-      ],
-      "task_id": 7
-    },
-    {
-      "applicability": true,
-      "context_chars": 513,
-      "corpus": "applicability",
-      "correct": false,
-      "estimated_context_tokens": 129,
-      "expected_pattern": "O904",
-      "latency_ms": 0.009625,
-      "order": 2,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 7
-    },
-    {
-      "applicability": true,
-      "context_chars": 105,
-      "corpus": "applicability",
-      "correct": true,
-      "estimated_context_tokens": 27,
-      "expected_pattern": "O904",
-      "latency_ms": 0.0245,
-      "order": 3,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 1,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O904"
-      ],
-      "task_id": 7
-    },
-    {
-      "applicability": true,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "O1",
-      "latency_ms": 0.013209,
-      "order": 0,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 0
-    },
-    {
-      "applicability": true,
-      "context_chars": 1294,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 324,
-      "expected_pattern": "O1",
-      "latency_ms": 1.98675,
-      "order": 1,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O1"
-      ],
-      "task_id": 0
-    },
-    {
-      "applicability": false,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "O1",
-      "latency_ms": 0.015292,
-      "order": 2,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 0
-    },
-    {
-      "applicability": false,
-      "context_chars": 1294,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 324,
-      "expected_pattern": "O1",
-      "latency_ms": 2.016458,
-      "order": 3,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O1"
-      ],
-      "task_id": 0
-    },
-    {
-      "applicability": true,
-      "context_chars": 927,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 232,
-      "expected_pattern": "O2",
-      "latency_ms": 2.036333,
-      "order": 0,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O2"
-      ],
-      "task_id": 1
-    },
-    {
-      "applicability": false,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "O2",
-      "latency_ms": 0.023167,
-      "order": 1,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 1
-    },
-    {
-      "applicability": false,
-      "context_chars": 927,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 232,
-      "expected_pattern": "O2",
-      "latency_ms": 1.9405,
-      "order": 2,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O2"
-      ],
-      "task_id": 1
-    },
-    {
-      "applicability": true,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "O2",
-      "latency_ms": 0.016375,
-      "order": 3,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 1
-    },
-    {
-      "applicability": false,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "O3",
-      "latency_ms": 0.013917,
-      "order": 0,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 2
-    },
-    {
-      "applicability": false,
-      "context_chars": 1299,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 325,
-      "expected_pattern": "O3",
-      "latency_ms": 1.914708,
-      "order": 1,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O3"
-      ],
-      "task_id": 2
-    },
-    {
-      "applicability": true,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "O3",
-      "latency_ms": 0.015208,
-      "order": 2,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 2
-    },
-    {
-      "applicability": true,
-      "context_chars": 1299,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 325,
-      "expected_pattern": "O3",
-      "latency_ms": 1.9575,
-      "order": 3,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O3"
-      ],
-      "task_id": 2
-    },
-    {
-      "applicability": false,
-      "context_chars": 1646,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 412,
-      "expected_pattern": "O4",
-      "latency_ms": 1.928375,
-      "order": 0,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O4"
-      ],
-      "task_id": 3
-    },
-    {
-      "applicability": true,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "O4",
-      "latency_ms": 0.017875,
-      "order": 1,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 3
-    },
-    {
-      "applicability": true,
-      "context_chars": 1646,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 412,
-      "expected_pattern": "O4",
-      "latency_ms": 1.88875,
-      "order": 2,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O4"
-      ],
-      "task_id": 3
-    },
-    {
-      "applicability": false,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "O4",
-      "latency_ms": 0.014833,
-      "order": 3,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 3
-    },
-    {
-      "applicability": true,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "L9",
-      "latency_ms": 0.01575,
-      "order": 0,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 4
-    },
-    {
-      "applicability": true,
-      "context_chars": 1217,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 305,
-      "expected_pattern": "L9",
-      "latency_ms": 2.248042,
-      "order": 1,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#L9"
-      ],
-      "task_id": 4
-    },
-    {
-      "applicability": false,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "L9",
-      "latency_ms": 0.019375,
-      "order": 2,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 4
-    },
-    {
-      "applicability": false,
-      "context_chars": 1217,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 305,
-      "expected_pattern": "L9",
-      "latency_ms": 2.128083,
-      "order": 3,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#L9"
-      ],
-      "task_id": 4
-    },
-    {
-      "applicability": true,
-      "context_chars": 740,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 185,
-      "expected_pattern": "B471",
-      "latency_ms": 1.996208,
-      "order": 0,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#B471"
-      ],
-      "task_id": 5
-    },
-    {
-      "applicability": false,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "B471",
-      "latency_ms": 0.017625,
-      "order": 1,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 5
-    },
-    {
-      "applicability": false,
-      "context_chars": 740,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 185,
-      "expected_pattern": "B471",
-      "latency_ms": 2.009375,
-      "order": 2,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#B471"
-      ],
-      "task_id": 5
-    },
-    {
-      "applicability": true,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "B471",
-      "latency_ms": 0.191541,
-      "order": 3,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 5
-    },
-    {
-      "applicability": false,
-      "context_chars": 513,
-      "corpus": "applicability",
-      "correct": false,
-      "estimated_context_tokens": 129,
-      "expected_pattern": "O902",
-      "latency_ms": 0.013292,
-      "order": 0,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 6
-    },
-    {
-      "applicability": false,
-      "context_chars": 133,
-      "corpus": "applicability",
-      "correct": false,
-      "estimated_context_tokens": 34,
-      "expected_pattern": "O902",
-      "latency_ms": 0.028459,
-      "order": 1,
-      "pattern_records": true,
-      "policy_violations": 1,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O901"
-      ],
-      "task_id": 6
-    },
-    {
-      "applicability": true,
-      "context_chars": 513,
-      "corpus": "applicability",
-      "correct": false,
-      "estimated_context_tokens": 129,
-      "expected_pattern": "O902",
-      "latency_ms": 0.010292,
-      "order": 2,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 6
-    },
-    {
-      "applicability": true,
-      "context_chars": 96,
-      "corpus": "applicability",
-      "correct": true,
-      "estimated_context_tokens": 24,
-      "expected_pattern": "O902",
-      "latency_ms": 0.024375,
-      "order": 3,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O902"
-      ],
-      "task_id": 6
-    },
-    {
-      "applicability": false,
-      "context_chars": 144,
-      "corpus": "applicability",
-      "correct": false,
-      "estimated_context_tokens": 36,
-      "expected_pattern": "O904",
-      "latency_ms": 0.025209,
-      "order": 0,
-      "pattern_records": true,
-      "policy_violations": 1,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O903"
-      ],
-      "task_id": 7
-    },
-    {
-      "applicability": true,
-      "context_chars": 513,
-      "corpus": "applicability",
-      "correct": false,
-      "estimated_context_tokens": 129,
-      "expected_pattern": "O904",
-      "latency_ms": 0.009208,
-      "order": 1,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 7
-    },
-    {
-      "applicability": true,
-      "context_chars": 105,
-      "corpus": "applicability",
-      "correct": true,
-      "estimated_context_tokens": 27,
-      "expected_pattern": "O904",
-      "latency_ms": 0.023292,
-      "order": 2,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O904"
-      ],
-      "task_id": 7
-    },
-    {
-      "applicability": false,
-      "context_chars": 513,
-      "corpus": "applicability",
-      "correct": false,
-      "estimated_context_tokens": 129,
-      "expected_pattern": "O904",
-      "latency_ms": 0.008792,
-      "order": 3,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 2,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 7
-    },
-    {
-      "applicability": true,
-      "context_chars": 1294,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 324,
-      "expected_pattern": "O1",
-      "latency_ms": 1.99525,
-      "order": 0,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 3,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O1"
-      ],
-      "task_id": 0
-    },
-    {
-      "applicability": false,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "O1",
       "latency_ms": 0.015625,
       "order": 1,
       "pattern_records": false,
       "policy_violations": 0,
       "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 4
+    },
+    {
+      "applicability": true,
+      "context_chars": 1217,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 305,
+      "expected_pattern": "L9",
+      "latency_ms": 1.707292,
+      "order": 2,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#L9"
+      ],
+      "task_id": 4
+    },
+    {
+      "applicability": false,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "L9",
+      "latency_ms": 0.0155,
+      "order": 3,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 4
+    },
+    {
+      "applicability": true,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "B471",
+      "latency_ms": 0.011792,
+      "order": 0,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 5
+    },
+    {
+      "applicability": true,
+      "context_chars": 740,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 185,
+      "expected_pattern": "B471",
+      "latency_ms": 1.653375,
+      "order": 1,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#B471"
+      ],
+      "task_id": 5
+    },
+    {
+      "applicability": false,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "B471",
+      "latency_ms": 0.012625,
+      "order": 2,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 5
+    },
+    {
+      "applicability": false,
+      "context_chars": 740,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 185,
+      "expected_pattern": "B471",
+      "latency_ms": 1.761459,
+      "order": 3,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#B471"
+      ],
+      "task_id": 5
+    },
+    {
+      "applicability": true,
+      "context_chars": 96,
+      "corpus": "applicability",
+      "correct": true,
+      "estimated_context_tokens": 24,
+      "expected_pattern": "O902",
+      "latency_ms": 0.033666,
+      "order": 0,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O902"
+      ],
+      "task_id": 6
+    },
+    {
+      "applicability": false,
+      "context_chars": 513,
+      "corpus": "applicability",
+      "correct": false,
+      "estimated_context_tokens": 129,
+      "expected_pattern": "O902",
+      "latency_ms": 0.010709,
+      "order": 1,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 6
+    },
+    {
+      "applicability": false,
+      "context_chars": 133,
+      "corpus": "applicability",
+      "correct": false,
+      "estimated_context_tokens": 34,
+      "expected_pattern": "O902",
+      "latency_ms": 0.023833,
+      "order": 2,
+      "pattern_records": true,
+      "policy_violations": 1,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O901"
+      ],
+      "task_id": 6
+    },
+    {
+      "applicability": true,
+      "context_chars": 513,
+      "corpus": "applicability",
+      "correct": false,
+      "estimated_context_tokens": 129,
+      "expected_pattern": "O902",
+      "latency_ms": 0.008959,
+      "order": 3,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 6
+    },
+    {
+      "applicability": false,
+      "context_chars": 513,
+      "corpus": "applicability",
+      "correct": false,
+      "estimated_context_tokens": 129,
+      "expected_pattern": "O904",
+      "latency_ms": 0.007166,
+      "order": 0,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 7
+    },
+    {
+      "applicability": false,
+      "context_chars": 144,
+      "corpus": "applicability",
+      "correct": false,
+      "estimated_context_tokens": 36,
+      "expected_pattern": "O904",
+      "latency_ms": 0.02025,
+      "order": 1,
+      "pattern_records": true,
+      "policy_violations": 1,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O903"
+      ],
+      "task_id": 7
+    },
+    {
+      "applicability": true,
+      "context_chars": 513,
+      "corpus": "applicability",
+      "correct": false,
+      "estimated_context_tokens": 129,
+      "expected_pattern": "O904",
+      "latency_ms": 0.00775,
+      "order": 2,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 7
+    },
+    {
+      "applicability": true,
+      "context_chars": 105,
+      "corpus": "applicability",
+      "correct": true,
+      "estimated_context_tokens": 27,
+      "expected_pattern": "O904",
+      "latency_ms": 0.018625,
+      "order": 3,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 1,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O904"
+      ],
+      "task_id": 7
+    },
+    {
+      "applicability": true,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "O1",
+      "latency_ms": 0.010417,
+      "order": 0,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 0
+    },
+    {
+      "applicability": true,
+      "context_chars": 1294,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 324,
+      "expected_pattern": "O1",
+      "latency_ms": 1.564417,
+      "order": 1,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O1"
+      ],
+      "task_id": 0
+    },
+    {
+      "applicability": false,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "O1",
+      "latency_ms": 0.012166,
+      "order": 2,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 0
+    },
+    {
+      "applicability": false,
+      "context_chars": 1294,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 324,
+      "expected_pattern": "O1",
+      "latency_ms": 1.53,
+      "order": 3,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O1"
+      ],
+      "task_id": 0
+    },
+    {
+      "applicability": true,
+      "context_chars": 927,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 232,
+      "expected_pattern": "O2",
+      "latency_ms": 1.504584,
+      "order": 0,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O2"
+      ],
+      "task_id": 1
+    },
+    {
+      "applicability": false,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "O2",
+      "latency_ms": 0.011959,
+      "order": 1,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 1
+    },
+    {
+      "applicability": false,
+      "context_chars": 927,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 232,
+      "expected_pattern": "O2",
+      "latency_ms": 1.494291,
+      "order": 2,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O2"
+      ],
+      "task_id": 1
+    },
+    {
+      "applicability": true,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "O2",
+      "latency_ms": 0.010875,
+      "order": 3,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 1
+    },
+    {
+      "applicability": false,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "O3",
+      "latency_ms": 0.009791,
+      "order": 0,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 2
+    },
+    {
+      "applicability": false,
+      "context_chars": 1299,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 325,
+      "expected_pattern": "O3",
+      "latency_ms": 1.517459,
+      "order": 1,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O3"
+      ],
+      "task_id": 2
+    },
+    {
+      "applicability": true,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "O3",
+      "latency_ms": 0.011625,
+      "order": 2,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 2
+    },
+    {
+      "applicability": true,
+      "context_chars": 1299,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 325,
+      "expected_pattern": "O3",
+      "latency_ms": 1.755833,
+      "order": 3,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O3"
+      ],
+      "task_id": 2
+    },
+    {
+      "applicability": false,
+      "context_chars": 1646,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 412,
+      "expected_pattern": "O4",
+      "latency_ms": 1.552958,
+      "order": 0,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O4"
+      ],
+      "task_id": 3
+    },
+    {
+      "applicability": true,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "O4",
+      "latency_ms": 0.0135,
+      "order": 1,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 3
+    },
+    {
+      "applicability": true,
+      "context_chars": 1646,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 412,
+      "expected_pattern": "O4",
+      "latency_ms": 1.521167,
+      "order": 2,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O4"
+      ],
+      "task_id": 3
+    },
+    {
+      "applicability": false,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "O4",
+      "latency_ms": 0.011458,
+      "order": 3,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 3
+    },
+    {
+      "applicability": true,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "L9",
+      "latency_ms": 0.0135,
+      "order": 0,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 4
+    },
+    {
+      "applicability": true,
+      "context_chars": 1217,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 305,
+      "expected_pattern": "L9",
+      "latency_ms": 1.831625,
+      "order": 1,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#L9"
+      ],
+      "task_id": 4
+    },
+    {
+      "applicability": false,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "L9",
+      "latency_ms": 0.014834,
+      "order": 2,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 4
+    },
+    {
+      "applicability": false,
+      "context_chars": 1217,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 305,
+      "expected_pattern": "L9",
+      "latency_ms": 1.806292,
+      "order": 3,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#L9"
+      ],
+      "task_id": 4
+    },
+    {
+      "applicability": true,
+      "context_chars": 740,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 185,
+      "expected_pattern": "B471",
+      "latency_ms": 1.699959,
+      "order": 0,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#B471"
+      ],
+      "task_id": 5
+    },
+    {
+      "applicability": false,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "B471",
+      "latency_ms": 0.012584,
+      "order": 1,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 5
+    },
+    {
+      "applicability": false,
+      "context_chars": 740,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 185,
+      "expected_pattern": "B471",
+      "latency_ms": 1.63025,
+      "order": 2,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#B471"
+      ],
+      "task_id": 5
+    },
+    {
+      "applicability": true,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "B471",
+      "latency_ms": 0.181584,
+      "order": 3,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 5
+    },
+    {
+      "applicability": false,
+      "context_chars": 513,
+      "corpus": "applicability",
+      "correct": false,
+      "estimated_context_tokens": 129,
+      "expected_pattern": "O902",
+      "latency_ms": 0.009875,
+      "order": 0,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 6
+    },
+    {
+      "applicability": false,
+      "context_chars": 133,
+      "corpus": "applicability",
+      "correct": false,
+      "estimated_context_tokens": 34,
+      "expected_pattern": "O902",
+      "latency_ms": 0.024125,
+      "order": 1,
+      "pattern_records": true,
+      "policy_violations": 1,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O901"
+      ],
+      "task_id": 6
+    },
+    {
+      "applicability": true,
+      "context_chars": 513,
+      "corpus": "applicability",
+      "correct": false,
+      "estimated_context_tokens": 129,
+      "expected_pattern": "O902",
+      "latency_ms": 0.008208,
+      "order": 2,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 6
+    },
+    {
+      "applicability": true,
+      "context_chars": 96,
+      "corpus": "applicability",
+      "correct": true,
+      "estimated_context_tokens": 24,
+      "expected_pattern": "O902",
+      "latency_ms": 0.019833,
+      "order": 3,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O902"
+      ],
+      "task_id": 6
+    },
+    {
+      "applicability": false,
+      "context_chars": 144,
+      "corpus": "applicability",
+      "correct": false,
+      "estimated_context_tokens": 36,
+      "expected_pattern": "O904",
+      "latency_ms": 0.020208,
+      "order": 0,
+      "pattern_records": true,
+      "policy_violations": 1,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O903"
+      ],
+      "task_id": 7
+    },
+    {
+      "applicability": true,
+      "context_chars": 513,
+      "corpus": "applicability",
+      "correct": false,
+      "estimated_context_tokens": 129,
+      "expected_pattern": "O904",
+      "latency_ms": 0.007083,
+      "order": 1,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 7
+    },
+    {
+      "applicability": true,
+      "context_chars": 105,
+      "corpus": "applicability",
+      "correct": true,
+      "estimated_context_tokens": 27,
+      "expected_pattern": "O904",
+      "latency_ms": 0.0175,
+      "order": 2,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O904"
+      ],
+      "task_id": 7
+    },
+    {
+      "applicability": false,
+      "context_chars": 513,
+      "corpus": "applicability",
+      "correct": false,
+      "estimated_context_tokens": 129,
+      "expected_pattern": "O904",
+      "latency_ms": 0.006458,
+      "order": 3,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 2,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 7
+    },
+    {
+      "applicability": true,
+      "context_chars": 1294,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 324,
+      "expected_pattern": "O1",
+      "latency_ms": 1.755584,
+      "order": 0,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 3,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O1"
+      ],
+      "task_id": 0
+    },
+    {
+      "applicability": false,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "O1",
+      "latency_ms": 0.016167,
+      "order": 1,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
       "repetition": 3,
       "selected_ids": [
         "algo-cli:algorithm:ALGO.md"
@@ -2139,7 +2139,7 @@
       "correct": true,
       "estimated_context_tokens": 324,
       "expected_pattern": "O1",
-      "latency_ms": 2.102542,
+      "latency_ms": 1.589875,
       "order": 2,
       "pattern_records": true,
       "policy_violations": 0,
@@ -2157,7 +2157,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O1",
-      "latency_ms": 0.016542,
+      "latency_ms": 0.012208,
       "order": 3,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2175,7 +2175,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O2",
-      "latency_ms": 0.012542,
+      "latency_ms": 0.012708,
       "order": 0,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2193,7 +2193,7 @@
       "correct": true,
       "estimated_context_tokens": 232,
       "expected_pattern": "O2",
-      "latency_ms": 1.90725,
+      "latency_ms": 1.476833,
       "order": 1,
       "pattern_records": true,
       "policy_violations": 0,
@@ -2211,7 +2211,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O2",
-      "latency_ms": 0.014417,
+      "latency_ms": 0.010459,
       "order": 2,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2229,7 +2229,7 @@
       "correct": true,
       "estimated_context_tokens": 232,
       "expected_pattern": "O2",
-      "latency_ms": 1.997333,
+      "latency_ms": 1.545709,
       "order": 3,
       "pattern_records": true,
       "policy_violations": 0,
@@ -2247,7 +2247,7 @@
       "correct": true,
       "estimated_context_tokens": 325,
       "expected_pattern": "O3",
-      "latency_ms": 1.948625,
+      "latency_ms": 1.562,
       "order": 0,
       "pattern_records": true,
       "policy_violations": 0,
@@ -2265,7 +2265,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O3",
-      "latency_ms": 0.017292,
+      "latency_ms": 0.011958,
       "order": 1,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2283,7 +2283,7 @@
       "correct": true,
       "estimated_context_tokens": 325,
       "expected_pattern": "O3",
-      "latency_ms": 1.985209,
+      "latency_ms": 1.602625,
       "order": 2,
       "pattern_records": true,
       "policy_violations": 0,
@@ -2301,7 +2301,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O3",
-      "latency_ms": 0.016125,
+      "latency_ms": 0.014042,
       "order": 3,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2319,7 +2319,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O4",
-      "latency_ms": 0.013209,
+      "latency_ms": 0.011458,
       "order": 0,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2337,7 +2337,7 @@
       "correct": true,
       "estimated_context_tokens": 412,
       "expected_pattern": "O4",
-      "latency_ms": 1.926917,
+      "latency_ms": 1.779709,
       "order": 1,
       "pattern_records": true,
       "policy_violations": 0,
@@ -2355,7 +2355,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O4",
-      "latency_ms": 0.014541,
+      "latency_ms": 0.015292,
       "order": 2,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2373,7 +2373,7 @@
       "correct": true,
       "estimated_context_tokens": 412,
       "expected_pattern": "O4",
-      "latency_ms": 2.012917,
+      "latency_ms": 1.529709,
       "order": 3,
       "pattern_records": true,
       "policy_violations": 0,
@@ -2391,7 +2391,7 @@
       "correct": true,
       "estimated_context_tokens": 305,
       "expected_pattern": "L9",
-      "latency_ms": 2.157875,
+      "latency_ms": 1.725334,
       "order": 0,
       "pattern_records": true,
       "policy_violations": 0,
@@ -2409,7 +2409,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "L9",
-      "latency_ms": 0.018667,
+      "latency_ms": 0.014875,
       "order": 1,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2427,7 +2427,7 @@
       "correct": true,
       "estimated_context_tokens": 305,
       "expected_pattern": "L9",
-      "latency_ms": 2.122041,
+      "latency_ms": 1.721625,
       "order": 2,
       "pattern_records": true,
       "policy_violations": 0,
@@ -2445,7 +2445,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "L9",
-      "latency_ms": 0.018125,
+      "latency_ms": 0.013916,
       "order": 3,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2463,150 +2463,6 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "B471",
-      "latency_ms": 0.014583,
-      "order": 0,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 3,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 5
-    },
-    {
-      "applicability": false,
-      "context_chars": 740,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 185,
-      "expected_pattern": "B471",
-      "latency_ms": 1.959875,
-      "order": 1,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 3,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#B471"
-      ],
-      "task_id": 5
-    },
-    {
-      "applicability": true,
-      "context_chars": 2000,
-      "corpus": "catalog",
-      "correct": false,
-      "estimated_context_tokens": 500,
-      "expected_pattern": "B471",
-      "latency_ms": 0.016459,
-      "order": 2,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 3,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 5
-    },
-    {
-      "applicability": true,
-      "context_chars": 740,
-      "corpus": "catalog",
-      "correct": true,
-      "estimated_context_tokens": 185,
-      "expected_pattern": "B471",
-      "latency_ms": 2.066916,
-      "order": 3,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 3,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#B471"
-      ],
-      "task_id": 5
-    },
-    {
-      "applicability": false,
-      "context_chars": 133,
-      "corpus": "applicability",
-      "correct": false,
-      "estimated_context_tokens": 34,
-      "expected_pattern": "O902",
-      "latency_ms": 0.037,
-      "order": 0,
-      "pattern_records": true,
-      "policy_violations": 1,
-      "provider_tokens": 0,
-      "repetition": 3,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O901"
-      ],
-      "task_id": 6
-    },
-    {
-      "applicability": true,
-      "context_chars": 513,
-      "corpus": "applicability",
-      "correct": false,
-      "estimated_context_tokens": 129,
-      "expected_pattern": "O902",
-      "latency_ms": 0.011875,
-      "order": 1,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 3,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 6
-    },
-    {
-      "applicability": true,
-      "context_chars": 96,
-      "corpus": "applicability",
-      "correct": true,
-      "estimated_context_tokens": 24,
-      "expected_pattern": "O902",
-      "latency_ms": 0.0285,
-      "order": 2,
-      "pattern_records": true,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 3,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md#O902"
-      ],
-      "task_id": 6
-    },
-    {
-      "applicability": false,
-      "context_chars": 513,
-      "corpus": "applicability",
-      "correct": false,
-      "estimated_context_tokens": 129,
-      "expected_pattern": "O902",
-      "latency_ms": 0.010333,
-      "order": 3,
-      "pattern_records": false,
-      "policy_violations": 0,
-      "provider_tokens": 0,
-      "repetition": 3,
-      "selected_ids": [
-        "algo-cli:algorithm:ALGO.md"
-      ],
-      "task_id": 6
-    },
-    {
-      "applicability": true,
-      "context_chars": 513,
-      "corpus": "applicability",
-      "correct": false,
-      "estimated_context_tokens": 129,
-      "expected_pattern": "O904",
       "latency_ms": 0.010042,
       "order": 0,
       "pattern_records": false,
@@ -2616,6 +2472,150 @@
       "selected_ids": [
         "algo-cli:algorithm:ALGO.md"
       ],
+      "task_id": 5
+    },
+    {
+      "applicability": false,
+      "context_chars": 740,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 185,
+      "expected_pattern": "B471",
+      "latency_ms": 1.57675,
+      "order": 1,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 3,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#B471"
+      ],
+      "task_id": 5
+    },
+    {
+      "applicability": true,
+      "context_chars": 2000,
+      "corpus": "catalog",
+      "correct": false,
+      "estimated_context_tokens": 500,
+      "expected_pattern": "B471",
+      "latency_ms": 0.012,
+      "order": 2,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 3,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 5
+    },
+    {
+      "applicability": true,
+      "context_chars": 740,
+      "corpus": "catalog",
+      "correct": true,
+      "estimated_context_tokens": 185,
+      "expected_pattern": "B471",
+      "latency_ms": 1.650459,
+      "order": 3,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 3,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#B471"
+      ],
+      "task_id": 5
+    },
+    {
+      "applicability": false,
+      "context_chars": 133,
+      "corpus": "applicability",
+      "correct": false,
+      "estimated_context_tokens": 34,
+      "expected_pattern": "O902",
+      "latency_ms": 0.02775,
+      "order": 0,
+      "pattern_records": true,
+      "policy_violations": 1,
+      "provider_tokens": 0,
+      "repetition": 3,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O901"
+      ],
+      "task_id": 6
+    },
+    {
+      "applicability": true,
+      "context_chars": 513,
+      "corpus": "applicability",
+      "correct": false,
+      "estimated_context_tokens": 129,
+      "expected_pattern": "O902",
+      "latency_ms": 0.008792,
+      "order": 1,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 3,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 6
+    },
+    {
+      "applicability": true,
+      "context_chars": 96,
+      "corpus": "applicability",
+      "correct": true,
+      "estimated_context_tokens": 24,
+      "expected_pattern": "O902",
+      "latency_ms": 0.021834,
+      "order": 2,
+      "pattern_records": true,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 3,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md#O902"
+      ],
+      "task_id": 6
+    },
+    {
+      "applicability": false,
+      "context_chars": 513,
+      "corpus": "applicability",
+      "correct": false,
+      "estimated_context_tokens": 129,
+      "expected_pattern": "O902",
+      "latency_ms": 0.019042,
+      "order": 3,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 3,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
+      "task_id": 6
+    },
+    {
+      "applicability": true,
+      "context_chars": 513,
+      "corpus": "applicability",
+      "correct": false,
+      "estimated_context_tokens": 129,
+      "expected_pattern": "O904",
+      "latency_ms": 0.009209,
+      "order": 0,
+      "pattern_records": false,
+      "policy_violations": 0,
+      "provider_tokens": 0,
+      "repetition": 3,
+      "selected_ids": [
+        "algo-cli:algorithm:ALGO.md"
+      ],
       "task_id": 7
     },
     {
@@ -2625,7 +2625,7 @@
       "correct": true,
       "estimated_context_tokens": 27,
       "expected_pattern": "O904",
-      "latency_ms": 0.024459,
+      "latency_ms": 0.022417,
       "order": 1,
       "pattern_records": true,
       "policy_violations": 0,
@@ -2643,7 +2643,7 @@
       "correct": false,
       "estimated_context_tokens": 129,
       "expected_pattern": "O904",
-      "latency_ms": 0.009708,
+      "latency_ms": 0.006916,
       "order": 2,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2661,7 +2661,7 @@
       "correct": false,
       "estimated_context_tokens": 36,
       "expected_pattern": "O904",
-      "latency_ms": 0.026,
+      "latency_ms": 0.021167,
       "order": 3,
       "pattern_records": true,
       "policy_violations": 1,
@@ -2679,7 +2679,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O1",
-      "latency_ms": 0.012833,
+      "latency_ms": 0.010375,
       "order": 0,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2697,7 +2697,7 @@
       "correct": true,
       "estimated_context_tokens": 324,
       "expected_pattern": "O1",
-      "latency_ms": 2.011,
+      "latency_ms": 1.674458,
       "order": 1,
       "pattern_records": true,
       "policy_violations": 0,
@@ -2715,7 +2715,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O1",
-      "latency_ms": 0.018917,
+      "latency_ms": 0.013416,
       "order": 2,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2733,7 +2733,7 @@
       "correct": true,
       "estimated_context_tokens": 324,
       "expected_pattern": "O1",
-      "latency_ms": 1.966292,
+      "latency_ms": 1.603459,
       "order": 3,
       "pattern_records": true,
       "policy_violations": 0,
@@ -2751,7 +2751,7 @@
       "correct": true,
       "estimated_context_tokens": 232,
       "expected_pattern": "O2",
-      "latency_ms": 1.963208,
+      "latency_ms": 1.486542,
       "order": 0,
       "pattern_records": true,
       "policy_violations": 0,
@@ -2769,7 +2769,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O2",
-      "latency_ms": 0.015875,
+      "latency_ms": 0.011625,
       "order": 1,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2787,7 +2787,7 @@
       "correct": true,
       "estimated_context_tokens": 232,
       "expected_pattern": "O2",
-      "latency_ms": 1.958083,
+      "latency_ms": 1.576583,
       "order": 2,
       "pattern_records": true,
       "policy_violations": 0,
@@ -2805,7 +2805,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O2",
-      "latency_ms": 0.015084,
+      "latency_ms": 0.012709,
       "order": 3,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2823,7 +2823,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O3",
-      "latency_ms": 0.013541,
+      "latency_ms": 0.010334,
       "order": 0,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2841,7 +2841,7 @@
       "correct": true,
       "estimated_context_tokens": 325,
       "expected_pattern": "O3",
-      "latency_ms": 1.942292,
+      "latency_ms": 1.563958,
       "order": 1,
       "pattern_records": true,
       "policy_violations": 0,
@@ -2859,7 +2859,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O3",
-      "latency_ms": 0.016625,
+      "latency_ms": 0.013042,
       "order": 2,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2877,7 +2877,7 @@
       "correct": true,
       "estimated_context_tokens": 325,
       "expected_pattern": "O3",
-      "latency_ms": 1.9415,
+      "latency_ms": 1.567458,
       "order": 3,
       "pattern_records": true,
       "policy_violations": 0,
@@ -2895,7 +2895,7 @@
       "correct": true,
       "estimated_context_tokens": 412,
       "expected_pattern": "O4",
-      "latency_ms": 1.959792,
+      "latency_ms": 1.53775,
       "order": 0,
       "pattern_records": true,
       "policy_violations": 0,
@@ -2913,7 +2913,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O4",
-      "latency_ms": 0.014959,
+      "latency_ms": 0.014875,
       "order": 1,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2931,7 +2931,7 @@
       "correct": true,
       "estimated_context_tokens": 412,
       "expected_pattern": "O4",
-      "latency_ms": 1.855125,
+      "latency_ms": 1.692917,
       "order": 2,
       "pattern_records": true,
       "policy_violations": 0,
@@ -2949,7 +2949,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "O4",
-      "latency_ms": 0.014583,
+      "latency_ms": 0.01375,
       "order": 3,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2967,7 +2967,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "L9",
-      "latency_ms": 0.01425,
+      "latency_ms": 0.012708,
       "order": 0,
       "pattern_records": false,
       "policy_violations": 0,
@@ -2985,7 +2985,7 @@
       "correct": true,
       "estimated_context_tokens": 305,
       "expected_pattern": "L9",
-      "latency_ms": 2.067084,
+      "latency_ms": 1.735667,
       "order": 1,
       "pattern_records": true,
       "policy_violations": 0,
@@ -3003,7 +3003,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "L9",
-      "latency_ms": 0.016709,
+      "latency_ms": 0.014,
       "order": 2,
       "pattern_records": false,
       "policy_violations": 0,
@@ -3021,7 +3021,7 @@
       "correct": true,
       "estimated_context_tokens": 305,
       "expected_pattern": "L9",
-      "latency_ms": 2.148,
+      "latency_ms": 1.794709,
       "order": 3,
       "pattern_records": true,
       "policy_violations": 0,
@@ -3039,7 +3039,7 @@
       "correct": true,
       "estimated_context_tokens": 185,
       "expected_pattern": "B471",
-      "latency_ms": 1.929166,
+      "latency_ms": 1.596,
       "order": 0,
       "pattern_records": true,
       "policy_violations": 0,
@@ -3057,7 +3057,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "B471",
-      "latency_ms": 0.017,
+      "latency_ms": 0.012458,
       "order": 1,
       "pattern_records": false,
       "policy_violations": 0,
@@ -3075,7 +3075,7 @@
       "correct": true,
       "estimated_context_tokens": 185,
       "expected_pattern": "B471",
-      "latency_ms": 2.073459,
+      "latency_ms": 1.679917,
       "order": 2,
       "pattern_records": true,
       "policy_violations": 0,
@@ -3093,7 +3093,7 @@
       "correct": false,
       "estimated_context_tokens": 500,
       "expected_pattern": "B471",
-      "latency_ms": 0.017125,
+      "latency_ms": 0.016792,
       "order": 3,
       "pattern_records": false,
       "policy_violations": 0,
@@ -3111,7 +3111,7 @@
       "correct": false,
       "estimated_context_tokens": 129,
       "expected_pattern": "O902",
-      "latency_ms": 0.011875,
+      "latency_ms": 0.010125,
       "order": 0,
       "pattern_records": false,
       "policy_violations": 0,
@@ -3129,7 +3129,7 @@
       "correct": true,
       "estimated_context_tokens": 24,
       "expected_pattern": "O902",
-      "latency_ms": 0.0275,
+      "latency_ms": 0.02325,
       "order": 1,
       "pattern_records": true,
       "policy_violations": 0,
@@ -3147,7 +3147,7 @@
       "correct": false,
       "estimated_context_tokens": 129,
       "expected_pattern": "O902",
-      "latency_ms": 0.010208,
+      "latency_ms": 0.008541,
       "order": 2,
       "pattern_records": false,
       "policy_violations": 0,
@@ -3165,7 +3165,7 @@
       "correct": false,
       "estimated_context_tokens": 34,
       "expected_pattern": "O902",
-      "latency_ms": 0.028125,
+      "latency_ms": 0.02175,
       "order": 3,
       "pattern_records": true,
       "policy_violations": 1,
@@ -3183,7 +3183,7 @@
       "correct": true,
       "estimated_context_tokens": 27,
       "expected_pattern": "O904",
-      "latency_ms": 0.024292,
+      "latency_ms": 0.019666,
       "order": 0,
       "pattern_records": true,
       "policy_violations": 0,
@@ -3201,7 +3201,7 @@
       "correct": false,
       "estimated_context_tokens": 129,
       "expected_pattern": "O904",
-      "latency_ms": 0.0095,
+      "latency_ms": 0.006583,
       "order": 1,
       "pattern_records": false,
       "policy_violations": 0,
@@ -3219,7 +3219,7 @@
       "correct": false,
       "estimated_context_tokens": 36,
       "expected_pattern": "O904",
-      "latency_ms": 0.026084,
+      "latency_ms": 0.019209,
       "order": 2,
       "pattern_records": true,
       "policy_violations": 1,
@@ -3237,7 +3237,7 @@
       "correct": false,
       "estimated_context_tokens": 129,
       "expected_pattern": "O904",
-      "latency_ms": 0.009333,
+      "latency_ms": 0.006666,
       "order": 3,
       "pattern_records": false,
       "policy_violations": 0,
@@ -3253,7 +3253,7 @@
   "scope": "Local retrieval microbenchmark, not generated-answer quality, provider quality, or M8 qualification.",
   "source_stable": true,
   "sources": {
-    "algo_cli/__init__.py": "sha256:716619b0e3979d86df2aa35aa7676b76541812e866efb899e172d2e8ae5a6b3d",
+    "algo_cli/__init__.py": "sha256:a7e3f57d59dfa1a22ed42fb3934bfe3bccde1ed6470840ac791aa9b39f3f8fec",
     "algo_cli/__main__.py": "sha256:beca366b68f66ad36df7fd13e9fccb57c7995d7c111c5e6ecd95b313ccd7a955",
     "algo_cli/_internal/__init__.py": "sha256:863263e27de892df5273a0fd3c7d45160045b07af4d53bccfd47e69452c8ca3c",
     "algo_cli/_internal/policy_chain.py": "sha256:b7a4c19c40dbb6396fdf50fc7f493c0696c88a08bd3671f5bc336d7cad00b741",
@@ -3523,7 +3523,7 @@
     "algo_cli/tool_contract.py": "sha256:cbe3fc6ef177c31b033fa0550351d8e6741a705e35870b33fe885dc416c92b4b",
     "algo_cli/tool_schema.py": "sha256:4203b8d0d39f1cd8bb61a24661433e020b7d9a17a48143353f3e05da0c2fdd97",
     "algo_cli/tools.py": "sha256:459f75d52284f213e13745890b7b1a944148d943da1401fa89da09f06bc001f6",
-    "algo_cli/updater.py": "sha256:7752b824e19c758b94afefed1c7dee87448ce08504c9618c9952c335aa48c0ed",
+    "algo_cli/updater.py": "sha256:e3b95eefab24468e35d6662624fb856665308ada71f0421c8c291c5695c38c39",
     "algo_cli/url_scheme.py": "sha256:e8ae6344fa99fc98e3d8f7cd9b5f76e5f25d8df2d8b459bf2505cb38f14a291d",
     "algo_cli/verify.py": "sha256:10ee8a4b220b019d55ab673b2ff07838b3624f46ef5664c5fc64764aa1b8f1c1",
     "algo_cli/version_manifest.py": "sha256:095951e4d74b632ab2614a8ee61c71c6add499b412a8ca395affeb2279f2fd5e",
@@ -3548,7 +3548,7 @@
     "tests/test_ada_echo_veil_identity.py": "sha256:4fd525f8fced895dcb0f7dc4b0fa34c15cac39ca8be93e5912e8f15f7b39df66",
     "tests/test_ada_memory_echo_veil.py": "sha256:09bbc5f14fe3ced89ae476231ac980694ef9e598316f3f0d78de6698cdb4a25d",
     "tests/test_ada_private_event_store.py": "sha256:5ad6ed3b5aa59f960d5434a613f3bdcb2a5dd2929ec9f3b60fedb7ad037a057f",
-    "tests/test_ada_supply_chain_manifest.py": "sha256:73a72bcdc18d03c3e084eb77dbaafe407eab63be2a8308f9b99b2e9c0e838f31",
+    "tests/test_ada_supply_chain_manifest.py": "sha256:1b4d6e50bff31873ab8dc9001028b469625756c577b1f1c0f7b7c05ba35a1c64",
     "tests/test_ada_task_ledger_echo.py": "sha256:a7a2c85c9eef09d6e19dfcb982d7f49863d1d98d490bd46e314ad8800acb1ddb",
     "tests/test_ada_uninstall_recovery.py": "sha256:51dae16971dc5806441c8efff09e040f7abf0c83bcfaea8f6cd1e2fbac2ef0d5",
     "tests/test_adversarial_audit.py": "sha256:e6bb61ec51cbeda181399abcb376dfeb5db2067af7435656497832c6c5b19212",
@@ -3567,7 +3567,7 @@
     "tests/test_austin_desktop_simulator.py": "sha256:d42e8ec30cb8650302164a15f716a583d34fd3d385135ae7228056cec30a12f3",
     "tests/test_austin_install_finalizer.py": "sha256:b99becda0e0c406416090f1225a5d7cf2b37d1b1f1f5ba347c0985d1d2e882eb",
     "tests/test_austin_native_package.py": "sha256:beba2b3ae9c0cf9d0aa6a269565c9604475cbdc1a6ba4682f9602523a214a2d8",
-    "tests/test_austin_release_packager.py": "sha256:dbe5646ec02d054faabfc266e9de67da660e6768675285c41d9bf51ff47099d9",
+    "tests/test_austin_release_packager.py": "sha256:7b65d401d8c988a9d3811401118700692c4cb6e3cbab06aaea4d78027618825e",
     "tests/test_austin_thomas_binding.py": "sha256:b7c73d6969bfe2336cec6df91ef7c4216759bfc9d4dda5ce37f9fa4a98b45b97",
     "tests/test_austin_thomas_preparation.py": "sha256:14d96eda3423354d031769cb800a53ecef7d6c1c672e081a7c8380e84fc0528c",
     "tests/test_autonomous_engineer.py": "sha256:a3c00dfbaa3c526b6c0da4b401eebbe3828ac9fe96ecd8eefb9f5556487707b9",
@@ -3702,10 +3702,11 @@
     "tests/test_oliver_control_installer.py": "sha256:09817f5d68ac467f3fe63cb1edc17ce9763fbd3883f07efa775acfd8df569598",
     "tests/test_oliver_installed_source_parity.py": "sha256:e050796eddc3ea2642a31b7aa070bce1fc6c7291021d1a9513d5173f9de584a7",
     "tests/test_oliver_oneshot.py": "sha256:0b9e761db725f6dddadec6fa175d81da97250fb4993155ad375fa49a01a543dc",
-    "tests/test_oliver_release_authority.py": "sha256:e5718f5317d1367858eeb187399eb9afd2d1164a3aafdc724e52b00663251cd1",
+    "tests/test_oliver_release_authority.py": "sha256:45b6ba09e81d8fd19a0d243e19b93b2b4264165451fb6908fa97961304e9228c",
     "tests/test_oliver_release_source_binding.py": "sha256:c0e196fb54e34d6003e05c4f30d0c17791dad3da8b2e89ca2c436b1721e13361",
     "tests/test_oliver_slash_dispatch_owners.py": "sha256:a3f0908d39f9f115e74cb259dbd9f68901082ffe94fba66f9b92d703dddedf4a",
     "tests/test_oliver_slash_unknown.py": "sha256:84467445dc5041a45357de973d631b74c3d6778835a712007a51e6870b5a66cf",
+    "tests/test_oliver_smoke_upgrade.py": "sha256:6754d1c3e62ea184cf40b1b3f18115faf8455057a38cbb977158936f757d2bff",
     "tests/test_oliver_smoke_wheel_install.py": "sha256:34a2a52cb0e58bf409e8d9d16ce9d5068dd4a1e741f7181b62197338c2ef5b72",
     "tests/test_oliver_windows_security_api.py": "sha256:018f993b39bfa7e85d3d1a7f62b2bb4597957fdf345ba702d28e61b4b1257195",
     "tests/test_output_normalize.py": "sha256:b0d6e2cfc3dd53a745662848c3c4d69df2a43d4ab8e3f8803cc3263a18e7b759",
@@ -3749,10 +3750,10 @@
     "tests/test_tool_contract.py": "sha256:a67fe8cc7f2b8b3558c655ed0dc61fa95759947f43d2aa732563350b048586d9",
     "tests/test_tools.py": "sha256:44e48a1bfbffd1f7d27a53febd1e7d4c65cc5bc008376e18d408736fbd55c857",
     "tests/test_tree_of_thought.py": "sha256:5dd79897f568eac28729b5654e32e05b87a628b8f39eee8234fa19f925307904",
-    "tests/test_updater.py": "sha256:b78c9fe66f5abdf49ade1c4d2f63e28f11f83a1f78dee5c083ba242d9e652221",
+    "tests/test_updater.py": "sha256:abfe7e7c508fb16c29b405dda7b376e02e71ca778215e34a9b8b601105a01768",
     "tests/test_url_scheme.py": "sha256:1576527e7bdbb5d2bfd98127463f592a2a06f06b178f6290741365644834054b",
     "tests/test_verify.py": "sha256:a336343623071918bd71e3df786b41f9946ed232d16b3f8cfdc14b53b8356989",
-    "tests/test_version_manifest.py": "sha256:c524f7a1d41c43b6348cf1957bd899b4a29265fdafb7118d9de24c840b2a410b",
+    "tests/test_version_manifest.py": "sha256:ce1726396d76e196c3f708745f0455617bb349cd9cd620160103dfdb95951f11",
     "tests/test_william_plugins.py": "sha256:f155460e58af22c6b594b7c7bcb994f1d42a433e8d01743a04272db7f727591c",
     "tests/test_workspace_resolver.py": "sha256:c8a24b9b3d73ba5b88e78963be3858dd10b2fd90ac4d1a892c2ed87dbb89ed57",
     "tests/test_worktree_runtime.py": "sha256:b2b33ccfe869a9cb910a55dec34c8adfd272d0f425ced62bd38fe0221715895d",
