@@ -113,6 +113,9 @@ _CLEANUP_BOUNDARY_REASONS = (
     "internal_network_cleanup_failed",
 )
 _CLEANUP_MASKS = frozenset(f"{mask:02x}" for mask in range(1, 1 << len(_CLEANUP_BOUNDARY_REASONS)))
+_EGRESS_DNS_REASONS = frozenset(
+    {"dns_resolution_failed", "dns_empty", "dns_answer_limit", "dns_answer_invalid", "non_public_address"}
+)
 _BROKER_TERMINAL_REASONS = frozenset(
     {
         "active_connection_limit",
@@ -172,6 +175,30 @@ _BROKER_TERMINAL_REASONS = frozenset(
         "upstream_target",
         "upstream_timeout",
         "websocket_denied",
+    }
+    | {"upstream_" + reason for reason in _EGRESS_DNS_REASONS | {"dns_rebinding", "target_type"}}
+    | {
+        "redirect_" + reason
+        for reason in _EGRESS_DNS_REASONS
+        | {
+            "ambiguous_numeric_host",
+            "cross_origin_redirect_denied",
+            "host_invalid",
+            "local_discovery_denied",
+            "policy_type",
+            "port_denied",
+            "redirect_downgrade",
+            "redirect_limit",
+            "redirect_origin_not_allowed",
+            "scheme_denied",
+            "session_not_started",
+            "url_ambiguous",
+            "url_invalid",
+            "url_size",
+            "url_type",
+            "userinfo_denied",
+            "websocket_denied",
+        }
     }
 )
 _BROWSER_TERMINAL_REASONS = frozenset(

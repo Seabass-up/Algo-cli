@@ -55,6 +55,9 @@ Broker result failures retain only allowlisted `broker_*` reason codes. Unknown
 or malformed broker reasons remain `broker_terminal_rejected`; failed, blocked,
 handoff, or unknown dispositions never become verified. Result type, positive
 integer counters, and CA binding remain separate mandatory checks.
+The closed vocabulary includes DNS-pin and redirect rejection codes emitted
+with the broker's `upstream_` and `redirect_` prefixes. Unknown suffixes are
+still rejected; prefixes alone never authorize diagnostic text.
 
 Cleanup failures retain a two-digit lowercase hexadecimal suffix from `01`
 through `3f`, appended to `cleanup_incomplete` or

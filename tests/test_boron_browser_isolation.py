@@ -28,6 +28,15 @@ from algo_cli.boron_browser_isolation import (
     probe_docker_image,
     verify_docker_topology,
 )
+from algo_cli.xenon_browser_broker import (
+    XenonBrokerRejected,
+    XenonBrokerSession,
+    XenonEphemeralCertificateAuthority,
+    connect_xenon_upstream,
+    issue_xenon_broker_permit,
+    verify_xenon_broker_permit,
+)
+from algo_cli.xenon_browser_egress import XenonEgressPolicy, XenonEgressSession
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1374,13 +1383,98 @@ def test_broker_terminal_diagnostics_never_turn_a_failure_into_success(reason: s
         )
 
 
-@pytest.mark.parametrize("reason", [None, "", "private_token", "socket_eof private_token", True, {}])
+@pytest.mark.parametrize(
+    "reason",
+    [
+        None,
+        "",
+        "private_token",
+        "socket_eof private_token",
+        "upstream_private_token",
+        "redirect_private_token",
+        True,
+        {},
+    ],
+)
 def test_broker_terminal_diagnostics_do_not_echo_untrusted_values(reason) -> None:
     module = _live_module()
     with pytest.raises(module.LiveSessionRejected, match="^broker_terminal_rejected$"):
         module._validate_broker_result(
             {"type": "xenon.result", "disposition": "failed", "reason_code": reason},
             ca_certificate_digest="sha256:" + "a" * 64,
+        )
+
+
+@pytest.mark.parametrize(
+    ("answers", "reason"),
+    [
+        (("8.8.4.4",), "dns_rebinding"),
+        (OSError("private_dns_detail"), "dns_resolution_failed"),
+        ((), "dns_empty"),
+        (("8.8.8.8",) * 33, "dns_answer_limit"),
+        (("not-an-address",), "dns_answer_invalid"),
+        (("127.0.0.1",), "non_public_address"),
+    ],
+)
+def test_upstream_dns_producer_reasons_survive_live_validation(answers, reason: str) -> None:
+    module = _live_module()
+    session = XenonEgressSession(XenonEgressPolicy(), resolver=lambda *_: ("8.8.8.8",))
+    target = session.begin("https://example.com/")
+
+    def resolve(*_):
+        if isinstance(answers, OSError):
+            raise answers
+        return answers
+
+    session.resolver = resolve
+    with pytest.raises(XenonBrokerRejected, match="^upstream_" + reason + "$") as caught:
+        connect_xenon_upstream(target, session)
+    with pytest.raises(module.LiveSessionRejected, match="^broker_upstream_" + reason + "$"):
+        module._validate_broker_result(
+            {"type": "xenon.result", "disposition": "failed", "reason_code": caught.value.reason_code},
+            ca_certificate_digest="sha256:" + "a" * 64,
+        )
+
+
+@pytest.mark.parametrize(
+    ("location", "reason"),
+    [
+        ("https://other.example/", "cross_origin_redirect_denied"),
+        ("http://example.com/", "scheme_denied"),
+        ("wss://example.com/", "websocket_denied"),
+        ("https://localhost/", "local_discovery_denied"),
+        ("https://user:private@example.com/", "userinfo_denied"),
+        ("https://example.com:444/", "port_denied"),
+        ("https://example.com/next", "redirect_limit"),
+    ],
+)
+def test_redirect_producer_reasons_survive_live_validation(location: str, reason: str) -> None:
+    module = _live_module()
+    key = b"x" * 32
+
+    def resolver(*_):
+        return ("8.8.8.8",)
+
+    permit = issue_xenon_broker_permit(
+        authority_key=key,
+        raw_url="https://example.com/",
+        resolver=resolver,
+        issued_at_ms=NOW_MS,
+        expires_at_ms=NOW_MS + 60_000,
+        fencing_token=1,
+        maximum_redirects=0 if reason == "redirect_limit" else 5,
+    )
+    canonical, egress, target = verify_xenon_broker_permit(
+        permit, authority_key=key, resolver=resolver, now_ms=NOW_MS + 1, expected_fencing_token=1
+    )
+    ca = XenonEphemeralCertificateAuthority.create(now_ms=NOW_MS, expires_at_ms=NOW_MS + 60_000)
+    session = XenonBrokerSession(canonical, egress, target, ca, clock_ms=lambda: NOW_MS + 1)
+    with pytest.raises(XenonBrokerRejected, match="^redirect_" + reason + "$") as caught:
+        session.validate_redirect(target.canonical_url, location)
+    with pytest.raises(module.LiveSessionRejected, match="^broker_redirect_" + reason + "$"):
+        module._validate_broker_result(
+            {"type": "xenon.result", "disposition": "failed", "reason_code": caught.value.reason_code},
+            ca_certificate_digest=ca.certificate_digest,
         )
 
 
