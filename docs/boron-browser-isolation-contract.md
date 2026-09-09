@@ -49,6 +49,22 @@ linked NSS path components are rejected before import. Certificate verification
 stays enabled. Successful `certutil` readback is not browser qualification:
 the exact hosted Chrome process must complete the broker navigation as well.
 
+### Failure diagnostics
+
+Broker result failures retain only allowlisted `broker_*` reason codes. Unknown
+or malformed broker reasons remain `broker_terminal_rejected`; failed, blocked,
+handoff, or unknown dispositions never become verified. Result type, positive
+integer counters, and CA binding remain separate mandatory checks.
+
+Cleanup failures retain a two-digit lowercase hexadecimal suffix from `01`
+through `3f`, appended to `cleanup_incomplete` or
+`<primary>_and_cleanup_incomplete`. Bits identify the browser driver (`01`),
+broker driver (`02`), browser container (`04`), broker container (`08`), egress
+network (`10`), and internal network (`20`). Combined failures preserve every
+known bit without emitting resource names, paths, payloads, or exception text.
+The legacy suffix without a mask remains valid when boundary detail is absent.
+These diagnostics do not change teardown commands, deadlines, or success gates.
+
 ### Freshness semantics
 
 The public gate measures **security update lag**, not the age of the current

@@ -103,6 +103,77 @@ _CLEANUP_RESOURCE_KEYS = frozenset(
         "internal_network",
     }
 )
+# Bit positions are part of the closed diagnostic vocabulary, not raw errors.
+_CLEANUP_BOUNDARY_REASONS = (
+    "browser_driver_cleanup_failed",
+    "broker_driver_cleanup_failed",
+    "browser_container_cleanup_failed",
+    "broker_container_cleanup_failed",
+    "egress_network_cleanup_failed",
+    "internal_network_cleanup_failed",
+)
+_CLEANUP_MASKS = frozenset(f"{mask:02x}" for mask in range(1, 1 << len(_CLEANUP_BOUNDARY_REASONS)))
+_BROKER_TERMINAL_REASONS = frozenset(
+    {
+        "active_connection_limit",
+        "auth_handoff",
+        "broker_clock",
+        "broker_expired",
+        "browser_tls",
+        "ca_expired",
+        "chunk_framing",
+        "chunk_line",
+        "chunk_size",
+        "connect_authority",
+        "connect_header",
+        "connect_host",
+        "connect_method",
+        "connect_origin",
+        "connect_pipelining",
+        "connect_port",
+        "connection_limit",
+        "connection_unknown",
+        "download_handoff",
+        "http_header",
+        "http_header_count",
+        "http_header_name",
+        "http_header_size",
+        "http_header_value",
+        "http_line_ending",
+        "http_start_line",
+        "leaf_context",
+        "pdf_handoff",
+        "redirect_origin",
+        "request_body",
+        "request_connection",
+        "request_host",
+        "request_method",
+        "request_pipelining",
+        "request_target",
+        "response_byte_limit",
+        "response_connection",
+        "response_framing",
+        "response_length",
+        "response_location",
+        "response_pipelining",
+        "response_status",
+        "response_truncated",
+        "response_unexpected_body",
+        "socket_eof",
+        "socket_read",
+        "total_byte_limit",
+        "trailer_size",
+        "upgrade_denied",
+        "upstream_alpn",
+        "upstream_connect",
+        "upstream_connector",
+        "upstream_read",
+        "upstream_socket",
+        "upstream_target",
+        "upstream_timeout",
+        "websocket_denied",
+    }
+)
 _BROWSER_TERMINAL_REASONS = frozenset(
     {
         "cdp_command_failed",
@@ -211,9 +282,13 @@ _LIVE_STATIC_REASON_CODES = frozenset(
         "browser_result_type",
         "browser_security_evidence_shape",
         "browser_terminal_rejected",
+        "broker_ca_identity",
         "broker_ready_identity",
+        "broker_result_counters",
         "broker_result_invariant",
+        "broker_result_type",
         "broker_stop_failed",
+        "broker_terminal_rejected",
         "cleanup_incomplete",
         "container_inspect_timeout",
         "container_inspect_unavailable",
@@ -259,6 +334,7 @@ _LIVE_READ_STAGES = frozenset({"broker_ready", "broker_result", "browser_result"
 _LIVE_WAIT_STAGES = frozenset({"broker_attach_exit", "browser_exit"})
 _LIVE_BASE_REASON_CODES = frozenset(
     _LIVE_STATIC_REASON_CODES
+    | {"broker_" + reason for reason in _BROKER_TERMINAL_REASONS}
     | {"browser_" + reason for reason in _BROWSER_TERMINAL_REASONS}
     | {"browser_entry_" + reason for reason in _BROWSER_ENTRY_REASONS}
     | {stage + suffix for stage in _LIVE_RUN_STAGES for suffix in ("_failed", "_unavailable")}
@@ -327,6 +403,12 @@ def _normalized_live_reason(reason_code: Any) -> str:
     cleanup_suffix = "_and_cleanup_incomplete"
     if reason_code.endswith(cleanup_suffix) and reason_code[: -len(cleanup_suffix)] in _LIVE_BASE_REASON_CODES:
         return reason_code
+    stem, _separator, mask = reason_code.rpartition("_")
+    if mask in _CLEANUP_MASKS and (
+        stem in {"cleanup_incomplete", "live_failure_and_cleanup_incomplete"}
+        or (stem.endswith(cleanup_suffix) and stem[: -len(cleanup_suffix)] in _LIVE_BASE_REASON_CODES)
+    ):
+        return reason_code
     return "live_internal_error"
 
 
@@ -343,6 +425,23 @@ def _reject_browser_entry_error(row: Mapping[str, Any]) -> NoReturn:
     if reason in _BROWSER_ENTRY_REASONS:
         _reject("browser_entry_" + reason)
     _reject("browser_entry_rejected")
+
+
+def _validate_broker_result(row: Mapping[str, Any], *, ca_certificate_digest: str) -> None:
+    if row.get("type") != "xenon.result":
+        _reject("broker_result_type")
+    if row.get("disposition") != "verified":
+        reason = row.get("reason_code")
+        if type(reason) is str and reason in _BROKER_TERMINAL_REASONS:
+            _reject("broker_" + reason)
+        _reject("broker_terminal_rejected")
+    if any(
+        type(row.get(field)) is not int or row[field] < 1
+        for field in ("connection_count", "request_count", "bytes_to_browser")
+    ):
+        _reject("broker_result_counters")
+    if row.get("ca_certificate_digest") != ca_certificate_digest:
+        _reject("broker_ca_identity")
 
 
 class LiveSessionRejected(RuntimeError):
@@ -1025,9 +1124,17 @@ def _wait_docker_absent(kind: str, resource_id: str) -> bool:
         time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
 
 
-def _cleanup_failure_reason(primary_error: BaseException | None) -> str:
+def _cleanup_failure_reason(primary_error: BaseException | None, failures: tuple[str, ...] = ()) -> str:
+    suffix = ""
+    if (
+        type(failures) is tuple
+        and failures
+        and all(type(reason) is str and reason in _CLEANUP_BOUNDARY_REASONS for reason in failures)
+    ):
+        mask = sum(1 << bit for bit, reason in enumerate(_CLEANUP_BOUNDARY_REASONS) if reason in failures)
+        suffix = f"_{mask:02x}"
     if primary_error is None:
-        return "cleanup_incomplete"
+        return "cleanup_incomplete" + suffix
     reason = getattr(primary_error, "reason_code", None)
     if (
         isinstance(primary_error, LiveSessionRejected)
@@ -1035,8 +1142,8 @@ def _cleanup_failure_reason(primary_error: BaseException | None) -> str:
         and _PRIMARY_REASON_CODE_RE.fullmatch(reason)
         and reason in _LIVE_BASE_REASON_CODES
     ):
-        return reason + "_and_cleanup_incomplete"
-    return "live_failure_and_cleanup_incomplete"
+        return reason + "_and_cleanup_incomplete" + suffix
+    return "live_failure_and_cleanup_incomplete" + suffix
 
 
 def _reported_failure_reason(error: BaseException) -> str:
@@ -1514,18 +1621,7 @@ def run_live_session(
             BytesIO(broker_attach.read(deadline=time.monotonic() + 20, stage="broker_result") + b"\x00")
         )
         broker_attach.wait(timeout=15, stage="broker_attach_exit")
-        if (
-            broker_result.get("type") != "xenon.result"
-            or broker_result.get("disposition") != "verified"
-            or type(broker_result.get("connection_count")) is not int
-            or broker_result["connection_count"] < 1
-            or type(broker_result.get("request_count")) is not int
-            or broker_result["request_count"] < 1
-            or type(broker_result.get("bytes_to_browser")) is not int
-            or broker_result["bytes_to_browser"] < 1
-            or broker_result.get("ca_certificate_digest") != ready.get("ca_certificate_digest")
-        ):
-            _reject("broker_result_invariant")
+        _validate_broker_result(broker_result, ca_certificate_digest=ready.get("ca_certificate_digest"))
         return {
             "schema_version": 2,
             "platform": live_platform,
@@ -1581,7 +1677,7 @@ def run_live_session(
             except OSError:
                 seccomp_close_failed = True
         if cleanup_failures:
-            raise LiveSessionRejected(_cleanup_failure_reason(primary_error)) from primary_error
+            raise LiveSessionRejected(_cleanup_failure_reason(primary_error, cleanup_failures)) from primary_error
         if seccomp_close_failed and primary_error is None:
             raise LiveSessionRejected("live_seccomp_close_failed") from None
 

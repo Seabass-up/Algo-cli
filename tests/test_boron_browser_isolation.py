@@ -1305,6 +1305,114 @@ def test_cleanup_failure_reason_never_uses_untyped_exception_text() -> None:
     )
 
 
+@pytest.mark.parametrize("mask", range(1, 64))
+def test_live_cleanup_diagnostics_keep_only_known_boundary_bits(mask: int) -> None:
+    module = _live_module()
+    boundaries = (
+        "browser_driver_cleanup_failed",
+        "broker_driver_cleanup_failed",
+        "browser_container_cleanup_failed",
+        "broker_container_cleanup_failed",
+        "egress_network_cleanup_failed",
+        "internal_network_cleanup_failed",
+    )
+    failures = tuple(reason for bit, reason in enumerate(boundaries) if mask & (1 << bit))
+    primary = module.LiveSessionRejected("broker_socket_eof")
+    expected = f"broker_socket_eof_and_cleanup_incomplete_{mask:02x}"
+    assert module._cleanup_failure_reason(primary, failures) == expected
+    assert module._normalized_live_reason(expected) == expected
+    assert module._cleanup_failure_reason(None, failures) == f"cleanup_incomplete_{mask:02x}"
+    unknown = module._cleanup_failure_reason(RuntimeError("private_token"), failures)
+    assert unknown == f"live_failure_and_cleanup_incomplete_{mask:02x}"
+    assert module.LiveSessionRejected(unknown).reason_code == unknown
+
+
+@pytest.mark.parametrize("suffix", ["00", "40", "ff", "1", "001", "private_token"])
+def test_live_cleanup_diagnostics_reject_unknown_boundary_masks(suffix: str) -> None:
+    module = _live_module()
+    assert module._normalized_live_reason("broker_socket_eof_and_cleanup_incomplete_" + suffix) == "live_internal_error"
+    assert module._normalized_live_reason("cleanup_incomplete_" + suffix) == "live_internal_error"
+
+
+def test_broker_result_validation_preserves_success_and_separates_invariants() -> None:
+    module = _live_module()
+    digest = "sha256:" + "a" * 64
+    row = {
+        "type": "xenon.result",
+        "disposition": "verified",
+        "connection_count": 1,
+        "request_count": 1,
+        "bytes_to_browser": 1,
+        "ca_certificate_digest": digest,
+        "reason_code": "request_verified",
+    }
+    assert module._validate_broker_result(row, ca_certificate_digest=digest) is None
+    for field, value, reason in (
+        ("type", "xenon.error", "broker_result_type"),
+        ("connection_count", 0, "broker_result_counters"),
+        ("connection_count", True, "broker_result_counters"),
+        ("request_count", -1, "broker_result_counters"),
+        ("request_count", "1", "broker_result_counters"),
+        ("bytes_to_browser", 0, "broker_result_counters"),
+        ("bytes_to_browser", 1.0, "broker_result_counters"),
+        ("ca_certificate_digest", "sha256:" + "b" * 64, "broker_ca_identity"),
+    ):
+        with pytest.raises(module.LiveSessionRejected, match="^" + reason + "$"):
+            module._validate_broker_result({**row, field: value}, ca_certificate_digest=digest)
+
+
+@pytest.mark.parametrize(
+    "reason", ["socket_eof", "browser_tls", "connection_unknown", "connect_origin", "response_truncated"]
+)
+@pytest.mark.parametrize("disposition", ["blocked", "handoff", "failed", "unknown"])
+def test_broker_terminal_diagnostics_never_turn_a_failure_into_success(reason: str, disposition: str) -> None:
+    module = _live_module()
+    with pytest.raises(module.LiveSessionRejected, match="^broker_" + reason + "$"):
+        module._validate_broker_result(
+            {"type": "xenon.result", "disposition": disposition, "reason_code": reason},
+            ca_certificate_digest="sha256:" + "a" * 64,
+        )
+
+
+@pytest.mark.parametrize("reason", [None, "", "private_token", "socket_eof private_token", True, {}])
+def test_broker_terminal_diagnostics_do_not_echo_untrusted_values(reason) -> None:
+    module = _live_module()
+    with pytest.raises(module.LiveSessionRejected, match="^broker_terminal_rejected$"):
+        module._validate_broker_result(
+            {"type": "xenon.result", "disposition": "failed", "reason_code": reason},
+            ca_certificate_digest="sha256:" + "a" * 64,
+        )
+
+
+def test_broker_and_cleanup_diagnostics_never_coerce_untrusted_objects() -> None:
+    module = _live_module()
+
+    class PrivateString(str):
+        def __hash__(self):
+            pytest.fail("diagnostics must not hash string subclasses")
+
+        def __eq__(self, _other):
+            pytest.fail("diagnostics must not compare string subclasses")
+
+    class PrivateObject:
+        def __str__(self):
+            pytest.fail("diagnostics must not stringify untrusted objects")
+
+    for reason in (PrivateString("socket_eof"), PrivateObject()):
+        with pytest.raises(module.LiveSessionRejected, match="^broker_terminal_rejected$"):
+            module._validate_broker_result(
+                {"type": "xenon.result", "disposition": "failed", "reason_code": reason},
+                ca_certificate_digest="sha256:" + "a" * 64,
+            )
+        assert module._cleanup_failure_reason(None, (reason,)) == "cleanup_incomplete"
+    for failures in (("private_token",), ["browser_driver_cleanup_failed"], None):
+        assert module._cleanup_failure_reason(None, failures) == "cleanup_incomplete"
+    assert (
+        module._cleanup_failure_reason(None, ("browser_driver_cleanup_failed", "browser_driver_cleanup_failed"))
+        == "cleanup_incomplete_01"
+    )
+
+
 def test_live_error_reporting_never_echoes_untrusted_reason_text() -> None:
     module = _live_module()
     assert module.LiveSessionRejected("private_token_value").reason_code == "live_internal_error"
