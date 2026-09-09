@@ -123,7 +123,7 @@ def _load_event(*, frame: str = "frame-a", loader: str = "loader-a") -> dict:
     return {
         "method": "Page.lifecycleEvent",
         "sessionId": "session-a",
-        "params": {"frameId": frame, "loaderId": loader, "name": "load", "timestamp": 1},
+        "params": {"frameId": frame, "loaderId": loader, "name": "load", "timestamp": 1234.125},
     }
 
 
@@ -170,6 +170,52 @@ def test_pipe_codec_round_trips_fragmented_and_coalesced_messages() -> None:
 def test_pipe_decoder_rejects_ambiguous_or_open_json(payload: bytes, reason: str) -> None:
     with pytest.raises(BoronPipeRejected, match=reason):
         decode_boron_pipe_message(payload)
+
+
+def test_fractional_cdp_lifecycle_timestamp_reaches_verified_navigation() -> None:
+    machine = BoronNavigationMachine(_plan())
+    command = _bootstrap(machine)
+    _navigate_ack(machine, command)
+    machine.handle(_frame_event())
+    event = _load_event()
+    payload = json.dumps(event).encode("ascii") + b"\x00"
+    decoder = BoronPipeDecoder()
+
+    assert decoder.feed(payload[:17]) == []
+    decoded = decoder.feed(payload[17:])
+    assert decoded == [event]
+    assert machine.handle(decoded[0]) == ()
+    assert machine.evidence().state is BoronNavigationState.VERIFIED
+    decoder.finish()
+
+    with pytest.raises(BoronPipeRejected, match="^json_float$"):
+        decode_boron_pipe_message(payload[:-1])
+    with pytest.raises(BoronPipeRejected, match="^json_float$"):
+        encode_boron_pipe_message(event)
+
+
+@pytest.mark.parametrize("number", [b"NaN", b"Infinity", b"-Infinity", b"1e999", b"-1e999"])
+def test_cdp_decoder_rejects_non_finite_numbers(number: bytes) -> None:
+    payload = b'{"method":"Page.loadEventFired","params":{"timestamp":' + number + b"}}\x00"
+    with pytest.raises(BoronPipeRejected, match="^json_(constant|float)$"):
+        BoronPipeDecoder().feed(payload)
+
+
+@pytest.mark.parametrize("number", [float("nan"), float("inf"), float("-inf")])
+def test_navigation_machine_rejects_non_finite_direct_input(number: float) -> None:
+    event = _load_event()
+    event["params"]["timestamp"] = number
+    with pytest.raises(BoronPipeRejected, match="^json_float$"):
+        BoronNavigationMachine(_plan()).handle(event)
+
+
+def test_fractional_cdp_message_id_is_still_rejected() -> None:
+    machine = BoronNavigationMachine(_plan())
+    command = machine.start()[0]
+    row = _response(command)
+    row["id"] = float(row["id"])
+    with pytest.raises(BoronPipeRejected, match="^cdp_response_id$"):
+        machine.handle(row)
 
 
 def test_pipe_decoder_bounds_frames_buffers_and_truncation() -> None:

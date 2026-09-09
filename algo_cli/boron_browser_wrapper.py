@@ -14,6 +14,7 @@ from enum import Enum
 import hashlib
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -111,7 +112,13 @@ def _constant(_value: str) -> NoReturn:
     _reject("json_constant")
 
 
-def _bound_tree(value: Any, *, depth: int = 0, count: list[int] | None = None) -> None:
+def _bound_tree(
+    value: Any,
+    *,
+    depth: int = 0,
+    count: list[int] | None = None,
+    allow_finite_floats: bool = False,
+) -> None:
     if count is None:
         count = [0]
     if depth > BORON_MAX_JSON_DEPTH:
@@ -122,6 +129,8 @@ def _bound_tree(value: Any, *, depth: int = 0, count: list[int] | None = None) -
     if value is None or type(value) in {bool, int}:
         return
     if type(value) is float:
+        if allow_finite_floats and math.isfinite(value):
+            return
         _reject("json_float")
     if type(value) is str:
         if len(value.encode("utf-8")) > BORON_MAX_STRING_BYTES:
@@ -129,17 +138,17 @@ def _bound_tree(value: Any, *, depth: int = 0, count: list[int] | None = None) -
         return
     if type(value) is list:
         for item in value:
-            _bound_tree(item, depth=depth + 1, count=count)
+            _bound_tree(item, depth=depth + 1, count=count, allow_finite_floats=allow_finite_floats)
         return
     if type(value) is dict:
         for key, item in value.items():
-            _bound_tree(key, depth=depth + 1, count=count)
-            _bound_tree(item, depth=depth + 1, count=count)
+            _bound_tree(key, depth=depth + 1, count=count, allow_finite_floats=allow_finite_floats)
+            _bound_tree(item, depth=depth + 1, count=count, allow_finite_floats=allow_finite_floats)
         return
     _reject("json_type")
 
 
-def decode_boron_pipe_message(payload: bytes) -> dict[str, Any]:
+def _decode_pipe_message(payload: bytes, *, allow_finite_floats: bool) -> dict[str, Any]:
     if type(payload) is not bytes or not payload or len(payload) > BORON_MAX_PIPE_MESSAGE_BYTES:
         _reject("pipe_frame_size")
     try:
@@ -154,8 +163,14 @@ def decode_boron_pipe_message(payload: bytes) -> dict[str, Any]:
         _reject("pipe_frame_json")
     if type(value) is not dict:
         _reject("pipe_message_object")
-    _bound_tree(value)
+    _bound_tree(value, allow_finite_floats=allow_finite_floats)
     return value
+
+
+def decode_boron_pipe_message(payload: bytes) -> dict[str, Any]:
+    """Decode the integer-only container control protocol."""
+
+    return _decode_pipe_message(payload, allow_finite_floats=False)
 
 
 def encode_boron_pipe_message(message: Mapping[str, Any]) -> bytes:
@@ -205,7 +220,8 @@ class BoronPipeDecoder:
                 _reject("pipe_frame_size")
             payload = bytes(self._buffer[:end])
             del self._buffer[: end + 1]
-            messages.append(decode_boron_pipe_message(payload))
+            # CDP uses fractional seconds; container control frames do not.
+            messages.append(_decode_pipe_message(payload, allow_finite_floats=True))
         return messages
 
     def finish(self) -> None:
@@ -763,7 +779,7 @@ class BoronNavigationMachine:
     def handle(self, message: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
         if type(message) is not dict:
             _reject("pipe_message_object")
-        _bound_tree(message)
+        _bound_tree(message, allow_finite_floats=True)
         if self.state in {
             BoronNavigationState.VERIFIED,
             BoronNavigationState.FAILED,
