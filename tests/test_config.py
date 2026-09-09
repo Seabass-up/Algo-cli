@@ -8,7 +8,9 @@ import stat
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -797,6 +799,162 @@ def test_windows_private_directory_is_private_at_creation_without_repair(
     )
     config._windows_canonicalize_private_path(inherited, directory=False)
     assert config._windows_private_dacl(inherited) is True
+
+
+def test_windows_existing_real_directory_pins_complete_chain_once(tmp_path, monkeypatch) -> None:
+    leaf = tmp_path / "top" / "middle" / "leaf"
+    leaf.mkdir(parents=True)
+    calls = []
+    exits = []
+    monkeypatch.setattr(config, "os", SimpleNamespace(**{**vars(os), "name": "nt"}))
+    expected = tuple(
+        (path, config._portable_directory_identity(path.lstat())) for path in (*reversed(leaf.parents), leaf)
+    )
+
+    @contextmanager
+    def pinned(path):
+        calls.append(path)
+        yield expected[: len(path.parts)]
+        exits.append(path)
+
+    def unexpected_mutation(*args, **kwargs):
+        pytest.fail("an existing generic directory must not be created or have its ACL changed")
+
+    monkeypatch.setattr(config, "_windows_pinned_directory_chain", pinned)
+    monkeypatch.setattr(config, "_windows_namespace_control_dacl", lambda *args, **kwargs: True)
+    monkeypatch.setattr(config, "_windows_harden_private_dacl", unexpected_mutation)
+    monkeypatch.setattr(Path, "mkdir", unexpected_mutation)
+
+    assert config._ensure_windows_real_directory(leaf) == expected
+    assert calls == [leaf]
+    assert exits == [leaf]
+
+
+@pytest.mark.parametrize("on_exit", [False, True])
+@pytest.mark.parametrize("error_type", [FileNotFoundError, PermissionError, OSError])
+def test_windows_existing_real_directory_never_retries_failed_pin(tmp_path, monkeypatch, on_exit, error_type) -> None:
+    leaf = tmp_path / "leaf"
+    leaf.mkdir()
+    monkeypatch.setattr(config, "os", SimpleNamespace(**{**vars(os), "name": "nt"}))
+    failure = error_type("ancestry validation failed")
+
+    @contextmanager
+    def pinned(path):
+        if not on_exit:
+            raise failure
+        yield ()
+        raise failure
+
+    monkeypatch.setattr(config, "_windows_pinned_directory_chain", pinned)
+    with pytest.raises(error_type) as rejected:
+        config._ensure_windows_real_directory(leaf)
+    assert rejected.value is failure
+    assert leaf.is_dir()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows real-directory creation contract")
+def test_windows_missing_real_directory_creates_only_under_pinned_parent(tmp_path, monkeypatch) -> None:
+    leaf = tmp_path / "new-parent" / "leaf"
+    original_pin = config._windows_pinned_directory_chain
+    original_mkdir = Path.mkdir
+    active = []
+    created = []
+
+    @contextmanager
+    def pinned(path):
+        with original_pin(path) as captured:
+            active.append(path)
+            try:
+                yield captured
+            finally:
+                active.pop()
+
+    def guarded_mkdir(path, *args, **kwargs):
+        assert active == [path.parent]
+        created.append(path)
+        return original_mkdir(path, *args, **kwargs)
+
+    with monkeypatch.context() as creation_context:
+        creation_context.setattr(config, "_windows_pinned_directory_chain", pinned)
+        creation_context.setattr(Path, "mkdir", guarded_mkdir)
+        captured = config._ensure_windows_real_directory(leaf)
+
+    assert created == [leaf.parent, leaf]
+    assert captured[-1] == (leaf, config._portable_directory_identity(leaf.lstat()))
+    config._recheck_directory_chain(captured)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows real-directory ancestry contract")
+@pytest.mark.parametrize("existing", [False, True])
+def test_windows_real_directory_rejects_junction_without_mutation(tmp_path, existing) -> None:
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    if existing:
+        (victim / "leaf").mkdir()
+    alias = tmp_path / "alias"
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(victim)],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+    before = list(victim.iterdir())
+    with pytest.raises(OSError, match="ancestry is unsafe"):
+        config._ensure_windows_real_directory(alias / "leaf")
+    assert list(victim.iterdir()) == before
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows no-delete-share ancestry contract")
+@pytest.mark.parametrize("existing", [False, True])
+def test_windows_real_directory_rechecks_ancestor_authorization(tmp_path, existing) -> None:
+    top = tmp_path / "top"
+    top.mkdir()
+    config._windows_harden_private_dacl(top)
+    leaf = top / "middle" / "leaf"
+    if existing:
+        config._ensure_windows_real_directory(leaf)
+    icacls = Path(os.environ["SystemRoot"]) / "System32" / "icacls.exe"
+    granted = subprocess.run(
+        [str(icacls), str(top), "/grant", "*S-1-5-20:(DC)"],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert granted.returncode == 0, granted.stderr.decode(errors="replace")
+    before = list(top.iterdir())
+    with pytest.raises(OSError, match="ancestry"):
+        config._ensure_windows_real_directory(leaf)
+    assert list(top.iterdir()) == before
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows no-delete-share ancestry contract")
+def test_windows_existing_real_directory_holds_handles_through_exit_recheck(tmp_path, monkeypatch) -> None:
+    top = tmp_path / "top"
+    leaf = top / "middle" / "leaf"
+    leaf.mkdir(parents=True)
+    for directory in (top, top / "middle", leaf):
+        config._windows_harden_private_dacl(directory)
+    displaced = top / "displaced"
+    original_recheck = config._recheck_directory_chain
+    checked = []
+
+    def recheck(captured):
+        assert captured[-1][0] == leaf
+        with pytest.raises(OSError):
+            (top / "middle").rename(displaced)
+        checked.append(captured)
+        original_recheck(captured)
+
+    monkeypatch.setattr(config, "_recheck_directory_chain", recheck)
+    result = config._ensure_windows_real_directory(leaf)
+    assert checked == [result]
+    (top / "middle").rename(displaced)
+    assert (displaced / "leaf").is_dir()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows no-delete-share ancestry contract")

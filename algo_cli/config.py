@@ -1562,6 +1562,15 @@ def _ensure_windows_real_directory(path: Path) -> tuple[tuple[Path, tuple[int, .
     current = Path(absolute.anchor)
     if not current.anchor:
         raise OSError("directory path is not absolute")
+    try:
+        absolute.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        # The existence probe grants no trust: pin and validate the complete
+        # ancestry once, including the exit recheck, without caching any ACL.
+        with _windows_pinned_directory_chain(absolute) as existing_chain:
+            return existing_chain
     with _windows_pinned_directory_chain(current) as root_chain:
         captured = list(root_chain)
     for part in absolute.parts[1:]:
