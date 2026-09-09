@@ -1279,10 +1279,26 @@ def test_blocked_main_run_returns_nonzero_and_never_creates_report(
     }
 
 
-def test_main_never_emits_unvalidated_dependency_exception_text(
+@pytest.mark.parametrize(
+    "reason,expected",
+    [
+        ("private_token_material", "hosted_build_failed"),
+        ("browser_build_failed private_token_material", "hosted_build_failed"),
+        ("browser_build_failed\nprivate_token_material", "hosted_build_failed"),
+        ("browser_build_private_token_material", "hosted_build_failed"),
+        ("browser_build_failed", "hosted_browser_build_failed"),
+        ("broker_build_unavailable", "hosted_broker_build_unavailable"),
+        ("build_metadata_number", "hosted_build_metadata_number"),
+        ("build_metadata_provenance_invocation", "hosted_build_metadata_provenance_invocation"),
+        ("browser_build_attestations_sbom_components", "hosted_browser_build_attestations_sbom_components"),
+    ],
+)
+def test_main_only_emits_allowlisted_dependency_rejection_codes(
     tmp_path: Path,
     monkeypatch,
     capsys,
+    reason: str,
+    expected: str,
 ) -> None:
     source = tmp_path / "source.py"
     source.write_text("pass\n", encoding="utf-8")
@@ -1292,15 +1308,35 @@ def test_main_never_emits_unvalidated_dependency_exception_text(
         monkeypatch.setenv(key, value)
 
     def fail_build(**_kwargs):
-        raise SCRIPT.BuildRejected("private_token_material")
+        raise SCRIPT.BuildRejected(reason)
 
     monkeypatch.setattr(SCRIPT, "run_hosted_qualification", fail_build)
     monkeypatch.setattr(SCRIPT, "_verified_revision_payloads", _accept_test_revision)
 
-    assert SCRIPT.main(["--repetitions", "5"]) == 2
+    report = tmp_path / "blocked-report.json"
+    assert SCRIPT.main(["--repetitions", "5", "--output-report", str(report)]) == 2
+    assert not report.exists()
     output = capsys.readouterr().out
     assert "private_token_material" not in output
     assert json.loads(output) == {
-        "reason_code": "hosted_build_failed",
+        "reason_code": expected,
         "status": "blocked",
     }
+
+
+def test_build_diagnostics_do_not_stringify_objects_or_multiple_arguments() -> None:
+    class PrivateObject:
+        def __str__(self):
+            raise AssertionError("exception arguments must not be stringified")
+
+    class PrivateString(str):
+        def __hash__(self):
+            raise AssertionError("string subclasses must not reach the allowlist lookup")
+
+    for arguments in (
+        (),
+        (PrivateObject(),),
+        (PrivateString("browser_build_failed"),),
+        ("browser_build_failed", "private_token_material"),
+    ):
+        assert SCRIPT._normalized_rejection_reason(SCRIPT.BuildRejected(*arguments)) == "hosted_build_failed"

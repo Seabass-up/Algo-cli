@@ -125,16 +125,25 @@ def _hosted_environment(**changes: str) -> dict[str, str]:
     return environment
 
 
-def _slsa_predicate() -> dict[str, object]:
+def _slsa_predicate(*, context_digest: str = "sha256:" + "f" * 64) -> dict[str, object]:
+    context_uri = "http://buildkit-session/" + "c" * 25
+    context_digests = {"sha256": context_digest.removeprefix("sha256:")}
+    dockerfile = "algo_cli/resources/boron_browser/boron_public_browser.Dockerfile"
+    frontend = "docker/dockerfile:1.26.0@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32"
+    arguments = {"build-arg:BORON_CODE_DIGEST": "sha256:" + "a" * 64}
     return {
         "buildType": "https://mobyproject.org/buildkit@v1",
         "builder": {"id": "https://github.com/Seabass-up/Algo-cli/actions/runs/987654321/attempts/2"},
         "invocation": {
-            "configSource": {"entryPoint": "algo_cli/resources/boron_browser/boron_public_browser.Dockerfile"},
+            "configSource": {"uri": context_uri, "digest": context_digests, "entryPoint": dockerfile},
             "parameters": {
-                "frontend": "dockerfile.v0",
-                "locals": [{"name": "context"}, {"name": "dockerfile"}],
-                "args": {"build-arg:BORON_CODE_DIGEST": "sha256:" + "a" * 64},
+                "frontend": "gateway.v0",
+                "compatibilityVersion": 30,
+                "args": {**arguments, "cmdline": frontend, "source": frontend},
+                "root": {
+                    "configSource": {"uri": context_uri, "digest": context_digests, "path": dockerfile},
+                    "request": {"args": dict(arguments)},
+                },
             },
             "environment": {"platform": "linux/amd64"},
         },
@@ -146,7 +155,7 @@ def _slsa_predicate() -> dict[str, object]:
             "completeness": {
                 "parameters": True,
                 "environment": True,
-                "materials": False,
+                "materials": True,
             },
         },
         "buildConfig": {"llbDefinition": {"digest": "sha256:" + "b" * 64}},
@@ -154,15 +163,15 @@ def _slsa_predicate() -> dict[str, object]:
             {
                 "uri": (
                     "pkg:docker/docker/dockerfile@1.26.0?"
-                    "digest=sha256%3Aecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32"
+                    "digest=sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32"
                     "&platform=linux%2Famd64"
                 ),
-                "digest": {"sha256": "34b128e419449565adc5ed7f487a6f503a73f1077012cfed86354c731338c44f"},
+                "digest": {"sha256": "ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32"},
             },
             {
                 "uri": (
                     "pkg:docker/docker/buildkit-syft-scanner@1.11.0?"
-                    "digest=sha256%3A79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68"
+                    "digest=sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68"
                     "&platform=linux%2Famd64"
                 ),
                 "digest": {"sha256": "79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68"},
@@ -170,11 +179,19 @@ def _slsa_predicate() -> dict[str, object]:
             {
                 "uri": (
                     "pkg:docker/debian@bookworm-slim?"
-                    "digest=sha256%3A63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e"
+                    "digest=sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e"
                     "&platform=linux%2Famd64"
                 ),
                 "digest": {"sha256": "63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e"},
             },
+            {
+                "uri": (
+                    "pkg:docker/docker/dockerfile@1.26.0?"
+                    "digest=sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32"
+                ),
+                "digest": {"sha256": "ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32"},
+            },
+            {"uri": context_uri, "digest": context_digests},
         ],
     }
 
@@ -719,6 +736,159 @@ def test_validated_build_metadata_requires_oci_index_config_and_real_provenance(
             module._validated_build_metadata(metadata)
 
 
+def test_build_metadata_accepts_finite_provenance_resource_samples(tmp_path: Path) -> None:
+    module = _build_module()
+    document = _build_metadata_document()
+    document["buildx.build.provenance"]["metadata"]["https://mobyproject.org/buildkit@v1#metadata"] = {
+        "sysUsage": [{"cpuStat": {"user": 46.79, "system": 7.24}}],
+    }
+    payload = json.dumps(document).encode("utf-8")
+    path = tmp_path / "metadata.json"
+    path.write_bytes(payload)
+
+    observed, digest, *_identities = module._validated_build_metadata(path)
+    assert observed == document
+    assert digest == "sha256:" + hashlib.sha256(payload).hexdigest()
+
+    document["containerimage.descriptor"]["size"] = 4096.0
+    path.write_text(json.dumps(document))
+    with pytest.raises(module.BuildRejected, match="build_metadata_identity"):
+        module._validated_build_metadata(path)
+
+
+def test_index_build_metadata_can_omit_config_but_cannot_supply_an_invalid_hint(tmp_path: Path) -> None:
+    module = _build_module()
+    document = _build_metadata_document()
+    del document["containerimage.config.digest"]
+    document["containerimage.descriptor"]["annotations"] = {}
+    path = tmp_path / "metadata.json"
+    path.write_text(json.dumps(document))
+    assert module._validated_build_metadata(path)[3] is None
+
+    for malformed in (None, False, 42, "not-a-digest"):
+        document["containerimage.config.digest"] = malformed
+        path.write_text(json.dumps(document))
+        with pytest.raises(module.BuildRejected, match="build_metadata_identity"):
+            module._validated_build_metadata(path)
+
+
+@pytest.mark.parametrize(
+    "location,value,reason",
+    [
+        (("invocation", "configSource", "uri"), "https://attacker.invalid/archive", "context"),
+        (("invocation", "configSource", "digest"), {"sha256": "e" * 64}, "context"),
+        (("invocation", "parameters", "compatibilityVersion"), 30.0, "invocation"),
+        (("invocation", "parameters", "compatibilityVersion"), 29, "invocation"),
+        (("invocation", "parameters", "locals"), [{"name": "context"}], "invocation"),
+        (("invocation", "parameters", "root", "configSource", "path"), "other.Dockerfile", "invocation"),
+        (("invocation", "parameters", "args", "source"), "docker/dockerfile:latest", "parameters"),
+        (("invocation", "parameters", "args", "cmdline"), "docker/dockerfile:latest", "parameters"),
+        (("invocation", "parameters", "root", "request", "args", "secret:extra"), "value", "parameters"),
+        (("invocation", "environment", "platform"), "linux/arm64", "platform"),
+        (("metadata", "completeness", "materials"), False, "metadata"),
+    ],
+)
+def test_archive_provenance_rejects_changed_bindings(location, value, reason) -> None:
+    module = _build_module()
+    document = _slsa_predicate()
+    row = document
+    for key in location[:-1]:
+        row = row[key]
+    row[location[-1]] = value
+    with pytest.raises(module.BuildRejected, match="provenance_" + reason):
+        module._validate_slsa_predicate(
+            document,
+            stage="provenance",
+            expected_platform="linux/amd64",
+            expected_parameters={"build-arg:BORON_CODE_DIGEST": "sha256:" + "a" * 64},
+            expected_context_digest="sha256:" + "f" * 64,
+        )
+
+
+def test_platformless_frontend_and_archive_materials_remain_exactly_pinned() -> None:
+    module = _build_module()
+    for index in (3, 4):
+        document = _slsa_predicate()
+        document["materials"][index] = {**document["materials"][index], "digest": {"sha256": "e" * 64}}
+        with pytest.raises(module.BuildRejected, match="provenance_materials"):
+            module._validate_slsa_predicate(document, stage="provenance", expected_context_digest="sha256:" + "f" * 64)
+
+
+def test_platform_config_identity_is_read_from_digest_bound_manifest(monkeypatch) -> None:
+    module = _build_module()
+    document = {
+        "schemaVersion": 2,
+        "mediaType": module._OCI_MANIFEST_MEDIA_TYPE,
+        "config": {
+            "mediaType": "application/vnd.oci.image.config.v1+json",
+            "digest": "sha256:" + "a" * 64,
+            "size": 512,
+        },
+        "layers": [
+            {"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": "sha256:" + "b" * 64, "size": 4096}
+        ],
+    }
+
+    def invoke(value, *, corrupt=False):
+        payload = json.dumps(value).encode("utf-8")
+        reference = "ghcr.io/seabass-up/algo-cli-boron-browser@sha256:" + hashlib.sha256(payload).hexdigest()
+
+        def fake_run(args, **kwargs):
+            assert args == ["docker", "buildx", "imagetools", "inspect", reference, "--raw"]
+            assert kwargs == {"stage": "browser_build_platform", "timeout": 120}
+            return module.subprocess.CompletedProcess(args, 0, payload.decode() + (" " if corrupt else ""), "")
+
+        monkeypatch.setattr(module, "_run", fake_run)
+        return module._registry_platform_config_digest(
+            reference, expected_size=len(payload), stage="browser_build_platform"
+        )
+
+    assert invoke(document) == "sha256:" + "a" * 64
+    with pytest.raises(module.BuildRejected, match="browser_build_platform_digest"):
+        invoke(document, corrupt=True)
+    for key, value in (("digest", "invalid"), ("size", False), ("mediaType", module._OCI_EMPTY_MEDIA_TYPE)):
+        wrong = deepcopy(document)
+        wrong["config"][key] = value
+        with pytest.raises(module.BuildRejected, match="browser_build_platform_shape"):
+            invoke(wrong)
+    wrong = deepcopy(document)
+    wrong["schemaVersion"] = 2.0
+    with pytest.raises(module.BuildRejected, match="browser_build_platform_number"):
+        invoke(wrong)
+
+
+@pytest.mark.parametrize("number", ["NaN", "Infinity", "-Infinity", "1e999", "-1e999"])
+def test_build_provenance_rejects_nonfinite_numbers(number: str, tmp_path: Path) -> None:
+    module = _build_module()
+    payload = ('{"sample":' + number + "}").encode("ascii")
+    path = tmp_path / "metadata.json"
+    path.write_bytes(payload)
+    with pytest.raises(module.BuildRejected, match="build_metadata_number"):
+        module._strict_build_metadata(path)
+    with pytest.raises(module.BuildRejected, match="provenance_number"):
+        module._strict_registry_json(payload, maximum=1024, stage="provenance", allow_finite_floats=True)
+
+
+@pytest.mark.parametrize("allow_finite_floats", [False, True])
+def test_registry_json_rejects_duplicate_keys_with_either_number_policy(allow_finite_floats: bool) -> None:
+    module = _build_module()
+    with pytest.raises(module.BuildRejected, match="provenance_duplicate_key"):
+        module._strict_registry_json(
+            b'{"sample":1,"sample":2}',
+            maximum=1024,
+            stage="provenance",
+            allow_finite_floats=allow_finite_floats,
+        )
+
+
+def test_registry_nonprovenance_json_still_rejects_fractional_numbers() -> None:
+    module = _build_module()
+    with pytest.raises(module.BuildRejected, match="manifest_number"):
+        module._strict_registry_json(b'{"schemaVersion":2.0}', maximum=1024, stage="manifest")
+    with pytest.raises(module.BuildRejected, match="release_evidence_number"):
+        module._strict_json(b'{"sample":1.25}')
+
+
 def test_registry_index_resolves_raw_attestation_bound_amd64_descriptors(
     monkeypatch,
 ) -> None:
@@ -917,8 +1087,12 @@ def test_raw_registry_attestations_bind_envelopes_subjects_and_pinned_materials(
             expected_platform="linux/amd64",
             expected_dockerfile=expected_dockerfile,
             expected_parameters=expected_parameters,
+            expected_context_digest="sha256:" + "f" * 64,
         )
 
+    provenance["predicate"]["metadata"]["https://mobyproject.org/buildkit@v1#metadata"] = {
+        "sysUsage": [{"cpuStat": {"user": 1.25, "system": 0.01}}],
+    }
     observed = invoke(provenance, sbom)
     assert observed == (
         "sha256:" + hashlib.sha256(json.dumps(provenance, separators=(",", ":")).encode("ascii")).hexdigest(),
@@ -1027,7 +1201,7 @@ def test_raw_registry_attestations_bind_envelopes_subjects_and_pinned_materials(
     )
     adversarial.append((wrong, sbom, None, "browser_attestations_provenance_materials"))
     wrong = deepcopy(provenance)
-    wrong["predicate"]["metadata"]["completeness"]["materials"] = True
+    wrong["predicate"]["metadata"]["completeness"]["materials"] = False
     adversarial.append((wrong, sbom, None, "browser_attestations_provenance_metadata"))
     wrong = deepcopy(provenance)
     wrong["predicate"]["invocation"]["parameters"]["args"]["build-arg:UNEXPECTED"] = "1"
@@ -1097,8 +1271,10 @@ def test_raw_registry_attestations_bind_envelopes_subjects_and_pinned_materials(
             )
 
 
+@pytest.mark.parametrize("include_config_digest", [False, True])
 def test_published_build_uses_bound_builder_provenance_sbom_and_exact_digest(
     monkeypatch,
+    include_config_digest: bool,
 ) -> None:
     module = _build_module()
     context_archive, source_digest = _hosted_context(module)
@@ -1140,14 +1316,16 @@ def test_published_build_uses_bound_builder_provenance_sbom_and_exact_digest(
                 json.dumps(
                     {
                         "containerimage.digest": index_digest,
-                        "containerimage.config.digest": config_digest,
+                        **({"containerimage.config.digest": config_digest} if include_config_digest else {}),
                         "containerimage.descriptor": {
                             "digest": index_digest,
                             "mediaType": "application/vnd.oci.image.index.v1+json",
                             "size": 4_096,
-                            "annotations": {"config.digest": config_digest},
+                            "annotations": {"config.digest": config_digest} if include_config_digest else {},
                         },
-                        "buildx.build.provenance": _slsa_predicate(),
+                        "buildx.build.provenance": _slsa_predicate(
+                            context_digest="sha256:" + hashlib.sha256(context_archive).hexdigest()
+                        ),
                     }
                 ),
                 encoding="utf-8",
@@ -1180,6 +1358,13 @@ def test_published_build_uses_bound_builder_provenance_sbom_and_exact_digest(
         },
     )
     monkeypatch.setattr(module, "_registry_attestation_digests", fake_attestation)
+    platform_config_calls = []
+
+    def platform_config(reference, *, expected_size, stage):
+        platform_config_calls.append((reference, expected_size, stage))
+        return config_digest
+
+    monkeypatch.setattr(module, "_registry_platform_config_digest", platform_config)
     monkeypatch.setattr(
         module,
         "_strict_build_metadata",
@@ -1260,12 +1445,28 @@ def test_published_build_uses_bound_builder_provenance_sbom_and_exact_digest(
     assert attestation_calls[0]["attestation_manifest_size"] == 2_048
     assert attestation_calls[0]["expected_builder_id"] == builder_id
     assert attestation_calls[0]["expected_platform"] == "linux/amd64"
+    assert attestation_calls[0]["expected_context_digest"] == "sha256:" + hashlib.sha256(context_archive).hexdigest()
+    assert platform_config_calls == [(tag.rsplit(":", 1)[0] + "@" + platform_digest, 1_024, "browser_build_platform")]
     assert attestation_calls[0]["expected_dockerfile"] == (
         "algo_cli/resources/boron_browser/boron_public_browser.Dockerfile"
     )
     expected_parameters = attestation_calls[0]["expected_parameters"]
     assert expected_parameters["build-arg:BORON_CODE_DIGEST"] == "sha256:" + "a" * 64
     assert expected_parameters["label:com.algo-cli.github.run-id"] == "987654321"
+
+    monkeypatch.setattr(module, "_registry_platform_config_digest", lambda *_args, **_kwargs: "sha256:" + "9" * 64)
+    with pytest.raises(module.BuildRejected, match="registry_pull_identity"):
+        module._published_build(
+            context_archive=context_archive,
+            qualification_source_digest=source_digest,
+            dockerfile=dockerfile,
+            tag=tag,
+            build_arg=build_arg,
+            stage="browser_build",
+            platform="linux/amd64",
+            labels=labels,
+            builder_id=builder_id,
+        )
 
     with pytest.raises(module.BuildRejected, match="registry_builder_identity"):
         module._published_build(
