@@ -1740,7 +1740,8 @@ def test_hosted_build_rejects_oversize_truncated_duplicate_and_link_archives(
             )
 
 
-def test_registry_build_reinspection_rejects_a_changed_local_config(monkeypatch) -> None:
+@pytest.mark.parametrize("changed_local_config", [True, False])
+def test_registry_build_reinspection_binds_the_live_evidence_contract(monkeypatch, changed_local_config) -> None:
     module = _build_module()
     environment = _hosted_environment()
     context_archive, source_digest = _hosted_context(module)
@@ -1805,7 +1806,9 @@ def test_registry_build_reinspection_rejects_a_changed_local_config(monkeypatch)
     monkeypatch.setattr(
         module,
         "_run",
-        lambda args, **_kwargs: module.subprocess.CompletedProcess(args, 0, "", ""),
+        lambda args, **kwargs: module.subprocess.CompletedProcess(
+            args, 0, "Google Chrome " + module.CHROME_VERSION if kwargs["stage"] == "browser_version_probe" else "", ""
+        ),
     )
 
     def inspect(reference: str) -> dict[str, object]:
@@ -1825,7 +1828,7 @@ def test_registry_build_reinspection_rejects_a_changed_local_config(monkeypatch)
                     },
                     "User": "1000:1000",
                 },
-                "Id": "sha256:" + "0" * 64,
+                "Id": "sha256:" + ("0" if changed_local_config else "c") * 64,
                 "RepoDigests": [browser_reference],
             }
         assert reference == broker_reference
@@ -1857,14 +1860,22 @@ def test_registry_build_reinspection_rejects_a_changed_local_config(monkeypatch)
         now_ms,
         "sha256:" + "3" * 64,
     )
-    with pytest.raises(module.BuildRejected, match="registry_reinspection_mismatch"):
-        module.build_images(
+
+    def build():
+        return module.build_images(
             now_ms=now_ms,
             release_evidence=release_evidence,
             hosted_environment=environment,
             qualification_source_digest=source_digest,
             context_archive=context_archive,
         )
+
+    if changed_local_config:
+        with pytest.raises(module.BuildRejected, match="registry_reinspection_mismatch"):
+            build()
+    else:
+        evidence = build()
+        assert _live_module()._validated_build_evidence(evidence) == evidence
     assert len(published_calls) == 2
     assert all(call["context_archive"] is context_archive for call in published_calls)
     assert all(call["qualification_source_digest"] == source_digest for call in published_calls)

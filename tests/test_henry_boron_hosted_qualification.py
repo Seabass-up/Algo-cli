@@ -110,6 +110,7 @@ def _environment(**changes: str) -> dict[str, str]:
 
 
 def _build_evidence(*, source_digest: str = _digest("c")) -> dict[str, object]:
+    producer = SCRIPT._runtime().build_module
     return {
         "schema_version": 2,
         "platform": "linux/amd64",
@@ -143,6 +144,14 @@ def _build_evidence(*, source_digest: str = _digest("c")) -> dict[str, object]:
         "broker_provenance_digest": _digest("a"),
         "broker_sbom_digest": _digest("b"),
         "broker_code_digest": _digest("5"),
+        "debian_snapshot": producer.DEBIAN_SNAPSHOT,
+        "debian_security_snapshot": producer.DEBIAN_SECURITY_SNAPSHOT,
+        "browser_dpkg_lock_digest": producer.BROWSER_DPKG_LOCK_DIGEST,
+        "browser_dpkg_lock_entries": int(producer.BROWSER_DPKG_LOCK_ENTRIES),
+        "broker_dpkg_lock_digest": producer.BROKER_DPKG_LOCK_DIGEST,
+        "broker_dpkg_lock_entries": int(producer.BROKER_DPKG_LOCK_ENTRIES),
+        "image_build_hermetic": False,
+        "image_build_reproducible": False,
         "cryptography_version": "50.0.0",
         "image_provenance": "ghcr_buildkit_max_sbom",
         "non_root_defaults": True,
@@ -430,6 +439,50 @@ def test_live_and_build_evidence_reconstruct_exact_schemas() -> None:
     live["schema_version"] = True
     with pytest.raises(SCRIPT.HostedQualificationRejected, match="hosted_live_evidence_identity"):
         SCRIPT._validated_live_evidence(live)
+
+
+@pytest.mark.parametrize(
+    "field,replacement",
+    [
+        ("debian_snapshot", "20260101T000000Z"),
+        ("debian_security_snapshot", "20260101T000000Z"),
+        ("browser_dpkg_lock_digest", _digest("0")),
+        ("broker_dpkg_lock_digest", _digest("0")),
+        ("browser_dpkg_lock_entries", 1),
+        ("broker_dpkg_lock_entries", True),
+        ("browser_dpkg_lock_entries", "1"),
+        ("broker_dpkg_lock_entries", 122.0),
+        ("image_build_hermetic", True),
+        ("image_build_reproducible", True),
+        ("image_build_hermetic", 0),
+        ("image_build_reproducible", "false"),
+    ],
+)
+def test_live_build_contract_rejects_changed_package_pins_and_false_claims(field, replacement) -> None:
+    build = _build_evidence()
+    build[field] = replacement
+    with pytest.raises(SCRIPT.LiveSessionRejected, match="browser_build_evidence_packages"):
+        SCRIPT._validated_build_evidence(build)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "debian_snapshot",
+        "debian_security_snapshot",
+        "browser_dpkg_lock_digest",
+        "browser_dpkg_lock_entries",
+        "broker_dpkg_lock_digest",
+        "broker_dpkg_lock_entries",
+        "image_build_hermetic",
+        "image_build_reproducible",
+    ],
+)
+def test_live_build_contract_requires_package_provenance(field) -> None:
+    build = _build_evidence()
+    del build[field]
+    with pytest.raises(SCRIPT.LiveSessionRejected, match="browser_build_evidence_shape"):
+        SCRIPT._validated_build_evidence(build)
 
     live = _live_evidence(1)
     live["browser_state"] = "ready"

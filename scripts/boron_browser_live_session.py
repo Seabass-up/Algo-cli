@@ -49,9 +49,15 @@ from algo_cli.xenon_browser_broker import (
 )
 from algo_cli.xenon_browser_entry import XenonEntryRejected, read_xenon_entry_frame
 from boron_browser_build_images import (
+    BROKER_DPKG_LOCK_DIGEST,
+    BROKER_DPKG_LOCK_ENTRIES,
+    BROWSER_DPKG_LOCK_DIGEST,
+    BROWSER_DPKG_LOCK_ENTRIES,
     CHROME_RELEASE_AT_MS,
     CHROME_VERSION,
     CRYPTOGRAPHY_VERSION,
+    DEBIAN_SECURITY_SNAPSHOT,
+    DEBIAN_SNAPSHOT,
     PLATFORM,
     BuildRejected,
     hosted_registry_tags,
@@ -116,6 +122,7 @@ _LIVE_STATIC_REASON_CODES = frozenset(
     {
         "browser_build_evidence_digest",
         "browser_build_evidence_identity",
+        "browser_build_evidence_packages",
         "browser_build_evidence_shape",
         "browser_build_evidence_time",
         "browser_build_evidence_version",
@@ -218,6 +225,14 @@ _BUILD_EVIDENCE_KEYS = frozenset(
         "broker_provenance_digest",
         "broker_sbom_digest",
         "broker_code_digest",
+        "debian_snapshot",
+        "debian_security_snapshot",
+        "browser_dpkg_lock_digest",
+        "browser_dpkg_lock_entries",
+        "broker_dpkg_lock_digest",
+        "broker_dpkg_lock_entries",
+        "image_build_hermetic",
+        "image_build_reproducible",
         "cryptography_version",
         "image_provenance",
         "non_root_defaults",
@@ -970,6 +985,21 @@ def _validated_build_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
     if type(value) is not dict or set(value) != _BUILD_EVIDENCE_KEYS:
         _reject("browser_build_evidence_shape")
     evidence = dict(value)
+    package_pins = {
+        "debian_snapshot": DEBIAN_SNAPSHOT,
+        "debian_security_snapshot": DEBIAN_SECURITY_SNAPSHOT,
+        "browser_dpkg_lock_digest": BROWSER_DPKG_LOCK_DIGEST,
+        "browser_dpkg_lock_entries": int(BROWSER_DPKG_LOCK_ENTRIES),
+        "broker_dpkg_lock_digest": BROKER_DPKG_LOCK_DIGEST,
+        "broker_dpkg_lock_entries": int(BROKER_DPKG_LOCK_ENTRIES),
+        "image_build_hermetic": False,
+        "image_build_reproducible": False,
+    }
+    if any(
+        type(evidence[field]) is not type(expected) or evidence[field] != expected
+        for field, expected in package_pins.items()
+    ):
+        _reject("browser_build_evidence_packages")
     string_fields = (
         "platform",
         "browser_tag",
