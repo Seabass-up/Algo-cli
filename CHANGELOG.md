@@ -39,6 +39,11 @@ index still serves 0.18.0 until the approved release workflow succeeds.
 
 ### Release Operations
 
+- Correct browser-build evidence validation for pinned Buildx/BuildKit output:
+  accept finite provenance resource samples, bind the uploaded source archive
+  and nested frontend request, and resolve image-config identity from the
+  digest-verified platform manifest. Report closed, content-free build failure
+  codes without exposing raw logs or weakening publication and approval gates.
 - Qualify real source-bound builds in ordinary CI, including standard Hatchling
   ZIP metadata, its automatically included `.gitignore`, and canonical
   dependency-range ordering. Accept the versionless local-project lock entry

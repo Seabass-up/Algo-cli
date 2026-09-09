@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import hashlib
 import io
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -67,6 +68,7 @@ HOSTED_REPOSITORY_ID = "1297752684"
 _VERSION_RE = re.compile(r"^[1-9][0-9]{0,3}(?:\.[0-9]{1,6}){3}$")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
+_CONTEXT_URI_RE = re.compile(r"^http://buildkit-session/[a-z0-9]{25}$")
 _INTEGER_RE = re.compile(r"^[1-9][0-9]{0,19}$")
 _REGISTRY_RE = re.compile(
     r"^ghcr\.io/[a-z0-9](?:[a-z0-9._-]{0,38})/"
@@ -100,14 +102,12 @@ _INTOTO_MEDIA_TYPE = "application/vnd.in-toto+json"
 _ATTESTATION_ARTIFACT_TYPE = "application/vnd.docker.attestation.manifest.v1+json"
 _EMPTY_JSON_DIGEST = "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
 
-# Official Docker Verified Publisher descriptors, resolved from Docker Hub on
-# 2026-08-09. BuildKit v0.32.2 records the reachable frontend SourceOp's
-# linux/amd64 manifest digest, while its scanner metadata resolution records
-# the scanner's immutable root index digest.
+# BuildKit v0.32.2 records immutable root index digests for these pinned
+# frontend/scanner references, including the platformless syntax resolution.
 DOCKERFILE_FRONTEND_REFERENCE = (
     "docker/dockerfile:1.26.0@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32"
 )
-DOCKERFILE_FRONTEND_AMD64_DIGEST = "sha256:34b128e419449565adc5ed7f487a6f503a73f1077012cfed86354c731338c44f"
+DOCKERFILE_FRONTEND_INDEX_DIGEST = "sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32"
 SBOM_GENERATOR_REFERENCE = (
     "docker/buildkit-syft-scanner:1.11.0@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68"
 )
@@ -123,17 +123,21 @@ BROKER_DPKG_LOCK_ENTRIES = "122"
 _PINNED_PROVENANCE_MATERIALS = {
     (
         "pkg:docker/docker/dockerfile@1.26.0?"
-        "digest=sha256%3Aecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32"
+        "digest=sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32"
         "&platform=linux%2Famd64"
-    ): DOCKERFILE_FRONTEND_AMD64_DIGEST,
+    ): DOCKERFILE_FRONTEND_INDEX_DIGEST,
+    (
+        "pkg:docker/docker/dockerfile@1.26.0?"
+        "digest=sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32"
+    ): DOCKERFILE_FRONTEND_INDEX_DIGEST,
     (
         "pkg:docker/docker/buildkit-syft-scanner@1.11.0?"
-        "digest=sha256%3A79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68"
+        "digest=sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68"
         "&platform=linux%2Famd64"
     ): SBOM_GENERATOR_INDEX_DIGEST,
     (
         "pkg:docker/debian@bookworm-slim?"
-        "digest=sha256%3A63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e"
+        "digest=sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e"
         "&platform=linux%2Famd64"
     ): DEBIAN_BASE_AMD64_DIGEST,
 }
@@ -321,11 +325,11 @@ def _strict_build_metadata(path: Path) -> tuple[dict[str, Any], str]:
             after.st_ctime_ns,
         ):
             raise BuildRejected("build_metadata_changed")
-        document = json.loads(
-            payload.decode("utf-8", errors="strict"),
-            object_pairs_hook=_reject_duplicate_keys,
-            parse_float=_reject_json_float,
-            parse_constant=_reject_json_constant,
+        document = _strict_registry_json(
+            bytes(payload),
+            maximum=MAX_BUILD_METADATA_BYTES,
+            stage="build_metadata",
+            allow_finite_floats=True,
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise BuildRejected("build_metadata_json") from error
@@ -856,7 +860,6 @@ def _validate_materials(
     if type(value) is not list or not value:
         raise BuildRejected(stage + "_materials")
     docker_material = False
-    docker_material_uris: set[str] = set()
     observed: dict[str, dict[str, str]] = {}
     for material in value:
         if type(material) is not dict:
@@ -886,21 +889,16 @@ def _validate_materials(
                 raise BuildRejected(stage + "_materials")
         if decoded_uri.casefold().startswith("pkg:docker/"):
             docker_material = True
-            docker_material_uris.add(uri)
         if uri in observed:
             raise BuildRejected(stage + "_materials")
         observed[uri] = digests
     if not docker_material:
         raise BuildRejected(stage + "_materials")
     if expected_materials is not None:
-        # BuildKit records exactly these three image inputs: the runtime
-        # Debian manifest, reachable Dockerfile frontend, and SBOM scanner.
-        # RUN network downloads are not provenance materials; the Dockerfiles
-        # constrain apt with signed immutable snapshots and a final dpkg lock,
-        # while this validator requires a non-reproducible predicate below.
-        # Reject every other Docker PURL, including percent-escaped spellings.
+        # Exact image inputs plus the digest-bound uploaded source archive.
+        # RUN downloads remain constrained separately by the Dockerfile locks.
         expected = {uri: {"sha256": digest.removeprefix("sha256:")} for uri, digest in expected_materials.items()}
-        if docker_material_uris != set(expected_materials) or observed != expected:
+        if observed != expected:
             raise BuildRejected(stage + "_materials")
 
 
@@ -912,7 +910,7 @@ def _validate_slsa_predicate(
     expected_platform: str | None = None,
     expected_dockerfile: str | None = None,
     expected_parameters: Mapping[str, str] | None = None,
-    expected_materials: Mapping[str, str] | None = None,
+    expected_context_digest: str | None = None,
 ) -> None:
     """Validate the BuildKit SLSA v0.2 predicate, including run bindings."""
 
@@ -934,42 +932,65 @@ def _validate_slsa_predicate(
         raise BuildRejected(stage + "_shape")
     if expected_builder_id is not None and builder["id"] != expected_builder_id:
         raise BuildRejected(stage + "_builder")
-    _validate_materials(
-        materials,
-        stage=stage,
-        expected_materials=expected_materials,
-    )
-
     config_source = invocation.get("configSource")
     parameters = invocation.get("parameters")
     environment = invocation.get("environment")
     if (
         type(config_source) is not dict
+        or set(config_source) != {"uri", "digest", "entryPoint"}
         or type(config_source.get("entryPoint")) is not str
         or type(parameters) is not dict
-        or parameters.get("frontend") not in {"dockerfile.v0", "gateway.v0"}
-        or type(parameters.get("locals")) is not list
+        or set(parameters) != {"frontend", "args", "root", "compatibilityVersion"}
+        or parameters.get("frontend") != "gateway.v0"
+        or type(parameters.get("compatibilityVersion")) is not int
+        or parameters["compatibilityVersion"] != 30
         or type(environment) is not dict
         or type(environment.get("platform")) is not str
     ):
         raise BuildRejected(stage + "_invocation")
-    if set(parameters) != {"frontend", "args", "locals"}:
-        raise BuildRejected(stage + "_invocation")
-    local_rows = parameters["locals"]
-    if len(local_rows) != 2 or any(
-        type(row) is not dict or set(row) != {"name"} or type(row.get("name")) is not str for row in local_rows
+    context_uri = config_source.get("uri")
+    context_digests = config_source.get("digest")
+    if (
+        type(context_uri) is not str
+        or _CONTEXT_URI_RE.fullmatch(context_uri) is None
+        or type(context_digests) is not dict
+        or set(context_digests) != {"sha256"}
+        or type(context_digests.get("sha256")) is not str
+        or _DIGEST_RE.fullmatch("sha256:" + context_digests["sha256"]) is None
+        or (expected_context_digest is not None and "sha256:" + context_digests["sha256"] != expected_context_digest)
+    ):
+        raise BuildRejected(stage + "_context")
+    _validate_materials(
+        materials,
+        stage=stage,
+        expected_materials={
+            **_PINNED_PROVENANCE_MATERIALS,
+            context_uri: "sha256:" + context_digests["sha256"],
+        },
+    )
+    root = parameters.get("root")
+    if (
+        type(root) is not dict
+        or set(root) != {"configSource", "request"}
+        or root["configSource"] != {"uri": context_uri, "digest": context_digests, "path": config_source["entryPoint"]}
+        or type(root.get("request")) is not dict
+        or set(root["request"]) != {"args"}
     ):
         raise BuildRejected(stage + "_invocation")
-    local_names = [row["name"] for row in local_rows]
-    if sorted(local_names) != ["context", "dockerfile"]:
-        raise BuildRejected(stage + "_invocation")
+    arguments = root["request"].get("args")
+    if (
+        type(arguments) is not dict
+        or any(type(key) is not str or type(argument) is not str for key, argument in arguments.items())
+        or parameters.get("args")
+        != {**arguments, "cmdline": DOCKERFILE_FRONTEND_REFERENCE, "source": DOCKERFILE_FRONTEND_REFERENCE}
+    ):
+        raise BuildRejected(stage + "_parameters")
     if expected_platform is not None and environment["platform"] != expected_platform:
         raise BuildRejected(stage + "_platform")
     if expected_dockerfile is not None and config_source["entryPoint"] != expected_dockerfile:
         raise BuildRejected(stage + "_dockerfile")
     if expected_parameters is not None:
-        arguments = parameters.get("args")
-        if type(arguments) is not dict or arguments != dict(expected_parameters):
+        if arguments != dict(expected_parameters):
             raise BuildRejected(stage + "_parameters")
 
     completeness = metadata.get("completeness")
@@ -991,12 +1012,9 @@ def _validate_slsa_predicate(
         or type(completeness) is not dict
         or completeness.get("parameters") is not True
         or completeness.get("environment") is not True
-        # BuildKit v0.32.2 sets this to false whenever Sources.Local is
-        # nonempty. Our hosted stdin archive is deliberately a local source;
-        # the hosted boundary proves it with the canonical archive
-        # qualification digest, and the raw registry pass binds the exact
-        # invocation parameters.
-        or completeness.get("materials") is not False
+        # The stdin archive is a hashed buildkit-session HTTP material, not
+        # an unbound local directory. This does not attest RUN downloads.
+        or completeness.get("materials") is not True
     ):
         raise BuildRejected(stage + "_metadata")
 
@@ -1153,7 +1171,11 @@ def _validate_spdx_document(
             raise BuildRejected(stage + "_components")
 
 
-def _validated_build_metadata(path: Path) -> tuple[dict[str, Any], str, str, str]:
+def _validated_build_metadata(
+    path: Path,
+    *,
+    expected_context_digest: str | None = None,
+) -> tuple[dict[str, Any], str, str, str | None]:
     """Validate Buildx's OCI-index result and return index/config identities."""
 
     metadata, metadata_digest = _strict_build_metadata(path)
@@ -1164,8 +1186,10 @@ def _validated_build_metadata(path: Path) -> tuple[dict[str, Any], str, str, str
     if (
         type(manifest_digest) is not str
         or _DIGEST_RE.fullmatch(manifest_digest) is None
-        or type(config_digest) is not str
-        or _DIGEST_RE.fullmatch(config_digest) is None
+        or (
+            "containerimage.config.digest" in metadata
+            and (type(config_digest) is not str or _DIGEST_RE.fullmatch(config_digest) is None)
+        )
         or type(descriptor) is not dict
         or descriptor.get("digest") != manifest_digest
         or descriptor.get("mediaType") != "application/vnd.oci.image.index.v1+json"
@@ -1174,23 +1198,46 @@ def _validated_build_metadata(path: Path) -> tuple[dict[str, Any], str, str, str
         or type(provenance) is not dict
     ):
         raise BuildRejected("build_metadata_identity")
-    _validate_slsa_predicate(provenance, stage="build_metadata_provenance")
+    _validate_slsa_predicate(
+        provenance,
+        stage="build_metadata_provenance",
+        expected_context_digest=expected_context_digest,
+    )
     annotations = descriptor.get("annotations")
     if annotations is not None:
         if type(annotations) is not dict:
             raise BuildRejected("build_metadata_identity")
         annotated_config = annotations.get("config.digest")
-        if annotated_config is not None and annotated_config != config_digest:
-            raise BuildRejected("build_metadata_identity")
+        if annotated_config is not None:
+            if (
+                type(annotated_config) is not str
+                or _DIGEST_RE.fullmatch(annotated_config) is None
+                or (config_digest is not None and annotated_config != config_digest)
+            ):
+                raise BuildRejected("build_metadata_identity")
+            config_digest = annotated_config
     return metadata, metadata_digest, manifest_digest, config_digest
 
 
-def _strict_registry_json(payload: bytes, *, maximum: int, stage: str) -> Any:
+def _strict_registry_json(
+    payload: bytes,
+    *,
+    maximum: int,
+    stage: str,
+    allow_finite_floats: bool = False,
+) -> Any:
     if not 1 <= len(payload) <= maximum:
         raise BuildRejected(stage + "_size")
 
     def reject_number(_value: str) -> None:
         raise BuildRejected(stage + "_number")
+
+    def parse_float(value: str) -> float:
+        # BuildKit's provenance resource samples contain fractional CPU usage.
+        number = float(value)
+        if not allow_finite_floats or not math.isfinite(number):
+            raise BuildRejected(stage + "_number")
+        return number
 
     def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         row: dict[str, Any] = {}
@@ -1204,10 +1251,10 @@ def _strict_registry_json(payload: bytes, *, maximum: int, stage: str) -> Any:
         return json.loads(
             payload.decode("utf-8", errors="strict"),
             object_pairs_hook=reject_duplicates,
-            parse_float=reject_number,
+            parse_float=parse_float,
             parse_constant=reject_number,
         )
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
         raise BuildRejected(stage + "_json") from error
 
 
@@ -1539,6 +1586,49 @@ def _registry_index_descriptors(
     return selected[0][0], selected[0][1], attestations[0][0], attestations[0][1]
 
 
+def _registry_platform_config_digest(reference: str, *, expected_size: int, stage: str) -> str:
+    """Bind the image config to the index's exact platform-manifest bytes."""
+
+    if (
+        "@" not in reference
+        or _REGISTRY_RE.fullmatch(reference.rsplit("@", 1)[0]) is None
+        or _DIGEST_RE.fullmatch(reference.rsplit("@", 1)[1]) is None
+        or type(expected_size) is not int
+        or not 1 <= expected_size <= MAX_BUILD_METADATA_BYTES
+    ):
+        raise BuildRejected(stage + "_identity")
+    result = _run(
+        ["docker", "buildx", "imagetools", "inspect", reference, "--raw"],
+        stage=stage,
+        timeout=120,
+    )
+    payload = result.stdout.encode("utf-8", errors="strict")
+    if len(payload) != expected_size or "sha256:" + hashlib.sha256(payload).hexdigest() != reference.rsplit("@", 1)[1]:
+        raise BuildRejected(stage + "_digest")
+    document = _strict_registry_json(payload, maximum=MAX_BUILD_METADATA_BYTES, stage=stage)
+    if (
+        type(document) is not dict
+        or set(document) != {"schemaVersion", "mediaType", "config", "layers"}
+        or document.get("schemaVersion") != 2
+        or document.get("mediaType") != _OCI_MANIFEST_MEDIA_TYPE
+        or type(document.get("layers")) is not list
+        or not document["layers"]
+    ):
+        raise BuildRejected(stage + "_shape")
+    config = document.get("config")
+    if (
+        type(config) is not dict
+        or set(config) != {"mediaType", "digest", "size"}
+        or config.get("mediaType") != "application/vnd.oci.image.config.v1+json"
+        or type(config.get("digest")) is not str
+        or _DIGEST_RE.fullmatch(config["digest"]) is None
+        or type(config.get("size")) is not int
+        or not 1 <= config["size"] <= MAX_BUILD_METADATA_BYTES
+    ):
+        raise BuildRejected(stage + "_shape")
+    return config["digest"]
+
+
 def _registry_subject_name(tag: str, *, platform: str) -> str:
     if _REGISTRY_TAG_RE.fullmatch(tag) is None or platform != PLATFORM:
         raise BuildRejected("registry_subject_identity")
@@ -1558,6 +1648,7 @@ def _registry_attestation_digests(
     expected_platform: str,
     expected_dockerfile: str,
     expected_parameters: Mapping[str, str],
+    expected_context_digest: str,
 ) -> tuple[str, str]:
     """Validate raw in-toto layers and return their immutable descriptor digests."""
 
@@ -1671,6 +1762,7 @@ def _registry_attestation_digests(
             statement_payload,
             maximum=MAX_REGISTRY_ATTESTATION_BYTES,
             stage=(stage + "_provenance" if predicate_type == _SLSA_PREDICATE_TYPE else stage + "_sbom"),
+            allow_finite_floats=predicate_type == _SLSA_PREDICATE_TYPE,
         )
         if (
             type(statement) is not dict
@@ -1695,7 +1787,7 @@ def _registry_attestation_digests(
                 expected_platform=expected_platform,
                 expected_dockerfile=expected_dockerfile,
                 expected_parameters=expected_parameters,
-                expected_materials=_PINNED_PROVENANCE_MATERIALS,
+                expected_context_digest=expected_context_digest,
             )
         else:
             _validate_spdx_document(
@@ -1834,7 +1926,10 @@ def _published_build(
             metadata_digest,
             manifest_digest,
             metadata_config_digest,
-        ) = _validated_build_metadata(metadata_path)
+        ) = _validated_build_metadata(
+            metadata_path,
+            expected_context_digest="sha256:" + hashlib.sha256(context_archive).hexdigest(),
+        )
     finally:
         primary_error = sys.exc_info()[1]
         try:
@@ -1856,6 +1951,13 @@ def _published_build(
         expected_size=descriptor["size"],
         stage=stage + "_index",
     )
+    platform_config_digest = _registry_platform_config_digest(
+        repository + "@" + platform_manifest_digest,
+        expected_size=platform_manifest_size,
+        stage=stage + "_platform",
+    )
+    if metadata_config_digest is not None and metadata_config_digest != platform_config_digest:
+        raise BuildRejected("registry_pull_identity")
     _run(
         ["docker", "pull", "--platform", platform, reference],
         stage=stage + "_pull",
@@ -1866,7 +1968,7 @@ def _published_build(
     if (
         type(config_digest) is not str
         or _DIGEST_RE.fullmatch(config_digest) is None
-        or config_digest != metadata_config_digest
+        or config_digest != platform_config_digest
         or type(repo_digests) is not list
         or reference not in repo_digests
     ):
@@ -1882,6 +1984,7 @@ def _published_build(
         expected_platform=platform,
         expected_dockerfile=dockerfile,
         expected_parameters=expected_parameters,
+        expected_context_digest="sha256:" + hashlib.sha256(context_archive).hexdigest(),
     )
     return (
         reference,

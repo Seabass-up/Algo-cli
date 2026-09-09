@@ -80,6 +80,88 @@ _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 _INTEGER_RE = re.compile(r"^[1-9][0-9]{0,19}$")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+# Only this closed vocabulary may cross the dependency error boundary. Never
+# emit exception text, command output, credentials, or arbitrary stage names.
+_PUBLIC_BUILD_REJECTIONS = frozenset(
+    {
+        "browser_security_update_stale",
+        "browser_security_evidence_observed_at_ms",
+        "browser_version_mismatch",
+        "build_failed_and_metadata_cleanup",
+        "image_identity_mismatch",
+        "image_config_digest",
+        "registry_build_context",
+        "registry_builder_identity",
+        "registry_pull_identity",
+        "registry_reinspection_mismatch",
+        "registry_source_label_mismatch",
+    }
+    | {
+        stage + "_" + reason
+        for stage in (
+            "build_metadata",
+            "build_metadata_provenance",
+            "docker_info",
+            "image_inspect",
+            "browser_version_probe",
+            "module_import_probe",
+            "release_evidence",
+            *(
+                role + "_build" + suffix
+                for role in ("browser", "broker")
+                for suffix in (
+                    "",
+                    "_pull",
+                    "_index",
+                    "_platform",
+                    "_attestations",
+                    "_attestations_manifest",
+                    "_attestations_provenance",
+                    "_attestations_sbom",
+                )
+            ),
+        )
+        for reason in (
+            "environment",
+            "input",
+            "unavailable",
+            "failed",
+            "file",
+            "changed",
+            "cleanup",
+            "json",
+            "number",
+            "duplicate_key",
+            "size",
+            "shape",
+            "identity",
+            "builder",
+            "materials",
+            "invocation",
+            "context",
+            "platform",
+            "dockerfile",
+            "parameters",
+            "metadata",
+            "content",
+            "components",
+            "relationships",
+            "authentication",
+            "credentials",
+            "response",
+            "redirect",
+            "encoding",
+            "digest",
+            "manifest_digest",
+            "manifest_shape",
+            "predicate_type",
+            "attestation_count",
+            "attestation_binding",
+            "statement_digest",
+            "statement_binding",
+        )
+    }
+)
 _LIVE_EVIDENCE_KEYS = frozenset(
     {
         "schema_version",
@@ -1952,6 +2034,8 @@ def _normalized_rejection_reason(error: BaseException) -> str:
         return error.reason_code
     runtime = _ACTIVE_RUNTIME
     if runtime is not None and isinstance(error, runtime.build_module.BuildRejected):
+        if len(error.args) == 1 and type(reason := error.args[0]) is str and reason in _PUBLIC_BUILD_REJECTIONS:
+            return "hosted_" + reason
         return "hosted_build_failed"
     if runtime is not None and isinstance(error, runtime.live_module.LiveSessionRejected):
         return "hosted_live_failed"
