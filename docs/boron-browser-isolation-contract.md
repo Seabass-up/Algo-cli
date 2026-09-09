@@ -49,6 +49,25 @@ linked NSS path components are rejected before import. Certificate verification
 stays enabled. Successful `certutil` readback is not browser qualification:
 the exact hosted Chrome process must complete the broker navigation as well.
 
+### Failure diagnostics
+
+Broker result failures retain only allowlisted `broker_*` reason codes. Unknown
+or malformed broker reasons remain `broker_terminal_rejected`; failed, blocked,
+handoff, or unknown dispositions never become verified. Result type, positive
+integer counters, and CA binding remain separate mandatory checks.
+The closed vocabulary includes DNS-pin and redirect rejection codes emitted
+with the broker's `upstream_` and `redirect_` prefixes. Unknown suffixes are
+still rejected; prefixes alone never authorize diagnostic text.
+
+Cleanup failures retain a two-digit lowercase hexadecimal suffix from `01`
+through `3f`, appended to `cleanup_incomplete` or
+`<primary>_and_cleanup_incomplete`. Bits identify the browser driver (`01`),
+broker driver (`02`), browser container (`04`), broker container (`08`), egress
+network (`10`), and internal network (`20`). Combined failures preserve every
+known bit without emitting resource names, paths, payloads, or exception text.
+The legacy suffix without a mask remains valid when boundary detail is absent.
+These diagnostics do not change teardown commands, deadlines, or success gates.
+
 ### Freshness semantics
 
 The public gate measures **security update lag**, not the age of the current
@@ -187,6 +206,11 @@ The candidate closes several source-level provenance gaps:
   falls back to bounded force removal, and suppresses evidence if any resource
   cannot be proven absent. Report publication likewise remains descriptor-bound
   and rolls back the final path after any late integrity or durability failure.
+- Initially absent resources retain the three-second create-settlement watch,
+  followed by one fresh inspection with the existing two-second I/O cap (up to
+  five seconds total). A deadline-clipped probe cannot establish absence. The
+  final inspection must return absence or an exact owned identity; foreign
+  resources and inspection errors still block cleanup qualification.
 - Any July artifact produced through the former `command | tee` plus
   `if: always()`/warn-on-missing path is invalidated for qualification. That path
   could retain or attest failure-shaped output without proving that the

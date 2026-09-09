@@ -12,10 +12,12 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Iterator
 
 import pytest
 
+import algo_cli.daemon as daemon_module
 from algo_cli.config import CONFIG_DIR
 from algo_cli.daemon import (
     DAEMON_PROTOCOL_VERSION,
@@ -96,14 +98,20 @@ def _start_fake_rpc_server(
     listener.bind(str(sock_path))
     sock_path.chmod(0o600)
     listener.listen(1)
+    listener.settimeout(1.0)
     errors: list[BaseException] = []
 
     def serve() -> None:
         try:
             conn, _ = listener.accept()
+            conn.settimeout(1.0)
             try:
-                while b"\n" not in conn.recv(65536):
-                    pass
+                while True:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        raise ConnectionError("Test RPC client closed before its request")
+                    if b"\n" in chunk:
+                        break
                 for delay, chunk in chunks:
                     time.sleep(delay)
                     conn.sendall(chunk)
@@ -117,6 +125,20 @@ def _start_fake_rpc_server(
     thread = threading.Thread(target=serve)
     thread.start()
     return thread, errors
+
+
+def test_fake_rpc_server_exits_when_client_closes_before_request(tmp_paths):
+    sock_path, _ = tmp_paths
+    server, errors = _start_fake_rpc_server(sock_path, [])
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        client.connect(str(sock_path))
+    finally:
+        client.close()
+        server.join(timeout=2.0)
+    assert not server.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], ConnectionError)
 
 
 class TestRPCRegistry:
@@ -629,19 +651,82 @@ class TestDaemonLifecycle:
         assert not server.is_alive()
         assert not server_errors
 
-    def test_rpc_client_timeout_is_one_end_to_end_deadline(self, tmp_paths):
+    def test_rpc_client_times_out_on_a_real_trickling_socket(self, tmp_paths):
         sock_path, _ = tmp_paths
         server, _ = _start_fake_rpc_server(
             sock_path,
             [(0.04, b" "), (0.04, b" "), (0.04, b" ")],
         )
-        started = time.monotonic()
         try:
             with pytest.raises(ConnectionError, match="RPC failed"):
                 rpc_call(sock_path, "ping", timeout=0.06)
-            assert time.monotonic() - started < 0.11
         finally:
             server.join(timeout=2.0)
+        assert not server.is_alive()
+
+    def test_rpc_client_timeout_is_one_end_to_end_deadline(self, tmp_paths, monkeypatch):
+        sock_path, _ = tmp_paths
+        clock = [100.0]
+        timeouts: list[float] = []
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(sock_path))
+        sock_path.chmod(0o600)
+
+        class TimedSocket:
+            closed = False
+            receive_calls = 0
+
+            def settimeout(self, timeout):
+                timeouts.append(timeout)
+                self.timeout = timeout
+
+            def connect(self, path):
+                assert path == str(sock_path)
+                clock[0] += 0.5
+
+            def sendall(self, payload):
+                assert json.loads(payload)["method"] == "ping"
+                clock[0] += 0.75
+
+            def recv(self, _size):
+                self.receive_calls += 1
+                assert self.receive_calls <= 3
+                clock[0] += min(2.0, self.timeout)
+                if self.timeout < 2.0:
+                    raise socket.timeout("simulated transport deadline")
+                return b" "
+
+            def close(self):
+                self.closed = True
+
+        client = TimedSocket()
+        validate = daemon_module._validate_client_socket
+
+        def validate_endpoint(path):
+            validate(path)
+            clock[0] += 0.25
+
+        monkeypatch.setattr(daemon_module, "_validate_client_socket", validate_endpoint)
+        monkeypatch.setattr(daemon_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+        monkeypatch.setattr(
+            daemon_module,
+            "socket",
+            SimpleNamespace(
+                AF_UNIX=socket.AF_UNIX,
+                SOCK_STREAM=socket.SOCK_STREAM,
+                socket=lambda *_: client,
+                timeout=socket.timeout,
+            ),
+        )
+        try:
+            with pytest.raises(ConnectionError, match="RPC failed"):
+                rpc_call(sock_path, "ping", timeout=6.0)
+        finally:
+            listener.close()
+        assert timeouts == [5.75, 5.25, 4.5, 2.5, 0.5]
+        assert clock[0] == 106.0
+        assert client.closed
+        assert client.receive_calls == 3
 
     def test_peer_uid_is_verified_for_local_socket(self):
         server, client = socket.socketpair()

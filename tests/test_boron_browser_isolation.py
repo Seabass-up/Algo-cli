@@ -28,6 +28,15 @@ from algo_cli.boron_browser_isolation import (
     probe_docker_image,
     verify_docker_topology,
 )
+from algo_cli.xenon_browser_broker import (
+    XenonBrokerRejected,
+    XenonBrokerSession,
+    XenonEphemeralCertificateAuthority,
+    connect_xenon_upstream,
+    issue_xenon_broker_permit,
+    verify_xenon_broker_permit,
+)
+from algo_cli.xenon_browser_egress import XenonEgressPolicy, XenonEgressSession
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -988,6 +997,58 @@ def test_cleanup_waits_for_late_owned_resource_before_mutation(monkeypatch) -> N
     assert mutations == [["docker", "network", "rm", resource_id]]
 
 
+@pytest.mark.parametrize(("kind", "role"), [("container", "managed-browser"), ("network", "browser-internal")])
+@pytest.mark.parametrize("final_state", ["absent", "owned", "foreign", "error"])
+@pytest.mark.parametrize("exhausted_probe_errors", [False, True])
+def test_settled_cleanup_requires_fresh_final_inspection(
+    monkeypatch, kind: str, role: str, final_state: str, exhausted_probe_errors: bool
+) -> None:
+    module = _live_module()
+    clock = [100.0]
+    timeouts: list[float] = []
+    resource_id = "a" * 64 if final_state in {"owned", "foreign"} else None
+
+    def identity(observed_kind, identifier, *, session_digest, role: str, timeout_seconds: float):
+        assert observed_kind == kind
+        assert identifier == "pending-resource"
+        assert session_digest == _plan().session_digest
+        timeouts.append(timeout_seconds)
+        if clock[0] >= 100.12:
+            assert timeout_seconds == module.CLEANUP_INSPECT_TIMEOUT_SECONDS
+            return final_state, resource_id
+        clock[0] += min(timeout_seconds, 0.04)
+        if exhausted_probe_errors and timeout_seconds < 0.04:
+            return "error", None
+        return "absent", None
+
+    monkeypatch.setattr(module, "CLEANUP_ABSENCE_TIMEOUT_SECONDS", 0.12)
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(module.time, "sleep", lambda duration: clock.__setitem__(0, clock[0] + duration))
+    monkeypatch.setattr(module, "_cleanup_resource_identity", identity)
+    assert module._settled_cleanup_resource_identity(
+        kind, "pending-resource", session_digest=_plan().session_digest, role=role
+    ) == (final_state, resource_id)
+    assert len(timeouts) == 3
+    assert 0 < timeouts[1] < 0.04
+    assert all(0 < timeout <= 0.12 for timeout in timeouts[:-1])
+    assert timeouts[-1] == module.CLEANUP_INSPECT_TIMEOUT_SECONDS
+
+
+def test_settled_cleanup_does_not_retry_an_early_inspection_error(monkeypatch) -> None:
+    module = _live_module()
+    calls = []
+
+    def identity(*_args, **kwargs):
+        calls.append(kwargs)
+        return "error", None
+
+    monkeypatch.setattr(module, "_cleanup_resource_identity", identity)
+    assert module._settled_cleanup_resource_identity(
+        "container", "pending-resource", session_digest=_plan().session_digest, role="managed-browser"
+    ) == ("error", None)
+    assert len(calls) == 1
+
+
 def test_absence_probe_caps_each_command_to_remaining_deadline(monkeypatch) -> None:
     module = _live_module()
     clock = [100.0]
@@ -1302,6 +1363,199 @@ def test_cleanup_failure_reason_never_uses_untyped_exception_text() -> None:
     assert (
         module._cleanup_failure_reason(module.LiveSessionRejected("browser_result_timeout"))
         == "browser_result_timeout_and_cleanup_incomplete"
+    )
+
+
+@pytest.mark.parametrize("mask", range(1, 64))
+def test_live_cleanup_diagnostics_keep_only_known_boundary_bits(mask: int) -> None:
+    module = _live_module()
+    boundaries = (
+        "browser_driver_cleanup_failed",
+        "broker_driver_cleanup_failed",
+        "browser_container_cleanup_failed",
+        "broker_container_cleanup_failed",
+        "egress_network_cleanup_failed",
+        "internal_network_cleanup_failed",
+    )
+    failures = tuple(reason for bit, reason in enumerate(boundaries) if mask & (1 << bit))
+    primary = module.LiveSessionRejected("broker_socket_eof")
+    expected = f"broker_socket_eof_and_cleanup_incomplete_{mask:02x}"
+    assert module._cleanup_failure_reason(primary, failures) == expected
+    assert module._normalized_live_reason(expected) == expected
+    assert module._cleanup_failure_reason(None, failures) == f"cleanup_incomplete_{mask:02x}"
+    unknown = module._cleanup_failure_reason(RuntimeError("private_token"), failures)
+    assert unknown == f"live_failure_and_cleanup_incomplete_{mask:02x}"
+    assert module.LiveSessionRejected(unknown).reason_code == unknown
+
+
+@pytest.mark.parametrize("suffix", ["00", "40", "ff", "1", "001", "private_token"])
+def test_live_cleanup_diagnostics_reject_unknown_boundary_masks(suffix: str) -> None:
+    module = _live_module()
+    assert module._normalized_live_reason("broker_socket_eof_and_cleanup_incomplete_" + suffix) == "live_internal_error"
+    assert module._normalized_live_reason("cleanup_incomplete_" + suffix) == "live_internal_error"
+
+
+def test_broker_result_validation_preserves_success_and_separates_invariants() -> None:
+    module = _live_module()
+    digest = "sha256:" + "a" * 64
+    row = {
+        "type": "xenon.result",
+        "disposition": "verified",
+        "connection_count": 1,
+        "request_count": 1,
+        "bytes_to_browser": 1,
+        "ca_certificate_digest": digest,
+        "reason_code": "request_verified",
+    }
+    assert module._validate_broker_result(row, ca_certificate_digest=digest) is None
+    for field, value, reason in (
+        ("type", "xenon.error", "broker_result_type"),
+        ("connection_count", 0, "broker_result_counters"),
+        ("connection_count", True, "broker_result_counters"),
+        ("request_count", -1, "broker_result_counters"),
+        ("request_count", "1", "broker_result_counters"),
+        ("bytes_to_browser", 0, "broker_result_counters"),
+        ("bytes_to_browser", 1.0, "broker_result_counters"),
+        ("ca_certificate_digest", "sha256:" + "b" * 64, "broker_ca_identity"),
+    ):
+        with pytest.raises(module.LiveSessionRejected, match="^" + reason + "$"):
+            module._validate_broker_result({**row, field: value}, ca_certificate_digest=digest)
+
+
+@pytest.mark.parametrize(
+    "reason", ["socket_eof", "browser_tls", "connection_unknown", "connect_origin", "response_truncated"]
+)
+@pytest.mark.parametrize("disposition", ["blocked", "handoff", "failed", "unknown"])
+def test_broker_terminal_diagnostics_never_turn_a_failure_into_success(reason: str, disposition: str) -> None:
+    module = _live_module()
+    with pytest.raises(module.LiveSessionRejected, match="^broker_" + reason + "$"):
+        module._validate_broker_result(
+            {"type": "xenon.result", "disposition": disposition, "reason_code": reason},
+            ca_certificate_digest="sha256:" + "a" * 64,
+        )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        None,
+        "",
+        "private_token",
+        "socket_eof private_token",
+        "upstream_private_token",
+        "redirect_private_token",
+        True,
+        {},
+    ],
+)
+def test_broker_terminal_diagnostics_do_not_echo_untrusted_values(reason) -> None:
+    module = _live_module()
+    with pytest.raises(module.LiveSessionRejected, match="^broker_terminal_rejected$"):
+        module._validate_broker_result(
+            {"type": "xenon.result", "disposition": "failed", "reason_code": reason},
+            ca_certificate_digest="sha256:" + "a" * 64,
+        )
+
+
+@pytest.mark.parametrize(
+    ("answers", "reason"),
+    [
+        (("8.8.4.4",), "dns_rebinding"),
+        (OSError("private_dns_detail"), "dns_resolution_failed"),
+        ((), "dns_empty"),
+        (("8.8.8.8",) * 33, "dns_answer_limit"),
+        (("not-an-address",), "dns_answer_invalid"),
+        (("127.0.0.1",), "non_public_address"),
+    ],
+)
+def test_upstream_dns_producer_reasons_survive_live_validation(answers, reason: str) -> None:
+    module = _live_module()
+    session = XenonEgressSession(XenonEgressPolicy(), resolver=lambda *_: ("8.8.8.8",))
+    target = session.begin("https://example.com/")
+
+    def resolve(*_):
+        if isinstance(answers, OSError):
+            raise answers
+        return answers
+
+    session.resolver = resolve
+    with pytest.raises(XenonBrokerRejected, match="^upstream_" + reason + "$") as caught:
+        connect_xenon_upstream(target, session)
+    with pytest.raises(module.LiveSessionRejected, match="^broker_upstream_" + reason + "$"):
+        module._validate_broker_result(
+            {"type": "xenon.result", "disposition": "failed", "reason_code": caught.value.reason_code},
+            ca_certificate_digest="sha256:" + "a" * 64,
+        )
+
+
+@pytest.mark.parametrize(
+    ("location", "reason"),
+    [
+        ("https://other.example/", "cross_origin_redirect_denied"),
+        ("http://example.com/", "scheme_denied"),
+        ("wss://example.com/", "websocket_denied"),
+        ("https://localhost/", "local_discovery_denied"),
+        ("https://user:private@example.com/", "userinfo_denied"),
+        ("https://example.com:444/", "port_denied"),
+        ("https://example.com/next", "redirect_limit"),
+    ],
+)
+def test_redirect_producer_reasons_survive_live_validation(location: str, reason: str) -> None:
+    module = _live_module()
+    key = b"x" * 32
+
+    def resolver(*_):
+        return ("8.8.8.8",)
+
+    permit = issue_xenon_broker_permit(
+        authority_key=key,
+        raw_url="https://example.com/",
+        resolver=resolver,
+        issued_at_ms=NOW_MS,
+        expires_at_ms=NOW_MS + 60_000,
+        fencing_token=1,
+        maximum_redirects=0 if reason == "redirect_limit" else 5,
+    )
+    canonical, egress, target = verify_xenon_broker_permit(
+        permit, authority_key=key, resolver=resolver, now_ms=NOW_MS + 1, expected_fencing_token=1
+    )
+    ca = XenonEphemeralCertificateAuthority.create(now_ms=NOW_MS, expires_at_ms=NOW_MS + 60_000)
+    session = XenonBrokerSession(canonical, egress, target, ca, clock_ms=lambda: NOW_MS + 1)
+    with pytest.raises(XenonBrokerRejected, match="^redirect_" + reason + "$") as caught:
+        session.validate_redirect(target.canonical_url, location)
+    with pytest.raises(module.LiveSessionRejected, match="^broker_redirect_" + reason + "$"):
+        module._validate_broker_result(
+            {"type": "xenon.result", "disposition": "failed", "reason_code": caught.value.reason_code},
+            ca_certificate_digest=ca.certificate_digest,
+        )
+
+
+def test_broker_and_cleanup_diagnostics_never_coerce_untrusted_objects() -> None:
+    module = _live_module()
+
+    class PrivateString(str):
+        def __hash__(self):
+            pytest.fail("diagnostics must not hash string subclasses")
+
+        def __eq__(self, _other):
+            pytest.fail("diagnostics must not compare string subclasses")
+
+    class PrivateObject:
+        def __str__(self):
+            pytest.fail("diagnostics must not stringify untrusted objects")
+
+    for reason in (PrivateString("socket_eof"), PrivateObject()):
+        with pytest.raises(module.LiveSessionRejected, match="^broker_terminal_rejected$"):
+            module._validate_broker_result(
+                {"type": "xenon.result", "disposition": "failed", "reason_code": reason},
+                ca_certificate_digest="sha256:" + "a" * 64,
+            )
+        assert module._cleanup_failure_reason(None, (reason,)) == "cleanup_incomplete"
+    for failures in (("private_token",), ["browser_driver_cleanup_failed"], None):
+        assert module._cleanup_failure_reason(None, failures) == "cleanup_incomplete"
+    assert (
+        module._cleanup_failure_reason(None, ("browser_driver_cleanup_failed", "browser_driver_cleanup_failed"))
+        == "cleanup_incomplete_01"
     )
 
 

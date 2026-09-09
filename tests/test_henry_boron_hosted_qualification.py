@@ -1408,6 +1408,10 @@ def test_build_diagnostics_do_not_stringify_objects_or_multiple_arguments() -> N
         "browser_navigation_certificate_untrusted",
         "browser_navigation_proxy_tunnel_and_cleanup_incomplete",
         "browser_result_timeout_and_cleanup_incomplete",
+        "broker_socket_eof_and_cleanup_incomplete_30",
+        "broker_connect_origin",
+        "broker_result_counters",
+        "cleanup_incomplete_04",
         "live_internal_error",
     ],
 )
