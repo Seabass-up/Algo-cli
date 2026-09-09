@@ -1029,18 +1029,22 @@ def run_boron_navigation(plan: BoronNavigationPlan) -> BoronNavigationEvidence:
     decoder = BoronPipeDecoder()
     browser = launch_boron_chrome(plan)
     deadline = time.monotonic() + plan.maximum_duration_ms / 1000
+    terminal_states = {
+        BoronNavigationState.VERIFIED,
+        BoronNavigationState.FAILED,
+        BoronNavigationState.HANDOFF,
+        BoronNavigationState.UNKNOWN,
+    }
     try:
         for command in machine.start():
             browser.send(command)
-        while machine.state not in {
-            BoronNavigationState.VERIFIED,
-            BoronNavigationState.FAILED,
-            BoronNavigationState.HANDOFF,
-            BoronNavigationState.UNKNOWN,
-        }:
+        while machine.state not in terminal_states:
             for message in browser.receive(decoder, deadline=deadline):
                 for command in machine.handle(message):
                     browser.send(command)
+                # A single pipe read can include events after the terminal result.
+                if machine.state in terminal_states:
+                    break
         return machine.evidence()
     finally:
         browser.close()
