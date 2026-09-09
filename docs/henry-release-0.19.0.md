@@ -54,8 +54,9 @@ because native control functionality remains disabled.
 - Pending: protected-main browser qualification at the exact release source,
   owner approval, retained attestation, and package-bound evidence.
 - In progress: verified publication configuration and PyPI authority inventory.
-- Pending: explicit publication authorization. No release, tag, or publish
-  dispatch is authorized merely by this preparation checklist.
+- Authorized on 2026-09-09: qualify and publish 0.19.0 under the bounded owner
+  delegation below. This does not establish readiness or authorize publication
+  while any required qualification remains failed or missing.
 
 The filesystem upgrade test does not qualify OS Keychain or Echo key migration.
 Those authorities remain subject to their separate contracts. A green feature
@@ -83,8 +84,27 @@ reviewer. Self-review and administrator bypass of the environment approval wait
 are explicitly allowed. Teams, additional reviewers, other dispatch/rerun
 actors, and unprotected source branches are rejected. A repository administrator
 may skip the approval wait; this deliberately does not claim mandatory or
-independent human approval. The agent must never approve or bypass a pending
-environment job on the owner's behalf. Tag rules still have no bypass actors.
+independent human approval. Agent approval on the owner's behalf is prohibited
+except for the explicit, bounded delegation below. Tag rules still have no
+bypass actors.
+
+### Owner Delegation for 0.19.0
+
+On 2026-09-09, after the manual-only restriction was explained, the owner
+explicitly instructed Codex to use the signed-in GitHub account to perform the
+reviews and complete publication so `algo-cli update` can obtain the release.
+This supersedes the manual-only restriction solely for `browser-hardening` and
+`release-authority` jobs needed to qualify and publish 0.19.0 from protected
+`main`, including its corrective pull requests. Use the normal review UI as
+`Seabass-up`, not administrator bypass, and record the delegation plus exact
+run and source revision in each approval comment. Do not represent delegated
+approval as independent or personally performed human review.
+
+The delegation does not permit another identity, changed environment settings,
+weaker checks, unqualified artifacts, native-signing substitutes, skipped
+qualification, tag rewrites, or a later release. It expires when 0.19.0 is
+published or the owner revokes it. Any remaining technical failure blocks
+publication regardless of this authorization.
 
 Keep immutable releases, exact no-bypass `refs/tags/v*` update/deletion
 protection, protected-main source binding, short-lived scoped policy-audit

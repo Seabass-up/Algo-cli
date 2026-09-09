@@ -889,6 +889,183 @@ def test_registry_nonprovenance_json_still_rejects_fractional_numbers() -> None:
         module._strict_json(b'{"sample":1.25}')
 
 
+class _RegistryResponse(io.BytesIO):
+    status = 200
+
+    def __init__(self, payload: bytes) -> None:
+        super().__init__(payload)
+        self.headers = {"Content-Length": str(len(payload))}
+
+
+@pytest.mark.parametrize("token_key", ["token", "access_token"])
+@pytest.mark.parametrize("redirect_blob", [False, True])
+def test_registry_blob_authenticates_only_after_exact_bearer_challenge(
+    monkeypatch, token_key: str, redirect_blob: bool
+) -> None:
+    module = _build_module()
+    repository = "seabass-up/algo-cli-boron-browser"
+    payload = b'{"statement":"fixture"}'
+    digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+    blob_url = "https://ghcr.io/v2/" + repository + "/blobs/" + digest
+    token_url = "https://ghcr.io/token?service=ghcr.io&scope=repository%3Aseabass-up%2Falgo-cli-boron-browser%3Apull"
+    redirect_url = "https://blob-storage.example.invalid/immutable-blob"
+    basic = "Basic ZGlhZ25vc3RpYzpub3QtYS10b2tlbg=="
+    token = "fixture-token-not-a-credential"
+    requests = []
+
+    class Registry:
+        def open(self, request, *, timeout):
+            assert timeout == module.RELEASE_FETCH_TIMEOUT_SECONDS
+            requests.append(request)
+            authorization = request.get_header("Authorization")
+            if request.full_url == blob_url and authorization != "Bearer " + token:
+                # GHCR returns a placeholder scope for Basic at its blob endpoint.
+                scope = "user/image" if authorization is not None else repository
+                challenge = (
+                    'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:' + scope + ':pull"'
+                )
+                raise module.urllib.error.HTTPError(
+                    blob_url, 401, "Unauthorized", {"WWW-Authenticate": challenge}, io.BytesIO()
+                )
+            if request.full_url == token_url:
+                assert authorization == basic
+                return _RegistryResponse(json.dumps({token_key: token}).encode("ascii"))
+            if request.full_url == blob_url:
+                assert authorization == "Bearer " + token
+                if redirect_blob:
+                    raise module.urllib.error.HTTPError(
+                        blob_url, 307, "Redirect", {"Location": redirect_url}, io.BytesIO()
+                    )
+                return _RegistryResponse(payload)
+            assert request.full_url == redirect_url
+            assert authorization is None
+            return _RegistryResponse(payload)
+
+    monkeypatch.setattr(module, "_read_docker_authorization", lambda **_kwargs: basic)
+    monkeypatch.setattr(module.urllib.request, "build_opener", lambda *_args: Registry())
+
+    assert (
+        module._registry_blob_bytes(
+            repository, digest=digest, expected_size=len(payload), stage="browser_attestations_sbom"
+        )
+        == payload
+    )
+    assert [request.full_url for request in requests] == [blob_url, token_url, blob_url] + (
+        [redirect_url] if redirect_blob else []
+    )
+    assert requests[0].get_header("Authorization") is None
+    assert all(request.get_header("Accept-encoding") == "identity" for request in requests)
+
+
+@pytest.mark.parametrize(
+    "challenge",
+    [
+        'Basic realm="https://ghcr.io/token"',
+        'Bearer realm="https://attacker.example/token",service="ghcr.io",scope="repository:seabass-up/algo-cli-boron-browser:pull"',
+        'Bearer realm="http://ghcr.io/token",service="ghcr.io",scope="repository:seabass-up/algo-cli-boron-browser:pull"',
+        'Bearer realm="https://ghcr.io/token",service="attacker.example",scope="repository:seabass-up/algo-cli-boron-browser:pull"',
+        'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:user/image:pull"',
+        'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:seabass-up/algo-cli-boron-browser:pull,push"',
+        'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:seabass-up/algo-cli-boron-browser:pull",service="ghcr.io"',
+        "",
+    ],
+)
+def test_registry_blob_rejects_untrusted_challenges_before_sending_credentials(monkeypatch, challenge: str) -> None:
+    module = _build_module()
+    requests = []
+
+    class Registry:
+        def open(self, request, *, timeout):
+            requests.append(request)
+            raise module.urllib.error.HTTPError(
+                request.full_url, 401, "Unauthorized", {"WWW-Authenticate": challenge}, io.BytesIO()
+            )
+
+    monkeypatch.setattr(module, "_read_docker_authorization", lambda **_kwargs: "Basic fixture-only")
+    monkeypatch.setattr(module.urllib.request, "build_opener", lambda *_args: Registry())
+
+    with pytest.raises(module.BuildRejected, match="^browser_attestations_sbom_authentication$"):
+        module._registry_blob_bytes(
+            "seabass-up/algo-cli-boron-browser",
+            digest="sha256:" + "a" * 64,
+            expected_size=1,
+            stage="browser_attestations_sbom",
+        )
+    assert len(requests) == 1
+    assert requests[0].get_header("Authorization") is None
+
+
+@pytest.mark.parametrize("denied_stage", ["token", "blob"])
+def test_registry_blob_does_not_retry_denied_credentials(monkeypatch, denied_stage: str) -> None:
+    module = _build_module()
+    requests = []
+    responses = []
+
+    class Registry:
+        def open(self, request, *, timeout):
+            requests.append(request)
+            if len(requests) == 1:
+                headers = {
+                    "WWW-Authenticate": 'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:seabass-up/algo-cli-boron-browser:pull"'
+                }
+            elif len(requests) == 2 and denied_stage == "blob":
+                response = _RegistryResponse(b'{"token":"fixture-only"}')
+                responses.append(response)
+                return response
+            else:
+                headers = {}
+            error = module.urllib.error.HTTPError(request.full_url, 401, "Unauthorized", headers, io.BytesIO())
+            responses.append(error)
+            raise error
+
+    monkeypatch.setattr(module, "_read_docker_authorization", lambda **_kwargs: "Basic fixture-only")
+    monkeypatch.setattr(module.urllib.request, "build_opener", lambda *_args: Registry())
+
+    reason = "browser_attestations_sbom" + ("_token" if denied_stage == "token" else "") + "_response"
+    with pytest.raises(module.BuildRejected, match="^" + reason + "$"):
+        module._registry_blob_bytes(
+            "seabass-up/algo-cli-boron-browser",
+            digest="sha256:" + "a" * 64,
+            expected_size=1,
+            stage="browser_attestations_sbom",
+        )
+    assert len(requests) == (2 if denied_stage == "token" else 3)
+    assert all(response.closed for response in responses)
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_size", "expected_digest", "reason"),
+    [
+        (b"{}", 3, "sha256:" + hashlib.sha256(b"{}").hexdigest(), "size"),
+        (b"{}", 1, "sha256:" + hashlib.sha256(b"{}").hexdigest(), "size"),
+        (b"{}", 2, "sha256:" + "a" * 64, "digest"),
+    ],
+)
+def test_registry_blob_still_rejects_size_and_digest_mismatch(
+    monkeypatch, payload: bytes, expected_size: int, expected_digest: str, reason: str
+) -> None:
+    module = _build_module()
+    requests = []
+
+    class Registry:
+        def open(self, request, *, timeout):
+            requests.append(request)
+            return _RegistryResponse(payload)
+
+    monkeypatch.setattr(module, "_read_docker_authorization", lambda **_kwargs: "Basic fixture-only")
+    monkeypatch.setattr(module.urllib.request, "build_opener", lambda *_args: Registry())
+
+    with pytest.raises(module.BuildRejected, match="^browser_attestations_sbom_" + reason + "$"):
+        module._registry_blob_bytes(
+            "seabass-up/algo-cli-boron-browser",
+            digest=expected_digest,
+            expected_size=expected_size,
+            stage="browser_attestations_sbom",
+        )
+    assert len(requests) == 1
+    assert requests[0].get_header("Authorization") is None
+
+
 def test_registry_index_resolves_raw_attestation_bound_amd64_descriptors(
     monkeypatch,
 ) -> None:

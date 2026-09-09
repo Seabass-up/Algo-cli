@@ -1439,12 +1439,13 @@ def _registry_blob_bytes(
         raise BuildRejected(stage + "_identity")
     basic = _read_docker_authorization(stage=stage)
     blob_url = "https://ghcr.io/v2/" + repository + "/blobs/" + digest
+    # GHCR's blob endpoint accepts Bearer tokens, not Docker's Basic login.
+    # Discover the exact pull challenge before authenticating at the token endpoint.
     request = urllib.request.Request(
         blob_url,
         headers={
             "Accept": _INTOTO_MEDIA_TYPE,
             "Accept-Encoding": "identity",
-            "Authorization": basic,
             "User-Agent": "algo-cli-boron-hardening/1",
         },
         method="GET",
