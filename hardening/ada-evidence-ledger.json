@@ -3908,6 +3908,15 @@
           "timestamp": "2026-09-09T23:50:02Z",
           "scope": "source digest sha256:6d5bd5510b6a3d44b539b358ffd949fc6d1f307a7aca97231f9c0bde1a6a2cd2 retains the secure release CLI reader while keeping parsed snapshot validation cross-platform",
           "limitations": "PR CI 34417571345 failed 12 Windows tests at the POSIX-only reader; that failure is retained. No tests are skipped or security flags removed. Fresh full CI and publication qualification remain required; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after correcting workflow API identifiers and repository identity projection",
+          "digest": "sha256:51e29d1acf5946079188858a82942a9a9270a45fa3a5cadd2511a7c5db7c8e20",
+          "result": "9 local metrics pass, 5 broader external metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-10T00:28:22Z",
+          "scope": "source digest sha256:3b68e40a10257540bcb3ad16526fca383895b7f3a9cb8ca223fe32cf9250da4f binds all three filename-only Actions routes and exact repository ID/name validation with normal API metadata",
+          "limitations": "Release run 34420930530 failed after its draft capture passed. The corrected read-only 14-request live API diagnostic and tagged-report reconstruction are not fresh hosted qualification or publication; HARD-080 remains in progress"
         }
       ]
     },
@@ -5824,6 +5833,15 @@
           "timestamp": "2026-09-09T23:50:02Z",
           "scope": "source digest sha256:6d5bd5510b6a3d44b539b358ffd949fc6d1f307a7aca97231f9c0bde1a6a2cd2 binds unchanged tagged bytes and latency limits to the test-boundary correction",
           "limitations": "All platform upgrade jobs passed in the failed PR run, but they do not qualify the corrected commit or establish comparative performance. Broader M8/M9 completion remains blocked; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after correcting workflow API identifiers and repository identity projection",
+          "digest": "sha256:51e29d1acf5946079188858a82942a9a9270a45fa3a5cadd2511a7c5db7c8e20",
+          "result": "9 local metrics pass, 5 broader external metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-10T00:28:22Z",
+          "scope": "source digest sha256:3b68e40a10257540bcb3ad16526fca383895b7f3a9cb8ca223fe32cf9250da4f retains unchanged tagged package bytes, fixture denominators and latency limits",
+          "limitations": "Prior passing source and publisher CI cannot qualify these API corrections. Local regression and read-only API checks do not establish comparative performance or release readiness; HARD-081 remains in progress"
         }
       ]
     },

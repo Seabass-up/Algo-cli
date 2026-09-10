@@ -191,7 +191,7 @@ def _environment(**overrides: str) -> dict[str, str]:
 
 def _api_documents(*, revision: str = REVISION, release_id: int = 301) -> dict[str, Any]:
     workflow_runs = (
-        f"repos/{SCRIPT.REPOSITORY}/actions/workflows/{SCRIPT.CI_WORKFLOW_PATH}/runs"
+        f"repos/{SCRIPT.REPOSITORY}/actions/workflows/oliver-ci.yml/runs"
         f"?branch={SCRIPT.DEFAULT_BRANCH}&event=push&head_sha={revision}"
         "&status=success&per_page=100"
     )
@@ -223,7 +223,7 @@ def _api_documents(*, revision: str = REVISION, release_id: int = 301) -> dict[s
             "published_at": None,
             "assets": [],
         },
-        f"repos/{SCRIPT.REPOSITORY}/actions/workflows/{SCRIPT.CI_WORKFLOW_PATH}": {
+        f"repos/{SCRIPT.REPOSITORY}/actions/workflows/oliver-ci.yml": {
             "id": 401,
             "name": "CI",
             "path": SCRIPT.CI_WORKFLOW_PATH,
@@ -543,7 +543,7 @@ RECOVERY_HEAD = "f" * 40
 
 
 def _ci_query(revision: str) -> str:
-    return (f"repos/{SCRIPT.REPOSITORY}/actions/workflows/{SCRIPT.CI_WORKFLOW_PATH}/runs"
+    return (f"repos/{SCRIPT.REPOSITORY}/actions/workflows/oliver-ci.yml/runs"
             f"?branch=main&event=push&head_sha={revision}&status=success&per_page=100")
 
 
@@ -580,6 +580,44 @@ def test_authorized_recovery_binds_unchanged_source_and_qualified_publisher() ->
         receipt, environment=_environment(GITHUB_SHA=RECOVERY_HEAD, GITHUB_WORKFLOW_SHA=RECOVERY_HEAD),
         api_get=lambda endpoint: copy.deepcopy(rows[endpoint]),
     ) == RECOVERY_HEAD
+
+
+def test_workflow_api_uses_filename_but_still_binds_repository_path() -> None:
+    rows = _recovery_documents()
+    calls: list[str] = []
+
+    def get(endpoint: str) -> Any:
+        calls.append(endpoint)
+        assert "/actions/workflows/.github/" not in endpoint
+        return copy.deepcopy(rows[endpoint])
+
+    environment = _environment(GITHUB_SHA=RECOVERY_HEAD, GITHUB_WORKFLOW_SHA=RECOVERY_HEAD)
+    receipt, _ = SCRIPT.validate_authority(
+        tag=TAG, environment=environment, checkout_revision=RECOVERY_HEAD,
+        policy_receipt=_repository_policy(), api_get=get,
+    )
+    assert SCRIPT.verify_publisher(receipt, environment=environment, api_get=get) == RECOVERY_HEAD
+    assert calls.count(f"repos/{SCRIPT.REPOSITORY}/actions/workflows/oliver-ci.yml") == 2
+    assert calls.count(_ci_query(RECOVERY_HEAD)) == 2
+    assert calls.count(_ci_query(RECOVERY_SOURCE)) == 1
+    assert receipt["boron"]["workflow_path"] == ".github/workflows/oliver-ci.yml"
+    rows[f"repos/{SCRIPT.REPOSITORY}/actions/workflows/oliver-ci.yml"]["path"] = "oliver-ci.yml"
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_ci_workflow"):
+        SCRIPT.verify_publisher(receipt, environment=environment, api_get=get)
+
+
+@pytest.mark.parametrize("field", ["repository", "head_repository"])
+def test_ci_repository_identity_accepts_normal_api_metadata_but_rejects_other_repositories(field: str) -> None:
+    rows = _recovery_documents()
+    repository = rows[_ci_query(RECOVERY_HEAD)]["workflow_runs"][0][field]
+    repository.update(private=False, owner={"login": "Seabass-up"}, html_url="https://github.com/Seabass-up/Algo-cli")
+    assert _recovery_authority(rows)["source"]["revision"] == RECOVERY_SOURCE
+    for key, changed in (("id", 1), ("full_name", "other/Algo-cli")):
+        original = repository[key]
+        repository[key] = changed
+        with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_ci_run"):
+            _recovery_authority(rows)
+        repository[key] = original
 
 
 @pytest.mark.parametrize("revision", [RECOVERY_SOURCE, RECOVERY_HEAD])
