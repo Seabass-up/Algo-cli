@@ -47,7 +47,13 @@ def test_every_release_job_uses_the_pinned_posix_runner() -> None:
     workflow = (ROOT / ".github/workflows/oliver-release.yml").read_text(encoding="utf-8")
     jobs = _workflow_job_bodies(workflow)
     assert jobs
-    assert all("    runs-on: ubuntu-24.04\n" in body for body in jobs.values())
+    for body in jobs.values():
+        if "uses: ./.github/workflows/oliver-draft-capture.yml" in body:
+            child = (ROOT / ".github/workflows/oliver-draft-capture.yml").read_text(encoding="utf-8")
+            assert "    runs-on: ubuntu-24.04\n" in child
+            assert _yaml_duplicate_mapping_keys(child) == ()
+        else:
+            assert "    runs-on: ubuntu-24.04\n" in body
 
 
 def _yaml_duplicate_mapping_keys(document: str) -> tuple[tuple[int, str], ...]:
@@ -102,6 +108,12 @@ def _workflow_job_bodies(document: str) -> dict[str, str]:
 def _workflow_job_outputs(document: str) -> dict[str, frozenset[str]]:
     outputs: dict[str, frozenset[str]] = {}
     for job, body in _workflow_job_bodies(document).items():
+        if "uses: ./.github/workflows/oliver-draft-capture.yml" in body:
+            child = (ROOT / ".github/workflows/oliver-draft-capture.yml").read_text(encoding="utf-8")
+            assert "      artifact-id:\n        value: ${{ jobs.capture.outputs.artifact-id }}" in child
+            assert "artifact-id" in _workflow_job_outputs(child)["capture"]
+            outputs[job] = frozenset({"artifact-id"})
+            continue
         section = re.search(r"^    outputs:\n((?:^      [a-z][a-z0-9-]*:.*\n)+)", body, flags=re.MULTILINE)
         outputs[job] = frozenset(
             re.findall(r"^      ([a-z][a-z0-9-]*):", section.group(1), flags=re.MULTILINE)
@@ -1613,7 +1625,7 @@ def test_release_workflow_is_draft_first_least_privilege_and_durable() -> None:
     ):
         assert expected in dispatch
 
-    policy = workflow.split("  repository-policy:\n", 1)[1].split("\n  release-authority:\n", 1)[0]
+    policy = _workflow_job_bodies(workflow)["repository-policy"]
     assert "actions/checkout" not in policy
     assert "contents: write" not in policy
     assert "id-token: write" not in policy
@@ -1725,7 +1737,10 @@ def test_release_workflow_is_draft_first_least_privilege_and_durable() -> None:
     assert publish.index("path: ${{ runner.temp }}/verified-release-assets") < publish.index(
         'ASSETS="${RUNNER_TEMP}/verified-release-assets"'
     )
-    assert 'source_get "repos/Seabass-up/Algo-cli/releases/${RELEASE_ID}"' in publish
+    assert 'source_get "repos/Seabass-up/Algo-cli/releases/${RELEASE_ID}"' not in publish
+    assert "needs.draft-publish-capture.outputs.artifact-id" in publish
+    assert "time.time() - value['captured_at'] <= 120" in publish
+    assert "contents: write" not in publish
     assert "if remote != local:" in publish
     assert "https://pypi.org/pypi/algo-cli-runtime/${version}/json" in publish
     assert "steps.immediate-authority.outputs.publish-required == 'true'" in publish

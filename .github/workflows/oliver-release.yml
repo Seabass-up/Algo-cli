@@ -216,9 +216,18 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  draft-capture:
+    needs: [dispatch-authority, repository-policy]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/oliver-draft-capture.yml
+    with:
+      phase: initial
+      tag: ${{ inputs.tag }}
+
   release-authority:
     name: Bind release, protected source, same-SHA CI, and Boron evidence
-    needs: [dispatch-authority, repository-policy]
+    needs: [dispatch-authority, repository-policy, draft-capture]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -266,6 +275,10 @@ jobs:
           test -f "${gh_bin}" && test ! -L "${gh_bin}"
           test "$("${gh_bin}" version | sed -n '1p')" = "gh version ${GH_CLI_VERSION} (2026-06-17)"
           printf '%s\n' "${RUNNER_TEMP}/gh_${GH_CLI_VERSION}_linux_amd64/bin" >> "${GITHUB_PATH}"
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.draft-capture.outputs.artifact-id }}
+          path: ${{ runner.temp }}/draft-capture
       - name: Resolve the release and selected Boron run
         id: authority
         env:
@@ -276,6 +289,7 @@ jobs:
           python -I -B -S scripts/oliver_release_authority.py authority
           --tag "${RELEASE_TAG}"
           --policy "${RUNNER_TEMP}/oliver-release-repository-policy.json"
+          --draft-snapshot "${RUNNER_TEMP}/draft-capture/snapshot.json"
           --output "${RUNNER_TEMP}/oliver-release-authority.json"
           --github-output "${GITHUB_OUTPUT}"
       - name: Download only the selected attempt-scoped Boron artifact
@@ -352,7 +366,7 @@ jobs:
   durable-reconcile:
     name: Reconcile an exact durable draft or published release without rebuilding
     if: ${{ needs.release-authority.outputs.release-state == 'draft-exact' || needs.release-authority.outputs.release-state == 'published-exact' }}
-    needs: release-authority
+    needs: [release-authority, draft-capture]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -388,9 +402,12 @@ jobs:
           test -f "${gh_bin}" && test ! -L "${gh_bin}"
           test "$("${gh_bin}" version | sed -n '1p')" = "gh version ${GH_CLI_VERSION} (2026-06-17)"
           printf '%s\n' "${RUNNER_TEMP}/gh_${GH_CLI_VERSION}_linux_amd64/bin" >> "${GITHUB_PATH}"
-      - name: Download the exact API-bound release assets by immutable asset ID
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.draft-capture.outputs.artifact-id }}
+          path: ${{ runner.temp }}/draft-capture
+      - name: Select the captured API-bound release assets by immutable asset ID
         env:
-          GH_TOKEN: ${{ github.token }}
           RELEASE_ID: ${{ needs.release-authority.outputs.release-id }}
           RELEASE_STATE: ${{ needs.release-authority.outputs.release-state }}
           RELEASE_TAG: ${{ inputs.tag }}
@@ -399,7 +416,14 @@ jobs:
           state="${RUNNER_TEMP}/durable-state"
           stage="${RUNNER_TEMP}/release-assets"
           install -d -m 0700 "${state}" "${stage}"
-          gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/Seabass-up/Algo-cli/releases/${RELEASE_ID}" > "${state}/release.json"
+          SNAPSHOT="${RUNNER_TEMP}/draft-capture/snapshot.json" python -I -B -S - > "${state}/release.json" <<'PY'
+          import json, os
+          from pathlib import Path
+          snapshot = json.loads(Path(os.environ['SNAPSHOT']).read_bytes())
+          if snapshot['publisher'] != os.environ['GITHUB_SHA'] or snapshot['run_id'] != os.environ['GITHUB_RUN_ID'] or snapshot['run_attempt'] != os.environ['GITHUB_RUN_ATTEMPT']:
+              raise SystemExit(2)
+          print(json.dumps(snapshot['release']))
+          PY
           python -I -B -S scripts/oliver_release_authority.py asset-plan \
             --tag "${RELEASE_TAG}" --release-id "${RELEASE_ID}" --release-state "${RELEASE_STATE}" \
             --release-json "${state}/release.json" --output "${state}/asset-plan.json"
@@ -413,10 +437,8 @@ jobs:
           PY
           while IFS=$'\t' read -r asset_id name; do
             [[ "${asset_id}" =~ ^[1-9][0-9]*$ && -n "${name}" ]]
-            gh api -H "Accept: application/octet-stream" -H "X-GitHub-Api-Version: 2026-03-10" \
-              "repos/Seabass-up/Algo-cli/releases/assets/${asset_id}" > "${stage}/${name}"
+            cp -- "${RUNNER_TEMP}/draft-capture/assets/${name}" "${stage}/${name}"
           done < "${state}/assets.tsv"
-          unset GH_TOKEN
       - name: Rebind durable bytes to authority, policy, source, and checksums
         env:
           RELEASE_ID: ${{ needs.release-authority.outputs.release-id }}
@@ -1392,10 +1414,20 @@ jobs:
           --tag "${RELEASE_TAG}" --dist "${RUNNER_TEMP}/package/bound-dist"
           --github-output "${GITHUB_OUTPUT}"
 
+  draft-publish-capture:
+    if: ${{ needs.pypi-preflight.outputs.pypi-state == 'absent' || needs.pypi-preflight.outputs.pypi-state == 'partial-exact' }}
+    needs: pypi-preflight
+    permissions:
+      contents: write
+    uses: ./.github/workflows/oliver-draft-capture.yml
+    with:
+      phase: before-pypi
+      tag: ${{ inputs.tag }}
+
   publish:
     name: Publish absent exact distributions to PyPI
     if: ${{ needs.pypi-preflight.outputs.pypi-state == 'absent' || needs.pypi-preflight.outputs.pypi-state == 'partial-exact' }}
-    needs: [release-authority, repository-policy, release-assets-ready, pypi-preflight]
+    needs: [release-authority, repository-policy, release-assets-ready, pypi-preflight, draft-publish-capture]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment:
@@ -1417,6 +1449,10 @@ jobs:
         with:
           artifact-ids: ${{ needs.repository-policy.outputs.artifact-id }}
           path: ${{ runner.temp }}/expected-policy
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.draft-publish-capture.outputs.artifact-id }}
+          path: ${{ runner.temp }}/draft-publish-capture
       - name: Mint a short-lived policy token after the protected environment wait
         id: policy-token
         continue-on-error: true
@@ -1481,7 +1517,26 @@ jobs:
             source_get "repos/Seabass-up/Algo-cli/compare/${SOURCE_SHA}...${branch_sha}" "${state}/compare.json"
           fi
           source_get "repos/Seabass-up/Algo-cli/commits/${RELEASE_TAG}" "${state}/tag.json"
-          source_get "repos/Seabass-up/Algo-cli/releases/${RELEASE_ID}" "${state}/release.json"
+          SNAPSHOT="${RUNNER_TEMP}/draft-publish-capture/snapshot.json" python -I -B -S - > "${state}/release.json" <<'PY'
+          import json, os, stat, time
+          from pathlib import Path
+          path = Path(os.environ['SNAPSHOT'])
+          info = path.lstat()
+          if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or not 1 <= info.st_size <= 8388608:
+              raise SystemExit(2)
+          value = json.loads(path.read_bytes())
+          if (value.get('schema_version') != 1 or value.get('phase') != 'before-pypi'
+              or value.get('publisher') != os.environ['GITHUB_SHA']
+              or value.get('source') != os.environ['SOURCE_SHA']
+              or value.get('run_id') != os.environ['GITHUB_RUN_ID']
+              or value.get('run_attempt') != os.environ['GITHUB_RUN_ATTEMPT']
+              or value.get('tag') != os.environ['RELEASE_TAG']
+              or value.get('release_id') != int(os.environ['RELEASE_ID'])
+              or type(value.get('captured_at')) is not int
+              or not 0 <= time.time() - value['captured_at'] <= 120):
+              raise SystemExit(2)
+          print(json.dumps(value['release']))
+          PY
           STATE="${state}" ASSETS="${RUNNER_TEMP}/verified-release-assets" PACKAGE="${RUNNER_TEMP}/package/bound-dist" RELEASE_ID="${RELEASE_ID}" RELEASE_TAG="${RELEASE_TAG}" SOURCE_SHA="${SOURCE_SHA}" python -I -B -S - <<'PY'
           import hashlib, json, os, re, stat
           from pathlib import Path
@@ -1595,6 +1650,16 @@ jobs:
                   raise SystemExit(2)
               observed.add(name)
           print("publish-required=" + ("false" if observed == expected else "true"))
+          PY
+      - name: Reject draft evidence aged during approval or final validation
+        if: ${{ steps.immediate-authority.outputs.publish-required == 'true' }}
+        run: |
+          python -I -B -S - <<'PY'
+          import json, os, time
+          from pathlib import Path
+          value = json.loads((Path(os.environ['RUNNER_TEMP']) / 'draft-publish-capture/snapshot.json').read_bytes())
+          if type(value.get('captured_at')) is not int or not 0 <= time.time() - value['captured_at'] <= 120:
+              raise SystemExit('{"reason_code":"release_draft_snapshot_expired","status":"blocked"}')
           PY
       - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
         if: ${{ steps.immediate-authority.outputs.publish-required == 'true' }}
