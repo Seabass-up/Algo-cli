@@ -2250,3 +2250,25 @@ evaluation/recovery suite passes 53 cases.
   cases. Tests now cover LF, CRLF, and missing final newline without changing
   runtime matching. The current candidate requires fresh local reports, pattern
   receipts, installed smoke, and native CI before delivery claims.
+
+### PyPI Visibility Race Repair - 2026-09-10
+
+- Protected release run `34473404830` uploaded the exact `0.19.1.post1`
+  distributions successfully, then failed its immediate public check with
+  `release_pypi_missing`. PyPI exposed both files shortly afterward with the
+  expected names, sizes, and SHA-256 digests. The failed run remains failed;
+  visibility appearing later is not retroactive success.
+- A fresh protected-main dispatch, run `34474096803`, revalidated the immutable
+  source and exact public bytes, skipped re-upload, completed every release gate,
+  and published the immutable GitHub release. That recovered this release without
+  moving a tag, bypassing a gate, or treating upload acceptance as publication.
+- The local stopping-point candidate adds a six-observation, 30-second visibility
+  window only to post-upload PyPI verification. It retries `absent` and
+  `partial-exact`; malformed responses and file, identity, digest, size, type, or
+  yank conflicts remain immediate failures. Preflight classification stays
+  one-shot.
+- Red tests first recorded the missing retry contract. Focused tests now cover
+  absent-to-partial-to-exact convergence, bounded exhaustion, immediate conflict
+  rejection, command-mode misuse, and workflow placement. This candidate is a
+  local follow-up to the published release; it is not part of `0.19.1.post1` and
+  does not claim hosted CI qualification until pushed through the normal path.
