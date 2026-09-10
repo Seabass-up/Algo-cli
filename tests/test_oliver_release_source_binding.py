@@ -51,10 +51,38 @@ def test_project_requirements_match_build_backend_canonical_spelling() -> None:
     for extra in metadata["optional-dependencies"].values():
         requirements.extend(extra)
     for requirement in requirements:
+        assert Requirement(requirement).url is None
         assert BINDING._canonical_requirement(requirement) == BINDING._canonical_requirement(
             str(Requirement(requirement))
         )
+    assert "echo-veil" not in metadata["optional-dependencies"]
+    assert project["dependency-groups"]["echo-veil"] == [
+        "echo-veil @ git+https://github.com/Seabass-up/echo-veil.git@cbee525687ac03c830d4b6632ff1d044b4b838fc"
+    ]
+    assert "allow-direct-references" not in project["tool"]["hatch"].get("metadata", {})
     assert "/.gitignore" in project["tool"]["hatch"]["build"]["targets"]["sdist"]["include"]
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {
+            "dependencies": ["example @ https://packages.example/example.whl"],
+            "optional-dependencies": {},
+        },
+        {
+            "dependencies": [],
+            "optional-dependencies": {
+                "private": [
+                    "example @ git+https://github.com/example/example.git@" + "a" * 40
+                ]
+            },
+        },
+    ],
+)
+def test_public_direct_requirements_are_rejected_before_artifact_binding(metadata: dict[str, Any]) -> None:
+    with pytest.raises(BINDING.SourceBindingRejected, match="package_pypi_direct_dependency"):
+        BINDING._expected_requirements(metadata)
 
 
 def test_ci_exercises_real_reproducible_binding_before_installed_wheel_checks() -> None:

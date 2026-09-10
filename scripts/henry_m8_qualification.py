@@ -40,9 +40,11 @@ from algo_cli.henry_hardening_qualification import (  # noqa: E402
 
 
 FUZZER = ROOT / "scripts" / "david_control_kernel_fuzzer.py"
+INSTALLED_PARITY = ROOT / "scripts" / "oliver_installed_source_parity.py"
 SOURCE_PATHS = (
     ".gitattributes",
     "scripts/nathan_agent_runtime_profile.py",
+    "scripts/oliver_installed_source_parity.py",
     "algo_cli/evals/harness_retrieval_benchmark.py",
     "algo_cli/evals/grounded_retrieval.py",
     "algo_cli/evals/grounded_retrieval_validation.py",
@@ -522,11 +524,31 @@ def _run_protocol_frames(iterations: int) -> dict[str, Any]:
 
 
 def _run_focused_tests() -> bool:
+    environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    parity = subprocess.run(
+        [sys.executable, "-I", str(INSTALLED_PARITY)],
+        cwd=ROOT,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+        env=environment,
+    )
+    if parity.returncode != 0:
+        return False
+    pytest_entry = Path(sys.executable).with_name("pytest.exe" if os.name == "nt" else "pytest")
+    try:
+        pytest_info = pytest_entry.lstat()
+    except OSError:
+        return False
+    if not stat.S_ISREG(pytest_info.st_mode) or pytest_entry.is_symlink():
+        return False
     completed = subprocess.run(
         [
-            sys.executable,
-            "-m",
-            "pytest",
+            str(pytest_entry),
             "-q",
             "-k",
             " and ".join(f"not {name}" for name in POSTWRITE_EVIDENCE_TESTS),
@@ -540,7 +562,7 @@ def _run_focused_tests() -> bool:
         encoding="utf-8",
         timeout=300,
         check=False,
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        env=environment,
     )
     return completed.returncode == 0
 

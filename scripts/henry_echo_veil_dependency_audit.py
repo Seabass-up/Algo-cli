@@ -77,7 +77,7 @@ def _validate_dependency_files() -> None:
     project = _read_toml(PROJECT_PATH)
     lock = _read_toml(LOCK_PATH)
     try:
-        requirements = project["project"]["optional-dependencies"]["echo-veil"]
+        requirements = project["dependency-groups"]["echo-veil"]
     except (KeyError, TypeError):
         _reject("project_pin_missing")
     if requirements != [EXPECTED_REQUIREMENT]:

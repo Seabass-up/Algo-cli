@@ -17,9 +17,12 @@ TCC permission, or browser authority. Local macOS Keychain is the qualified
 operator recovery path; an unsupported backend or failed write blocks safely.
 
 The optional `echo-veil` dependency must also be installed in the exact Python
-environment used by the `algo-cli` launcher. Use the project's pinned
-`algo-cli-runtime[echo-veil]` extra, not an arbitrary Echo checkout or replacement
-profile. Credential readiness alone does not prove adapter or model readiness;
+environment used by the `algo-cli` launcher. Source development uses the
+project's commit-pinned `echo-veil` dependency group. Because that qualified
+Echo revision is not published on PyPI, the public Algo package does not expose
+an `echo-veil` extra; install the documented exact source revision separately,
+not an arbitrary Echo checkout or replacement profile. Credential readiness
+alone does not prove adapter or model readiness;
 finish recovery with the authenticated Echo doctor and one bounded model turn.
 
 Only the four Elsie auxiliary-store namespaces are accepted. The whole map is

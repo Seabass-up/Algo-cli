@@ -1,10 +1,24 @@
 # 0.19.1 Release Scope
 
-State: frozen stability candidate, not published. The published upgrade
-baseline remains 0.18.0. This candidate inherits the reliability, security,
-model-discovery, Windows, and delivery-path scope recorded in
+State: frozen 0.19.1.post1 stability candidate, not published. The published
+upgrade baseline remains 0.18.0. This candidate inherits the reliability,
+security, model-discovery, Windows, and delivery-path scope recorded in
 [the 0.19.0 history](henry-release-0.19.0.md), with one additional browser fix.
 The unfinished contained test runner and all prior scope exclusions remain out.
+
+The immutable v0.19.1 candidate cannot be uploaded to PyPI because its public
+package metadata contains a direct Git dependency, which PyPI rejects. That tag
+will not be moved or repackaged. Version 0.19.1.post1 is the packaging-only
+successor: Echo Veil remains pinned as a source dependency group for development
+and qualification, but no direct URL is emitted in public package metadata. The
+source-binding verifier rejects any future public direct dependency before
+artifact binding. This correction requires fresh source, platform, browser,
+artifact, approval, and publication qualification.
+
+The Python and installer artifact identity remains `0.19.1.post1`. Apple's
+three-integer bundle version constraint maps that post-release to native
+marketing version `0.19.1`; the separately incremented native build number
+continues to identify the exact signed iteration.
 
 On 2026-09-09 the owner authorized fixing the browser race and qualifying a new
 v0.19.1 tag, leaving v0.19.0 untouched and unpublished. The earlier environment

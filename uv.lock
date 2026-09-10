@@ -30,9 +30,6 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
 ]
-echo-veil = [
-    { name = "echo-veil" },
-]
 pdf = [
     { name = "pymupdf" },
 ]
@@ -48,11 +45,15 @@ supply-chain = [
     { name = "pip-audit" },
 ]
 
+[package.dev-dependencies]
+echo-veil = [
+    { name = "echo-veil" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "build", marker = "extra == 'release'", specifier = "==1.5.0" },
     { name = "cryptography", specifier = ">=44.0" },
-    { name = "echo-veil", marker = "extra == 'echo-veil'", git = "https://github.com/Seabass-up/echo-veil.git?rev=cbee525687ac03c830d4b6632ff1d044b4b838fc" },
     { name = "hatchling", marker = "extra == 'release'", specifier = "==1.31.0" },
     { name = "keyring", specifier = ">=25.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0" },
@@ -71,7 +72,10 @@ requires-dist = [
     { name = "twine", marker = "extra == 'release'", specifier = "==6.2.0" },
     { name = "wcmatch", specifier = ">=10.2.1,<11" },
 ]
-provides-extras = ["dev", "echo-veil", "pdf", "quantization", "release", "supply-chain"]
+provides-extras = ["dev", "pdf", "quantization", "release", "supply-chain"]
+
+[package.metadata.requires-dev]
+echo-veil = [{ name = "echo-veil", git = "https://github.com/Seabass-up/echo-veil.git?rev=cbee525687ac03c830d4b6632ff1d044b4b838fc" }]
 
 [[package]]
 name = "annotated-types"

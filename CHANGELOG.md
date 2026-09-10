@@ -4,6 +4,13 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.19.1.post1] - Release Candidate
+
+This packaging-only post-release removes the unpublished Echo Veil Git reference
+from public package metadata while retaining the exact development and
+qualification pin. It also carries the release-verifier and scheduler-safe test
+corrections qualified after the original immutable candidate was tagged.
+
 ## [0.19.1] - Release Candidate
 
 This version is being qualified and is not yet published. The stable package

@@ -35,9 +35,11 @@ archive, different repository, or different commit does not satisfy required
 protection.
 
 The development/runtime candidate is pinned to Echo Veil 0.8.0 commit
-`cbee525687ac03c830d4b6632ff1d044b4b838fc` through the
-`algo-cli-runtime[echo-veil]` extra. This source pin is qualification evidence,
-not a public Echo Veil release or a production-readiness claim.
+`cbee525687ac03c830d4b6632ff1d044b4b838fc` through the source-only
+`echo-veil` dependency group. It is deliberately absent from public package
+extras because that Echo revision is not published on PyPI. This source pin is
+qualification evidence, not a public Echo Veil release or a production-readiness
+claim.
 
 This local-only revision retains the POSIX SQLite lock-safety repair and reuses
 eligible vector comparisons within each MMR ranking call. It passed 807 tests

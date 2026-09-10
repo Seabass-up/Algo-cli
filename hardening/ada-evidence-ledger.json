@@ -3935,6 +3935,15 @@
           "timestamp": "2026-09-10T01:32:40Z",
           "scope": "source digest sha256:b335c814252937f029770be2cec76c3c8ada6e0019d3c774605f06313d513496 parses expected predicates, verification statements and signed DSSE payloads losslessly before comparison; canonical digest encoding is unchanged",
           "limitations": "Supersedes the previous precision claim: PR 52 review found that float decoding could round before equality. Eight new wire-level regressions cover rounding and underflow, and all eight real signatures plus 17-file closure pass again locally. Publication separately remains blocked by a direct URL requirement in both immutable v0.19.1 distributions. HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after PyPI metadata repair, native post-release version mapping, and installed-environment M8 correction",
+          "digest": "sha256:b86fd5c11da9847aef3a132739a71c70e50d02d6509ed6d9517d482478eb949b",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-10T06:09:56Z",
+          "scope": "source digest sha256:dc657cf414e0ccd24d43d968d0d14f688a3b449f8df876e15eef350b33b9edc9 binds the public direct-URL dependency rejection, native 0.19.1 mapping for Python 0.19.1.post1, exact installed-source parity, and unchanged adversarial thresholds",
+          "limitations": "Local qualification does not establish hosted external-browser completion, native signing, public package publication, or broader M8 completion; HARD-080 remains in progress"
         }
       ]
     },
@@ -5878,6 +5887,24 @@
           "timestamp": "2026-09-10T01:32:40Z",
           "scope": "source digest sha256:b335c814252937f029770be2cec76c3c8ada6e0019d3c774605f06313d513496 retains fixture denominators, latency limits and immutable package bytes while rejecting numeric precision loss before comparison",
           "limitations": "The prior precision assertion is superseded by the lossless-parser correction. Local measurements do not establish comparative benefit or release eligibility; v0.19.1 remains unpublished with a separate PyPI metadata blocker. HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json refreshed by scripts/nathan_agent_runtime_qualification.py --refresh for the 0.19.1.post1 candidate",
+          "digest": "sha256:24a5b175fc9088736369da0c15c5431992a9319c8dd75eea21928661898fe9ff",
+          "result": "status pass: 17 of 17 correctness probes and 31 of 31 workloads pass; zero policy escapes, duplicate mutations, or unverified completions; public_claim_eligible is false",
+          "timestamp": "2026-09-10T05:59:51Z",
+          "scope": "source digest sha256:199ed59db7de164cd924887fe311e98321d576580eef4cbb32be799e9ba73571 and report digest sha256:4b3daab481b39971057a70cde3aca9856a339330581e3208d3ab156be281c81c bind the current deterministic Agent runtime benchmark",
+          "limitations": "Deterministic local fixtures do not establish provider quality, external-browser completion, hosted execution, publication, or cross-harness superiority; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated for the 0.19.1.post1 candidate",
+          "digest": "sha256:b86fd5c11da9847aef3a132739a71c70e50d02d6509ed6d9517d482478eb949b",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-10T06:09:56Z",
+          "scope": "source digest sha256:dc657cf414e0ccd24d43d968d0d14f688a3b449f8df876e15eef350b33b9edc9 binds five local token-efficiency repetitions with median schema reduction 83.615 percent and typed-program reduction 96.644 percent under unchanged thresholds",
+          "limitations": "Synthetic local token estimates do not establish task completion, model quality, screenshot reduction, hosted browser behavior, publication, or cross-harness advantage; HARD-081 remains in progress"
         }
       ]
     },
