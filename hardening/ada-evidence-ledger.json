@@ -3953,6 +3953,15 @@
           "timestamp": "2026-09-10T07:25:16Z",
           "scope": "source digest sha256:ada852e4e9cc1d71cc632dd38cfaf511ce8014a02802efb5c49f84bc948f6779 binds accounting schema 2, exact installed-source parity, the focused adversarial suite, and fail-closed separation of empty pre-upstream cancellation from partial broker input",
           "limitations": "Local qualification does not establish hosted external-browser completion, native signing, public package publication, or broader M8 completion. Exact-main run 34446268786 remains failed and fresh exact-current qualification is required; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after binding the owner-authorized empty pre-CONNECT cancellation to the Boron security contract",
+          "digest": "sha256:c7a52881fc4ad5734c3c1e053ab7d6134d93d2bdb22e781509c1e07a2d469f7d",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-10T08:01:59Z",
+          "scope": "source digest sha256:1e27bf086d5f70f07cab9a7899410ce6261cb88cd542af72a9a42641a809ced0 binds the schema-2 three-way partition, exact zero-byte pre-upstream cancellation rule, complete retained accounting, and unchanged failure handling for partial input and every post-upstream close",
+          "limitations": "Local qualification does not establish hosted external-browser completion, native signing, public package publication, or broader M8 completion. Exact-main run 34446268786 remains failed and fresh exact-current qualification is required; HARD-080 remains in progress"
         }
       ]
     },
@@ -5923,6 +5932,15 @@
           "timestamp": "2026-09-10T07:25:16Z",
           "scope": "source digest sha256:ada852e4e9cc1d71cc632dd38cfaf511ce8014a02802efb5c49f84bc948f6779 binds accounting schema 2, which retains empty pre-upstream cancellations while requiring at least one verified request and rejecting partial input or any overlap with upstream and denial records",
           "limitations": "This local deterministic evidence does not establish hosted-browser success, publication, or comparative performance. Exact-main run 34446268786 remains failed and must be superseded by a passing exact-current qualification; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after binding the owner-authorized empty pre-CONNECT cancellation to the Boron security contract",
+          "digest": "sha256:c7a52881fc4ad5734c3c1e053ab7d6134d93d2bdb22e781509c1e07a2d469f7d",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-10T08:01:59Z",
+          "scope": "source digest sha256:1e27bf086d5f70f07cab9a7899410ce6261cb88cd542af72a9a42641a809ced0 binds five local token-efficiency repetitions and the source-owned Boron accounting contract under unchanged thresholds",
+          "limitations": "Synthetic local token estimates and deterministic accounting tests do not establish hosted-browser success, publication, or comparative performance. Exact-main run 34446268786 remains failed and must be superseded by a passing exact-current qualification; HARD-081 remains in progress"
         }
       ]
     },
