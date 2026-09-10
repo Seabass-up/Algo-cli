@@ -2301,3 +2301,28 @@ evaluation/recovery suite passes 53 cases.
 - Public `0.19.1.post1` was reverified independently. These follow-up code and
   documentation changes are not in its immutable artifacts and require normal
   hosted qualification before any future publication.
+
+### Upgrade Qualification Fixture Repair - 2026-09-10
+
+- PR #59 at `dc08477` passed ordinary test, runtime, native, browser-contract,
+  and build jobs in run `34484392811`, but all three installed-wheel jobs failed
+  before the pipx/uv upgrade. Local reproduction confirmed that the baseline
+  resolver installed public `0.19.1.post1` instead of `0.18.0`. Unsupported
+  `UV_NO_INDEX` was the cause; the fixture now uses supported offline mode and
+  an isolated empty cache without altering Algo's normal updater.
+- Fresh-process checks now compare both installed packages and original wheel
+  metadata against the actual baseline/candidate payloads, excluding the
+  installer-rewritten RECORD. Same-version substitution, missing files, extra
+  package payloads, and runtime-path mismatches are rejected. Failure receipts
+  no longer claim the updater ran before completing the initial updater call.
+- All four local macOS manager/backend paths passed with the CI artifact,
+  verifying 251 baseline and 329 candidate files plus repeat-update parity and
+  preservation of 11 synthetic state files. The focused suites passed 43 tests;
+  the full installed suite passed 6,050 tests with 41 skips. The initially
+  incorrect source-loaded full-suite invocation and its 40 guarded-search
+  rejections are retained in [lessons learned](lessons-learned.md), not hidden
+  by changing the runtime identity guard.
+- Pinned Echo audit, installed-source parity, lint, hardening gate, and M9
+  evidence-currency checks passed. Relevant M8-bound source did not change;
+  its five external-browser blocks remain. Fresh hosted qualification of this
+  repair is required; no new tag, publication, or comparative claim follows.

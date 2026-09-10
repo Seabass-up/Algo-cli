@@ -9,7 +9,7 @@ from email.parser import BytesParser
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import sqlite3
 import stat
@@ -37,6 +37,7 @@ BASELINE_URL = (
 )
 BASELINE_SHA256 = "027903f9e383635fa09dde9e6b4bc991758d798b5375e72d8a35e0c2fc934ac0"
 BASELINE_SIZE = 1_034_630
+WHEEL_PACKAGES = frozenset({"algo_cli", "ollama_cli"})
 EXCLUDED_MODULES = frozenset(
     {
         "algo_cli/irene_verifier_snapshot.py",
@@ -79,6 +80,63 @@ def download_baseline(path: Path) -> None:
     if len(payload) != BASELINE_SIZE or hashlib.sha256(payload).hexdigest() != BASELINE_SHA256:
         raise ValueError("published 0.18.0 wheel does not match its pinned PyPI digest")
     path.write_bytes(payload)
+
+
+def offline_update_environment(env: dict[str, str], wheelhouse: Path, cache: Path) -> dict[str, str]:
+    # uv ignores pip's settings and has no UV_NO_INDEX environment variable.
+    # A fresh cache plus offline mode keeps every resolver on the local wheels.
+    location = wheelhouse.resolve().as_uri()
+    return dict(
+        env,
+        PIP_NO_INDEX="1",
+        PIP_FIND_LINKS=location,
+        UV_OFFLINE="true",
+        UV_FIND_LINKS=location,
+        UV_CACHE_DIR=str(cache),
+        UV_NO_CONFIG="true",
+        UV_PYTHON_DOWNLOADS="never",
+    )
+
+
+def verify_installed_wheel(wheel: Path, site: Path) -> int:
+    """Compare payload bytes, not just versions, without trusting installed RECORD."""
+    with zipfile.ZipFile(wheel) as archive:
+        names = [info.filename for info in archive.infolist() if not info.is_dir()]
+        metadata = [name for name in names if name.endswith(".dist-info/METADATA")]
+        if len(metadata) != 1 or len(names) != len(set(names)):
+            raise ValueError("installed wheel has ambiguous archive metadata or paths")
+        metadata_root = metadata[0].split("/", 1)[0]
+        expected = set()
+        for name in names:
+            relative = PurePosixPath(name)
+            if (
+                relative.is_absolute() or relative.as_posix() != name
+                or any(part in {".", ".."} for part in name.split("/"))
+                or any(char in name for char in ("\\", ":", "\0"))
+                or relative.parts[0] not in WHEEL_PACKAGES | {metadata_root}
+            ):
+                raise ValueError(f"installed wheel has an unsupported archive path: {name[:200]}")
+            if name == f"{metadata_root}/RECORD":
+                continue
+            path = site.joinpath(*relative.parts)
+            if (
+                path.is_symlink() or not path.resolve().is_relative_to(site.resolve())
+                or not path.is_file() or path.read_bytes() != archive.read(name)
+            ):
+                raise ValueError(f"installed wheel payload mismatch: {name}")
+            expected.add(name)
+    for name in sorted(WHEEL_PACKAGES):
+        package = site / name
+        if not package.is_dir() or package.is_symlink() or f"{name}/__init__.py" not in expected:
+            raise ValueError("installed wheel package is missing or linked")
+        for path in package.rglob("*"):
+            if path.is_symlink():
+                raise ValueError("installed wheel contains an unexpected link")
+            if path.is_dir() or (path.suffix == ".pyc" and "__pycache__" in path.relative_to(package).parts):
+                continue
+            if path.relative_to(site).as_posix() not in expected:
+                raise ValueError(f"installed wheel contains an unexpected payload: {path.relative_to(site)}")
+    return len(expected)
 
 
 def seed_state(home: Path, workspace: Path) -> None:
@@ -136,17 +194,19 @@ def state_manifest(home: Path, workspace: Path) -> dict[str, dict[str, object]]:
 
 
 def installed_identity(
-    python: Path, env_dir: Path, expected: str, env: dict[str, str], work: Path, manager: str = "pip"
-) -> None:
+    python: Path, env_dir: Path, expected: str, env: dict[str, str], work: Path, manager: str = "pip",
+    *, wheel: Path,
+) -> int:
     output = run(
         [
             str(python),
             "-I",
             "-c",
             (
-                "import json, algo_cli; from importlib.metadata import version; "
+                "import json, algo_cli; from importlib.metadata import distribution; "
                 "from algo_cli.updater import infer_install_manager; "
-                "print(json.dumps({'metadata': version('algo-cli-runtime'), "
+                "dist = distribution('algo-cli-runtime'); "
+                "print(json.dumps({'metadata': dist.version, 'site': str(dist.locate_file('')), "
                 "'runtime': algo_cli.__version__, 'file': algo_cli.__file__, 'manager': infer_install_manager()}))"
             ),
         ],
@@ -155,11 +215,19 @@ def installed_identity(
     )
     identity = json.loads(output)
     if identity["metadata"] != expected or identity["runtime"] != expected:
-        raise ValueError("fresh-process installed metadata/runtime version mismatch")
+        raise ValueError(
+            f"fresh-process installed metadata/runtime version mismatch: expected {expected}, "
+            f"metadata {str(identity['metadata'])[:100]}, runtime {str(identity['runtime'])[:100]}"
+        )
     if identity["manager"] != manager:
         raise ValueError("installed updater did not identify its actual owning manager")
-    if not Path(identity["file"]).resolve().is_relative_to(env_dir.resolve()):
+    site = Path(identity["site"])
+    if (
+        not site.resolve().is_relative_to(env_dir.resolve())
+        or Path(identity["file"]).resolve() != (site / "algo_cli/__init__.py").resolve()
+    ):
         raise ValueError("upgrade smoke imported outside its isolated installation")
+    return verify_installed_wheel(wheel, site)
 
 
 def upgrade_command(python: Path, cli: Path, env: dict[str, str], work: Path) -> list[str]:
@@ -218,7 +286,7 @@ def main(argv: list[str] | None = None) -> int:
         "real_credentials_used": False,
         "os_keychain_qualified": False,
         "update_entrypoint": "owning-manager" if sys.platform == "win32" else "published-cli",
-        "published_updater_exercised": sys.platform != "win32",
+        "published_updater_exercised": False,
         "windows_launcher_guard_verified": False,
     }
     try:
@@ -248,7 +316,7 @@ def main(argv: list[str] | None = None) -> int:
                 env=env,
                 cwd=work,
             )
-            update_env = dict(env, PIP_NO_INDEX="1", PIP_FIND_LINKS=str(wheelhouse))
+            update_env = offline_update_environment(env, wheelhouse, root / "uv-cache")
             if args.manager == "pipx" and args.pipx_backend == "pip":
                 # pipx bootstraps its shared pip even when the app install is offline.
                 run(
@@ -275,11 +343,6 @@ def main(argv: list[str] | None = None) -> int:
                         PIPX_BIN_DIR=str(app_bin),
                         PIPX_DEFAULT_PYTHON=str(controller),
                         PIPX_DEFAULT_BACKEND=args.pipx_backend,
-                        UV_CACHE_DIR=str(root / "uv-cache"),
-                        UV_NO_CONFIG="true",
-                        UV_NO_INDEX="true",
-                        UV_FIND_LINKS=str(wheelhouse),
-                        UV_PYTHON_DOWNLOADS="never",
                     )
                     env_dir = root / "pipx" / "venvs" / "algo-cli-runtime"
                     run([str(binary), "install", "algo-cli-runtime"], env=update_env, cwd=work)
@@ -287,11 +350,6 @@ def main(argv: list[str] | None = None) -> int:
                     update_env.update(
                         UV_TOOL_DIR=str(root / "uv" / "tools"),
                         UV_TOOL_BIN_DIR=str(app_bin),
-                        UV_CACHE_DIR=str(root / "uv-cache"),
-                        UV_NO_CONFIG="true",
-                        UV_NO_INDEX="true",
-                        UV_FIND_LINKS=str(wheelhouse),
-                        UV_PYTHON_DOWNLOADS="never",
                     )
                     env_dir = root / "uv" / "tools" / "algo-cli-runtime"
                     run(
@@ -301,7 +359,9 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 python = env_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
                 cli = app_bin / ("algo-cli.exe" if os.name == "nt" else "algo-cli")
-            installed_identity(python, env_dir, BASELINE_VERSION, update_env, work, args.manager)
+            report["baseline_installed_wheel_files"] = installed_identity(
+                python, env_dir, BASELINE_VERSION, update_env, work, args.manager, wheel=baseline,
+            )
             command = upgrade_command(python, cli, update_env, work)
             if args.manager == "pipx":
                 metadata = json.loads((env_dir / "pipx_metadata.json").read_text(encoding="utf-8"))
@@ -326,14 +386,19 @@ def main(argv: list[str] | None = None) -> int:
             if not (wheelhouse / wheel.name).exists():
                 shutil.copy2(wheel, wheelhouse / wheel.name)
             run(command, env=update_env, cwd=work)
-            installed_identity(python, env_dir, expected, update_env, work, args.manager)
+            report["published_updater_exercised"] = sys.platform != "win32"
+            report["candidate_installed_wheel_files"] = installed_identity(
+                python, env_dir, expected, update_env, work, args.manager, wheel=wheel,
+            )
             if state_manifest(home, workspace) != before:
                 raise ValueError("update changed synthetic configuration, credentials, memory, or workspace")
             if sys.platform == "win32":
                 verify_windows_launcher_guard(cli, update_env, work)
                 report["windows_launcher_guard_verified"] = True
             run(command, env=update_env, cwd=work)
-            installed_identity(python, env_dir, expected, update_env, work, args.manager)
+            report["repeat_installed_wheel_files"] = installed_identity(
+                python, env_dir, expected, update_env, work, args.manager, wheel=wheel,
+            )
             if state_manifest(home, workspace) != before:
                 raise ValueError("repeat update changed synthetic user state")
             with closing(sqlite3.connect(home / ".algo_cli" / "memory-fixture.sqlite3")) as db:

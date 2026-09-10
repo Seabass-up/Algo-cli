@@ -192,6 +192,65 @@ Recompute source-bound reports after a change using their runners. Local passes
 do not qualify a new hosted release, native platform, or external-browser matrix.
 The follow-up remains separate from the published immutable package.
 
+**Follow-up invocation check:** A later full run using
+`.venv/bin/python -m pytest` from this non-editable checkout produced 40 protected
+search failures, 6,010 passes, and 41 skips. The parent imported source files,
+while `python -I` workers imported site-packages; the unchanged runtime-root
+identity check correctly rejected the mismatch. Both import paths were observed
+directly. Using the workflow's `.venv/bin/pytest` entrypoint passed all 55
+applicable protected-search tests, with one native-Windows skip. Do not relax
+the worker guard or inject PYTHONPATH to make mixed-runtime tests pass. Match
+the installed qualification entrypoint as well as the dependency set.
+
+## 2026-09-10: Upgrade Fixture Resolved The Public Package
+
+**Issue:** All three installed-wheel jobs in
+[CI run 34484392811](https://github.com/Seabass-up/Algo-cli/actions/runs/34484392811)
+failed the pipx/uv baseline check before reaching Algo's updater. The local
+reproducer installed public `0.19.1.post1` instead of the required `0.18.0`.
+
+**Cause:** The fixture used `UV_NO_INDEX`, which uv 0.11.26 does not support.
+uv also does not inherit pip's index controls. A local find-links directory alone
+did not exclude PyPI. Publication of a newer version exposed this dependency on
+public registry state. A separate receipt defect initialized
+`published_updater_exercised=true` before any updater call had run.
+
+**Repair:** Use the supported `UV_OFFLINE=true` control with a new isolated
+cache for each run. Keep pip's own no-index setting and use an escaped file URI
+for both installers' wheelhouse location. Verify fresh-process package and
+metadata locations, then compare every original wheel payload file except the
+installer-rewritten RECORD. Cover both `algo_cli` and the shipped `ollama_cli`
+compatibility package; reject mismatches, missing files, unexpected package
+payloads, and links. Record verified file counts after each successful phase.
+Set the updater-exercised flag only after its command completes successfully.
+
+**Verification:** The original baseline failure was reproduced locally with the
+exact CI candidate. After repair, local macOS runs passed for pip, pipx/pip,
+pipx/uv, and uv tool: 251 baseline files and 329 candidate files matched, including
+after repeat update. All 11 synthetic state files retained bytes, modes, and
+modification times, with SQLite integrity checked. The candidate wheel SHA-256
+was `a6058046d23786287875f2eb4f91ed1b3cdc3899f4e20c67f2c9a4d9a3ff7ead`,
+distinct from the same-version public wheel's
+`3aca3f8ec689f98b6572ff1fcd5474de3984b4f1b9b4c6b9ef47c45e48f88678`.
+The false updater-execution claim also failed its regression before repair.
+The focused install/upgrade suite passed 43 tests afterward. The correctly
+invoked full installed suite passed 6,050 tests with 41 existing skips in 88.73
+seconds; lint, pinned Echo audit, installed-source parity, hardening gate, and
+M9 evidence-currency verification also passed. Local receipts are
+under `/private/tmp/algo-cli-pipx-baseline.S5QzkC/`; hosted qualification of the
+corrected revision is still pending.
+
+**Prevention and limits:** Check the pinned installer's actual supported controls
+and test all manager/backend combinations. Do not assume pip-compatible command
+syntax implies compatible environment variables. A version-only assertion can
+accept different builds; bind installed payloads to the candidate, not an
+installed RECORD or the public version label. Initialize execution claims false
+and advance them only on observed outcomes. These are delivery-fixture changes,
+not a repair to the user's normal updater or a new release. Local synthetic-state
+tests do not qualify native Windows or real OS keychain preservation. See the
+[uv environment reference](https://docs.astral.sh/uv/reference/environment/#uv_offline)
+and [pip compatibility notes](https://docs.astral.sh/uv/pip/compatibility/#configuration-files-and-environment-variables).
+
 ## Repair Log Checklist
 
 - Date and component.
