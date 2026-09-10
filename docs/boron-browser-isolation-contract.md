@@ -67,7 +67,8 @@ Safe Browsing key request remained. Safe Browsing, certificate verification,
 the sandbox, and the broker's exact-origin enforcement stay unchanged. The
 diagnostic forwarded no requests and deliberately failed navigation; it is
 not native-amd64 browser qualification or proof that every background request
-is suppressed. Any remaining broker rejection still blocks qualification.
+is suppressed. Every broker denial or failure still blocks qualification except
+the exact empty pre-CONNECT cancellation defined below.
 
 ### Failure diagnostics
 
@@ -90,25 +91,38 @@ request cannot clear that disposition. On 2026-09-09 the owner explicitly
 authorized qualifying a verified approved navigation despite these denials,
 but only with complete evidence of zero unauthorized forwarding.
 
+On 2026-09-10 the owner also explicitly authorized qualifying a verified
+approved navigation when Chrome opens and closes an otherwise empty broker
+connection before sending any CONNECT bytes, provided every unauthorized
+request is demonstrably blocked, none is forwarded, and all denial and
+cancellation records and security restrictions are retained. This exact event
+is `connect_cancelled`. It is not a request, denial, or upstream attempt. Any
+received byte, partial CONNECT header, timeout, read error, TLS failure, or
+post-upstream close remains a terminal failure and cannot use this exception.
+
 Live evidence schema 3 retains the original broker disposition and reason plus
-a schema-1 accounting record. Every accepted connection receives a unique,
+a schema-2 accounting record. Every accepted connection receives a unique,
 bounded integer ID. The broker records an authorized upstream attempt before
-calling its connector, separately counts fully verified requests, and retains
-each denial as `[connection_id, closed_reason_code]`, without destination data.
-Only the three pre-upstream origin-denial codes above can coexist with a
-passing navigation. Other rejections are recorded as `other_rejection` and
-remain ineligible; arbitrary reason text never enters the denial ledger.
+calling its connector, separately counts fully verified requests, retains each
+denial as `[connection_id, closed_reason_code]`, and retains each exact empty
+pre-CONNECT cancellation as `[connection_id, "connect_cancelled"]`, without
+destination data. Only the three pre-upstream origin-denial codes above and the
+single exact cancellation code can coexist with a passing navigation. Other
+rejections are recorded as `other_rejection` and remain ineligible; arbitrary
+reason text never enters either ledger.
 
 Qualification requires no active connections, complete accounting, canonical
 unique ID lists, and an exact partition of all connection IDs into upstream
-attempts and denied connections. Those sets must not overlap, and upstream
-attempts, parsed requests, and fully verified requests must have equal positive
-counts. The broker must remain `blocked` when denials exist, not be relabeled
-`verified`. A missing record, unaccounted attempt, partial response, legacy
-schema, handoff, failure, unknown result, other rejection, or incomplete cleanup
-still fails qualification. Every retained denial is included in the repeated
-hosted report and its evidence digest. A bare asserted zero counter is not
-proof. Network policy, TLS checks, sandboxing, Safe Browsing, permit budgets,
+attempts, denied connections, and exact empty pre-CONNECT cancellations. Those
+three sets must not overlap, and upstream attempts, parsed requests, and fully
+verified requests must have equal positive counts. The broker must remain
+`blocked` when denials exist, not be relabeled `verified`; cancellations alone
+do not overwrite a separately verified navigation. A missing record,
+unaccounted attempt, partial CONNECT header, partial response, legacy schema,
+handoff, failure, unknown result, other rejection, or incomplete cleanup still
+fails qualification. Every retained denial and cancellation is included in the
+repeated hosted report and its evidence digest. A bare asserted zero counter is
+not proof. Network policy, TLS checks, sandboxing, Safe Browsing, permit budgets,
 and approval requirements are unchanged.
 
 The protected-environment preflight reads GitHub metadata with the job's
