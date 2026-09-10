@@ -3,8 +3,10 @@ from __future__ import annotations
 import base64
 import copy
 from decimal import Decimal
+from email.message import Message
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -1333,6 +1335,72 @@ def test_pypi_visibility_wait_requires_post_publish_mode(
         "reason_code": "release_pypi_retry_mode",
         "status": "blocked",
     }
+
+
+def test_pypi_missing_sha256_is_a_closed_file_rejection(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    document = json.loads(_pypi_document(_write_distributions(dist)))
+    document["urls"][0]["digests"] = {"md5": "0" * 32}
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_pypi_file"):
+        SCRIPT.verify_pypi_state(
+            tag=TAG, directory=dist, require_present=True,
+            fetch=lambda _url: json.dumps(document).encode(),
+            visibility_retry_delays=(1.0,),
+            sleep=lambda _delay: pytest.fail("a malformed digest must not be retried"),
+        )
+
+
+def test_pypi_empty_success_body_is_not_a_missing_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    dist = tmp_path / "dist"
+    _write_distributions(dist)
+    response = io.BytesIO()
+    response.status = 200
+    response.headers = Message()
+    response.headers["Content-Type"] = "application/json"
+    monkeypatch.setattr(SCRIPT, "urlopen", lambda _request, **_kwargs: response)
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_pypi_json"):
+        SCRIPT.verify_pypi_state(
+            tag=TAG, directory=dist, require_present=True,
+            visibility_retry_delays=(1.0,),
+            sleep=lambda _delay: pytest.fail("HTTP 200 with malformed JSON must not be retried"),
+        )
+    assert response.closed
+
+
+def test_pypi_http_visibility_recovery_closes_every_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dist = tmp_path / "dist"
+    exact = _pypi_document(_write_distributions(dist))
+    partial = json.loads(exact)
+    partial["urls"] = partial["urls"][:1]
+    missing_body = io.BytesIO(b"missing-version")
+    responses = [io.BytesIO(json.dumps(partial).encode()), io.BytesIO(exact)]
+    for response in responses:
+        response.status = 200
+        response.headers = Message()
+        response.headers["Content-Type"] = "application/json"
+    requests: list[str] = []
+    sleeps: list[float] = []
+
+    def open_response(request: Any, *, timeout: int) -> io.BytesIO:
+        assert timeout == 20
+        assert request.get_method() == "GET"
+        assert request.get_header("Accept") == "application/json"
+        requests.append(request.full_url)
+        if len(requests) == 1:
+            raise SCRIPT.HTTPError(request.full_url, 404, "missing", Message(), missing_body)
+        return responses[len(requests) - 2]
+
+    monkeypatch.setattr(SCRIPT, "urlopen", open_response)
+    assert SCRIPT.verify_pypi_state(
+        tag=TAG, directory=dist, require_present=True,
+        visibility_retry_delays=(1.0, 2.0), sleep=sleeps.append,
+    ) == "exact"
+    assert requests == ["https://pypi.org/pypi/algo-cli-runtime/0.19.1.post1/json"] * 3
+    assert sleeps == [1.0, 2.0]
+    assert missing_body.closed
+    assert all(response.closed for response in responses)
 
 
 def _durable_asset_fixture(

@@ -1753,7 +1753,7 @@ def _classify_pypi_payload(
             or filename in observed
             or filename not in distributions
             or type(digests) is not dict
-            or set(digests) < {"sha256"}
+            or "sha256" not in digests
             or file["yanked"] is not False
             or file["packagetype"] != ("bdist_wheel" if filename.endswith(".whl") else "sdist")
         ):
@@ -1796,11 +1796,14 @@ def verify_pypi_state(
                     _reject("release_pypi_response")
                 payload = response.read(MAX_API_BYTES + 1)
         except HTTPError as error:
-            if error.code == 404:
-                return b""
-            _reject("release_pypi_response")
+            with error:
+                if error.code == 404:
+                    return b""
+                _reject("release_pypi_response")
         except OSError:
             _reject("release_pypi_response")
+        if not payload:
+            _reject("release_pypi_json")
         return payload
 
     fetch_payload = default_fetch if fetch is None else fetch
