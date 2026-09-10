@@ -3971,6 +3971,24 @@
           "timestamp": "2026-09-10T09:01:05Z",
           "scope": "source digest sha256:bf390514f6ac5362149943200274fab3eba1ba97438fc0028e4da3d5bdbcc8d0 binds the immutable v0.19.1.post1 recovery tuple, bounded post-release tag grammar, current draft-capture workflow, and unchanged browser security controls",
           "limitations": "Local qualification does not establish hosted qualification of the publisher commit, public package publication, native signing, or broader M8 completion. Exact source commit 09428d1 passed protected main CI 34455031874, but this publisher patch still requires fresh exact-current CI; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after correcting transitive release-job skip propagation",
+          "digest": "sha256:e59e38a1f84f5c4b201e9e2221c3a7d7f5aeb13290049ea29bfd676d954ebf4b",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-10T09:49:47Z",
+          "scope": "source digest sha256:366032fd4264e363a9fc8335c9a72bf14e0214f0ff13865b976f4277b48a5eab binds explicit post-convergence job conditions that consume only successful direct predecessors while preserving the intentional build-or-recovery split",
+          "limitations": "Local qualification does not establish hosted execution of the corrected publication chain, PyPI publication, native signing, or broader M8 completion. Release run 34461420722 retained verified draft assets but skipped publication because of the now-covered condition defect; fresh exact-current CI and release execution remain required; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after preserving cancellation through skip-aware release convergence",
+          "digest": "sha256:94059d0cb6108871330ca1239a0f248724ccb086e7f54b0754a98a58f7c6b257",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-10T10:13:51Z",
+          "scope": "source digest sha256:76b4a505e54082b9e603f671b8a5795ce2b691db2ba817bd56eb9021294f06f8 binds cancellation-aware post-convergence conditions that preserve the intentional build-or-recovery split while allowing operator cancellation to stop every publication stage",
+          "limitations": "Local qualification does not establish hosted execution of the cancellation-aware publication chain, PyPI publication, native signing, or broader M8 completion. Release run 34461420722 retained verified draft assets but did not publish; fresh exact-current CI and release execution remain required; HARD-080 remains in progress"
         }
       ]
     },
@@ -5959,6 +5977,24 @@
           "timestamp": "2026-09-10T09:01:05Z",
           "scope": "source digest sha256:bf390514f6ac5362149943200274fab3eba1ba97438fc0028e4da3d5bdbcc8d0 binds five local token-efficiency repetitions, the publisher authority, and the draft-capture workflow under unchanged thresholds",
           "limitations": "Synthetic local token estimates and deterministic release-policy tests do not establish comparative performance, hosted qualification of the publisher commit, or publication. Exact source commit 09428d1 passed protected main CI 34455031874, but fresh publisher qualification remains required; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after correcting transitive release-job skip propagation",
+          "digest": "sha256:e59e38a1f84f5c4b201e9e2221c3a7d7f5aeb13290049ea29bfd676d954ebf4b",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-10T09:49:47Z",
+          "scope": "source digest sha256:366032fd4264e363a9fc8335c9a72bf14e0214f0ff13865b976f4277b48a5eab binds five local token-efficiency repetitions and the post-convergence release condition regression under unchanged thresholds",
+          "limitations": "Synthetic local token estimates and deterministic workflow tests do not establish comparative performance, hosted execution of the corrected publication chain, or publication. Release run 34461420722 retained verified assets but did not publish; fresh exact-current qualification remains required; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after preserving cancellation through skip-aware release convergence",
+          "digest": "sha256:94059d0cb6108871330ca1239a0f248724ccb086e7f54b0754a98a58f7c6b257",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-10T10:13:51Z",
+          "scope": "source digest sha256:76b4a505e54082b9e603f671b8a5795ce2b691db2ba817bd56eb9021294f06f8 binds five local token-efficiency repetitions and cancellation-aware post-convergence release tests under unchanged thresholds",
+          "limitations": "Synthetic local token estimates and deterministic workflow tests do not establish comparative performance, hosted execution of the cancellation-aware publication chain, or publication. Release run 34461420722 retained verified assets but did not publish; fresh exact-current qualification remains required; HARD-081 remains in progress"
         }
       ]
     },
