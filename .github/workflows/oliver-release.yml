@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing non-prerelease draft release tag (for example v0.19.1)
+        description: Existing non-prerelease draft release tag (for example v0.19.1.post1)
         required: true
         type: string
 
@@ -1026,7 +1026,7 @@ jobs:
           import sys
 
           stage = Path(os.environ["STAGE"])
-          match = re.fullmatch(r"v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})", sys.argv[1])
+          match = re.fullmatch(r"v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})(?:\.post[1-9][0-9]{0,3})?", sys.argv[1])
           if match is None:
               raise SystemExit(2)
           version = sys.argv[1][1:]
@@ -1096,7 +1096,7 @@ jobs:
           import sys
 
           tag = sys.argv[1]
-          if re.fullmatch(r"v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})", tag) is None:
+          if re.fullmatch(r"v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})(?:\.post[1-9][0-9]{0,3})?", tag) is None:
               raise SystemExit(2)
           version = tag[1:]
           stage = Path(os.environ["STAGE"])
@@ -1553,7 +1553,7 @@ jobs:
           if release.get("id") != int(os.environ["RELEASE_ID"]) or release.get("tag_name") != os.environ["RELEASE_TAG"] or release.get("draft") is not True or release.get("prerelease") is not False or release.get("immutable") is not False or release.get("published_at") is not None:
               raise SystemExit(2)
           tag = os.environ["RELEASE_TAG"]
-          if re.fullmatch(r"v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})", tag) is None:
+          if re.fullmatch(r"v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})(?:\.post[1-9][0-9]{0,3})?", tag) is None:
               raise SystemExit(2)
           version = tag[1:]
           wheel = f"algo_cli_runtime-{version}-py3-none-any.whl"
@@ -1617,7 +1617,7 @@ jobs:
           import hashlib, json, os, re, stat
           from pathlib import Path
           tag = os.environ["RELEASE_TAG"]
-          if re.fullmatch(r"v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})", tag) is None:
+          if re.fullmatch(r"v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})(?:\.post[1-9][0-9]{0,3})?", tag) is None:
               raise SystemExit(2)
           version = tag[1:]
           expected = {f"algo_cli_runtime-{version}-py3-none-any.whl", f"algo_cli_runtime-{version}.tar.gz"}
@@ -1924,7 +1924,7 @@ jobs:
           import hashlib, json, os, re, stat
           from pathlib import Path
           tag = os.environ["RELEASE_TAG"]
-          if re.fullmatch(r"v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})", tag) is None:
+          if re.fullmatch(r"v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})(?:\.post[1-9][0-9]{0,3})?", tag) is None:
               raise SystemExit(2)
           version = tag[1:]
           expected = {f"algo_cli_runtime-{version}-py3-none-any.whl", f"algo_cli_runtime-{version}.tar.gz"}

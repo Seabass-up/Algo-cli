@@ -23,7 +23,7 @@ assert SPEC and SPEC.loader
 AUTHORITY = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = AUTHORITY
 SPEC.loader.exec_module(AUTHORITY)
-SOURCE = "57a4740ab73a79244413a64396ee9e9f2285b738"
+SOURCE = "09428d131cbd11fa76268cb17e394368dc3f6934"
 PUBLISHER = "a" * 40
 
 
@@ -35,11 +35,11 @@ def program() -> str:
 def document(*, populated: bool = False) -> dict[str, Any]:
     rows = []
     if populated:
-        for index, name in enumerate(sorted(AUTHORITY.expected_release_assets("v0.19.1")), 1):
+        for index, name in enumerate(sorted(AUTHORITY.expected_release_assets("v0.19.1.post1")), 1):
             payload = name.encode()
             rows.append({"id": index, "name": name, "size": len(payload), "state": "uploaded",
                          "digest": "sha256:" + hashlib.sha256(payload).hexdigest()})
-    return {"id": 385866827, "tag_name": "v0.19.1", "target_commitish": SOURCE,
+    return {"id": 386125544, "tag_name": "v0.19.1.post1", "target_commitish": SOURCE,
             "draft": True, "prerelease": False, "immutable": False, "published_at": None, "assets": rows}
 
 
@@ -56,7 +56,7 @@ def execute(
     release = document() if release is None else release
     listing = [release] if listing is None else listing
     values = {
-        "CAPTURE_TOKEN": "synthetic-token", "CAPTURE_PHASE": phase, "RELEASE_TAG": "v0.19.1",
+        "CAPTURE_TOKEN": "synthetic-token", "CAPTURE_PHASE": phase, "RELEASE_TAG": "v0.19.1.post1",
         "RUNNER_TEMP": str(tmp_path), "GITHUB_REPOSITORY": "Seabass-up/Algo-cli",
         "GITHUB_ACTOR_ID": "184999458", "GITHUB_REF": "refs/heads/main", "GITHUB_REF_PROTECTED": "true",
         "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_RUN_ID": "99",
@@ -85,7 +85,7 @@ def execute(
             endpoint = url.removeprefix(prefix)
             if endpoint == "releases?per_page=100":
                 return Response(json.dumps(listing).encode())
-            if endpoint == "releases/385866827":
+            if endpoint == "releases/386125544":
                 reads += 1
                 value = copy.deepcopy(release)
                 if drift and reads == 2:
@@ -115,7 +115,7 @@ def test_exact_capture_preserves_identity_and_only_gets(
     receipt, calls = execute(monkeypatch, tmp_path, phase=phase, release=release)
     assert receipt["release"] == release and receipt["source"] == SOURCE and receipt["publisher"] == PUBLISHER
     assert receipt["phase"] == phase and receipt["run_id"] == "99" and receipt["run_attempt"] == "1"
-    expected = AUTHORITY.expected_release_assets("v0.19.1") if phase == "initial" and populated else set()
+    expected = AUTHORITY.expected_release_assets("v0.19.1.post1") if phase == "initial" and populated else set()
     assert {p.name for p in (tmp_path / "draft-capture/assets").iterdir()} == expected
     assert len(calls) == 3 + len(expected)
 
@@ -181,7 +181,7 @@ def test_draft_snapshot_routes_only_bound_release_data(monkeypatch: pytest.Monke
     api = AUTHORITY.draft_snapshot_api(receipt, environment=os.environ,
                                        api_get=lambda endpoint: requests.append(endpoint) or "live")
     assert api("repos/Seabass-up/Algo-cli/releases?per_page=100") == receipt["listing"]
-    assert api("repos/Seabass-up/Algo-cli/releases/385866827") == receipt["release"]
+    assert api("repos/Seabass-up/Algo-cli/releases/386125544") == receipt["release"]
     assert api("repos/Seabass-up/Algo-cli/branches/main") == "live"
     assert requests == ["repos/Seabass-up/Algo-cli/branches/main"]
     with pytest.raises(AUTHORITY.ReleaseAuthorityRejected, match="release_draft_snapshot_endpoint"):
@@ -192,7 +192,7 @@ def test_signed_asset_download_does_not_receive_credentials(monkeypatch: pytest.
     receipt, calls = execute(monkeypatch, tmp_path, release=document(populated=True),
                              redirect="https://release-assets.githubusercontent.com/asset?signature=synthetic")
     downloads = [r for r in calls if r.full_url.startswith("https://release-assets.githubusercontent.com/")]
-    assert len(downloads) == len(AUTHORITY.expected_release_assets("v0.19.1"))
+    assert len(downloads) == len(AUTHORITY.expected_release_assets("v0.19.1.post1"))
     assert all(r.get_header("Authorization") is None for r in downloads)
     assert receipt["release"]["draft"] is True
 

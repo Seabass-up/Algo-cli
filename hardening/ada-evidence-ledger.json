@@ -3962,6 +3962,15 @@
           "timestamp": "2026-09-10T08:01:59Z",
           "scope": "source digest sha256:1e27bf086d5f70f07cab9a7899410ce6261cb88cd542af72a9a42641a809ced0 binds the schema-2 three-way partition, exact zero-byte pre-upstream cancellation rule, complete retained accounting, and unchanged failure handling for partial input and every post-upstream close",
           "limitations": "Local qualification does not establish hosted external-browser completion, native signing, public package publication, or broader M8 completion. Exact-main run 34446268786 remains failed and fresh exact-current qualification is required; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated for the v0.19.1.post1 publisher authority",
+          "digest": "sha256:bfc179ed405830164ef89590f2a7fc10235e4e5e3a9a2c7cd1fd4e648f346b84",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-10T09:01:05Z",
+          "scope": "source digest sha256:bf390514f6ac5362149943200274fab3eba1ba97438fc0028e4da3d5bdbcc8d0 binds the immutable v0.19.1.post1 recovery tuple, bounded post-release tag grammar, current draft-capture workflow, and unchanged browser security controls",
+          "limitations": "Local qualification does not establish hosted qualification of the publisher commit, public package publication, native signing, or broader M8 completion. Exact source commit 09428d1 passed protected main CI 34455031874, but this publisher patch still requires fresh exact-current CI; HARD-080 remains in progress"
         }
       ]
     },
@@ -5941,6 +5950,15 @@
           "timestamp": "2026-09-10T08:01:59Z",
           "scope": "source digest sha256:1e27bf086d5f70f07cab9a7899410ce6261cb88cd542af72a9a42641a809ced0 binds five local token-efficiency repetitions and the source-owned Boron accounting contract under unchanged thresholds",
           "limitations": "Synthetic local token estimates and deterministic accounting tests do not establish hosted-browser success, publication, or comparative performance. Exact-main run 34446268786 remains failed and must be superseded by a passing exact-current qualification; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated for the v0.19.1.post1 publisher authority",
+          "digest": "sha256:bfc179ed405830164ef89590f2a7fc10235e4e5e3a9a2c7cd1fd4e648f346b84",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-10T09:01:05Z",
+          "scope": "source digest sha256:bf390514f6ac5362149943200274fab3eba1ba97438fc0028e4da3d5bdbcc8d0 binds five local token-efficiency repetitions, the publisher authority, and the draft-capture workflow under unchanged thresholds",
+          "limitations": "Synthetic local token estimates and deterministic release-policy tests do not establish comparative performance, hosted qualification of the publisher commit, or publication. Exact source commit 09428d1 passed protected main CI 34455031874, but fresh publisher qualification remains required; HARD-081 remains in progress"
         }
       ]
     },

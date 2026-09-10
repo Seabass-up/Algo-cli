@@ -63,7 +63,10 @@ DSSE_IN_TOTO_PAYLOAD_TYPE = "application/vnd.in-toto+json"
 
 _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-_TAG_RE = re.compile(r"^v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$")
+_TAG_RE = re.compile(
+    r"^v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})"
+    r"(?:\.post[1-9][0-9]{0,3})?$"
+)
 _INTEGER_RE = re.compile(r"^(?:0|[1-9][0-9]{0,15})$")
 _GITHUB_TIMESTAMP_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 _RFC3339_TIMESTAMP_RE = re.compile(
@@ -857,9 +860,9 @@ def validate_authority(
     if tag_revision != branch_revision:
         # Explicit owner authorization for this immutable, qualified draft only.
         if initial_recovery and (
-            release_tag != "v0.19.1"
-            or tag_revision != "57a4740ab73a79244413a64396ee9e9f2285b738"
-            or release_id != 385866827
+            release_tag != "v0.19.1.post1"
+            or tag_revision != "09428d131cbd11fa76268cb17e394368dc3f6934"
+            or release_id != 386125544
             or release["target_commitish"] != tag_revision
         ):
             _reject("release_tag_not_default_head")
@@ -987,8 +990,8 @@ def _validate_authority_receipt(value: Any) -> dict[str, Any]:
             type(publisher) is not dict or set(publisher) != {"revision", "identity"}
             or publisher["identity"] != RELEASE_WORKFLOW_IDENTITY
             or type(source) is not dict or type(release) is not dict
-            or source.get("revision") != "57a4740ab73a79244413a64396ee9e9f2285b738"
-            or release != {"id": 385866827, "tag": "v0.19.1"}
+            or source.get("revision") != "09428d131cbd11fa76268cb17e394368dc3f6934"
+            or release != {"id": 386125544, "tag": "v0.19.1.post1"}
             or publisher["revision"] == source["revision"]
         ):
             _reject("release_authority_publisher")
@@ -1805,9 +1808,9 @@ def draft_snapshot_api(value: Any, *, environment: Mapping[str, str], api_get: A
         or set(value) != {"schema_version", "phase", "tag", "release_id", "publisher", "source",
                           "run_id", "run_attempt", "captured_at", "listing", "release"}
         or value.get("schema_version") != 1 or value.get("phase") != "initial"
-        or value.get("tag") != "v0.19.1" or value.get("release_id") != 385866827
+        or value.get("tag") != "v0.19.1.post1" or value.get("release_id") != 386125544
         or value.get("publisher") != environment.get("GITHUB_SHA")
-        or value.get("source") != "57a4740ab73a79244413a64396ee9e9f2285b738"
+        or value.get("source") != "09428d131cbd11fa76268cb17e394368dc3f6934"
         or value.get("run_id") != environment.get("GITHUB_RUN_ID")
         or value.get("run_attempt") != environment.get("GITHUB_RUN_ATTEMPT")
         or type(value.get("captured_at")) is not int
@@ -1822,7 +1825,7 @@ def draft_snapshot_api(value: Any, *, environment: Mapping[str, str], api_get: A
     def get(endpoint: str) -> Any:
         if endpoint == f"repos/{REPOSITORY}/releases?per_page=100":
             return value["listing"]
-        if endpoint == f"repos/{REPOSITORY}/releases/385866827":
+        if endpoint == f"repos/{REPOSITORY}/releases/386125544":
             return value["release"]
         if endpoint.startswith(f"repos/{REPOSITORY}/releases"):
             _reject("release_draft_snapshot_endpoint")
