@@ -33,7 +33,7 @@ sys.modules[SPEC.name] = SCRIPT
 SPEC.loader.exec_module(SCRIPT)
 
 REVISION = "a" * 40
-TAG = "v0.19.1"
+TAG = "v0.19.1.post1"
 REPORT_DIGEST = "sha256:" + "b" * 64
 RULESET_ID = 701
 
@@ -42,6 +42,30 @@ def test_release_authority_platform_boundary_is_fail_closed() -> None:
     SCRIPT._require_release_platform("posix")
     with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_platform_unsupported"):
         SCRIPT._require_release_platform("nt")
+
+
+@pytest.mark.parametrize("tag", ["v0.19.1", "v0.19.1.post1", "v9999.9999.9999.post9999"])
+def test_release_tag_accepts_bounded_final_and_post_release_versions(tag: str) -> None:
+    assert SCRIPT._tag(tag) == tag
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "v0.19.1.post0",
+        "v0.19.1.post01",
+        "v0.19.1.post10000",
+        "v0.19.1.dev1",
+        "v0.19.1+local",
+        "v0.19.1.post1.extra",
+        "v10000.19.1",
+        None,
+        True,
+    ],
+)
+def test_release_tag_rejects_unbounded_or_non_release_versions(tag: Any) -> None:
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_tag"):
+        SCRIPT._tag(tag)
 
 
 def test_every_release_job_uses_the_pinned_posix_runner() -> None:
@@ -539,7 +563,7 @@ def test_draft_discovery_uses_id_and_rejects_changed_identity() -> None:
         documents[f"repos/{SCRIPT.REPOSITORY}/releases/301"] = original
 
 
-RECOVERY_SOURCE = "57a4740ab73a79244413a64396ee9e9f2285b738"
+RECOVERY_SOURCE = "09428d131cbd11fa76268cb17e394368dc3f6934"
 RECOVERY_HEAD = "f" * 40
 
 
@@ -549,9 +573,9 @@ def _ci_query(revision: str) -> str:
 
 
 def _recovery_documents() -> dict[str, Any]:
-    rows = _api_documents(revision=RECOVERY_SOURCE, release_id=385866827)
+    rows = _api_documents(revision=RECOVERY_SOURCE, release_id=386125544)
     rows[f"repos/{SCRIPT.REPOSITORY}/branches/main"]["commit"]["sha"] = RECOVERY_HEAD
-    rows[f"repos/{SCRIPT.REPOSITORY}/releases/385866827"]["target_commitish"] = RECOVERY_SOURCE
+    rows[f"repos/{SCRIPT.REPOSITORY}/releases/386125544"]["target_commitish"] = RECOVERY_SOURCE
     rows[f"repos/{SCRIPT.REPOSITORY}/compare/{RECOVERY_SOURCE}...{RECOVERY_HEAD}"] = {
         "status": "ahead", "ahead_by": 2, "behind_by": 0,
         "base_commit": {"sha": RECOVERY_SOURCE}, "merge_base_commit": {"sha": RECOVERY_SOURCE},
@@ -641,7 +665,7 @@ def test_recovery_requires_proven_ancestry(change: dict[str, Any]) -> None:
 def test_recovery_exception_does_not_authorize_a_replacement_draft() -> None:
     rows = _recovery_documents()
     rows[f"repos/{SCRIPT.REPOSITORY}/releases?per_page=100"][0]["id"] = 301
-    release = rows.pop(f"repos/{SCRIPT.REPOSITORY}/releases/385866827")
+    release = rows.pop(f"repos/{SCRIPT.REPOSITORY}/releases/386125544")
     release["id"] = 301
     rows[f"repos/{SCRIPT.REPOSITORY}/releases/301"] = release
     with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_tag_not_default_head"):
@@ -1098,8 +1122,8 @@ def test_atomic_output_removes_partial_file_after_post_stat_failure(tmp_path: Pa
 def _write_distributions(directory: Path) -> dict[str, bytes]:
     directory.mkdir()
     payloads = {
-        "algo_cli_runtime-0.19.1-py3-none-any.whl": b"wheel",
-        "algo_cli_runtime-0.19.1.tar.gz": b"sdist",
+        "algo_cli_runtime-0.19.1.post1-py3-none-any.whl": b"wheel",
+        "algo_cli_runtime-0.19.1.post1.tar.gz": b"sdist",
     }
     for name, payload in payloads.items():
         (directory / name).write_bytes(payload)
@@ -1109,7 +1133,7 @@ def _write_distributions(directory: Path) -> dict[str, bytes]:
 def _pypi_document(payloads: dict[str, bytes]) -> bytes:
     return json.dumps(
         {
-            "info": {"name": "algo-cli-runtime", "version": "0.19.1"},
+            "info": {"name": "algo-cli-runtime", "version": "0.19.1.post1"},
             "urls": [
                 {
                     "filename": name,
@@ -1256,7 +1280,7 @@ def test_fixed_tag_retry_retains_original_publisher_and_all_core_authority(tmp_p
     rows = _recovery_documents()
     retained = _recovery_authority(rows)
     assets, authority, policy, release = _durable_asset_fixture(tmp_path, retained)
-    rows[f"repos/{SCRIPT.REPOSITORY}/releases/385866827"]["assets"] = release["assets"]
+    rows[f"repos/{SCRIPT.REPOSITORY}/releases/386125544"]["assets"] = release["assets"]
     current, state = SCRIPT.validate_authority(
         tag=TAG, environment=_environment(GITHUB_SHA=RECOVERY_HEAD, GITHUB_WORKFLOW_SHA=RECOVERY_HEAD),
         checkout_revision=RECOVERY_HEAD, policy_receipt=_repository_policy(),
@@ -1265,7 +1289,7 @@ def test_fixed_tag_retry_retains_original_publisher_and_all_core_authority(tmp_p
     assert state == "draft-exact" and current["schema_version"] == 1
     authority.write_bytes(SCRIPT._canonical(current) + b"\n")
     arguments = dict(
-        tag=TAG, release_id=385866827, release_state="draft-exact", source_revision=RECOVERY_SOURCE,
+        tag=TAG, release_id=386125544, release_state="draft-exact", source_revision=RECOVERY_SOURCE,
         release=release, directory=assets, authority_path=authority, policy_path=policy,
         report_path=assets / SCRIPT.BORON_REPORT_NAME,
         boron_bundle_path=assets / "grace-boron-hosted-qualification.sigstore.jsonl",
@@ -1488,7 +1512,7 @@ def test_recovery_attestations_bind_new_signer_without_changing_package_source(t
     dist, assets, verifications = (tmp_path / name for name in ("dist", "assets", "verifications"))
     for directory in (dist, assets, verifications):
         directory.mkdir()
-    for name in ("algo_cli_runtime-0.19.1-py3-none-any.whl", "algo_cli_runtime-0.19.1.tar.gz"):
+    for name in ("algo_cli_runtime-0.19.1.post1-py3-none-any.whl", "algo_cli_runtime-0.19.1.post1.tar.gz"):
         (dist / name).write_bytes(b"unchanged tagged distribution")
     distributions = SCRIPT._local_distributions(dist, TAG)
     specifications = (
@@ -1566,7 +1590,7 @@ def test_predicate_number_comparison_does_not_change_canonical_hash_encoding() -
 def test_release_predicate_numbers_are_lossless_from_wire_to_signed_bundle(
     tmp_path: Path, expected: str, signed: str, verified: str, reason: str | None,
 ) -> None:
-    distributions = {"algo_cli_runtime-0.19.1-py3-none-any.whl": {"digest": "a" * 64, "size": 1}}
+    distributions = {"algo_cli_runtime-0.19.1.post1-py3-none-any.whl": {"digest": "a" * 64, "size": 1}}
     verification, bundle = _release_verification_fixture(
         predicate_type=SCRIPT.SOURCE_BINDING_PREDICATE,
         predicate={"number": "NUMBER_TOKEN"}, distributions=distributions,
@@ -1596,8 +1620,8 @@ def test_release_predicate_numbers_are_lossless_from_wire_to_signed_bundle(
 
 def test_release_bundle_verification_binds_subject_predicate_bundle_and_run(tmp_path: Path) -> None:
     distributions = {
-        "algo_cli_runtime-0.19.1-py3-none-any.whl": {"digest": "a" * 64, "size": 1},
-        "algo_cli_runtime-0.19.1.tar.gz": {"digest": "b" * 64, "size": 1},
+        "algo_cli_runtime-0.19.1.post1-py3-none-any.whl": {"digest": "a" * 64, "size": 1},
+        "algo_cli_runtime-0.19.1.post1.tar.gz": {"digest": "b" * 64, "size": 1},
     }
     predicate = {"source": REVISION}
     verification, bundle = _release_verification_fixture(
@@ -2010,8 +2034,8 @@ def test_immediate_pypi_validator_handles_exact_partial_absent_and_yanked(tmp_pa
     dist.mkdir()
     state.mkdir()
     payloads = {
-        "algo_cli_runtime-0.19.1-py3-none-any.whl": b"wheel\n",
-        "algo_cli_runtime-0.19.1.tar.gz": b"sdist\n",
+        "algo_cli_runtime-0.19.1.post1-py3-none-any.whl": b"wheel\n",
+        "algo_cli_runtime-0.19.1.post1.tar.gz": b"sdist\n",
     }
     for name, payload in payloads.items():
         (dist / name).write_bytes(payload)
@@ -2055,8 +2079,8 @@ def test_final_before_and_after_pypi_validator_rejects_every_nonexact_index_shap
     stage = tmp_path / "stage"
     stage.mkdir()
     payloads = {
-        "algo_cli_runtime-0.19.1-py3-none-any.whl": b"wheel\n",
-        "algo_cli_runtime-0.19.1.tar.gz": b"sdist\n",
+        "algo_cli_runtime-0.19.1.post1-py3-none-any.whl": b"wheel\n",
+        "algo_cli_runtime-0.19.1.post1.tar.gz": b"sdist\n",
     }
     for name, payload in payloads.items():
         (stage / name).write_bytes(payload)
