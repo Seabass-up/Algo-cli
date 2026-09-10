@@ -3917,6 +3917,15 @@
           "timestamp": "2026-09-10T00:28:22Z",
           "scope": "source digest sha256:3b68e40a10257540bcb3ad16526fca383895b7f3a9cb8ca223fe32cf9250da4f binds all three filename-only Actions routes and exact repository ID/name validation with normal API metadata",
           "limitations": "Release run 34420930530 failed after its draft capture passed. The corrected read-only 14-request live API diagnostic and tagged-report reconstruction are not fresh hosted qualification or publication; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after exact JSON-number predicate comparison",
+          "digest": "sha256:f76f2f2fccf24b221e36fd5794cd49e32e1a9187045556e3f7414f3dabf56f2f",
+          "result": "9 local metrics pass, 5 broader external metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-10T01:14:58Z",
+          "scope": "source digest sha256:df0cd1276d60b5979f9addd8c28d372b4a6e7f5460e85e95ef4eba4b1c0cfa15 binds exact number equivalence without boolean coercion, precision loss, changed keys, or changed canonical digest bytes",
+          "limitations": "Release 34423608524 passed tests and cryptographic checks but failed the original 1.0 versus 1 predicate comparison. The same eight real signed checks and 17-file asset closure now pass locally; fresh CI and publication remain required. HARD-080 remains in progress"
         }
       ]
     },
@@ -5842,6 +5851,15 @@
           "timestamp": "2026-09-10T00:28:22Z",
           "scope": "source digest sha256:3b68e40a10257540bcb3ad16526fca383895b7f3a9cb8ca223fe32cf9250da4f retains unchanged tagged package bytes, fixture denominators and latency limits",
           "limitations": "Prior passing source and publisher CI cannot qualify these API corrections. Local regression and read-only API checks do not establish comparative performance or release readiness; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after exact JSON-number predicate comparison",
+          "digest": "sha256:f76f2f2fccf24b221e36fd5794cd49e32e1a9187045556e3f7414f3dabf56f2f",
+          "result": "9 local metrics pass, 5 broader external metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-10T01:14:58Z",
+          "scope": "source digest sha256:df0cd1276d60b5979f9addd8c28d372b4a6e7f5460e85e95ef4eba4b1c0cfa15 retains exact signed measurement values, source/package bytes and all existing latency limits",
+          "limitations": "Equivalent JSON numeric spelling does not permit rounded measurements or comparative performance claims. The failed release remains failed; broader M8/M9 completion remains blocked. HARD-081 remains in progress"
         }
       ]
     },

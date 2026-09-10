@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -1463,6 +1464,30 @@ def _local_sigstore_bundle(path: Path) -> Any:
     return _json_bytes(lines[0], maximum=MAX_ATTESTATION_BYTES, reason_code="release_bundle_json")
 
 
+def _same_json_value(left: Any, right: Any) -> bool:
+    """Allow a signer's 1.0 -> 1 encoding without coercing types or rounding values."""
+    pending = [(left, right)]
+    while pending:
+        left, right = pending.pop()
+        if type(left) in (int, float) and type(right) in (int, float):
+            if ((type(left) is float and not math.isfinite(left))
+                or (type(right) is float and not math.isfinite(right)) or left != right):
+                return False
+        elif type(left) is not type(right):
+            return False
+        elif type(left) is dict:
+            if left.keys() != right.keys() or any(type(key) is not str for key in left):
+                return False
+            pending.extend((left[key], right[key]) for key in left)
+        elif type(left) is list:
+            if len(left) != len(right):
+                return False
+            pending.extend(zip(left, right))
+        elif type(left) not in (str, bool, type(None)) or left != right:
+            return False
+    return True
+
+
 def _validate_release_verification(
     *,
     path: Path,
@@ -1500,7 +1525,7 @@ def _validate_release_verification(
     if statement["_type"] != IN_TOTO_STATEMENT_V1 or statement["predicateType"] != predicate_type:
         _reject("release_bundle_statement")
     _release_statement_subjects(statement, distributions)
-    if predicate is not None and _canonical(statement["predicate"]) != _canonical(predicate):
+    if predicate is not None and not _same_json_value(statement["predicate"], predicate):
         _reject("release_bundle_predicate")
 
     signature = _exact_mapping(result["signature"], {"certificate"}, "release_bundle_certificate")

@@ -1498,10 +1498,15 @@ def test_recovery_attestations_bind_new_signer_without_changing_package_source(t
     )
     for label, predicate_type, bundle_name, predicate_name in specifications:
         predicate = {"source": RECOVERY_SOURCE}
+        if label == "boron":
+            predicate["summary"] = {"rate": 1.0, "wilson_95": [0.565518, 1.0]}
         if predicate_name:
             (assets / predicate_name).write_text(json.dumps(predicate), encoding="utf-8")
+        signed_predicate = copy.deepcopy(predicate)
+        if label == "boron":
+            signed_predicate["summary"] = {"rate": 1, "wilson_95": [0.565518, 1]}
         verification, bundle = _release_verification_fixture(
-            predicate_type=predicate_type, predicate=predicate, distributions=distributions,
+            predicate_type=predicate_type, predicate=signed_predicate, distributions=distributions,
         )
         verification[0]["verificationResult"]["signature"]["certificate"].update(
             buildSignerDigest=RECOVERY_HEAD, sourceRepositoryDigest=RECOVERY_HEAD,
@@ -1522,6 +1527,28 @@ def test_recovery_attestations_bind_new_signer_without_changing_package_source(t
     (assets / "oliver-release-source-binding.json").write_text(json.dumps({"source": RECOVERY_HEAD}), encoding="utf-8")
     with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_bundle_predicate"):
         SCRIPT.validate_release_attestations(**arguments)
+
+
+@pytest.mark.parametrize(("left", "right", "equal"), [
+    (1.0, 1, True), (0, -0.0, True), (0.565518, 0.565518, True),
+    ({"rate": 1.0, "rows": [None, True, "1"]}, {"rows": [None, True, "1"], "rate": 1}, True),
+    (True, 1, False), (False, 0.0, False), ("1", 1, False), (None, 0, False),
+    (1.0000000000000002, 1, False), (2**53 + 1, float(2**53 + 1), False),
+    (10**400, 10**400, True), (10**400, float("inf"), False),
+    (float("inf"), float("inf"), False), (float("nan"), float("nan"), False),
+    ({"rate": 1.0}, {"rate": 1, "extra": None}, False),
+    ([1, 2], [2, 1], False), ([1], [1, 1], False), ([True], [1], False),
+    ({"count": 9007199254740993}, {"count": 9007199254740992}, False),
+    ((1,), (1,), False), ({1: "value"}, {1: "value"}, False),
+])
+def test_signed_predicate_json_equivalence_preserves_exact_values(left: Any, right: Any, equal: bool) -> None:
+    assert SCRIPT._same_json_value(left, right) is equal
+    assert SCRIPT._same_json_value(right, left) is equal
+
+
+def test_predicate_number_comparison_does_not_change_canonical_hash_encoding() -> None:
+    assert SCRIPT._canonical({"rate": 1.0}) == b'{"rate":1.0}'
+    assert SCRIPT._canonical({"rate": 1}) == b'{"rate":1}'
 
 
 def test_release_bundle_verification_binds_subject_predicate_bundle_and_run(tmp_path: Path) -> None:
