@@ -1255,7 +1255,7 @@ jobs:
 
   release-assets-ready:
     name: Select one verified draft package and release-asset boundary
-    if: ${{ always() && needs.release-authority.result == 'success' && needs.release-authority.outputs.release-state != 'published-exact' }}
+    if: ${{ always() && !cancelled() && needs.release-authority.result == 'success' && needs.release-authority.outputs.release-state != 'published-exact' }}
     needs: [release-authority, package, attach-evidence, durable-reconcile]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -1294,8 +1294,9 @@ jobs:
   repository-policy-publish:
     name: Revalidate unchanged release policy before PyPI publication
     # release-assets-ready converges mutually exclusive build and recovery paths.
-    # Override GitHub's transitive implicit success() so their intentional skip does not propagate.
-    if: ${{ always() && needs.dispatch-authority.result == 'success' && needs.repository-policy.result == 'success' && needs.release-assets-ready.result == 'success' }}
+    # Override GitHub's transitive implicit success() so their intentional skip does not propagate,
+    # while still allowing operator cancellation to stop publication.
+    if: ${{ always() && !cancelled() && needs.dispatch-authority.result == 'success' && needs.repository-policy.result == 'success' && needs.release-assets-ready.result == 'success' }}
     needs: [dispatch-authority, repository-policy, release-assets-ready]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -1353,7 +1354,7 @@ jobs:
 
   pypi-preflight:
     name: Classify retry-safe PyPI state
-    if: ${{ always() && needs.release-authority.result == 'success' && needs.release-assets-ready.result == 'success' && needs.repository-policy-publish.result == 'success' }}
+    if: ${{ always() && !cancelled() && needs.release-authority.result == 'success' && needs.release-assets-ready.result == 'success' && needs.repository-policy-publish.result == 'success' }}
     needs: [release-authority, release-assets-ready, repository-policy-publish]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -1419,7 +1420,7 @@ jobs:
           --github-output "${GITHUB_OUTPUT}"
 
   draft-publish-capture:
-    if: ${{ always() && needs.pypi-preflight.result == 'success' && (needs.pypi-preflight.outputs.pypi-state == 'absent' || needs.pypi-preflight.outputs.pypi-state == 'partial-exact') }}
+    if: ${{ always() && !cancelled() && needs.pypi-preflight.result == 'success' && (needs.pypi-preflight.outputs.pypi-state == 'absent' || needs.pypi-preflight.outputs.pypi-state == 'partial-exact') }}
     needs: pypi-preflight
     permissions:
       contents: write
@@ -1430,7 +1431,7 @@ jobs:
 
   publish:
     name: Publish absent exact distributions to PyPI
-    if: ${{ always() && needs.release-authority.result == 'success' && needs.repository-policy.result == 'success' && needs.release-assets-ready.result == 'success' && needs.pypi-preflight.result == 'success' && needs.draft-publish-capture.result == 'success' && (needs.pypi-preflight.outputs.pypi-state == 'absent' || needs.pypi-preflight.outputs.pypi-state == 'partial-exact') }}
+    if: ${{ always() && !cancelled() && needs.release-authority.result == 'success' && needs.repository-policy.result == 'success' && needs.release-assets-ready.result == 'success' && needs.pypi-preflight.result == 'success' && needs.draft-publish-capture.result == 'success' && (needs.pypi-preflight.outputs.pypi-state == 'absent' || needs.pypi-preflight.outputs.pypi-state == 'partial-exact') }}
     needs: [release-authority, repository-policy, release-assets-ready, pypi-preflight, draft-publish-capture]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -1673,7 +1674,7 @@ jobs:
 
   pypi-verify:
     name: Verify the exact immutable PyPI file set
-    if: ${{ always() && needs.release-authority.result == 'success' && needs.release-assets-ready.result == 'success' && needs.pypi-preflight.result == 'success' && ((needs.pypi-preflight.outputs.pypi-state == 'exact' && needs.publish.result == 'skipped') || ((needs.pypi-preflight.outputs.pypi-state == 'absent' || needs.pypi-preflight.outputs.pypi-state == 'partial-exact') && needs.publish.result == 'success')) }}
+    if: ${{ always() && !cancelled() && needs.release-authority.result == 'success' && needs.release-assets-ready.result == 'success' && needs.pypi-preflight.result == 'success' && ((needs.pypi-preflight.outputs.pypi-state == 'exact' && needs.publish.result == 'skipped') || ((needs.pypi-preflight.outputs.pypi-state == 'absent' || needs.pypi-preflight.outputs.pypi-state == 'partial-exact') && needs.publish.result == 'success')) }}
     needs: [release-authority, release-assets-ready, pypi-preflight, publish]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -1700,7 +1701,7 @@ jobs:
 
   repository-policy-final:
     name: Revalidate unchanged release policy immediately before publication
-    if: ${{ always() && needs.dispatch-authority.result == 'success' && needs.repository-policy.result == 'success' && needs.pypi-verify.result == 'success' }}
+    if: ${{ always() && !cancelled() && needs.dispatch-authority.result == 'success' && needs.repository-policy.result == 'success' && needs.pypi-verify.result == 'success' }}
     needs: [dispatch-authority, repository-policy, pypi-verify]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -1758,7 +1759,7 @@ jobs:
 
   publish-release:
     name: Publish or reconcile the evidence-complete immutable GitHub release
-    if: ${{ always() && needs.release-authority.result == 'success' && needs.repository-policy.result == 'success' && needs.release-assets-ready.result == 'success' && needs.pypi-verify.result == 'success' && needs.repository-policy-final.result == 'success' }}
+    if: ${{ always() && !cancelled() && needs.release-authority.result == 'success' && needs.repository-policy.result == 'success' && needs.release-assets-ready.result == 'success' && needs.pypi-verify.result == 'success' && needs.repository-policy-final.result == 'success' }}
     needs: [release-authority, repository-policy, release-assets-ready, pypi-verify, repository-policy-final]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -2001,7 +2002,7 @@ jobs:
 
   repository-policy-postcheck:
     name: Detect repository-policy drift after immutable publication
-    if: ${{ always() && needs.repository-policy.result == 'success' && needs.publish-release.result == 'success' }}
+    if: ${{ always() && !cancelled() && needs.repository-policy.result == 'success' && needs.publish-release.result == 'success' }}
     needs: [repository-policy, publish-release]
     runs-on: ubuntu-24.04
     timeout-minutes: 5

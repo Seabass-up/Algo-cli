@@ -1971,6 +1971,8 @@ def test_published_exact_branch_is_read_only_and_draft_recovery_reuses_durable_b
         body = workflow.split(f"  {job}:\n", 1)[1].split(f"\n  {next_job}:\n", 1)[0]
         assert "release-state == 'draft'" in body
     ready = workflow.split("  release-assets-ready:\n", 1)[1].split("\n  repository-policy-publish:\n", 1)[0]
+    assert "always()" in ready
+    assert "!cancelled()" in ready
     assert "release-state != 'published-exact'" in ready
     assert '"${RELEASE_STATE}" == "draft-exact"' in ready
     assert "RECOVERED_PACKAGE_ID" in ready and "RECOVERED_ASSETS_ID" in ready
@@ -2004,6 +2006,7 @@ def test_post_convergence_release_jobs_do_not_inherit_intentional_skip_status() 
     for job, dependencies in required_success.items():
         header = jobs[job].split("    steps:\n", 1)[0]
         assert "always()" in header, f"{job} can inherit an intentional transitive skip"
+        assert "!cancelled()" in header, f"{job} can survive operator cancellation"
         for dependency in dependencies:
             assert f"needs.{dependency}.result == 'success'" in header
 
