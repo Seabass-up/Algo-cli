@@ -28,7 +28,8 @@ REPOSITORY = "Seabass-up/Algo-cli"
 REPOSITORY_ID = 1_297_752_684
 DEFAULT_BRANCH = "main"
 DEFAULT_REF = "refs/heads/main"
-CI_WORKFLOW_PATH = ".github/workflows/oliver-ci.yml"
+CI_WORKFLOW_FILENAME = "oliver-ci.yml"
+CI_WORKFLOW_PATH = f".github/workflows/{CI_WORKFLOW_FILENAME}"
 CI_WORKFLOW_REF = f"{REPOSITORY}/{CI_WORKFLOW_PATH}@{DEFAULT_REF}"
 CI_WORKFLOW_IDENTITY = f"https://github.com/{CI_WORKFLOW_REF}"
 RELEASE_WORKFLOW_PATH = ".github/workflows/oliver-release.yml"
@@ -722,7 +723,7 @@ def _discover_release(api_get: ApiGet, tag: str) -> dict[str, Any]:
 
 def _qualified_ci_run(api_get: ApiGet, revision: str, workflow_id: int) -> dict[str, Any]:
     query = (
-        f"repos/{REPOSITORY}/actions/workflows/{CI_WORKFLOW_PATH}/runs"
+        f"repos/{REPOSITORY}/actions/workflows/{CI_WORKFLOW_FILENAME}/runs"
         f"?branch={DEFAULT_BRANCH}&event=push&head_sha={revision}"
         "&status=success&per_page=100"
     )
@@ -749,8 +750,8 @@ def _qualified_ci_run(api_get: ApiGet, revision: str, workflow_id: int) -> dict[
         or run["head_branch"] != DEFAULT_BRANCH or run["head_sha"] != revision
         or run["event"] != "push" or run["status"] != "completed" or run["conclusion"] != "success"
         or completed < started
-        or repository != {"id": REPOSITORY_ID, "full_name": REPOSITORY}
-        or head_repository != {"id": REPOSITORY_ID, "full_name": REPOSITORY}
+        or repository["id"] != REPOSITORY_ID or repository["full_name"] != REPOSITORY
+        or head_repository["id"] != REPOSITORY_ID or head_repository["full_name"] != REPOSITORY
     ):
         _reject("release_ci_run")
     return run
@@ -863,7 +864,7 @@ def validate_authority(
         _require_ancestor(api_get, source_revision=tag_revision, head_revision=branch_revision)
 
     workflow = _exact_mapping(
-        api_get(f"repos/{REPOSITORY}/actions/workflows/{CI_WORKFLOW_PATH}"),
+        api_get(f"repos/{REPOSITORY}/actions/workflows/{CI_WORKFLOW_FILENAME}"),
         {"id", "name", "path", "state"},
         "release_ci_workflow",
     )
@@ -1023,7 +1024,7 @@ def verify_publisher(
         _require_ancestor(api_get, source_revision=source, head_revision=publisher)
     if publisher != context.source_revision:
         _require_ancestor(api_get, source_revision=publisher, head_revision=context.source_revision)
-    workflow = _exact_mapping(api_get(f"repos/{REPOSITORY}/actions/workflows/{CI_WORKFLOW_PATH}"), {"id", "name", "path", "state"}, "release_ci_workflow")
+    workflow = _exact_mapping(api_get(f"repos/{REPOSITORY}/actions/workflows/{CI_WORKFLOW_FILENAME}"), {"id", "name", "path", "state"}, "release_ci_workflow")
     if workflow["name"] != "CI" or workflow["path"] != CI_WORKFLOW_PATH or workflow["state"] != "active":
         _reject("release_ci_workflow")
     _qualified_ci_run(api_get, publisher, _positive_integer(workflow["id"], "release_ci_workflow_id"))
