@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import copy
+from decimal import Decimal
 import hashlib
 import importlib.util
 import json
@@ -1498,10 +1499,15 @@ def test_recovery_attestations_bind_new_signer_without_changing_package_source(t
     )
     for label, predicate_type, bundle_name, predicate_name in specifications:
         predicate = {"source": RECOVERY_SOURCE}
+        if label == "boron":
+            predicate["summary"] = {"rate": 1.0, "wilson_95": [0.565518, 1.0]}
         if predicate_name:
             (assets / predicate_name).write_text(json.dumps(predicate), encoding="utf-8")
+        signed_predicate = copy.deepcopy(predicate)
+        if label == "boron":
+            signed_predicate["summary"] = {"rate": 1, "wilson_95": [0.565518, 1]}
         verification, bundle = _release_verification_fixture(
-            predicate_type=predicate_type, predicate=predicate, distributions=distributions,
+            predicate_type=predicate_type, predicate=signed_predicate, distributions=distributions,
         )
         verification[0]["verificationResult"]["signature"]["certificate"].update(
             buildSignerDigest=RECOVERY_HEAD, sourceRepositoryDigest=RECOVERY_HEAD,
@@ -1522,6 +1528,70 @@ def test_recovery_attestations_bind_new_signer_without_changing_package_source(t
     (assets / "oliver-release-source-binding.json").write_text(json.dumps({"source": RECOVERY_HEAD}), encoding="utf-8")
     with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_bundle_predicate"):
         SCRIPT.validate_release_attestations(**arguments)
+
+
+@pytest.mark.parametrize(("left", "right", "equal"), [
+    (Decimal("1.0"), 1, True), (0, Decimal("-0.0"), True), (Decimal("0.565518"), Decimal("0.565518"), True),
+    ({"rate": Decimal("1.0"), "rows": [None, True, "1"]}, {"rows": [None, True, "1"], "rate": 1}, True),
+    (True, 1, False), (False, Decimal("0.0"), False), ("1", 1, False), (None, 0, False),
+    (Decimal("1.0000000000000002"), 1, False), (2**53 + 1, Decimal(2**53), False),
+    (10**400, 10**400, True), (10**400, Decimal("Infinity"), False),
+    (Decimal("Infinity"), Decimal("Infinity"), False), (Decimal("NaN"), Decimal("NaN"), False),
+    ({"rate": Decimal("1.0")}, {"rate": 1, "extra": None}, False),
+    ([1, 2], [2, 1], False), ([1], [1, 1], False), ([True], [1], False),
+    ({"count": 9007199254740993}, {"count": 9007199254740992}, False),
+    ((1,), (1,), False), ({1: "value"}, {1: "value"}, False),
+    (0, Decimal("1e-400"), False), (2**53, Decimal("9007199254740993.0"), False),
+    (1.0, 1.0, False),
+])
+def test_signed_predicate_json_equivalence_preserves_exact_values(left: Any, right: Any, equal: bool) -> None:
+    assert SCRIPT._same_json_value(left, right) is equal
+    assert SCRIPT._same_json_value(right, left) is equal
+
+
+def test_predicate_number_comparison_does_not_change_canonical_hash_encoding() -> None:
+    assert SCRIPT._canonical({"rate": 1.0}) == b'{"rate":1.0}'
+    assert SCRIPT._canonical({"rate": 1}) == b'{"rate":1}'
+
+
+@pytest.mark.parametrize(("expected", "signed", "verified", "reason"), [
+    ("1.0", "1", "1", None), ("1e0", "1.000", "1.0", None),
+    ("9007199254740992", "9007199254740993.0", "9007199254740993.0", "release_bundle_predicate"),
+    ("9007199254740993.0", "9007199254740992", "9007199254740992", "release_bundle_predicate"),
+    ("0", "1e-400", "1e-400", "release_bundle_predicate"),
+    ("1e-400", "0", "0", "release_bundle_predicate"),
+    ("0", "1e-400", "0", "release_bundle_statement"),
+    ("9007199254740992", "9007199254740993.0", "9007199254740992", "release_bundle_statement"),
+])
+def test_release_predicate_numbers_are_lossless_from_wire_to_signed_bundle(
+    tmp_path: Path, expected: str, signed: str, verified: str, reason: str | None,
+) -> None:
+    distributions = {"algo_cli_runtime-0.19.1-py3-none-any.whl": {"digest": "a" * 64, "size": 1}}
+    verification, bundle = _release_verification_fixture(
+        predicate_type=SCRIPT.SOURCE_BINDING_PREDICATE,
+        predicate={"number": "NUMBER_TOKEN"}, distributions=distributions,
+    )
+    payload = base64.b64decode(bundle["dsseEnvelope"]["payload"])
+    bundle["dsseEnvelope"]["payload"] = base64.b64encode(
+        payload.replace(b'"NUMBER_TOKEN"', signed.encode("ascii")),
+    ).decode("ascii")
+    verification[0]["attestation"]["bundle"] = bundle
+    path, bundle_path = tmp_path / "verification.json", tmp_path / "bundle.jsonl"
+    path.write_text(json.dumps(verification).replace('"NUMBER_TOKEN"', verified), encoding="utf-8")
+    bundle_path.write_bytes(SCRIPT._canonical(bundle) + b"\n")
+    predicate = SCRIPT._json_bytes(
+        ('{"number":' + expected + '}').encode("ascii"), maximum=1024,
+        reason_code="release_bundle_predicate_json", lossless_numbers=True,
+    )
+    arguments = dict(
+        path=path, bundle_path=bundle_path, distributions=distributions,
+        predicate_type=SCRIPT.SOURCE_BINDING_PREDICATE, predicate=predicate, source_revision=REVISION,
+    )
+    if reason is None:
+        SCRIPT._validate_release_verification(**arguments)
+    else:
+        with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match=reason):
+            SCRIPT._validate_release_verification(**arguments)
 
 
 def test_release_bundle_verification_binds_subject_predicate_bundle_and_run(tmp_path: Path) -> None:
