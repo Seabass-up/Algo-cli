@@ -3926,6 +3926,15 @@
           "timestamp": "2026-09-10T01:14:58Z",
           "scope": "source digest sha256:df0cd1276d60b5979f9addd8c28d372b4a6e7f5460e85e95ef4eba4b1c0cfa15 binds exact number equivalence without boolean coercion, precision loss, changed keys, or changed canonical digest bytes",
           "limitations": "Release 34423608524 passed tests and cryptographic checks but failed the original 1.0 versus 1 predicate comparison. The same eight real signed checks and 17-file asset closure now pass locally; fresh CI and publication remain required. HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after lossless wire-number parsing",
+          "digest": "sha256:da79a7d54190db32b0f1ca45f8676d0e16eea97e55fadadca3501dc4382b83fa",
+          "result": "9 local metrics pass, 5 broader external metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-10T01:32:40Z",
+          "scope": "source digest sha256:b335c814252937f029770be2cec76c3c8ada6e0019d3c774605f06313d513496 parses expected predicates, verification statements and signed DSSE payloads losslessly before comparison; canonical digest encoding is unchanged",
+          "limitations": "Supersedes the previous precision claim: PR 52 review found that float decoding could round before equality. Eight new wire-level regressions cover rounding and underflow, and all eight real signatures plus 17-file closure pass again locally. Publication separately remains blocked by a direct URL requirement in both immutable v0.19.1 distributions. HARD-080 remains in progress"
         }
       ]
     },
@@ -5860,6 +5869,15 @@
           "timestamp": "2026-09-10T01:14:58Z",
           "scope": "source digest sha256:df0cd1276d60b5979f9addd8c28d372b4a6e7f5460e85e95ef4eba4b1c0cfa15 retains exact signed measurement values, source/package bytes and all existing latency limits",
           "limitations": "Equivalent JSON numeric spelling does not permit rounded measurements or comparative performance claims. The failed release remains failed; broader M8/M9 completion remains blocked. HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after lossless wire-number parsing",
+          "digest": "sha256:da79a7d54190db32b0f1ca45f8676d0e16eea97e55fadadca3501dc4382b83fa",
+          "result": "9 local metrics pass, 5 broader external metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-10T01:32:40Z",
+          "scope": "source digest sha256:b335c814252937f029770be2cec76c3c8ada6e0019d3c774605f06313d513496 retains fixture denominators, latency limits and immutable package bytes while rejecting numeric precision loss before comparison",
+          "limitations": "The prior precision assertion is superseded by the lossless-parser correction. Local measurements do not establish comparative benefit or release eligibility; v0.19.1 remains unpublished with a separate PyPI metadata blocker. HARD-081 remains in progress"
         }
       ]
     },

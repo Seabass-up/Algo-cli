@@ -8,9 +8,9 @@ import base64
 import binascii
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import re
@@ -93,7 +93,7 @@ def _closed_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _json_bytes(payload: bytes, *, maximum: int, reason_code: str) -> Any:
+def _json_bytes(payload: bytes, *, maximum: int, reason_code: str, lossless_numbers: bool = False) -> Any:
     if type(payload) is not bytes or not 1 <= len(payload) <= maximum:
         _reject(reason_code)
     try:
@@ -101,8 +101,9 @@ def _json_bytes(payload: bytes, *, maximum: int, reason_code: str) -> Any:
             payload.decode("utf-8", errors="strict"),
             object_pairs_hook=_closed_object,
             parse_constant=lambda _value: _reject(reason_code),
+            parse_float=Decimal if lossless_numbers else float,
         )
-    except (UnicodeError, json.JSONDecodeError):
+    except (UnicodeError, ValueError, InvalidOperation):
         _reject(reason_code)
 
 
@@ -1469,9 +1470,9 @@ def _same_json_value(left: Any, right: Any) -> bool:
     pending = [(left, right)]
     while pending:
         left, right = pending.pop()
-        if type(left) in (int, float) and type(right) in (int, float):
-            if ((type(left) is float and not math.isfinite(left))
-                or (type(right) is float and not math.isfinite(right)) or left != right):
+        if type(left) in (int, Decimal) and type(right) in (int, Decimal):
+            if ((type(left) is Decimal and not left.is_finite())
+                or (type(right) is Decimal and not right.is_finite()) or left != right):
                 return False
         elif type(left) is not type(right):
             return False
@@ -1497,8 +1498,11 @@ def _validate_release_verification(
     predicate: Any | None,
     source_revision: str,
 ) -> tuple[str, bytes]:
+    verification_payload = _read_regular(
+        path, maximum=MAX_ATTESTATION_BYTES, reason_code="release_bundle_verification_file",
+    )
     verification = _json_bytes(
-        _read_regular(path, maximum=MAX_ATTESTATION_BYTES, reason_code="release_bundle_verification_file"),
+        verification_payload,
         maximum=MAX_ATTESTATION_BYTES,
         reason_code="release_bundle_verification_json",
     )
@@ -1525,7 +1529,12 @@ def _validate_release_verification(
     if statement["_type"] != IN_TOTO_STATEMENT_V1 or statement["predicateType"] != predicate_type:
         _reject("release_bundle_statement")
     _release_statement_subjects(statement, distributions)
-    if predicate is not None and not _same_json_value(statement["predicate"], predicate):
+    # Keep comparison numbers lossless without changing canonical digest encoding.
+    exact_statement = _json_bytes(
+        verification_payload, maximum=MAX_ATTESTATION_BYTES,
+        reason_code="release_bundle_verification_json", lossless_numbers=True,
+    )[0]["verificationResult"]["statement"]
+    if predicate is not None and not _same_json_value(exact_statement["predicate"], predicate):
         _reject("release_bundle_predicate")
 
     signature = _exact_mapping(result["signature"], {"certificate"}, "release_bundle_certificate")
@@ -1597,10 +1606,11 @@ def _validate_release_verification(
             base64.b64decode(payload_text, validate=True),
             maximum=MAX_ATTESTATION_BYTES,
             reason_code="release_bundle_statement",
+            lossless_numbers=True,
         )
     except (binascii.Error, UnicodeError, ValueError):
         _reject("release_bundle_statement")
-    if _canonical(bundle_statement) != _canonical(statement):
+    if not _same_json_value(bundle_statement, exact_statement):
         _reject("release_bundle_statement")
     return run_uri, _canonical(statement)
 
@@ -1630,6 +1640,7 @@ def validate_release_attestations(
                 ),
                 maximum=MAX_REPORT_BYTES,
                 reason_code="release_bundle_predicate_json",
+                lossless_numbers=True,
             ),
             "algo-cli-release-sbom.sigstore.jsonl",
         ),
@@ -1643,6 +1654,7 @@ def validate_release_attestations(
                 ),
                 maximum=MAX_REPORT_BYTES,
                 reason_code="release_bundle_predicate_json",
+                lossless_numbers=True,
             ),
             "grace-boron-release-qualification.sigstore.jsonl",
         ),
@@ -1656,6 +1668,7 @@ def validate_release_attestations(
                 ),
                 maximum=MAX_REPORT_BYTES,
                 reason_code="release_bundle_predicate_json",
+                lossless_numbers=True,
             ),
             "oliver-release-source-binding.sigstore.jsonl",
         ),
