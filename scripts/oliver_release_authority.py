@@ -17,6 +17,7 @@ import re
 import stat
 import subprocess
 import sys
+import time
 from typing import Any, Callable, Mapping, NoReturn
 from urllib.error import HTTPError
 from urllib.parse import quote
@@ -51,6 +52,7 @@ MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 MAX_ATTESTATION_BYTES = 32 * 1024 * 1024
 MAX_GITHUB_OUTPUT_BYTES = 1024 * 1024
 ATTESTATION_CLOCK_SKEW = timedelta(minutes=10)
+PYPI_VISIBILITY_RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0, 15.0)
 
 SIGSTORE_BUNDLE_MEDIA_TYPES = frozenset(
     {
@@ -1724,41 +1726,10 @@ def _local_distributions(directory: Path, tag: str) -> dict[str, dict[str, Any]]
     return result
 
 
-def verify_pypi_state(
-    *,
-    tag: str,
-    directory: Path,
-    require_present: bool,
-    fetch: Callable[[str], bytes] | None = None,
+def _classify_pypi_payload(
+    *, payload: bytes, tag: str, distributions: Mapping[str, Mapping[str, Any]],
 ) -> str:
-    """Return absent/partial-exact/exact, rejecting every conflicting PyPI file."""
-
-    distributions = _local_distributions(directory, tag)
-    url = f"https://pypi.org/pypi/algo-cli-runtime/{_version(tag)}/json"
-
-    def default_fetch(target: str) -> bytes:
-        request = Request(
-            target,
-            headers={"Accept": "application/json", "User-Agent": "algo-cli-release-authority/1"},
-            method="GET",
-        )
-        try:
-            with urlopen(request, timeout=20) as response:  # noqa: S310 - fixed HTTPS authority
-                if response.status != 200 or response.headers.get_content_type() != "application/json":
-                    _reject("release_pypi_response")
-                payload = response.read(MAX_API_BYTES + 1)
-        except HTTPError as error:
-            if error.code == 404:
-                return b""
-            _reject("release_pypi_response")
-        except OSError:
-            _reject("release_pypi_response")
-        return payload
-
-    payload = (default_fetch if fetch is None else fetch)(url)
     if payload == b"":
-        if require_present:
-            _reject("release_pypi_missing")
         return "absent"
     document = _json_bytes(payload, maximum=MAX_API_BYTES, reason_code="release_pypi_json")
     root = _exact_mapping(document, {"info", "urls"}, "release_pypi_shape")
@@ -1782,7 +1753,7 @@ def verify_pypi_state(
             or filename in observed
             or filename not in distributions
             or type(digests) is not dict
-            or set(digests) < {"sha256"}
+            or "sha256" not in digests
             or file["yanked"] is not False
             or file["packagetype"] != ("bdist_wheel" if filename.endswith(".whl") else "sdist")
         ):
@@ -1796,9 +1767,73 @@ def verify_pypi_state(
             _reject("release_pypi_digest")
     if set(observed) == set(distributions):
         return "exact"
-    if require_present:
-        _reject("release_pypi_missing")
     return "partial-exact"
+
+
+def verify_pypi_state(
+    *,
+    tag: str,
+    directory: Path,
+    require_present: bool,
+    fetch: Callable[[str], bytes] | None = None,
+    visibility_retry_delays: tuple[float, ...] = (),
+    sleep: Callable[[float], None] = time.sleep,
+) -> str:
+    """Return absent/partial-exact/exact, rejecting every conflicting PyPI file."""
+
+    distributions = _local_distributions(directory, tag)
+    url = f"https://pypi.org/pypi/algo-cli-runtime/{_version(tag)}/json"
+
+    def default_fetch(target: str) -> bytes:
+        request = Request(
+            target,
+            headers={"Accept": "application/json", "User-Agent": "algo-cli-release-authority/1"},
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=20) as response:  # noqa: S310 - fixed HTTPS authority
+                if response.status != 200 or response.headers.get_content_type() != "application/json":
+                    _reject("release_pypi_response")
+                payload = response.read(MAX_API_BYTES + 1)
+        except HTTPError as error:
+            with error:
+                if error.code == 404:
+                    return b""
+                _reject("release_pypi_response")
+        except OSError:
+            _reject("release_pypi_response")
+        if not payload:
+            _reject("release_pypi_json")
+        return payload
+
+    fetch_payload = default_fetch if fetch is None else fetch
+    maximum_observations = len(visibility_retry_delays) + 1
+    for attempt in range(maximum_observations):
+        state = _classify_pypi_payload(
+            payload=fetch_payload(url), tag=tag, distributions=distributions,
+        )
+        if state == "exact" or not require_present:
+            return state
+        if attempt == len(visibility_retry_delays):
+            _reject("release_pypi_missing")
+        delay = visibility_retry_delays[attempt]
+        print(
+            json.dumps(
+                {
+                    "attempt": attempt + 1,
+                    "delay_seconds": delay,
+                    "max_observations": maximum_observations,
+                    "reason_code": "release_pypi_visibility_pending",
+                    "state": state,
+                    "status": "retrying",
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            file=sys.stderr,
+        )
+        sleep(delay)
+    _reject("release_pypi_missing")
 
 
 def draft_snapshot_api(value: Any, *, environment: Mapping[str, str], api_get: ApiGet) -> ApiGet:
@@ -2097,6 +2132,7 @@ def main(argv: list[str] | None = None) -> int:
     pypi.add_argument("--tag", required=True)
     pypi.add_argument("--dist", type=Path, required=True)
     pypi.add_argument("--require-present", action="store_true")
+    pypi.add_argument("--wait-for-visibility", action="store_true")
     pypi.add_argument("--github-output", type=Path)
 
     asset_plan = modes.add_parser("asset-plan")
@@ -2186,10 +2222,13 @@ def main(argv: list[str] | None = None) -> int:
             _atomic_write(arguments.output, bundle)
             print("passed")
         elif arguments.mode == "pypi":
+            if arguments.wait_for_visibility and not arguments.require_present:
+                _reject("release_pypi_retry_mode")
             state = verify_pypi_state(
                 tag=arguments.tag,
                 directory=arguments.dist,
                 require_present=arguments.require_present,
+                visibility_retry_delays=(PYPI_VISIBILITY_RETRY_DELAYS if arguments.wait_for_visibility else ()),
             )
             if arguments.github_output is not None:
                 _append_outputs(arguments.github_output, {"pypi-state": state})

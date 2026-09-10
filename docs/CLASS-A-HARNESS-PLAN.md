@@ -2250,3 +2250,79 @@ evaluation/recovery suite passes 53 cases.
   cases. Tests now cover LF, CRLF, and missing final newline without changing
   runtime matching. The current candidate requires fresh local reports, pattern
   receipts, installed smoke, and native CI before delivery claims.
+
+### PyPI Visibility Race Repair - 2026-09-10
+
+- Protected release run `34473404830` uploaded the exact `0.19.1.post1`
+  distributions successfully, then failed its immediate public check with
+  `release_pypi_missing`. PyPI exposed both files shortly afterward with the
+  expected names, sizes, and SHA-256 digests. The failed run remains failed;
+  visibility appearing later is not retroactive success.
+- A fresh protected-main dispatch, run `34474096803`, revalidated the immutable
+  source and exact public bytes, skipped re-upload, completed every release gate,
+  and published the immutable GitHub release. That recovered this release without
+  moving a tag, bypassing a gate, or treating upload acceptance as publication.
+- The local stopping-point candidate adds up to six observations with 30 seconds
+  of scheduled backoff, plus network time, only to post-upload PyPI verification.
+  Each HTTP operation retains its 20-second socket timeout; the workflow job
+  retains its five-minute timeout. It retries `absent` and
+  `partial-exact`; malformed responses and file, identity, digest, size, type, or
+  yank conflicts remain immediate failures. Preflight classification stays
+  one-shot.
+- Red tests first recorded the missing retry contract. Focused tests now cover
+  absent-to-partial-to-exact convergence, bounded exhaustion, immediate conflict
+  rejection, command-mode misuse, and workflow placement. This candidate is a
+  local follow-up to the published release; it is not part of `0.19.1.post1` and
+  does not claim hosted CI qualification until pushed through the normal path.
+
+### Release Closeout And Daemon Recovery - 2026-09-10
+
+- The local follow-up review reproduced two malformed-PyPI response defects:
+  missing SHA-256 alongside another digest raised `KeyError`, and an empty HTTP
+  200 response was mistaken for a retryable missing version. Required-field and
+  HTTP-adapter regressions now pass, with response closure checked explicitly.
+- The first full run returned 25 failures: 24 from a missing pinned Echo test
+  dependency and one from stale source-bound M8 evidence. Matching the frozen
+  workflow environment and regenerating real M8/M9 evidence repaired those
+  setup/evidence faults. The final full run passed 6,032 tests with 41 existing
+  skips. Ruff, source parity, pinned Echo audit, public-source scan, version,
+  hardening gate, and Nathan qualification passed.
+- The refreshed M8 report still has nine local passes and five external-browser
+  blocks. Neither those limitations nor public-claim eligibility were relaxed.
+- Live inspection confirmed the optional daemon stopped cleanly on August 19
+  after SIGTERM; the signal sender is unknown. No Algo launchd agent was present.
+  Starting the installed `0.19.1.post1` daemon restored readiness and ping;
+  repeat-start retained the same process, healthy more than ten minutes later.
+  Automatic login/reboot recovery and background refresh remain unconfigured.
+- [Lessons learned](lessons-learned.md) now records symptoms, causes, repairs,
+  verification, and recurrence prevention. Repository guidance and the local
+  release-upgrade skill require maintaining that record after repairs. The owner
+  also requested the same rule in global Codex instructions.
+- Public `0.19.1.post1` was reverified independently. These follow-up code and
+  documentation changes are not in its immutable artifacts and require normal
+  hosted qualification before any future publication.
+
+### Upgrade Qualification Fixture Repair - 2026-09-10
+
+- PR #59 at `dc08477` passed ordinary test, runtime, native, browser-contract,
+  and build jobs in run `34484392811`, but all three installed-wheel jobs failed
+  before the pipx/uv upgrade. Local reproduction confirmed that the baseline
+  resolver installed public `0.19.1.post1` instead of `0.18.0`. Unsupported
+  `UV_NO_INDEX` was the cause; the fixture now uses supported offline mode and
+  an isolated empty cache without altering Algo's normal updater.
+- Fresh-process checks now compare both installed packages and original wheel
+  metadata against the actual baseline/candidate payloads, excluding the
+  installer-rewritten RECORD. Same-version substitution, missing files, extra
+  package payloads, and runtime-path mismatches are rejected. Failure receipts
+  no longer claim the updater ran before completing the initial updater call.
+- All four local macOS manager/backend paths passed with the CI artifact,
+  verifying 251 baseline and 329 candidate files plus repeat-update parity and
+  preservation of 11 synthetic state files. The focused suites passed 43 tests;
+  the full installed suite passed 6,050 tests with 41 skips. The initially
+  incorrect source-loaded full-suite invocation and its 40 guarded-search
+  rejections are retained in [lessons learned](lessons-learned.md), not hidden
+  by changing the runtime identity guard.
+- Pinned Echo audit, installed-source parity, lint, hardening gate, and M9
+  evidence-currency checks passed. Relevant M8-bound source did not change;
+  its five external-browser blocks remain. Fresh hosted qualification of this
+  repair is required; no new tag, publication, or comparative claim follows.

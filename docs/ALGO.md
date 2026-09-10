@@ -15430,3 +15430,28 @@ rewriting source bytes or changing matcher semantics to get a green test.
 
 **Evidence:** `algo_cli/config.py`, `tests/test_oliver_windows_security_api.py`,
 `tests/test_config.py`, `tests/test_irene_search.py`.
+
+## Publication Visibility Barrier
+
+Treat an accepted package upload, registry index visibility, exact public-file
+verification, and final release publication as separate states. A publisher's
+success response does not prove that the registry's public version endpoint can
+already return every uploaded file.
+
+After an authenticated upload succeeds, the public verifier may observe only
+`absent`, `partial-exact`, or `exact`. Retry `absent` and `partial-exact` on a
+fixed, bounded schedule when the operation is already serialized by release tag.
+Do not use that wait in preflight classification, and do not turn transport,
+schema, identity, filename, digest, size, package-type, or yank conflicts into
+retryable states. Those conditions fail immediately and retain their distinct
+reason codes.
+
+Exhaustion is still a failed release attempt. Preserve its run and diagnostics;
+do not rewrite the failed result after public state changes. A fresh dispatch may
+reconcile only after it revalidates protected source ancestry, immutable tag,
+repository policy, source-bound distributions, and the now-public exact bytes.
+Final publication remains blocked until the public file set is exact.
+
+**Evidence:** `scripts/oliver_release_authority.py`,
+`.github/workflows/oliver-release.yml`,
+`tests/test_oliver_release_authority.py`.

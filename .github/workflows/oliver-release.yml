@@ -1698,6 +1698,7 @@ jobs:
         run: >-
           python -I -B -S scripts/oliver_release_authority.py pypi
           --tag "${RELEASE_TAG}" --dist "${RUNNER_TEMP}/package/bound-dist" --require-present
+          --wait-for-visibility
 
   repository-policy-final:
     name: Revalidate unchanged release policy immediately before publication

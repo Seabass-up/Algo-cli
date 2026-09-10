@@ -3,8 +3,10 @@ from __future__ import annotations
 import base64
 import copy
 from decimal import Decimal
+from email.message import Message
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -1226,6 +1228,181 @@ def test_pypi_retry_state_supports_partial_exact_and_rejects_conflicts(tmp_path:
         )
 
 
+def test_pypi_visibility_wait_retries_only_absent_or_partial_exact_state(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    dist = tmp_path / "dist"
+    payloads = _write_distributions(dist)
+    exact = _pypi_document(payloads)
+    partial = json.loads(exact)
+    partial["urls"] = partial["urls"][:1]
+    responses = iter((b"", json.dumps(partial).encode(), exact))
+    fetches: list[str] = []
+    sleeps: list[float] = []
+
+    def fetch(url: str) -> bytes:
+        fetches.append(url)
+        return next(responses)
+
+    assert (
+        SCRIPT.verify_pypi_state(
+            tag=TAG,
+            directory=dist,
+            require_present=True,
+            fetch=fetch,
+            visibility_retry_delays=(1.0, 2.0),
+            sleep=sleeps.append,
+        )
+        == "exact"
+    )
+    assert len(fetches) == 3
+    assert sleeps == [1.0, 2.0]
+    events = tuple(json.loads(line) for line in capsys.readouterr().err.splitlines())
+    assert events == (
+        {
+            "attempt": 1,
+            "delay_seconds": 1.0,
+            "max_observations": 3,
+            "reason_code": "release_pypi_visibility_pending",
+            "state": "absent",
+            "status": "retrying",
+        },
+        {
+            "attempt": 2,
+            "delay_seconds": 2.0,
+            "max_observations": 3,
+            "reason_code": "release_pypi_visibility_pending",
+            "state": "partial-exact",
+            "status": "retrying",
+        },
+    )
+
+
+def test_pypi_visibility_wait_is_bounded_and_never_retries_conflicts(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    payloads = _write_distributions(dist)
+    exact = _pypi_document(payloads)
+    fetch_count = 0
+    sleeps: list[float] = []
+
+    def missing(_url: str) -> bytes:
+        nonlocal fetch_count
+        fetch_count += 1
+        return b""
+
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_pypi_missing"):
+        SCRIPT.verify_pypi_state(
+            tag=TAG,
+            directory=dist,
+            require_present=True,
+            fetch=missing,
+            visibility_retry_delays=(1.0, 2.0),
+            sleep=sleeps.append,
+        )
+    assert fetch_count == 3
+    assert sleeps == [1.0, 2.0]
+
+    wrong = json.loads(exact)
+    wrong["urls"][0]["digests"]["sha256"] = "0" * 64
+    fetch_count = 0
+    sleeps.clear()
+
+    def conflict(_url: str) -> bytes:
+        nonlocal fetch_count
+        fetch_count += 1
+        return json.dumps(wrong).encode()
+
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_pypi_digest"):
+        SCRIPT.verify_pypi_state(
+            tag=TAG,
+            directory=dist,
+            require_present=True,
+            fetch=conflict,
+            visibility_retry_delays=(1.0, 2.0),
+            sleep=sleeps.append,
+        )
+    assert fetch_count == 1
+    assert sleeps == []
+
+
+def test_pypi_visibility_wait_requires_post_publish_mode(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert SCRIPT.main([
+        "pypi", "--tag", TAG, "--dist", str(tmp_path / "dist"), "--wait-for-visibility",
+    ]) == 2
+    assert json.loads(capsys.readouterr().err) == {
+        "reason_code": "release_pypi_retry_mode",
+        "status": "blocked",
+    }
+
+
+def test_pypi_missing_sha256_is_a_closed_file_rejection(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    document = json.loads(_pypi_document(_write_distributions(dist)))
+    document["urls"][0]["digests"] = {"md5": "0" * 32}
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_pypi_file"):
+        SCRIPT.verify_pypi_state(
+            tag=TAG, directory=dist, require_present=True,
+            fetch=lambda _url: json.dumps(document).encode(),
+            visibility_retry_delays=(1.0,),
+            sleep=lambda _delay: pytest.fail("a malformed digest must not be retried"),
+        )
+
+
+def test_pypi_empty_success_body_is_not_a_missing_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    dist = tmp_path / "dist"
+    _write_distributions(dist)
+    response = io.BytesIO()
+    response.status = 200
+    response.headers = Message()
+    response.headers["Content-Type"] = "application/json"
+    monkeypatch.setattr(SCRIPT, "urlopen", lambda _request, **_kwargs: response)
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_pypi_json"):
+        SCRIPT.verify_pypi_state(
+            tag=TAG, directory=dist, require_present=True,
+            visibility_retry_delays=(1.0,),
+            sleep=lambda _delay: pytest.fail("HTTP 200 with malformed JSON must not be retried"),
+        )
+    assert response.closed
+
+
+def test_pypi_http_visibility_recovery_closes_every_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dist = tmp_path / "dist"
+    exact = _pypi_document(_write_distributions(dist))
+    partial = json.loads(exact)
+    partial["urls"] = partial["urls"][:1]
+    missing_body = io.BytesIO(b"missing-version")
+    responses = [io.BytesIO(json.dumps(partial).encode()), io.BytesIO(exact)]
+    for response in responses:
+        response.status = 200
+        response.headers = Message()
+        response.headers["Content-Type"] = "application/json"
+    requests: list[str] = []
+    sleeps: list[float] = []
+
+    def open_response(request: Any, *, timeout: int) -> io.BytesIO:
+        assert timeout == 20
+        assert request.get_method() == "GET"
+        assert request.get_header("Accept") == "application/json"
+        requests.append(request.full_url)
+        if len(requests) == 1:
+            raise SCRIPT.HTTPError(request.full_url, 404, "missing", Message(), missing_body)
+        return responses[len(requests) - 2]
+
+    monkeypatch.setattr(SCRIPT, "urlopen", open_response)
+    assert SCRIPT.verify_pypi_state(
+        tag=TAG, directory=dist, require_present=True,
+        visibility_retry_delays=(1.0, 2.0), sleep=sleeps.append,
+    ) == "exact"
+    assert requests == ["https://pypi.org/pypi/algo-cli-runtime/0.19.1.post1/json"] * 3
+    assert sleeps == [1.0, 2.0]
+    assert missing_body.closed
+    assert all(response.closed for response in responses)
+
+
 def _durable_asset_fixture(
     tmp_path: Path, authority_receipt: dict[str, Any] | None = None,
 ) -> tuple[Path, Path, Path, dict[str, Any]]:
@@ -1888,7 +2065,13 @@ def test_release_workflow_is_draft_first_least_privilege_and_durable() -> None:
     assert "actions/checkout" not in pre_publish_policy
     assert "contents: write" not in pre_publish_policy
     assert "diff --no-dereference --recursive --brief" in pre_publish_policy
-    assert "repository-policy-publish" in workflow.split("  pypi-preflight:\n", 1)[1].split("\n  publish:\n", 1)[0]
+    pypi_preflight = workflow.split("  pypi-preflight:\n", 1)[1].split("\n  publish:\n", 1)[0]
+    assert "repository-policy-publish" in pypi_preflight
+    assert "--wait-for-visibility" not in pypi_preflight
+
+    pypi_verify = workflow.split("  pypi-verify:\n", 1)[1].split("\n  repository-policy-final:\n", 1)[0]
+    assert "--require-present" in pypi_verify
+    assert "--wait-for-visibility" in pypi_verify
 
     final_policy = workflow.split("  repository-policy-final:\n", 1)[1].split("\n  publish-release:\n", 1)[0]
     assert "actions/checkout" not in final_policy

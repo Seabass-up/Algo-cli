@@ -27,11 +27,12 @@ algo-cli update
 
 `algo-cli update` upgrades the published `algo-cli-runtime` package using the
 installation's owning tool: pipx, uv, or the current Python environment's pip.
-It does not pull GitHub commits. This source tree is the unpublished
-`0.19.1.post1` stability candidate; see
-[the frozen release scope](docs/henry-release-0.19.1.md).
-Published `0.18.0` installations cannot receive these fixes until the new
-package passes qualification and is published.
+It does not pull GitHub commits. Version `0.19.1.post1` was published on
+2026-09-10 and is available to compatible `0.18.0` installations; see
+[the release and qualification record](docs/henry-release-0.19.1.md).
+[PyPI](https://pypi.org/project/algo-cli-runtime/) lists the current published
+version. Changes listed as Unreleased in the changelog require a future package
+release before this command can install them.
 It leaves configuration, credentials, memory, and other files under
 `~/.algo_cli` untouched. Set `ALGO_CLI_UPDATE_MANAGER=pipx`, `uv`, or `pip`
 only when automatic installation detection needs an explicit override.
