@@ -696,6 +696,11 @@ def test_workflow_keeps_tagged_payload_and_current_publisher_verification_separa
     jobs = _workflow_job_bodies((ROOT / ".github/workflows/oliver-release.yml").read_text(encoding="utf-8"))
     for name in ("source-capture", "verify", "evidence"):
         assert "ref: ${{ needs.release-authority.outputs.source-sha }}" in jobs[name]
+    for name in ("pypi-preflight", "pypi-verify"):
+        body = jobs[name]
+        assert "ref: ${{ github.sha }}" in body
+        assert "ref: ${{ needs.release-authority.outputs.source-sha }}" not in body
+        assert "scripts/oliver_release_authority.py pypi" in body
     for name in ("durable-reconcile", "attestation-verification"):
         body = jobs[name]
         assert "ref: ${{ github.sha }}" in body
