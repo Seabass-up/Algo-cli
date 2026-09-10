@@ -192,8 +192,13 @@ def _live_evidence(
         "broker_disposition": "verified",
         "broker_reason_code": "request_verified",
         "broker_accounting": {
-            "schema_version": 1, "complete": True, "active_connection_count": 0,
-            "verified_request_count": 1, "upstream_connection_ids": [1], "denials": [],
+            "schema_version": 2,
+            "complete": True,
+            "active_connection_count": 0,
+            "verified_request_count": 1,
+            "upstream_connection_ids": [1],
+            "denials": [],
+            "cancellations": [],
         },
         "broker_connection_count": 1,
         "broker_request_count": 1,
@@ -365,8 +370,11 @@ def test_hosted_report_retains_every_proven_denial_and_rejects_laundering() -> N
         live["broker_accounting"]["denials"] = [[2, "connect_origin"]]
         rows.append((live, 100 + index))
     arguments = {
-        "context": context, "build_evidence": _build_evidence(), "repetitions": rows,
-        "generated_at": "2026-07-20T04:00:00Z", "source_digest": _digest("c"),
+        "context": context,
+        "build_evidence": _build_evidence(),
+        "repetitions": rows,
+        "generated_at": "2026-07-20T04:00:00Z",
+        "source_digest": _digest("c"),
     }
     report = SCRIPT.build_hosted_report(**arguments)
     assert report["status"] == "passed"
@@ -378,13 +386,44 @@ def test_hosted_report_retains_every_proven_denial_and_rejects_laundering() -> N
         SCRIPT.build_hosted_report(**arguments)
 
 
-@pytest.mark.parametrize("field,value", [
-    ("schema_version", 2), ("browser_state", "blocked"),
-    ("broker_disposition", "verified"), ("broker_disposition", "unknown"),
-    ("broker_disposition", "handoff"), ("broker_disposition", "failed"),
-    ("broker_reason_code", "socket_eof"), ("broker_reason_code", "private_canary"),
-    ("broker_accounting", None),
-])
+def test_hosted_report_retains_empty_connect_cancellations_and_rejects_overlap() -> None:
+    context = SCRIPT.HostedRunnerContext.from_environment(_environment())
+    rows = []
+    for index in range(1, 6):
+        live = _live_evidence(index)
+        live["broker_connection_count"] = 2
+        live["broker_accounting"]["cancellations"] = [[2, "connect_cancelled"]]
+        rows.append((live, 100 + index))
+    arguments = {
+        "context": context,
+        "build_evidence": _build_evidence(),
+        "repetitions": rows,
+        "generated_at": "2026-07-20T04:00:00Z",
+        "source_digest": _digest("c"),
+    }
+    report = SCRIPT.build_hosted_report(**arguments)
+    assert report["status"] == "passed"
+    for row in report["repetitions"]:
+        assert row["evidence"]["broker_accounting"]["cancellations"] == [[2, "connect_cancelled"]]
+    rows[-1][0]["broker_accounting"]["upstream_connection_ids"] = [1, 2]
+    with pytest.raises(SCRIPT.HostedQualificationRejected, match="hosted_live_evidence_broker_accounting"):
+        SCRIPT.build_hosted_report(**arguments)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("schema_version", 2),
+        ("browser_state", "blocked"),
+        ("broker_disposition", "verified"),
+        ("broker_disposition", "unknown"),
+        ("broker_disposition", "handoff"),
+        ("broker_disposition", "failed"),
+        ("broker_reason_code", "socket_eof"),
+        ("broker_reason_code", "private_canary"),
+        ("broker_accounting", None),
+    ],
+)
 def test_hosted_denials_cannot_hide_old_schema_browser_failure_or_missing_proof(field, value) -> None:
     live = _live_evidence(1)
     live.update(broker_disposition="blocked", broker_reason_code="connect_origin", broker_connection_count=2)

@@ -357,9 +357,7 @@ def test_http_request_parser_strips_hop_headers_and_forces_close() -> None:
         (b"GET / HTTP/1.1\r\nHost: example.com\r\nHost: example.com\r\n", "request_host"),
     ],
 )
-def test_http_request_parser_denies_mutation_auth_body_and_websocket(
-    start_or_header: bytes, reason: str
-) -> None:
+def test_http_request_parser_denies_mutation_auth_body_and_websocket(start_or_header: bytes, reason: str) -> None:
     with pytest.raises(XenonBrokerRejected, match=reason):
         parse_xenon_http_request(
             start_or_header + b"\r\n",
@@ -373,7 +371,7 @@ def test_response_parser_strips_alt_svc_and_connection_nominated_headers() -> No
         b"HTTP/1.1 200 OK\r\n"
         b"Content-Type: text/html\r\n"
         b"Content-Length: 4\r\n"
-        b"Alt-Svc: h3=\":443\"\r\n"
+        b'Alt-Svc: h3=":443"\r\n'
         b"Connection: X-Hop\r\n"
         b"X-Hop: secret\r\n\r\n"
     )
@@ -400,9 +398,7 @@ def test_response_parser_strips_alt_svc_and_connection_nominated_headers() -> No
         (b"HTTP/1.1 302 Found\r\nLocation: /a\r\nLocation: /b\r\n\r\n", "response_location"),
     ],
 )
-def test_response_parser_denies_upgrade_auth_download_and_ambiguous_framing(
-    head: bytes, reason: str
-) -> None:
+def test_response_parser_denies_upgrade_auth_download_and_ambiguous_framing(head: bytes, reason: str) -> None:
     with pytest.raises(XenonBrokerRejected, match=reason):
         parse_xenon_http_response(head)
 
@@ -471,7 +467,9 @@ def _read_all(connection: ssl.SSLSocket) -> bytes:
 
 
 def _run_double_tls(
-    response_bytes: bytes, *, session: XenonBrokerSession | None = None,
+    response_bytes: bytes,
+    *,
+    session: XenonBrokerSession | None = None,
 ) -> tuple[bytes, XenonBrokerSession, list[BaseException]]:
     tls_now_ms = int(time.time() * 1000)
     permit = _permit(
@@ -519,15 +517,11 @@ def _run_double_tls(
 
     broker_thread = threading.Thread(target=broker)
     broker_thread.start()
-    browser_raw.sendall(
-        b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"
-    )
+    browser_raw.sendall(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
     connected = browser_raw.recv(4096)
     assert connected == b"HTTP/1.1 200 Connection Established\r\n\r\n"
     with client_context.wrap_socket(browser_raw, server_hostname="example.com") as browser_tls:
-        browser_tls.sendall(
-            b"GET /start?q=1 HTTP/1.1\r\nHost: example.com\r\nConnection: keep-alive\r\n\r\n"
-        )
+        browser_tls.sendall(b"GET /start?q=1 HTTP/1.1\r\nHost: example.com\r\nConnection: keep-alive\r\n\r\n")
         output = _read_all(browser_tls)
     broker_thread.join(timeout=5)
     origin_thread.join(timeout=5)
@@ -538,7 +532,7 @@ def test_double_tls_broker_handles_coalesced_early_hints_and_fixed_body() -> Non
     output, session, errors = _run_double_tls(
         b"HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload\r\n\r\n"
         b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 4\r\n"
-        b"Alt-Svc: h3=\":443\"\r\n\r\npong"
+        b'Alt-Svc: h3=":443"\r\n\r\npong'
     )
     assert errors == []
     assert output.endswith(b"\r\n\r\npong")
@@ -578,10 +572,89 @@ def _rejected_connection(session, host, connector) -> tuple[bytes, str]:
 def _qualify_accounting(session) -> None:
     evidence = session.evidence()
     broker_module.validate_xenon_broker_accounting(
-        evidence.accounting, connection_count=evidence.connection_count,
-        request_count=evidence.request_count, disposition=evidence.disposition.value,
+        evidence.accounting,
+        connection_count=evidence.connection_count,
+        request_count=evidence.request_count,
+        disposition=evidence.disposition.value,
         reason_code=evidence.reason_code,
     )
+
+
+def test_empty_pre_connect_close_is_accounted_without_overriding_verified_navigation() -> None:
+    response = b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\npong"
+    output, session, errors = _run_double_tls(response)
+    assert output.endswith(b"pong") and errors == []
+    browser, broker = socket.socketpair()
+    cancellation_errors: list[BaseException] = []
+    upstream_calls: list[object] = []
+
+    def forbidden_connector(*args):
+        upstream_calls.append(args)
+        raise AssertionError("an empty cancellation must not open an upstream connection")
+
+    def serve() -> None:
+        try:
+            handle_xenon_connection(broker, session, connector=forbidden_connector)
+        except BaseException as error:
+            cancellation_errors.append(error)
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    browser.close()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert upstream_calls == []
+    assert len(cancellation_errors) == 1
+    assert isinstance(cancellation_errors[0], XenonBrokerRejected)
+    assert cancellation_errors[0].reason_code == "connect_cancelled"
+    evidence = session.evidence()
+    assert evidence.disposition is XenonBrokerDisposition.VERIFIED
+    assert evidence.reason_code == "request_verified"
+    assert evidence.accounting == {
+        "schema_version": 2,
+        "complete": True,
+        "active_connection_count": 0,
+        "verified_request_count": 1,
+        "upstream_connection_ids": [1],
+        "denials": [],
+        "cancellations": [[2, "connect_cancelled"]],
+    }
+    _qualify_accounting(session)
+
+
+def test_partial_pre_connect_close_remains_a_terminal_failure() -> None:
+    response = b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\npong"
+    output, session, errors = _run_double_tls(response)
+    assert output.endswith(b"pong") and errors == []
+    browser, broker = socket.socketpair()
+    partial_errors: list[BaseException] = []
+
+    def serve() -> None:
+        try:
+            handle_xenon_connection(
+                broker,
+                session,
+                connector=lambda *_args: pytest.fail("partial CONNECT reached upstream"),
+            )
+        except BaseException as error:
+            partial_errors.append(error)
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    browser.sendall(b"CON")
+    browser.close()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert len(partial_errors) == 1
+    assert isinstance(partial_errors[0], XenonBrokerRejected)
+    assert partial_errors[0].reason_code == "socket_eof"
+    evidence = session.evidence()
+    assert evidence.disposition is XenonBrokerDisposition.FAILED
+    assert evidence.reason_code == "socket_eof"
+    assert evidence.accounting["cancellations"] == []
+    assert evidence.accounting["denials"] == [[2, "other_rejection"]]
+    with pytest.raises(XenonBrokerRejected, match="^broker_accounting$"):
+        _qualify_accounting(session)
 
 
 def test_concurrent_denials_preserve_zero_upstream_access_and_later_verified_requests(monkeypatch) -> None:
@@ -604,10 +677,12 @@ def test_concurrent_denials_preserve_zero_upstream_access_and_later_verified_req
     with monkeypatch.context() as patch:
         patch.setattr(session, "begin_connection", synchronized_begin)
         with ThreadPoolExecutor(max_workers=8) as executor:
-            results = list(executor.map(
-                lambda index: _rejected_connection(session, f"private-{index}.example", forbidden_connector),
-                range(8),
-            ))
+            results = list(
+                executor.map(
+                    lambda index: _rejected_connection(session, f"private-{index}.example", forbidden_connector),
+                    range(8),
+                )
+            )
     assert calls == []
     assert all(raw.startswith(b"HTTP/1.1 403 Forbidden") and reason == "connect_origin" for raw, reason in results)
     output, session, errors = _run_double_tls(response, session=session)
@@ -615,9 +690,13 @@ def test_concurrent_denials_preserve_zero_upstream_access_and_later_verified_req
     evidence = session.evidence()
     assert evidence.disposition is XenonBrokerDisposition.BLOCKED
     assert evidence.accounting == {
-        "schema_version": 1, "complete": True, "active_connection_count": 0,
-        "verified_request_count": 2, "upstream_connection_ids": [1, 10],
+        "schema_version": 2,
+        "complete": True,
+        "active_connection_count": 0,
+        "verified_request_count": 2,
+        "upstream_connection_ids": [1, 10],
         "denials": [[index, "connect_origin"] for index in range(2, 10)],
+        "cancellations": [],
     }
     assert "private-" not in repr(evidence)
     _qualify_accounting(session)
@@ -657,8 +736,7 @@ def test_unfinished_or_unrecorded_connection_prevents_qualification() -> None:
 
 def test_double_tls_broker_relays_valid_chunked_body() -> None:
     output, session, errors = _run_double_tls(
-        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n"
-        b"4\r\npong\r\n0\r\n\r\n"
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n4\r\npong\r\n0\r\n\r\n"
     )
     assert errors == []
     assert output.endswith(b"4\r\npong\r\n0\r\n\r\n")
@@ -734,9 +812,7 @@ def test_server_accepts_only_exact_private_listener_without_starting_it() -> Non
 def test_read_head_preserves_coalesced_final_response_bytes() -> None:
     class FakeSocket:
         def __init__(self) -> None:
-            self.rows = [
-                b"HTTP/1.1 103 Early\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
-            ]
+            self.rows = [b"HTTP/1.1 103 Early\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"]
 
         def recv(self, _size: int) -> bytes:
             return self.rows.pop(0) if self.rows else b""
