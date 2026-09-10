@@ -40,7 +40,9 @@ AUSTIN_PACKAGE_ID = "com.algo-cli.austin.control.pkg"
 ADA_RELEASE_EVIDENCE_FILENAME = "AdaAustinReleaseEvidence.json"
 
 _TEAM_ID_RE = re.compile(r"^[A-Z0-9]{10}$")
-_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+_VERSION_RE = re.compile(
+    r"^(?P<native>[0-9]+\.[0-9]+\.[0-9]+)(?:\.post(?:0|[1-9][0-9]{0,8}))?$"
+)
 _BUILD_RE = re.compile(r"^[1-9][0-9]{0,8}$")
 _PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._:-]{0,127}$")
 _ORIGIN_RE = re.compile(r"^chrome-extension://[a-p]{32}/$")
@@ -68,6 +70,13 @@ class AustinReleaseRejected(RuntimeError):
 
 def _reject(reason_code: str) -> NoReturn:
     raise AustinReleaseRejected(reason_code)
+
+
+def _native_release_version(version: str) -> str:
+    match = _VERSION_RE.fullmatch(version)
+    if match is None:
+        _reject("austin_release_version")
+    return match.group("native")
 
 
 def _duplicate_rejecting_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -279,8 +288,9 @@ class AustinReleaseConfig:
             _reject("austin_release_notary_profile")
         if type(self.extension_origin) is not str or _ORIGIN_RE.fullmatch(self.extension_origin) is None:
             _reject("austin_release_extension_origin")
-        if type(self.version) is not str or _VERSION_RE.fullmatch(self.version) is None:
+        if type(self.version) is not str:
             _reject("austin_release_version")
+        _native_release_version(self.version)
         if self.version != __version__:
             _reject("austin_release_version_mismatch")
         if type(self.build_number) is not str or _BUILD_RE.fullmatch(self.build_number) is None:
@@ -501,7 +511,7 @@ class AustinReleasePackager:
         if type(info) is not dict or info.get("CFBundleIdentifier") != AUSTIN_BUNDLE_ID:
             _reject("austin_release_info")
         if (
-            info.get("CFBundleShortVersionString") != config.version
+            info.get("CFBundleShortVersionString") != _native_release_version(config.version)
             or info.get("CFBundleVersion") != config.build_number
         ):
             _reject("austin_release_info_version")
@@ -689,6 +699,7 @@ class AustinReleasePackager:
 
     def build(self, config: AustinReleaseConfig) -> AustinReleaseResult:
         config.validate()
+        native_version = _native_release_version(config.version)
         self._preflight_identities(config)
         with tempfile.TemporaryDirectory(prefix="AustinRelease.") as raw_temporary:
             temporary = Path(raw_temporary).resolve(strict=True)
@@ -718,7 +729,7 @@ class AustinReleasePackager:
                     "AUSTIN_CONFIGURATION": "release",
                     "AUSTIN_DEVELOPER_ID_IDENTITY": config.application_identity,
                     "AUSTIN_RELEASE_BUILD": config.build_number,
-                    "AUSTIN_RELEASE_VERSION": config.version,
+                    "AUSTIN_RELEASE_VERSION": native_version,
                     "NEON_EXTENSION_ORIGIN": config.extension_origin,
                 },
             )
@@ -759,7 +770,7 @@ class AustinReleasePackager:
                 "--identifier",
                 AUSTIN_PACKAGE_ID,
                 "--version",
-                config.version,
+                native_version,
                 "--sign",
                 config.installer_identity,
                 str(package),

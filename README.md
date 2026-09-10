@@ -27,8 +27,9 @@ algo-cli update
 
 `algo-cli update` upgrades the published `algo-cli-runtime` package using the
 installation's owning tool: pipx, uv, or the current Python environment's pip.
-It does not pull GitHub commits. This source tree is the unpublished `0.19.1`
-stability candidate; see [the frozen release scope](docs/henry-release-0.19.1.md).
+It does not pull GitHub commits. This source tree is the unpublished
+`0.19.1.post1` stability candidate; see
+[the frozen release scope](docs/henry-release-0.19.1.md).
 Published `0.18.0` installations cannot receive these fixes until the new
 package passes qualification and is published.
 It leaves configuration, credentials, memory, and other files under
@@ -46,7 +47,7 @@ inside the running launcher does not release that Windows file lock.
 To install a reviewed source checkout instead, clone the repository and run
 `pipx install .` from its root.
 
-Optional extras are available for protected Echo Veil memory (`algo-cli-runtime[echo-veil]`), PDF rendering (`algo-cli-runtime[pdf]`), and experimental vector quantization (`algo-cli-runtime[quantization]`). The Echo Veil extra is pinned to the qualified full source revision and remains local-development evidence rather than a production-readiness claim. The distribution installs the `algo-cli` command. Run `algo-cli doctor` for a side-effect-free readiness report.
+Optional extras are available for PDF rendering (`algo-cli-runtime[pdf]`) and experimental vector quantization (`algo-cli-runtime[quantization]`). Echo Veil is not a public package extra because its qualified 0.8 revision is not published on PyPI. Source development uses the exact commit-pinned `echo-veil` dependency group; operators who require Echo must install that same reviewed source revision into Algo's Python environment. The distribution installs the `algo-cli` command. Run `algo-cli doctor` for a side-effect-free readiness report.
 
 ## Quick Start
 

@@ -203,6 +203,12 @@ def test_two_round_release_pipeline_is_exact_and_emits_structural_evidence(tmp_p
     assert evidence["package_digest"] == result.package_digest
     assert evidence["native_control_protocol"] == "disabled_foundation"
     assert evidence["native_authority_public_key_digest"] == KEY_DIGEST
+    assert evidence["version"] == __version__
+    assert result.package_path.name == f"Algo-CLI-Control-{__version__}.pkg"
+    info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
+    assert info["CFBundleShortVersionString"] == "0.19.1"
+    pkgbuild = next(command for command in runner.commands if command[0] == "/usr/bin/pkgbuild")
+    assert pkgbuild[pkgbuild.index("--version") + 1] == "0.19.1"
     assert str(tmp_path) not in result.evidence_path.read_text(encoding="utf-8")
     assert stat.S_IMODE(result.evidence_path.stat().st_mode) == 0o600
     assert stat.S_IMODE(result.package_path.stat().st_mode) == 0o644
@@ -275,6 +281,7 @@ def test_notary_warning_or_issue_is_release_blocking(tmp_path: Path, monkeypatch
         ("notary_profile", "profile\nsecret", "austin_release_notary_profile"),
         ("extension_origin", "https://example.com", "austin_release_extension_origin"),
         ("version", "0.18.0-foundation", "austin_release_version"),
+        ("version", "0.19.1.post1.dev1", "austin_release_version"),
         ("version", "0.18.1", "austin_release_version_mismatch"),
         ("build_number", "0", "austin_release_build"),
         (

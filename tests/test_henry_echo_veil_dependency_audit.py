@@ -63,23 +63,23 @@ def test_hosted_echo_install_and_audit_paths_require_copy_link_mode() -> None:
     release = (ROOT / ".github/workflows/oliver-release.yml").read_text(encoding="utf-8")
 
     required_ci_commands = (
-        "uv sync --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil "
+        "uv sync --frozen --no-editable --extra dev --extra supply-chain --group echo-veil "
         "--reinstall-package algo-cli-runtime --link-mode copy",
         "uv run --frozen --no-editable --extra dev --extra supply-chain "
-        "--extra echo-veil --link-mode copy python -I scripts/henry_echo_veil_dependency_audit.py",
-        "uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil "
+        "--group echo-veil --link-mode copy python -I scripts/henry_echo_veil_dependency_audit.py",
+        "uv run --frozen --no-editable --extra dev --extra supply-chain --group echo-veil "
         "--link-mode copy pytest tests",
-        "uv sync --frozen --no-editable --extra dev --extra echo-veil "
+        "uv sync --frozen --no-editable --extra dev --group echo-veil "
         "--reinstall-package algo-cli-runtime --link-mode copy",
-        "uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy pytest tests",
+        "uv run --frozen --no-editable --extra dev --group echo-veil --link-mode copy pytest tests",
     )
     required_release_commands = (
         "uv sync --frozen --no-editable --extra dev --extra release --extra supply-chain "
-        "--extra echo-veil --reinstall-package algo-cli-runtime --link-mode copy",
+        "--group echo-veil --reinstall-package algo-cli-runtime --link-mode copy",
         "uv run --frozen --no-editable --extra dev --extra release --extra supply-chain "
-        "--extra echo-veil --link-mode copy python -I scripts/henry_echo_veil_dependency_audit.py",
+        "--group echo-veil --link-mode copy python -I scripts/henry_echo_veil_dependency_audit.py",
         "uv run --frozen --no-editable --extra dev --extra release --extra supply-chain "
-        "--extra echo-veil --link-mode copy pytest tests",
+        "--group echo-veil --link-mode copy pytest tests",
     )
 
     normalized_ci = " ".join(ci.split())

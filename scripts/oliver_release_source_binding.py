@@ -1446,6 +1446,11 @@ def _canonical_requirement(value: str) -> str:
     return normalized
 
 
+def _reject_public_direct_requirement(value: str) -> None:
+    if "@" in value.partition(";")[0]:
+        raise SourceBindingRejected("package_pypi_direct_dependency")
+
+
 def _expected_requirements(metadata: Mapping[str, Any]) -> tuple[set[str], set[str]]:
     dependencies = metadata.get("dependencies", [])
     optional = metadata.get("optional-dependencies", {})
@@ -1455,6 +1460,7 @@ def _expected_requirements(metadata: Mapping[str, Any]) -> tuple[set[str], set[s
     for requirement in dependencies:
         if type(requirement) is not str:
             raise SourceBindingRejected("package_configuration")
+        _reject_public_direct_requirement(requirement)
         expected.add(_canonical_requirement(requirement))
     extras: set[str] = set()
     for raw_extra, requirements in optional.items():
@@ -1465,6 +1471,7 @@ def _expected_requirements(metadata: Mapping[str, Any]) -> tuple[set[str], set[s
         for requirement in requirements:
             if type(requirement) is not str:
                 raise SourceBindingRejected("package_configuration")
+            _reject_public_direct_requirement(requirement)
             base, separator, marker = requirement.partition(";")
             if separator:
                 combined = f"{base}; ({marker.strip()}) and extra == '{extra}'"

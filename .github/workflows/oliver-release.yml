@@ -609,7 +609,7 @@ jobs:
           python -I -B -S "${helper}" materialize --archive "${boundary}/oliver-release-source.tar" --expected-revision "${SOURCE_SHA}" --stage "${RUNNER_TEMP}/source-b" --receipt "${boundary}/oliver-release-source-receipt.json"
           export UV_PROJECT_ENVIRONMENT="${RUNNER_TEMP}/release-build-env"
           uv sync --project "${RUNNER_TEMP}/source-a" --frozen --no-install-project --extra release
-          uv export --project "${RUNNER_TEMP}/source-a" --quiet --frozen --format requirements-txt --extra dev --extra release --extra supply-chain --extra echo-veil --no-emit-project --no-emit-package echo-veil --output-file "${boundary}/algo-cli-release-auditable-requirements.txt"
+          uv export --project "${RUNNER_TEMP}/source-a" --quiet --frozen --format requirements-txt --extra dev --extra release --extra supply-chain --group echo-veil --no-emit-project --no-emit-package echo-veil --output-file "${boundary}/algo-cli-release-auditable-requirements.txt"
       - name: Build two source-date-pinned distributions without isolation or live resolution
         run: |
           set -euo pipefail
@@ -705,23 +705,23 @@ jobs:
             --bound-dist "${RUNNER_TEMP}/package/bound-dist" \
             --manifest "${RUNNER_TEMP}/package/oliver-release-source-binding.json"
       - name: Install locked verification dependencies
-        run: uv sync --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil --reinstall-package algo-cli-runtime --link-mode copy
+        run: uv sync --frozen --no-editable --extra dev --extra release --extra supply-chain --group echo-veil --reinstall-package algo-cli-runtime --link-mode copy
       - name: Verify source, runtime, package, dependencies, and tests
         env:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil python -I scripts/oliver_installed_source_parity.py
-          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil python scripts/nathan_agent_runtime_qualification.py --quiet
-          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil python scripts/check_release_version.py --tag "${RELEASE_TAG}"
-          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil python scripts/check_public_release.py
-          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil python scripts/check_public_history.py --allow-contributor-identities
-          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil ruff check algo_cli tests scripts
-          uv export --quiet --frozen --format requirements-txt --extra dev --extra release --extra supply-chain --extra echo-veil --no-emit-project --no-emit-package echo-veil --output-file "${RUNNER_TEMP}/algo-cli-verification-auditable-requirements.txt"
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --group echo-veil python -I scripts/oliver_installed_source_parity.py
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --group echo-veil python scripts/nathan_agent_runtime_qualification.py --quiet
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --group echo-veil python scripts/check_release_version.py --tag "${RELEASE_TAG}"
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --group echo-veil python scripts/check_public_release.py
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --group echo-veil python scripts/check_public_history.py --allow-contributor-identities
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --group echo-veil ruff check algo_cli tests scripts
+          uv export --quiet --frozen --format requirements-txt --extra dev --extra release --extra supply-chain --group echo-veil --no-emit-project --no-emit-package echo-veil --output-file "${RUNNER_TEMP}/algo-cli-verification-auditable-requirements.txt"
           uv run --frozen --no-editable --extra dev --extra release --extra supply-chain pip-audit --requirement "${RUNNER_TEMP}/algo-cli-verification-auditable-requirements.txt" --require-hashes --disable-pip --strict --progress-spinner off
           uv run --frozen --no-editable --extra dev --extra release --extra supply-chain pip-audit --requirement "${RUNNER_TEMP}/package/algo-cli-release-auditable-requirements.txt" --require-hashes --disable-pip --strict --progress-spinner off
-          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil --link-mode copy python -I scripts/henry_echo_veil_dependency_audit.py
-          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --extra echo-veil --link-mode copy pytest tests
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --group echo-veil --link-mode copy python -I scripts/henry_echo_veil_dependency_audit.py
+          uv run --frozen --no-editable --extra dev --extra release --extra supply-chain --group echo-veil --link-mode copy pytest tests
           uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python -m twine check "${RUNNER_TEMP}"/package/bound-dist/*.whl "${RUNNER_TEMP}"/package/bound-dist/*.tar.gz
           uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python scripts/check_public_release.py --artifacts-only --artifact "${RUNNER_TEMP}"/package/bound-dist/*.whl --artifact "${RUNNER_TEMP}"/package/bound-dist/*.tar.gz
           uv run --frozen --no-editable --extra dev --extra release --extra supply-chain python scripts/oliver_smoke_wheel_install.py "${RUNNER_TEMP}/package/bound-dist"

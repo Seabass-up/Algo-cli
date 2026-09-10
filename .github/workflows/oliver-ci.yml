@@ -29,22 +29,22 @@ jobs:
           version: "0.11.26"
           enable-cache: true
       - name: Install locked project and quality tools
-        run: uv sync --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil --reinstall-package algo-cli-runtime --link-mode copy
+        run: uv sync --frozen --no-editable --extra dev --extra supply-chain --group echo-veil --reinstall-package algo-cli-runtime --link-mode copy
       - name: Install locked search backend
         shell: bash
         run: |
           cargo install ripgrep --version 15.2.0 --locked --root "$RUNNER_TEMP/algo-ci-ripgrep"
           printf '%s\n' "$RUNNER_TEMP/algo-ci-ripgrep/bin" >> "$GITHUB_PATH"
       - name: Installed-source parity (blocking)
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil python -I scripts/oliver_installed_source_parity.py
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain --group echo-veil python -I scripts/oliver_installed_source_parity.py
       - name: Ruff (blocking)
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil ruff check algo_cli tests scripts
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain --group echo-veil ruff check algo_cli tests scripts
       - name: Public source scan (blocking)
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil python scripts/check_public_release.py
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain --group echo-veil python scripts/check_public_release.py
       - name: Reachable history scan (blocking)
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil python scripts/check_public_history.py --allow-contributor-identities
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain --group echo-veil python scripts/check_public_history.py --allow-contributor-identities
       - name: Release version source (blocking)
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil python scripts/check_release_version.py
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain --group echo-veil python scripts/check_release_version.py
       - name: Locked Python dependency audit (blocking)
         run: |
           uv export --quiet --frozen --format requirements-txt \
@@ -58,10 +58,10 @@ jobs:
       - name: Echo Veil pinned-source and installed RECORD audit (blocking)
         run: >-
           uv run --frozen --no-editable --extra dev --extra supply-chain
-          --extra echo-veil --link-mode copy python -I scripts/henry_echo_veil_dependency_audit.py
+          --group echo-veil --link-mode copy python -I scripts/henry_echo_veil_dependency_audit.py
       - name: Runtime mypy contract (blocking)
         run: >-
-          uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil mypy
+          uv run --frozen --no-editable --extra dev --extra supply-chain --group echo-veil mypy
           algo_cli/main.py
           algo_cli/tools.py
           algo_cli/harness.py
@@ -136,13 +136,13 @@ jobs:
           --show-error-codes
       - name: Agent runtime hardening qualification (blocking)
         run: >-
-          uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil
+          uv run --frozen --no-editable --extra dev --extra supply-chain --group echo-veil
           python scripts/nathan_agent_runtime_qualification.py --quiet
       - name: Compile check
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil python -m compileall -q algo_cli ollama_cli
+        run: uv run --frozen --no-editable --extra dev --extra supply-chain --group echo-veil python -m compileall -q algo_cli ollama_cli
       - name: Full suite with branch coverage floor
         run: >-
-          uv run --frozen --no-editable --extra dev --extra supply-chain --extra echo-veil --link-mode copy pytest tests
+          uv run --frozen --no-editable --extra dev --extra supply-chain --group echo-veil --link-mode copy pytest tests
           --cov
           --cov-branch
           --cov-report=term-missing:skip-covered
@@ -185,25 +185,25 @@ jobs:
           version: "0.11.26"
           enable-cache: true
       - name: Install locked project
-        run: uv sync --frozen --no-editable --extra dev --extra echo-veil --reinstall-package algo-cli-runtime --link-mode copy
+        run: uv sync --frozen --no-editable --extra dev --group echo-veil --reinstall-package algo-cli-runtime --link-mode copy
       - name: Install locked search backend
         shell: bash
         run: |
           cargo install ripgrep --version 15.2.0 --locked --root "$RUNNER_TEMP/algo-ci-ripgrep"
           printf '%s\n' "$RUNNER_TEMP/algo-ci-ripgrep/bin" >> "$GITHUB_PATH"
       - name: Installed-source parity
-        run: uv run --frozen --no-editable --extra dev --extra echo-veil python -I scripts/oliver_installed_source_parity.py
+        run: uv run --frozen --no-editable --extra dev --group echo-veil python -I scripts/oliver_installed_source_parity.py
       - name: Run full suite
         id: full-suite
         run: >-
-          uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy pytest tests
+          uv run --frozen --no-editable --extra dev --group echo-veil --link-mode copy pytest tests
           -vv --durations=25 -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true
       - name: Measure native runtime latency (blocking)
         id: runtime-timing
         shell: bash
         run: |
           set -euo pipefail
-          uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy \
+          uv run --frozen --no-editable --extra dev --group echo-veil --link-mode copy \
             python -m algo_cli.evals.nathan_agent_runtime_hardening \
             > "${RUNNER_TEMP}/nathan-agent-runtime-live.json"
       - name: Retain native runtime latency evidence
@@ -217,7 +217,7 @@ jobs:
         if: ${{ failure() && runner.os == 'Windows' && (steps.full-suite.outcome == 'failure' || steps.runtime-timing.outcome == 'failure') }}
         timeout-minutes: 3
         run: >-
-          uv run --frozen --no-editable --extra dev --extra echo-veil --link-mode copy
+          uv run --frozen --no-editable --extra dev --group echo-veil --link-mode copy
           python scripts/nathan_agent_runtime_profile.py
       - name: Retain Windows timing diagnostics
         if: ${{ failure() && runner.os == 'Windows' && (steps.full-suite.outcome == 'failure' || steps.runtime-timing.outcome == 'failure') }}

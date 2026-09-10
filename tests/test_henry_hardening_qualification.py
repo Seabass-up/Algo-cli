@@ -600,18 +600,20 @@ def test_operator_script_help_runs_from_outside_checkout(tmp_path: Path) -> None
 
 
 def test_generation_suite_defers_only_postwrite_evidence_gates(monkeypatch) -> None:
-    captured: list[str] = []
+    captured: list[list[str]] = []
 
     class Completed:
         returncode = 0
 
     def fake_run(command: list[str], **kwargs: object) -> Completed:
-        captured.extend(command)
+        captured.append(command)
         return Completed()
 
     monkeypatch.setattr(SCRIPT.subprocess, "run", fake_run)
     assert SCRIPT._run_focused_tests() is True
-    expression = captured[captured.index("-k") + 1]
+    assert captured[0] == [sys.executable, "-I", str(SCRIPT.INSTALLED_PARITY)]
+    assert captured[1][0] == str(Path(sys.executable).with_name("pytest.exe" if os.name == "nt" else "pytest"))
+    expression = captured[1][captured[1].index("-k") + 1]
     assert expression == " and ".join(f"not {name}" for name in SCRIPT.POSTWRITE_EVIDENCE_TESTS)
     assert SCRIPT.POSTWRITE_EVIDENCE_TESTS == (
         "test_recorded_local_evidence_is_current_complete_and_honestly_blocked",
