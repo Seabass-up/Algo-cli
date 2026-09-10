@@ -3989,6 +3989,15 @@
           "timestamp": "2026-09-10T10:13:51Z",
           "scope": "source digest sha256:76b4a505e54082b9e603f671b8a5795ce2b691db2ba817bd56eb9021294f06f8 binds cancellation-aware post-convergence conditions that preserve the intentional build-or-recovery split while allowing operator cancellation to stop every publication stage",
           "limitations": "Local qualification does not establish hosted execution of the cancellation-aware publication chain, PyPI publication, native signing, or broader M8 completion. Release run 34461420722 retained verified draft assets but did not publish; fresh exact-current CI and release execution remain required; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after separating PyPI authority code from immutable release source code",
+          "digest": "sha256:c2ef6d3d31918aa4e581e61980d25a0ae04be3407587d7794d86ac0c29a2c884",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-10T11:16:48Z",
+          "scope": "source digest sha256:95f16732e087cef064d80da3016fffb82a3ab1bcb55fe95a2fe1b3902be96ca6 binds PyPI preflight and verification to the protected publisher revision while immutable package bytes and source ancestry remain bound to release source 09428d1",
+          "limitations": "Local qualification does not establish hosted execution of the corrected publication chain, PyPI publication, native signing, or broader M8 completion. Release run 34469084573 failed before PyPI when the preflight executed the older source parser; fresh exact-current CI and release execution remain required; HARD-080 remains in progress"
         }
       ]
     },
@@ -5995,6 +6004,15 @@
           "timestamp": "2026-09-10T10:13:51Z",
           "scope": "source digest sha256:76b4a505e54082b9e603f671b8a5795ce2b691db2ba817bd56eb9021294f06f8 binds five local token-efficiency repetitions and cancellation-aware post-convergence release tests under unchanged thresholds",
           "limitations": "Synthetic local token estimates and deterministic workflow tests do not establish comparative performance, hosted execution of the cancellation-aware publication chain, or publication. Release run 34461420722 retained verified assets but did not publish; fresh exact-current qualification remains required; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after separating PyPI authority code from immutable release source code",
+          "digest": "sha256:c2ef6d3d31918aa4e581e61980d25a0ae04be3407587d7794d86ac0c29a2c884",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-10T11:16:48Z",
+          "scope": "source digest sha256:95f16732e087cef064d80da3016fffb82a3ab1bcb55fe95a2fe1b3902be96ca6 binds five local token-efficiency repetitions with median schema reduction 83.615 percent and typed-program reduction 96.644 percent under unchanged thresholds",
+          "limitations": "Synthetic local token estimates and deterministic release-policy tests do not establish comparative performance, hosted execution of the corrected publication chain, or publication. Release run 34469084573 failed before PyPI; fresh exact-current qualification remains required; HARD-081 remains in progress"
         }
       ]
     },
