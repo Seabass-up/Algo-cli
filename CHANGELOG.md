@@ -4,19 +4,32 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
-## [0.19.1.post1] - Release Candidate
+### Fixed
 
-This packaging-only post-release removes the unpublished Echo Veil Git reference
+- Allow the post-upload PyPI verifier up to six observations with 30 seconds of
+  scheduled backoff for absent or partially visible matching files. Malformed
+  responses and conflicting files still stop publication immediately.
+- Report an empty successful PyPI response and a missing SHA-256 field as
+  explicit validation failures. Only HTTP 404 represents an absent version.
+- Correct release documentation to distinguish the published package from
+  later development changes.
+
+## [0.19.1.post1] - 2026-09-10
+
+This post-release removes the unpublished Echo Veil Git reference
 from public package metadata while retaining the exact development and
 qualification pin. It also carries the release-verifier and scheduler-safe test
-corrections qualified after the original immutable candidate was tagged.
+corrections and empty browser-proxy cancellation accounting qualified after the
+original immutable candidate was tagged. It is published on PyPI and as an
+[immutable GitHub release](https://github.com/Seabass-up/Algo-cli/releases/tag/v0.19.1.post1).
+The changes documented under 0.19.1 below are included in this release.
 
-## [0.19.1] - Release Candidate
+## [0.19.1] - Unpublished Candidate
 
-This version is being qualified and is not yet published. The stable package
-index still serves 0.18.0 until the approved release workflow succeeds.
-It supersedes the unpublished 0.19.0 candidate, whose existing tag and draft
-are retained unchanged but must not be published.
+This candidate was superseded by the published `0.19.1.post1` package. Its
+immutable tag is retained unchanged because its direct Git dependency made its
+package metadata incompatible with PyPI. The earlier unpublished 0.19.0 tag and
+draft are also retained unchanged and must not be published.
 
 ### Fixed
 

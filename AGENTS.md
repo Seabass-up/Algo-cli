@@ -45,9 +45,29 @@ Python code targets Python 3.10+ and follows standard PEP 8 conventions: 4-space
 
 Run `pytest tests` for Python changes, plus a focused test for the affected command or tool path. For harness changes, verify `/harness refresh`, `/harness status`, `/hsearch <query>`, and `/hread <id>` where relevant. For Rust or Go helper edits, run `cargo test --manifest-path harness-indexer/Cargo.toml --locked` or `go test ./...` from `harness-gateway/`.
 
+For the full qualification suite, match `.github/workflows/oliver-ci.yml` rather
+than relying on a dev-extra-only environment:
+
+```bash
+uv sync --frozen --no-editable --extra dev --extra supply-chain --group echo-veil --reinstall-package algo-cli-runtime --link-mode copy
+.venv/bin/python -I scripts/henry_echo_veil_dependency_audit.py
+.venv/bin/python -I scripts/oliver_installed_source_parity.py
+ALGO_TEST_REQUIRE_RIPGREP=1 .venv/bin/pytest tests
+```
+
+The pinned Echo dependency is a separate group. Reinstall after source edits
+before checking installed-source parity. Regenerate source-bound qualification
+reports through their real runners when relevant source changes; do not copy an
+old digest into a new receipt or count a blocked external metric as passing.
+
 ## Commit & Pull Request Guidelines
 
 Recent commits use short imperative subjects, for example `Add identity layer and harness RAG` and `Polish terminal display`. Follow that style: one focused change per commit, concise subject, and details in the body only when needed. Pull requests should describe the user-facing behavior changed, list manual verification commands, call out config or environment impacts, and include screenshots only for terminal display changes.
+
+After each verified repair, update `docs/lessons-learned.md` with the symptom,
+confirmed cause, repair, verification, and prevention lesson. Distinguish local
+validation from hosted qualification, publication, and durable service recovery.
+Keep unresolved causes explicit and exclude credentials or sensitive raw logs.
 
 ## Security & Configuration Tips
 

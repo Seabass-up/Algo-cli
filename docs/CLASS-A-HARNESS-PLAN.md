@@ -2262,8 +2262,10 @@ evaluation/recovery suite passes 53 cases.
   source and exact public bytes, skipped re-upload, completed every release gate,
   and published the immutable GitHub release. That recovered this release without
   moving a tag, bypassing a gate, or treating upload acceptance as publication.
-- The local stopping-point candidate adds a six-observation, 30-second visibility
-  window only to post-upload PyPI verification. It retries `absent` and
+- The local stopping-point candidate adds up to six observations with 30 seconds
+  of scheduled backoff, plus network time, only to post-upload PyPI verification.
+  Each HTTP operation retains its 20-second socket timeout; the workflow job
+  retains its five-minute timeout. It retries `absent` and
   `partial-exact`; malformed responses and file, identity, digest, size, type, or
   yank conflicts remain immediate failures. Preflight classification stays
   one-shot.
@@ -2272,3 +2274,30 @@ evaluation/recovery suite passes 53 cases.
   rejection, command-mode misuse, and workflow placement. This candidate is a
   local follow-up to the published release; it is not part of `0.19.1.post1` and
   does not claim hosted CI qualification until pushed through the normal path.
+
+### Release Closeout And Daemon Recovery - 2026-09-10
+
+- The local follow-up review reproduced two malformed-PyPI response defects:
+  missing SHA-256 alongside another digest raised `KeyError`, and an empty HTTP
+  200 response was mistaken for a retryable missing version. Required-field and
+  HTTP-adapter regressions now pass, with response closure checked explicitly.
+- The first full run returned 25 failures: 24 from a missing pinned Echo test
+  dependency and one from stale source-bound M8 evidence. Matching the frozen
+  workflow environment and regenerating real M8/M9 evidence repaired those
+  setup/evidence faults. The final full run passed 6,032 tests with 41 existing
+  skips. Ruff, source parity, pinned Echo audit, public-source scan, version,
+  hardening gate, and Nathan qualification passed.
+- The refreshed M8 report still has nine local passes and five external-browser
+  blocks. Neither those limitations nor public-claim eligibility were relaxed.
+- Live inspection confirmed the optional daemon stopped cleanly on August 19
+  after SIGTERM; the signal sender is unknown. No Algo launchd agent was present.
+  Starting the installed `0.19.1.post1` daemon restored readiness and ping;
+  repeat-start retained the same process, healthy more than ten minutes later.
+  Automatic login/reboot recovery and background refresh remain unconfigured.
+- [Lessons learned](lessons-learned.md) now records symptoms, causes, repairs,
+  verification, and recurrence prevention. Repository guidance and the local
+  release-upgrade skill require maintaining that record after repairs. The owner
+  also requested the same rule in global Codex instructions.
+- Public `0.19.1.post1` was reverified independently. These follow-up code and
+  documentation changes are not in its immutable artifacts and require normal
+  hosted qualification before any future publication.
