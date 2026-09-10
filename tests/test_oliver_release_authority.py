@@ -1976,6 +1976,43 @@ def test_published_exact_branch_is_read_only_and_draft_recovery_reuses_durable_b
     assert "RECOVERED_PACKAGE_ID" in ready and "RECOVERED_ASSETS_ID" in ready
 
 
+def test_post_convergence_release_jobs_do_not_inherit_intentional_skip_status() -> None:
+    workflow = (ROOT / ".github/workflows/oliver-release.yml").read_text(encoding="utf-8")
+    jobs = _workflow_job_bodies(workflow)
+    required_success = {
+        "repository-policy-publish": ("dispatch-authority", "repository-policy", "release-assets-ready"),
+        "pypi-preflight": ("release-authority", "release-assets-ready", "repository-policy-publish"),
+        "draft-publish-capture": ("pypi-preflight",),
+        "publish": (
+            "release-authority",
+            "repository-policy",
+            "release-assets-ready",
+            "pypi-preflight",
+            "draft-publish-capture",
+        ),
+        "pypi-verify": ("release-authority", "release-assets-ready", "pypi-preflight"),
+        "repository-policy-final": ("dispatch-authority", "repository-policy", "pypi-verify"),
+        "publish-release": (
+            "release-authority",
+            "repository-policy",
+            "release-assets-ready",
+            "pypi-verify",
+            "repository-policy-final",
+        ),
+        "repository-policy-postcheck": ("repository-policy", "publish-release"),
+    }
+    for job, dependencies in required_success.items():
+        header = jobs[job].split("    steps:\n", 1)[0]
+        assert "always()" in header, f"{job} can inherit an intentional transitive skip"
+        for dependency in dependencies:
+            assert f"needs.{dependency}.result == 'success'" in header
+
+    pypi_verify = jobs["pypi-verify"].split("    steps:\n", 1)[0]
+    assert "needs.pypi-preflight.outputs.pypi-state == 'exact'" in pypi_verify
+    assert "needs.publish.result == 'skipped'" in pypi_verify
+    assert "needs.publish.result == 'success'" in pypi_verify
+
+
 def test_immediate_pre_pypi_asset_validator_rejects_missing_or_conflicting_assets(tmp_path: Path) -> None:
     workflow = (ROOT / ".github/workflows/oliver-release.yml").read_text(encoding="utf-8")
     validator = _pre_pypi_asset_validator(workflow)
