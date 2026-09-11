@@ -4016,6 +4016,15 @@
           "timestamp": "2026-09-11T04:02:12Z",
           "scope": "source digest sha256:779b97b3fa1aeb0ea9a388760dc84aa9c135ee09024b0ef545eb73d7e50b3bf8 binds the cross-platform standalone uv pip upgrade workflow, fixed manager command, installed-first test bootstrap, existing adversarial denominators, and unchanged browser security requirements",
           "limitations": "Local deterministic and macOS package-manager evidence does not establish hosted Windows or Linux execution, external-browser completion, native signing, publication, or broader M8 completion. The public 0.19.1.post1 package does not contain this source repair; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after custom uv tool directory ownership repair",
+          "digest": "sha256:09f3d6831496d53349ae9852f976496c94ce75e86d30637bcbce89a9bd0ace88",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-11T04:29:52Z",
+          "scope": "source digest sha256:779b97b3fa1aeb0ea9a388760dc84aa9c135ee09024b0ef545eb73d7e50b3bf8 binds custom UV_TOOL_DIR and bounded uv tool dir ownership detection, path-boundary rejection, installed-source parity, existing adversarial denominators, and unchanged browser security requirements",
+          "limitations": "Local deterministic evidence does not establish hosted qualification of the revised commit, external-browser completion, native signing, publication, or broader M8 completion. The public 0.19.1.post1 package does not contain this source repair; HARD-080 remains in progress"
         }
       ]
     },
@@ -6058,6 +6067,24 @@
           "timestamp": "2026-09-11T04:02:14Z",
           "scope": "source digest sha256:779b97b3fa1aeb0ea9a388760dc84aa9c135ee09024b0ef545eb73d7e50b3bf8 binds five local token-efficiency repetitions with median schema reduction 83.615 percent and typed-program reduction 96.644 percent under unchanged thresholds",
           "limitations": "Synthetic local token estimates do not establish task completion, provider quality, comparative performance, external-browser completion, hosted execution, publication, or cross-harness superiority; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json refreshed after custom uv tool directory ownership repair",
+          "digest": "sha256:cc934b76c6e510d84f40df8477a3b6975935aa966c15d7bbfae20d25ef04951c",
+          "result": "status pass: 17 of 17 correctness probes and 31 of 31 workloads pass; zero policy escapes, duplicate mutations, or unverified completions; public_claim_eligible is false",
+          "timestamp": "2026-09-11T04:26:04Z",
+          "scope": "source digest sha256:6878f94d26ed89cce2f556bddda495551e2b16dbfc1aea8f4f7bbde298c65002 and report digest sha256:1cba9ea076521ec846fba26c482265bf0dbd347a50c8da6ef4eb8296c5406a5a bind the current deterministic Agent runtime benchmark; local agent workload p95 is 23.975458 ms",
+          "limitations": "Deterministic local fixtures do not establish provider quality, comparative performance, external-browser completion, hosted qualification of the revised commit, publication, or cross-harness superiority; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after custom uv tool directory ownership repair",
+          "digest": "sha256:09f3d6831496d53349ae9852f976496c94ce75e86d30637bcbce89a9bd0ace88",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-11T04:29:52Z",
+          "scope": "source digest sha256:779b97b3fa1aeb0ea9a388760dc84aa9c135ee09024b0ef545eb73d7e50b3bf8 binds five local token-efficiency repetitions with median schema reduction 83.615 percent and typed-program reduction 96.644 percent under unchanged thresholds",
+          "limitations": "Synthetic local token estimates do not establish task completion, provider quality, comparative performance, external-browser completion, hosted qualification of the revised commit, publication, or cross-harness superiority; HARD-081 remains in progress"
         }
       ]
     },

@@ -27,8 +27,9 @@ algo-cli update
 
 `algo-cli update` upgrades the published `algo-cli-runtime` package using the
 installation's owning tool: pipx, `uv tool`, standalone `uv pip`, or the current
-Python environment's pip. Standalone `uv pip` environments are identified from
-the distribution's installer metadata and do not need a bundled pip module.
+Python environment's pip. Custom `uv tool` directories are resolved through uv
+before standalone `uv pip` environments are identified from the distribution's
+installer metadata. Standalone environments do not need a bundled pip module.
 It does not pull GitHub commits. Version `0.19.1.post1` was published on
 2026-09-10 and is available to compatible `0.18.0` installations; see
 [the release and qualification record](docs/henry-release-0.19.1.md).

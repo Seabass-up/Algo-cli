@@ -261,15 +261,19 @@ environment had no `pip` module. The affected installation was
 **Cause:** Manager inference only recognized pipx and `uv tool` directory
 layouts and otherwise selected `python -m pip`. It ignored the installed
 distribution's `INSTALLER=uv` metadata, so a valid pip-free `uv pip`
-installation was assigned to the wrong updater.
+installation was assigned to the wrong updater. The first repair also treated
+every remaining `INSTALLER=uv` environment as standalone, which would have
+misclassified a `uv tool` installation under a custom configured tool directory.
 
 **Repair:** The current Mac installation received a one-time pip bootstrap via
 `uv pip`, after which its published updater completed successfully and reported
 the installed `0.19.1.post1` version. Unreleased source now distinguishes
 standalone `uv pip` from `uv tool`, emits a fixed `uv pip install --python`
 command, and stops with an explicit error if the owning `uv` binary is absent.
-Path-owned pipx and `uv tool` environments continue to take precedence over
-installer metadata. The cross-platform package smoke matrix now includes a
+Path-owned pipx and standard `uv tool` environments continue to take precedence
+over installer metadata. For custom layouts, detection reads `UV_TOOL_DIR` or
+queries `uv tool dir` with a fixed, bounded command before selecting standalone
+`uv pip`. The cross-platform package smoke matrix now includes a
 pip-free standalone `uv pip` environment and records that older packages need
 an owning-manager bootstrap before the repaired updater is installed.
 
@@ -291,10 +295,11 @@ repair is not yet published.
 
 **Prevention and limits:** Installation ownership is not determined by virtual
 environment path alone. Check both manager-specific paths and distribution
-installer metadata, and qualify every supported install topology without
-assuming pip is bundled. A source fix cannot repair an already installed older
-updater until an owning-manager command or equivalent one-time bootstrap gets
-the corrected package onto that environment.
+installer metadata, including the package manager's configured ownership root,
+and qualify every supported install topology without assuming pip is bundled.
+A source fix cannot repair an already installed older updater until an
+owning-manager command or equivalent one-time bootstrap gets the corrected
+package onto that environment.
 
 ## 2026-09-10: Non-Editable Test Run Could Not Import Qualification Scripts
 

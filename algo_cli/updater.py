@@ -14,6 +14,7 @@ from typing import Callable, Mapping
 
 PACKAGE_NAME = "algo-cli-runtime"
 UPDATE_TIMEOUT_SECONDS = 600
+UV_TOOL_DIR_TIMEOUT_SECONDS = 5
 SUPPORTED_MANAGERS = frozenset({"auto", "pipx", "uv", "uv-pip", "pip"})
 
 
@@ -69,11 +70,55 @@ def _distribution_installer() -> str:
     return (value or "").strip().casefold()
 
 
+def _path_is_within(path: str, directory: str) -> bool:
+    normalized_path = str(path).replace("\\", "/").rstrip("/").casefold()
+    normalized_directory = str(directory).replace("\\", "/").rstrip("/").casefold()
+    return bool(
+        normalized_directory
+        and (
+            normalized_path == normalized_directory
+            or normalized_path.startswith(f"{normalized_directory}/")
+        )
+    )
+
+
+def _configured_uv_tool_dir(
+    *,
+    env: Mapping[str, str] | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> str:
+    """Return uv's configured tool directory without trusting shell parsing."""
+    runtime_env = os.environ if env is None else env
+    configured = runtime_env.get("UV_TOOL_DIR", "").strip()
+    if configured:
+        return configured
+    binary = which("uv")
+    if not binary:
+        return ""
+    try:
+        completed = runner(
+            [binary, "tool", "dir"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=UV_TOOL_DIR_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return (completed.stdout or "").strip()
+
+
 def infer_install_manager(
     *,
     executable: str | None = None,
     prefix: str | None = None,
     installer: str | None = None,
+    uv_tool_dir: str | None = None,
 ) -> str:
     """Infer the manager that owns the running Algo CLI environment."""
     normalized = _normalized_install_path(
@@ -86,6 +131,11 @@ def infer_install_manager(
         return "uv"
     recorded_installer = _distribution_installer() if installer is None else installer.strip().casefold()
     if recorded_installer == "uv":
+        if uv_tool_dir and (
+            _path_is_within(executable or sys.executable, uv_tool_dir)
+            or _path_is_within(prefix or sys.prefix, uv_tool_dir)
+        ):
+            return "uv"
         return "uv-pip"
     return "pip"
 
@@ -96,18 +146,35 @@ def build_update_plan(
     executable: str | None = None,
     prefix: str | None = None,
     installer: str | None = None,
+    uv_tool_dir: str | None = None,
+    env: Mapping[str, str] | None = None,
     which: Callable[[str], str | None] = shutil.which,
+    probe_runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> UpdatePlan:
     """Build a fixed-argument update command for the owning package manager."""
     requested = manager.strip().casefold()
     if requested not in SUPPORTED_MANAGERS:
         choices = ", ".join(sorted(SUPPORTED_MANAGERS))
         raise ValueError(f"Unsupported update manager {manager!r}; choose one of: {choices}.")
-    selected = (
-        infer_install_manager(executable=executable, prefix=prefix, installer=installer)
-        if requested == "auto"
-        else requested
-    )
+    if requested == "auto":
+        recorded_installer = (
+            _distribution_installer() if installer is None else installer.strip().casefold()
+        )
+        configured_uv_tool_dir = uv_tool_dir
+        if recorded_installer == "uv" and configured_uv_tool_dir is None:
+            configured_uv_tool_dir = _configured_uv_tool_dir(
+                env=env,
+                which=which,
+                runner=probe_runner,
+            )
+        selected = infer_install_manager(
+            executable=executable,
+            prefix=prefix,
+            installer=recorded_installer,
+            uv_tool_dir=configured_uv_tool_dir,
+        )
+    else:
+        selected = requested
     python = executable or sys.executable
     if selected == "pipx":
         binary = which("pipx")
@@ -182,6 +249,7 @@ def update_algo_cli(
             manager=requested_manager,
             executable=executable,
             prefix=prefix,
+            env=runtime_env,
             which=which,
         )
     except (RuntimeError, ValueError) as exc:

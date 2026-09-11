@@ -33,6 +33,24 @@ def test_infer_install_manager_uses_distribution_installer_for_uv_pip_environmen
     ) == "uv-pip"
 
 
+def test_infer_install_manager_recognizes_custom_uv_tool_directory():
+    assert updater.infer_install_manager(
+        executable="/opt/company/apps/algo-cli-runtime/bin/python",
+        prefix="/opt/company/apps/algo-cli-runtime",
+        installer="uv",
+        uv_tool_dir="/opt/company/apps",
+    ) == "uv"
+
+
+def test_custom_uv_tool_directory_requires_a_path_boundary():
+    assert updater.infer_install_manager(
+        executable="/opt/company/apps-other/algo-cli-runtime/bin/python",
+        prefix="/opt/company/apps-other/algo-cli-runtime",
+        installer="uv",
+        uv_tool_dir="/opt/company/apps",
+    ) == "uv-pip"
+
+
 @pytest.mark.parametrize(
     ("executable", "prefix", "expected"),
     [
@@ -122,6 +140,55 @@ def test_auto_manager_uses_uv_pip_when_distribution_installer_is_uv():
 
     assert plan.manager == "uv-pip"
     assert plan.command[:5] == ("/bin/uv", "pip", "install", "--python", "/opt/algo/venv/bin/python")
+
+
+def test_auto_manager_uses_uv_tool_for_custom_directory_from_environment():
+    plan = updater.build_update_plan(
+        executable="/opt/company/apps/algo-cli-runtime/bin/python",
+        prefix="/opt/company/apps/algo-cli-runtime",
+        installer="uv",
+        env={"UV_TOOL_DIR": "/opt/company/apps"},
+        which=lambda name: f"/bin/{name}",
+    )
+
+    assert plan.manager == "uv"
+    assert plan.command == ("/bin/uv", "tool", "upgrade", "--no-sources", "algo-cli-runtime")
+
+
+def test_auto_manager_queries_uv_for_configured_custom_tool_directory():
+    probes = []
+
+    def probe_runner(command, **kwargs):
+        probes.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="/srv/uv-tools\n", stderr="")
+
+    plan = updater.build_update_plan(
+        executable="/srv/uv-tools/algo-cli-runtime/bin/python",
+        prefix="/srv/uv-tools/algo-cli-runtime",
+        installer="uv",
+        env={},
+        which=lambda name: f"/bin/{name}",
+        probe_runner=probe_runner,
+    )
+
+    assert plan.manager == "uv"
+    assert probes[0][0] == ["/bin/uv", "tool", "dir"]
+    assert "shell" not in probes[0][1]
+
+
+def test_failed_uv_tool_directory_probe_keeps_standalone_uv_pip_detection():
+    plan = updater.build_update_plan(
+        executable="/opt/algo/venv/bin/python",
+        prefix="/opt/algo/venv",
+        installer="uv",
+        env={},
+        which=lambda name: f"/bin/{name}",
+        probe_runner=lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 1, stdout="", stderr="unavailable"
+        ),
+    )
+
+    assert plan.manager == "uv-pip"
 
 
 def test_uv_pip_owner_without_uv_does_not_fall_back_to_missing_pip():
