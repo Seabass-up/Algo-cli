@@ -791,6 +791,8 @@ jobs:
         run: python scripts/oliver_smoke_upgrade.py dist --manager pipx --pipx-backend uv --report upgrade-smoke-pipx-uv.json
       - name: Upgrade public 0.18.0 with uv without changing user state
         run: python scripts/oliver_smoke_upgrade.py dist --manager uv --report upgrade-smoke-uv.json
+      - name: Upgrade a pip-free uv pip environment without changing user state
+        run: python scripts/oliver_smoke_upgrade.py dist --manager uv-pip --report upgrade-smoke-uv-pip.json
       - name: Retain upgrade qualification
         if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5

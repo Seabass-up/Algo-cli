@@ -251,6 +251,82 @@ tests do not qualify native Windows or real OS keychain preservation. See the
 [uv environment reference](https://docs.astral.sh/uv/reference/environment/#uv_offline)
 and [pip compatibility notes](https://docs.astral.sh/uv/pip/compatibility/#configuration-files-and-environment-variables).
 
+## 2026-09-10: Standalone uv pip Install Was Misclassified as pip
+
+**Issue:** `algo-cli update` failed with exit 1 because the running virtual
+environment had no `pip` module. The affected installation was
+`algo-cli-runtime 0.19.1.post1` under a regular virtual environment created by
+`uv pip`, rather than a `uv tool` environment.
+
+**Cause:** Manager inference only recognized pipx and `uv tool` directory
+layouts and otherwise selected `python -m pip`. It ignored the installed
+distribution's `INSTALLER=uv` metadata, so a valid pip-free `uv pip`
+installation was assigned to the wrong updater. The first repair also treated
+every remaining `INSTALLER=uv` environment as standalone, which would have
+misclassified a `uv tool` installation under a custom configured tool directory.
+
+**Repair:** The current Mac installation received a one-time pip bootstrap via
+`uv pip`, after which its published updater completed successfully and reported
+the installed `0.19.1.post1` version. Unreleased source now distinguishes
+standalone `uv pip` from `uv tool`, emits a fixed `uv pip install --python`
+command, and stops with an explicit error if the owning `uv` binary is absent.
+Path-owned pipx and standard `uv tool` environments continue to take precedence
+over installer metadata. For custom layouts, detection reads `UV_TOOL_DIR` or
+queries `uv tool dir` with a fixed, bounded command before selecting standalone
+`uv pip`. The cross-platform package smoke matrix now includes a
+pip-free standalone `uv pip` environment and records that older packages need
+an owning-manager bootstrap before the repaired updater is installed.
+
+**Verification:** The pre-repair focused suite produced 11 expected failures.
+After the source repair, `tests/test_updater.py` and
+`tests/test_oliver_smoke_upgrade.py` passed 71 tests. A live source probe against
+the affected interpreter selected `uv-pip` and emitted the expected absolute
+interpreter command. The normal `algo-cli update` launcher then completed with
+exit 0 and reported `v0.19.1.post1`. All five macOS upgrade paths passed against
+the candidate wheel, preserving 11 synthetic state files and matching 251
+baseline plus 329 candidate wheel files. The full non-editable suite collected
+6,100 tests and completed successfully with existing platform skips. Its first
+coverage run met the 57 percent floor at 67.37 percent and exposed a stale M9
+artifact; M8, Nathan, the evidence ledger, and M9 were refreshed, the exact M9
+regression passed, and the clean full-suite rerun passed. Ruff, focused mypy,
+compile, public-source, version, dependency, parity, hardening, and M9 gates
+passed. Hosted macOS/Linux/Windows qualification remains pending; this source
+repair is not yet published.
+
+**Prevention and limits:** Installation ownership is not determined by virtual
+environment path alone. Check both manager-specific paths and distribution
+installer metadata, including the package manager's configured ownership root,
+and qualify every supported install topology without assuming pip is bundled.
+A source fix cannot repair an already installed older updater until an
+owning-manager command or equivalent one-time bootstrap gets the corrected
+package onto that environment.
+
+## 2026-09-10: Non-Editable Test Run Could Not Import Qualification Scripts
+
+**Issue:** The workflow-equivalent non-editable pytest invocation stopped during
+collection because tests importing `scripts` could not resolve that namespace.
+
+**Cause:** A pytest console entry point starts with its virtual-environment bin
+directory on `sys.path`. The repository root was not otherwise available in the
+fresh non-editable environment. Adding it at the front would have caused parent
+tests to import source `algo_cli` while isolated workers imported the installed
+copy, violating the runtime-root identity check.
+
+**Repair:** The shared test bootstrap appends, rather than prepends, the checkout
+root. Qualification scripts become importable while installed packages retain
+precedence.
+
+**Verification:** The workflow-equivalent focused suite passed 71 tests after
+the change. The full non-editable suite collected 6,100 tests and completed
+successfully with existing platform skips. The refreshed M8 focused adversarial
+cell passed, and installed-source parity reported no missing, divergent, or
+unexpected Python files. Hosted CI remains required for native Windows and
+Linux confirmation.
+
+**Prevention:** Reproduce CI with a fresh non-editable environment and preserve
+module precedence when exposing repository-only test utilities. Do not use a
+front-loaded `PYTHONPATH` to hide an installed/source runtime mismatch.
+
 ## Repair Log Checklist
 
 - Date and component.

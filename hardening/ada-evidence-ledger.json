@@ -4007,6 +4007,24 @@
           "timestamp": "2026-09-10T13:36:22Z",
           "scope": "source digest sha256:82076de5cfec010346f700a4786737204db61c068dc061cefd3135acf13075fb binds bounded post-upload absence and partial-exact retries, one-shot preflight, required SHA-256 fields, and rejection of empty successful HTTP responses",
           "limitations": "Local qualification does not establish hosted execution of this follow-up, native signing, or broader M8 completion. The separately published immutable 0.19.1.post1 package does not contain these follow-up repairs; fresh exact-current hosted qualification remains required; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after standalone uv pip updater and non-editable test bootstrap repairs",
+          "digest": "sha256:cb474c0875258409b75a7dedb57541637ccf32d1b3eb6723ac0a77af059bca17",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-11T04:02:12Z",
+          "scope": "source digest sha256:779b97b3fa1aeb0ea9a388760dc84aa9c135ee09024b0ef545eb73d7e50b3bf8 binds the cross-platform standalone uv pip upgrade workflow, fixed manager command, installed-first test bootstrap, existing adversarial denominators, and unchanged browser security requirements",
+          "limitations": "Local deterministic and macOS package-manager evidence does not establish hosted Windows or Linux execution, external-browser completion, native signing, publication, or broader M8 completion. The public 0.19.1.post1 package does not contain this source repair; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after custom uv tool directory ownership repair",
+          "digest": "sha256:09f3d6831496d53349ae9852f976496c94ce75e86d30637bcbce89a9bd0ace88",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-11T04:29:52Z",
+          "scope": "source digest sha256:779b97b3fa1aeb0ea9a388760dc84aa9c135ee09024b0ef545eb73d7e50b3bf8 binds custom UV_TOOL_DIR and bounded uv tool dir ownership detection, path-boundary rejection, installed-source parity, existing adversarial denominators, and unchanged browser security requirements",
+          "limitations": "Local deterministic evidence does not establish hosted qualification of the revised commit, external-browser completion, native signing, publication, or broader M8 completion. The public 0.19.1.post1 package does not contain this source repair; HARD-080 remains in progress"
         }
       ]
     },
@@ -6031,6 +6049,42 @@
           "timestamp": "2026-09-10T13:36:22Z",
           "scope": "source digest sha256:82076de5cfec010346f700a4786737204db61c068dc061cefd3135acf13075fb binds five local token-efficiency repetitions with median schema reduction 83.615 percent and typed-program reduction 96.644 percent under unchanged thresholds",
           "limitations": "Synthetic local token estimates and deterministic release tests do not establish comparative performance or hosted qualification of this follow-up. The public 0.19.1.post1 release is independently verified and does not contain these repairs; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json refreshed after standalone uv pip updater and non-editable test bootstrap repairs",
+          "digest": "sha256:265f00ece7032e767e65d151e873830433c6ea7b6ad64b18d59fa5a0f69ec0dd",
+          "result": "status pass: 17 of 17 correctness probes and 31 of 31 workloads pass; zero policy escapes, duplicate mutations, or unverified completions; public_claim_eligible is false",
+          "timestamp": "2026-09-11T04:02:13Z",
+          "scope": "source digest sha256:6878f94d26ed89cce2f556bddda495551e2b16dbfc1aea8f4f7bbde298c65002 and report digest sha256:4c60dd2eac2ebff927a7f1b2fba7af35070338f10491509c1318387937f5fe6c bind the current deterministic Agent runtime benchmark; local agent workload p95 is 24.454084 ms",
+          "limitations": "Deterministic local fixtures do not establish provider quality, comparative performance, external-browser completion, hosted Windows or Linux execution, publication, or cross-harness superiority; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after standalone uv pip updater and non-editable test bootstrap repairs",
+          "digest": "sha256:cb474c0875258409b75a7dedb57541637ccf32d1b3eb6723ac0a77af059bca17",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-11T04:02:14Z",
+          "scope": "source digest sha256:779b97b3fa1aeb0ea9a388760dc84aa9c135ee09024b0ef545eb73d7e50b3bf8 binds five local token-efficiency repetitions with median schema reduction 83.615 percent and typed-program reduction 96.644 percent under unchanged thresholds",
+          "limitations": "Synthetic local token estimates do not establish task completion, provider quality, comparative performance, external-browser completion, hosted execution, publication, or cross-harness superiority; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json refreshed after custom uv tool directory ownership repair",
+          "digest": "sha256:cc934b76c6e510d84f40df8477a3b6975935aa966c15d7bbfae20d25ef04951c",
+          "result": "status pass: 17 of 17 correctness probes and 31 of 31 workloads pass; zero policy escapes, duplicate mutations, or unverified completions; public_claim_eligible is false",
+          "timestamp": "2026-09-11T04:26:04Z",
+          "scope": "source digest sha256:6878f94d26ed89cce2f556bddda495551e2b16dbfc1aea8f4f7bbde298c65002 and report digest sha256:1cba9ea076521ec846fba26c482265bf0dbd347a50c8da6ef4eb8296c5406a5a bind the current deterministic Agent runtime benchmark; local agent workload p95 is 23.975458 ms",
+          "limitations": "Deterministic local fixtures do not establish provider quality, comparative performance, external-browser completion, hosted qualification of the revised commit, publication, or cross-harness superiority; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after custom uv tool directory ownership repair",
+          "digest": "sha256:09f3d6831496d53349ae9852f976496c94ce75e86d30637bcbce89a9bd0ace88",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-11T04:29:52Z",
+          "scope": "source digest sha256:779b97b3fa1aeb0ea9a388760dc84aa9c135ee09024b0ef545eb73d7e50b3bf8 binds five local token-efficiency repetitions with median schema reduction 83.615 percent and typed-program reduction 96.644 percent under unchanged thresholds",
+          "limitations": "Synthetic local token estimates do not establish task completion, provider quality, comparative performance, external-browser completion, hosted qualification of the revised commit, publication, or cross-harness superiority; HARD-081 remains in progress"
         }
       ]
     },
