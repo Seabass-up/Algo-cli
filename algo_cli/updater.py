@@ -14,7 +14,7 @@ from typing import Callable, Mapping
 
 PACKAGE_NAME = "algo-cli-runtime"
 UPDATE_TIMEOUT_SECONDS = 600
-SUPPORTED_MANAGERS = frozenset({"auto", "pipx", "uv", "pip"})
+SUPPORTED_MANAGERS = frozenset({"auto", "pipx", "uv", "uv-pip", "pip"})
 
 
 @dataclass(frozen=True)
@@ -60,7 +60,21 @@ def _normalized_install_path(*, executable: str, prefix: str) -> str:
     return combined.replace("\\", "/").casefold()
 
 
-def infer_install_manager(*, executable: str | None = None, prefix: str | None = None) -> str:
+def _distribution_installer() -> str:
+    """Read the installer recorded for the installed Algo distribution."""
+    try:
+        value = metadata.distribution(PACKAGE_NAME).read_text("INSTALLER")
+    except (metadata.PackageNotFoundError, OSError):
+        return ""
+    return (value or "").strip().casefold()
+
+
+def infer_install_manager(
+    *,
+    executable: str | None = None,
+    prefix: str | None = None,
+    installer: str | None = None,
+) -> str:
     """Infer the manager that owns the running Algo CLI environment."""
     normalized = _normalized_install_path(
         executable=executable or sys.executable,
@@ -70,6 +84,9 @@ def infer_install_manager(*, executable: str | None = None, prefix: str | None =
         return "pipx"
     if "/uv/tools/" in normalized or "/uv/tool/" in normalized:
         return "uv"
+    recorded_installer = _distribution_installer() if installer is None else installer.strip().casefold()
+    if recorded_installer == "uv":
+        return "uv-pip"
     return "pip"
 
 
@@ -78,6 +95,7 @@ def build_update_plan(
     manager: str = "auto",
     executable: str | None = None,
     prefix: str | None = None,
+    installer: str | None = None,
     which: Callable[[str], str | None] = shutil.which,
 ) -> UpdatePlan:
     """Build a fixed-argument update command for the owning package manager."""
@@ -86,7 +104,7 @@ def build_update_plan(
         choices = ", ".join(sorted(SUPPORTED_MANAGERS))
         raise ValueError(f"Unsupported update manager {manager!r}; choose one of: {choices}.")
     selected = (
-        infer_install_manager(executable=executable, prefix=prefix)
+        infer_install_manager(executable=executable, prefix=prefix, installer=installer)
         if requested == "auto"
         else requested
     )
@@ -108,6 +126,23 @@ def build_update_plan(
         if requested != "auto":
             raise RuntimeError("uv owns this installation but the uv command is not on PATH.")
         selected = "pip"
+    if selected == "uv-pip":
+        binary = which("uv")
+        if not binary:
+            raise RuntimeError("uv pip owns this installation but the uv command is not on PATH.")
+        return UpdatePlan(
+            manager="uv-pip",
+            command=(
+                binary,
+                "pip",
+                "install",
+                "--python",
+                python,
+                "--upgrade",
+                "--no-sources",
+                PACKAGE_NAME,
+            ),
+        )
     return UpdatePlan(
         manager="pip",
         command=(

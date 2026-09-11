@@ -26,7 +26,9 @@ algo-cli update
 ```
 
 `algo-cli update` upgrades the published `algo-cli-runtime` package using the
-installation's owning tool: pipx, uv, or the current Python environment's pip.
+installation's owning tool: pipx, `uv tool`, standalone `uv pip`, or the current
+Python environment's pip. Standalone `uv pip` environments are identified from
+the distribution's installer metadata and do not need a bundled pip module.
 It does not pull GitHub commits. Version `0.19.1.post1` was published on
 2026-09-10 and is available to compatible `0.18.0` installations; see
 [the release and qualification record](docs/henry-release-0.19.1.md).
@@ -34,11 +36,12 @@ It does not pull GitHub commits. Version `0.19.1.post1` was published on
 version. Changes listed as Unreleased in the changelog require a future package
 release before this command can install them.
 It leaves configuration, credentials, memory, and other files under
-`~/.algo_cli` untouched. Set `ALGO_CLI_UPDATE_MANAGER=pipx`, `uv`, or `pip`
-only when automatic installation detection needs an explicit override.
+`~/.algo_cli` untouched. Set `ALGO_CLI_UPDATE_MANAGER=pipx`, `uv`, `uv-pip`, or
+`pip` only when automatic installation detection needs an explicit override.
 
 On Windows, close Algo CLI sessions and run the owning manager directly:
 `pipx upgrade algo-cli-runtime`, `uv tool upgrade --no-sources algo-cli-runtime`,
+`uv pip install --python <python.exe> --upgrade --no-sources algo-cli-runtime`,
 or `python -m pip install --upgrade algo-cli-runtime` using the Python environment
 where Algo is installed. Published `0.18.0` cannot replace its active `.exe`
 launcher. The new `algo-cli update` guard stops before changing packages and

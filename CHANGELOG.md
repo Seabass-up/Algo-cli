@@ -6,6 +6,9 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ### Fixed
 
+- Detect standalone `uv pip` installations from distribution metadata and
+  update them through `uv pip --python` instead of assuming their virtual
+  environment contains the `pip` module.
 - Allow the post-upload PyPI verifier up to six observations with 30 seconds of
   scheduled backoff for absent or partially visible matching files. Malformed
   responses and conflicting files still stop publication immediately.

@@ -266,7 +266,7 @@ def verify_windows_launcher_guard(cli: Path, env: dict[str, str], work: Path) ->
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("wheel")
-    parser.add_argument("--manager", choices=("pip", "pipx", "uv"), default="pip")
+    parser.add_argument("--manager", choices=("pip", "pipx", "uv", "uv-pip"), default="pip")
     parser.add_argument("--pipx-backend", choices=("pip", "uv"), default="pip")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
@@ -287,6 +287,9 @@ def main(argv: list[str] | None = None) -> int:
         "os_keychain_qualified": False,
         "update_entrypoint": "owning-manager" if sys.platform == "win32" else "published-cli",
         "published_updater_exercised": False,
+        "candidate_updater_exercised": False,
+        "legacy_missing_pip_verified": False,
+        "one_time_bootstrap_required": args.manager == "uv-pip",
         "windows_launcher_guard_verified": False,
     }
     try:
@@ -295,8 +298,9 @@ def main(argv: list[str] | None = None) -> int:
             home, work, workspace = root / "home", root / "work", root / "workspace"
             for path in (home, work, workspace):
                 path.mkdir(mode=0o700)
-            env_dir = root / ("venv" if args.manager == "pip" else "controller")
-            controller, install = _create_isolated_environment(env_dir)
+            controller_dir = root / ("venv" if args.manager == "pip" else "controller")
+            controller, install = _create_isolated_environment(controller_dir)
+            env_dir = controller_dir
             env = isolated_environment(home, controller.parent)
             baseline = root / "algo_cli_runtime-0.18.0-py3-none-any.whl"
             download_baseline(baseline)
@@ -333,10 +337,26 @@ def main(argv: list[str] | None = None) -> int:
                 run([*install, tooling], env=env, cwd=work)
                 if args.manager == "pipx" and args.pipx_backend == "uv":
                     run([*install, "uv==0.11.26"], env=env, cwd=work)
-                app_bin = root / "apps"
-                app_bin.mkdir()
-                update_env["PATH"] = str(app_bin) + os.pathsep + update_env["PATH"]
-                binary = controller.parent / (args.manager + (".exe" if os.name == "nt" else ""))
+                binary_name = "pipx" if args.manager == "pipx" else "uv"
+                binary = controller.parent / (binary_name + (".exe" if os.name == "nt" else ""))
+                if args.manager == "uv-pip":
+                    env_dir = root / "uv-pip"
+                    run(
+                        [str(controller), "-m", "venv", "--without-pip", str(env_dir)],
+                        env=env,
+                        cwd=work,
+                    )
+                    python = env_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+                    cli = python.parent / ("algo-cli.exe" if os.name == "nt" else "algo-cli")
+                    run(
+                        [str(binary), "pip", "install", "--python", str(python), "algo-cli-runtime"],
+                        env=update_env,
+                        cwd=work,
+                    )
+                else:
+                    app_bin = root / "apps"
+                    app_bin.mkdir()
+                    update_env["PATH"] = str(app_bin) + os.pathsep + update_env["PATH"]
                 if args.manager == "pipx":
                     update_env.update(
                         PIPX_HOME=str(root / "pipx"),
@@ -346,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     env_dir = root / "pipx" / "venvs" / "algo-cli-runtime"
                     run([str(binary), "install", "algo-cli-runtime"], env=update_env, cwd=work)
-                else:
+                elif args.manager == "uv":
                     update_env.update(
                         UV_TOOL_DIR=str(root / "uv" / "tools"),
                         UV_TOOL_BIN_DIR=str(app_bin),
@@ -357,12 +377,35 @@ def main(argv: list[str] | None = None) -> int:
                         env=update_env,
                         cwd=work,
                     )
-                python = env_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-                cli = app_bin / ("algo-cli.exe" if os.name == "nt" else "algo-cli")
+                if args.manager != "uv-pip":
+                    python = env_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+                    cli = app_bin / ("algo-cli.exe" if os.name == "nt" else "algo-cli")
+            baseline_manager = "pip" if args.manager == "uv-pip" else args.manager
             report["baseline_installed_wheel_files"] = installed_identity(
-                python, env_dir, BASELINE_VERSION, update_env, work, args.manager, wheel=baseline,
+                python, env_dir, BASELINE_VERSION, update_env, work, baseline_manager, wheel=baseline,
             )
-            command = upgrade_command(python, cli, update_env, work)
+            if args.manager == "uv-pip":
+                pip_probe = subprocess.run(
+                    [str(python), "-I", "-m", "pip", "--version"],
+                    env=update_env,
+                    cwd=work,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=30,
+                )
+                if pip_probe.returncode == 0:
+                    raise ValueError("uv pip baseline unexpectedly contains pip")
+                report["legacy_missing_pip_verified"] = True
+                report["update_entrypoint"] = "owning-manager-bootstrap"
+                command = [
+                    str(binary), "pip", "install", "--python", str(python),
+                    "--upgrade", "--no-sources", "algo-cli-runtime",
+                ]
+            else:
+                command = upgrade_command(python, cli, update_env, work)
             if args.manager == "pipx":
                 metadata = json.loads((env_dir / "pipx_metadata.json").read_text(encoding="utf-8"))
                 if metadata["backend"] != args.pipx_backend:
@@ -386,16 +429,18 @@ def main(argv: list[str] | None = None) -> int:
             if not (wheelhouse / wheel.name).exists():
                 shutil.copy2(wheel, wheelhouse / wheel.name)
             run(command, env=update_env, cwd=work)
-            report["published_updater_exercised"] = sys.platform != "win32"
+            report["published_updater_exercised"] = sys.platform != "win32" and args.manager != "uv-pip"
             report["candidate_installed_wheel_files"] = installed_identity(
                 python, env_dir, expected, update_env, work, args.manager, wheel=wheel,
             )
             if state_manifest(home, workspace) != before:
                 raise ValueError("update changed synthetic configuration, credentials, memory, or workspace")
+            repeat_command = upgrade_command(python, cli, update_env, work)
             if sys.platform == "win32":
                 verify_windows_launcher_guard(cli, update_env, work)
                 report["windows_launcher_guard_verified"] = True
-            run(command, env=update_env, cwd=work)
+            run(repeat_command, env=update_env, cwd=work)
+            report["candidate_updater_exercised"] = sys.platform != "win32"
             report["repeat_installed_wheel_files"] = installed_identity(
                 python, env_dir, expected, update_env, work, args.manager, wheel=wheel,
             )

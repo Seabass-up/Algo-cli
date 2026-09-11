@@ -287,7 +287,7 @@ def test_ci_requires_upgrade_on_every_installed_platform():
     job = workflow.split("  package-smoke:\n", 1)[1]
     assert "os: [ubuntu-latest, windows-latest, macos-latest]" in job
     assert "python scripts/oliver_smoke_upgrade.py dist" in job
-    for manager in ("pip", "pipx", "uv"):
+    for manager in ("pip", "pipx", "uv", "uv-pip"):
         assert (
             f"run: python scripts/oliver_smoke_upgrade.py dist --manager {manager} "
             f"--report upgrade-smoke-{manager}.json"

@@ -13,10 +13,17 @@ import os
 import random
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
+
+# Script tests need the checkout root, while installed-runtime tests must keep
+# site-packages ahead of source in a non-editable qualification environment.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.append(str(_REPO_ROOT))
 
 # Must run before any `import algo_cli.*` / `ollama_cli.*` in the test files.
 _TEST_CONFIG_DIR = Path(tempfile.gettempdir()) / f"algo_cli_pytest_{os.getpid()}"

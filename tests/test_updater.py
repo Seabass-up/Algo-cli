@@ -21,7 +21,39 @@ def test_infer_install_manager_from_common_environment_paths():
     assert updater.infer_install_manager(
         executable="/opt/algo/venv/bin/python",
         prefix="/opt/algo/venv",
+        installer="",
     ) == "pip"
+
+
+def test_infer_install_manager_uses_distribution_installer_for_uv_pip_environment():
+    assert updater.infer_install_manager(
+        executable="/opt/algo/venv/bin/python",
+        prefix="/opt/algo/venv",
+        installer="uv",
+    ) == "uv-pip"
+
+
+@pytest.mark.parametrize(
+    ("executable", "prefix", "expected"),
+    [
+        (
+            "/home/user/.local/pipx/venvs/algo-cli-runtime/bin/python",
+            "/home/user/.local/pipx/venvs/algo-cli-runtime",
+            "pipx",
+        ),
+        (
+            "/home/user/.local/share/uv/tools/algo-cli-runtime/bin/python",
+            "/home/user/.local/share/uv/tools/algo-cli-runtime",
+            "uv",
+        ),
+    ],
+)
+def test_path_owned_managers_take_precedence_over_uv_installer_metadata(executable, prefix, expected):
+    assert updater.infer_install_manager(
+        executable=executable,
+        prefix=prefix,
+        installer="uv",
+    ) == expected
 
 
 def test_build_update_plan_uses_fixed_manager_commands():
@@ -37,6 +69,20 @@ def test_build_update_plan_uses_fixed_manager_commands():
         "/bin/uv",
         "tool",
         "upgrade",
+        "--no-sources",
+        "algo-cli-runtime",
+    )
+    assert updater.build_update_plan(
+        manager="uv-pip",
+        executable="/venv/bin/python",
+        which=which,
+    ).command == (
+        "/bin/uv",
+        "pip",
+        "install",
+        "--python",
+        "/venv/bin/python",
+        "--upgrade",
         "--no-sources",
         "algo-cli-runtime",
     )
@@ -64,6 +110,28 @@ def test_auto_manager_falls_back_to_current_python_when_owner_binary_is_missing(
 
     assert plan.manager == "pip"
     assert plan.command[0] == "/home/user/.local/pipx/venvs/algo-cli-runtime/bin/python"
+
+
+def test_auto_manager_uses_uv_pip_when_distribution_installer_is_uv():
+    plan = updater.build_update_plan(
+        executable="/opt/algo/venv/bin/python",
+        prefix="/opt/algo/venv",
+        installer="uv",
+        which=lambda name: f"/bin/{name}",
+    )
+
+    assert plan.manager == "uv-pip"
+    assert plan.command[:5] == ("/bin/uv", "pip", "install", "--python", "/opt/algo/venv/bin/python")
+
+
+def test_uv_pip_owner_without_uv_does_not_fall_back_to_missing_pip():
+    with pytest.raises(RuntimeError, match="uv pip owns this installation"):
+        updater.build_update_plan(
+            executable="/opt/algo/venv/bin/python",
+            prefix="/opt/algo/venv",
+            installer="uv",
+            which=lambda _name: None,
+        )
 
 
 def test_update_reports_changed_version_and_passes_no_shell_arguments():
@@ -146,7 +214,7 @@ def test_update_rejects_invalid_manager_override_without_running_command():
 
 
 @pytest.mark.parametrize("launcher", ["algo-cli", "ALGO-CLI.EXE", "ollama-cli", "ollama-cli.exe"])
-@pytest.mark.parametrize("manager", ["pip", "pipx", "uv"])
+@pytest.mark.parametrize("manager", ["pip", "pipx", "uv", "uv-pip"])
 def test_windows_launcher_refuses_update_before_starting_package_manager(monkeypatch, launcher, manager):
     monkeypatch.setattr(updater.sys, "platform", "win32")
     monkeypatch.setattr(updater.sys, "argv", [rf"C:\Tools\{launcher}", "update"])
@@ -166,6 +234,9 @@ def test_windows_launcher_refuses_update_before_starting_package_manager(monkeyp
     if manager == "pip":
         assert "Python''s $env" in result.details
         assert "'-m' 'pip' 'install'" in result.details
+    elif manager == "uv-pip":
+        assert r"C:\Tools\uv.exe" in result.details
+        assert "'pip' 'install' '--python'" in result.details
     else:
         assert rf"C:\Tools\{manager}.exe" in result.details
 
