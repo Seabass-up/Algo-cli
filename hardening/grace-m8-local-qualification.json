@@ -231,7 +231,7 @@
   "public_claim_eligible": false,
   "qualification": "henry-m8-local-v1",
   "schema_version": 1,
-  "source_digest": "sha256:779b97b3fa1aeb0ea9a388760dc84aa9c135ee09024b0ef545eb73d7e50b3bf8",
+  "source_digest": "sha256:0431680e4b2c0aaceb070792934d28d4edc68fb965ff7907be8b9936fc178034",
   "status": "blocked",
   "summary": {
     "blocked": 5,

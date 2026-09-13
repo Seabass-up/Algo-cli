@@ -184,12 +184,12 @@ a CRX plus key in an automatically deleted temporary directory. This validates
 manifest/CSP/package acceptance, not installation, pairing, runtime grant
 behavior, or readiness.
 
-### Current source candidate — 2026-08-09
+### Current source candidate — 2026-09-13
 
 The dated Chrome 150 Linux and macOS results above remain historical evidence
 for those exact probes. The current Linux/amd64 source candidate instead pins
-Google Chrome `151.0.7922.108`, whose official VersionHistory serving start is
-`2026-08-06T20:04:27.459919Z`, and `cryptography` `50.0.0`. These are inspected
+Google Chrome `153.0.8010.36`, whose official VersionHistory serving start is
+`2026-09-08T21:20:43.154434Z`, and `cryptography` `50.0.0`. These are inspected
 source and local-candidate properties, not a new hosted execution result.
 
 The candidate closes several source-level provenance gaps:

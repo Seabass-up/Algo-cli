@@ -327,6 +327,32 @@ Linux confirmation.
 module precedence when exposing repository-only test utilities. Do not use a
 front-loaded `PYTHONPATH` to hide an installed/source runtime mismatch.
 
+## 2026-09-13: Refresh Boron Chrome Security Pin and Coupled Fixtures
+
+**Issue and cause:** The source still pinned Chrome `151.0.7922.108` after the
+user verified Linux stable `153.0.8010.36`. Initial pin-refresh tests exposed
+coupled fixtures: browser major 151 failed hosted validation, and an older
+wrong-version fixture triggered feed regression before the intended lag check.
+
+**Repair:** Updated build/qualifier versions, release milliseconds, Dockerfile
+package URL/checksum/labels, SBOM package identity, fixtures, and current-pin
+docs. Used `153.0.8010.37` for the newer-but-stale release case and major 153
+for hosted evidence. Preserved the 72-hour limit, lag checks, and isolation
+fixtures including `151.0.7922.34`.
+
+**Verification:** `shasum -a 256` on the supplied local Debian package matched
+`9bb44e33031c2f2857cf36b4343051a12f93058e4b781e3c76313df87f6c8d32`.
+`uv run pytest tests/test_boron_browser_images.py tests/test_boron_browser_isolation.py tests/test_henry_boron_hosted_qualification.py -q`
+passed with 435 passed and 1 skipped after correcting the fixtures.
+`git diff --check` passed. The parser test verified the supplied serving time
+maps to `1_788_902_443_154` using the build script's millisecond semantics.
+
+**Prevention and limits:** Refresh the complete package identity and coupled
+release/major fixtures together; keep negative cases on their intended rejection
+path. This is local source validation using user-supplied live release evidence,
+not a hosted image build, qualification, publication, or deployment. The durable
+prevention lesson is in the global `wiki-general/lessons-learned/cross-cutting.md`.
+
 ## Repair Log Checklist
 
 - Date and component.
