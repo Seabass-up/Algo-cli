@@ -40,9 +40,9 @@ from algo_cli.boron_browser_isolation import (
 ROOT = Path(__file__).resolve().parents[1]
 RESOURCE = ROOT / "algo_cli" / "resources" / "boron_browser"
 PLATFORM = "linux/amd64"
-CHROME_VERSION = "151.0.7922.108"
+CHROME_VERSION = "153.0.8010.36"
 CHROME_DEBIAN_VERSION = CHROME_VERSION + "-1"
-CHROME_RELEASE_AT_MS = 1_786_046_667_459
+CHROME_RELEASE_AT_MS = 1_788_902_443_154
 CRYPTOGRAPHY_VERSION = "50.0.0"
 CFFI_VERSION = "2.1.0"
 PYCPARSER_VERSION = "3.0"
@@ -152,7 +152,7 @@ _SBOM_COMPONENTS_BY_DOCKERFILE = {
         (
             "google-chrome-stable",
             CHROME_DEBIAN_VERSION,
-            "pkg:deb/debian/google-chrome-stable@151.0.7922.108-1?arch=amd64&distro=debian-12",
+            "pkg:deb/debian/google-chrome-stable@153.0.8010.36-1?arch=amd64&distro=debian-12",
         ),
         *_PYTHON_SBOM_COMPONENTS,
     ),

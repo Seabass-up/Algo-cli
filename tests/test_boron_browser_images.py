@@ -69,8 +69,8 @@ def _version_payload(
     document: dict[str, object] = {
         "versions": [
             {
-                "name": ("chrome/platforms/linux/channels/stable/versions/151.0.7922.108"),
-                "version": "151.0.7922.108",
+                "name": ("chrome/platforms/linux/channels/stable/versions/153.0.8010.36"),
+                "version": "153.0.8010.36",
             }
         ],
         "nextPageToken": next_page_token,
@@ -83,16 +83,16 @@ def _version_payload(
 def _release_payload(
     *,
     fraction: object = 1,
-    start_time: object = "2026-08-06T20:04:27.459919Z",
+    start_time: object = "2026-09-08T21:20:43.154434Z",
 ) -> bytes:
     return json.dumps(
         {
             "releases": [
                 {
-                    "name": ("chrome/platforms/linux/channels/stable/versions/151.0.7922.108/releases/1786046667"),
+                    "name": ("chrome/platforms/linux/channels/stable/versions/153.0.8010.36/releases/1788902443"),
                     "serving": {"startTime": start_time},
                     "fraction": fraction,
-                    "version": "151.0.7922.108",
+                    "version": "153.0.8010.36",
                     "fractionGroup": "1",
                     "pinnable": True,
                     "rolloutData": [],
@@ -218,8 +218,8 @@ def _spdx_document(*, role: str = "browser") -> dict[str, object]:
             (
                 "SPDXRef-Package-google-chrome-stable",
                 "google-chrome-stable",
-                "151.0.7922.108-1",
-                "pkg:deb/debian/google-chrome-stable@151.0.7922.108-1?arch=amd64&distro=debian-12",
+                "153.0.8010.36-1",
+                "pkg:deb/debian/google-chrome-stable@153.0.8010.36-1?arch=amd64&distro=debian-12",
             ),
         )
     elif role != "broker":
@@ -361,8 +361,8 @@ def test_dockerfiles_pin_base_downloads_users_and_narrow_copy_surface() -> None:
         assert "dpkg-query -W -f='${binary:Package}=${Version}\\n'" in source
         assert 'com.algo-cli.build.hermetic="false"' in source
         assert 'com.algo-cli.build.reproducible="false"' in source
-    assert "google-chrome-stable_151.0.7922.108-1_amd64.deb" in browser
-    assert 'com.algo-cli.browser.release-at-ms="1786046667459"' in browser
+    assert "google-chrome-stable_153.0.8010.36-1_amd64.deb" in browser
+    assert 'com.algo-cli.browser.release-at-ms="1788902443154"' in browser
     assert 'com.algo-cli.cryptography.version="50.0.0"' in browser
     assert 'com.algo-cli.cryptography.version="50.0.0"' in broker
     for source in (browser, broker):
@@ -628,7 +628,7 @@ def test_build_update_lag_gate_rejects_before_docker(monkeypatch) -> None:
     release_evidence = module.BoronBrowserReleaseEvidence(
         module.BoronReleaseEvidenceSource.GOOGLE_VERSION_HISTORY,
         module.BoronBrowserFamily.CHROME_STABLE,
-        "151.0.7922.109",
+        "153.0.8010.37",
         module.PLATFORM,
         now_ms - module.BORON_MAX_SECURITY_LAG_MS - 1,
         now_ms,

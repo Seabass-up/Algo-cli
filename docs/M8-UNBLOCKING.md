@@ -40,10 +40,10 @@ The native-hardening and PyPI policies were not changed.
 ## Remaining engineering and qualification
 
 1. Rebuild and qualify the managed-browser images on the hosted Linux/amd64
-   path. The source still pins Chrome `151.0.7922.108`; the strict Google
-   VersionHistory fetch observed stable `152.0.7977.82`. Refresh verified image
-   materials and digests, not just the version string, and obtain a fresh
-   release observation during each run. Enforce the existing 72-hour lag limit.
+   path. The source pins Chrome `153.0.8010.36`, with Google VersionHistory
+   serving startTime `2026-09-08T21:20:43.154434Z` and the verified Debian
+   package checksum. Obtain fresh image materials, digests, and a release
+   observation during each run. Enforce the existing 72-hour lag limit.
 2. Implement the selected-Chrome native authority bridge and supported actions.
    `NeonNativeHostMain` currently exits with `protocol_disabled`; the extension
    only observes and hands off. Removing that guard alone is not an implementation.
