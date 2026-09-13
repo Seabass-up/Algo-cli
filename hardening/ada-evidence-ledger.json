@@ -4034,6 +4034,15 @@
           "timestamp": "2026-09-13T19:43:31Z",
           "scope": "source digest sha256:5d02703447b7600a09ec8a68a365f8d745a49f87d2486407a4701c7a19bf72a2 binds Chrome 153.0.8010.36 pin materials, release-at-ms 1788902443154, deb sha256 9bb44e33031c2f2857cf36b4343051a12f93058e4b781e3c76313df87f6c8d32, existing adversarial denominators, and unchanged 72h browser security lag gate",
           "limitations": "Local deterministic evidence does not establish hosted qualification of the revised commit, external-browser completion, native signing, publication, or broader M8 completion; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json source_digest refreshed after Chrome 153 dpkg lock regeneration",
+          "digest": "sha256:560c4527ed3657a20fa7c4d515f7f610b51712b7a39f6fc5bd084760e586b191",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-13T20:16:00Z",
+          "scope": "source digest sha256:0431680e4b2c0aaceb070792934d28d4edc68fb965ff7907be8b9936fc178034 binds Chrome 153.0.8010.36 pin, dpkg lock sha256:4dcca86a77af31851da146c1c3cbcce77e25a051c1b4c587cd7bb15f8e755817 (228 entries), and unchanged 72h browser security lag gate",
+          "limitations": "Local deterministic evidence does not establish hosted qualification of the revised commit, external-browser completion, native signing, publication, or broader M8 completion; HARD-080 remains in progress"
         }
       ]
     },
@@ -6102,6 +6111,15 @@
           "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
           "timestamp": "2026-09-13T19:43:31Z",
           "scope": "source digest sha256:5d02703447b7600a09ec8a68a365f8d745a49f87d2486407a4701c7a19bf72a2 binds five local token-efficiency repetitions under unchanged thresholds after the Chrome pin refresh",
+          "limitations": "Synthetic local token estimates do not establish task completion, provider quality, comparative performance, external-browser completion, hosted qualification of the revised commit, publication, or cross-harness superiority; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json source_digest refreshed after Chrome 153 dpkg lock regeneration",
+          "digest": "sha256:560c4527ed3657a20fa7c4d515f7f610b51712b7a39f6fc5bd084760e586b191",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-13T20:16:00Z",
+          "scope": "source digest sha256:0431680e4b2c0aaceb070792934d28d4edc68fb965ff7907be8b9936fc178034 binds five local token-efficiency repetitions under unchanged thresholds after the Chrome 153 dpkg lock refresh",
           "limitations": "Synthetic local token estimates do not establish task completion, provider quality, comparative performance, external-browser completion, hosted qualification of the revised commit, publication, or cross-harness superiority; HARD-081 remains in progress"
         }
       ]
