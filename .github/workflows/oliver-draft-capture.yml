@@ -55,7 +55,7 @@ jobs:
 
           opener = urllib.request.build_opener(NoRedirect())
           phase, tag = os.environ['CAPTURE_PHASE'], os.environ['RELEASE_TAG']
-          if phase not in {'initial', 'before-pypi'} or tag != 'v0.19.1.post1':
+          if phase not in {'initial', 'before-pypi'} or tag != 'v0.19.2':
               fail()
           if (os.environ['GITHUB_REPOSITORY'] != 'Seabass-up/Algo-cli'
               or os.environ['GITHUB_ACTOR_ID'] != '184999458'
@@ -69,10 +69,9 @@ jobs:
           root.mkdir(mode=0o700)
           assets_dir = root / 'assets'
           assets_dir.mkdir(mode=0o700)
-          release_id = 386125544
-          source = '09428d131cbd11fa76268cb17e394368dc3f6934'
+          source = os.environ['GITHUB_SHA']
           expected = {
-              'algo_cli_runtime-0.19.1.post1-py3-none-any.whl', 'algo_cli_runtime-0.19.1.post1.tar.gz',
+              'algo_cli_runtime-0.19.2-py3-none-any.whl', 'algo_cli_runtime-0.19.2.tar.gz',
               'algo-cli-runtime.lock.cdx.json', 'SHA256SUMS',
               'grace-boron-hosted-qualification.json', 'grace-boron-hosted-qualification.sigstore.jsonl',
               'algo-cli-release-provenance.sigstore.jsonl',
@@ -83,9 +82,10 @@ jobs:
               'algo-cli-release-auditable-requirements.txt', 'grace-release-evidence-SHA256SUMS',
           }
           allowed_assets = set()
+          allowed_release = None
 
           def fetch(endpoint, binary=False):
-              if endpoint not in {'releases?per_page=100', 'releases/386125544'} and endpoint not in allowed_assets:
+              if endpoint != 'releases?per_page=100' and endpoint != allowed_release and endpoint not in allowed_assets:
                   fail()
               headers = {'Authorization': 'Bearer ' + os.environ['CAPTURE_TOKEN'],
                          'Accept': 'application/octet-stream' if binary else 'application/vnd.github+json',
@@ -114,7 +114,8 @@ jobs:
               return payload if binary else json.loads(payload, object_pairs_hook=pairs)
 
           def identity(document):
-              if (type(document) is not dict or document.get('id') != release_id or document.get('tag_name') != tag
+              if (type(document) is not dict or type(document.get('id')) is not int
+                  or document.get('id') != release_id or document.get('tag_name') != tag
                   or document.get('target_commitish') != source or document.get('prerelease') is not False
                   or not ((document.get('draft') is True and document.get('immutable') is False and document.get('published_at') is None)
                           or (phase == 'initial' and document.get('draft') is False and document.get('immutable') is True
@@ -146,9 +147,13 @@ jobs:
               if type(listing) is not list or len(listing) >= 100:
                   fail()
               matches = [r for r in listing if type(r) is dict and r.get('tag_name') == tag]
-              if len(matches) != 1 or matches[0].get('id') != release_id:
+              if len(matches) != 1:
                   fail()
-              first = fetch('releases/386125544')
+              release_id = matches[0].get('id')
+              if type(release_id) is not int or release_id < 1:
+                  fail()
+              allowed_release = 'releases/' + str(release_id)
+              first = fetch(allowed_release)
               first_identity, assets = identity(first)
               if phase == 'initial':
                   for name, row in assets.items():
@@ -158,7 +163,7 @@ jobs:
                       if len(payload) != row['size'] or 'sha256:' + hashlib.sha256(payload).hexdigest() != row['digest']:
                           fail()
                       (assets_dir / name).write_bytes(payload)
-              final = fetch('releases/386125544')
+              final = fetch(allowed_release)
               if identity(final) != (first_identity, assets):
                   fail()
               receipt = {'schema_version': 1, 'phase': phase, 'tag': tag, 'release_id': release_id,

@@ -353,6 +353,36 @@ path. This is local source validation using user-supplied live release evidence,
 not a hosted image build, qualification, publication, or deployment. The durable
 prevention lesson is in the global `wiki-general/lessons-learned/cross-cutting.md`.
 
+## 2026-09-13: New Release Could Not Use Fixed Prior Draft Identity
+
+**Issue:** The protected draft-capture child could authorize only the historical
+`v0.19.1.post1` tag, source revision, release ID, and distribution filenames, so
+it could not capture a newly created `v0.19.2` draft.
+
+**Cause:** The least-privilege recovery path correctly fixed the prior release's
+identity, but GitHub assigns each new draft a new numeric release ID. Carrying
+that old ID into the next release made the otherwise reusable publisher reject
+the new draft.
+
+**Repair:** Bind capture to exact tag `v0.19.2` and require both source and
+publisher to equal the protected-main workflow SHA. Derive the numeric release
+ID from exactly one matching row in the bounded release listing, require a
+positive non-boolean integer, and allow only that detail endpoint and the
+validated asset endpoints. The read-only validator repeats the tag, source,
+publisher, listing, release ID, receipt-age, and endpoint bindings.
+
+**Verification:** The complete release-authority focused group passed after a
+frozen non-editable environment refresh, covering dynamic release IDs, missing,
+ambiguous, truncated, and drifted listings, malformed identities, credential-free
+signed-asset redirects, exact filenames and digests, source binding, native
+version mapping, and updater smoke fixtures. `git diff --check` also passed.
+
+**Prevention and limits:** A fixed recovery identity is not a reusable release
+identity. For each release, keep the tag allowlist exact and derive only the
+server-assigned ID from a unique bounded observation. This is a tested local
+repair and prepared `0.19.2` candidate; hosted qualification and public
+publication are still required before calling it released or upgradeable.
+
 ## Repair Log Checklist
 
 - Date and component.

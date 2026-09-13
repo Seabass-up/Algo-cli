@@ -23,8 +23,10 @@ assert SPEC and SPEC.loader
 AUTHORITY = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = AUTHORITY
 SPEC.loader.exec_module(AUTHORITY)
-SOURCE = "09428d131cbd11fa76268cb17e394368dc3f6934"
+TAG = "v0.19.2"
+RELEASE_ID = 432100001
 PUBLISHER = "a" * 40
+SOURCE = PUBLISHER
 
 
 def program() -> str:
@@ -32,14 +34,14 @@ def program() -> str:
     return textwrap.dedent(workflow.split("          python -I -B -S - <<'PY'\n", 1)[1].split("\n          PY", 1)[0])
 
 
-def document(*, populated: bool = False) -> dict[str, Any]:
+def document(*, populated: bool = False, release_id: int = RELEASE_ID) -> dict[str, Any]:
     rows = []
     if populated:
-        for index, name in enumerate(sorted(AUTHORITY.expected_release_assets("v0.19.1.post1")), 1):
+        for index, name in enumerate(sorted(AUTHORITY.expected_release_assets(TAG)), 1):
             payload = name.encode()
             rows.append({"id": index, "name": name, "size": len(payload), "state": "uploaded",
                          "digest": "sha256:" + hashlib.sha256(payload).hexdigest()})
-    return {"id": 386125544, "tag_name": "v0.19.1.post1", "target_commitish": SOURCE,
+    return {"id": release_id, "tag_name": TAG, "target_commitish": SOURCE,
             "draft": True, "prerelease": False, "immutable": False, "published_at": None, "assets": rows}
 
 
@@ -55,8 +57,10 @@ def execute(
 ) -> tuple[dict[str, Any], list[urllib.request.Request]]:
     release = document() if release is None else release
     listing = [release] if listing is None else listing
+    matches = [row for row in listing if type(row) is dict and row.get("tag_name") == TAG] if type(listing) is list else []
+    detail_id = matches[0].get("id") if matches else release["id"]
     values = {
-        "CAPTURE_TOKEN": "synthetic-token", "CAPTURE_PHASE": phase, "RELEASE_TAG": "v0.19.1.post1",
+        "CAPTURE_TOKEN": "synthetic-token", "CAPTURE_PHASE": phase, "RELEASE_TAG": TAG,
         "RUNNER_TEMP": str(tmp_path), "GITHUB_REPOSITORY": "Seabass-up/Algo-cli",
         "GITHUB_ACTOR_ID": "184999458", "GITHUB_REF": "refs/heads/main", "GITHUB_REF_PROTECTED": "true",
         "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_RUN_ID": "99",
@@ -85,7 +89,7 @@ def execute(
             endpoint = url.removeprefix(prefix)
             if endpoint == "releases?per_page=100":
                 return Response(json.dumps(listing).encode())
-            if endpoint == "releases/386125544":
+            if endpoint == f"releases/{detail_id}":
                 reads += 1
                 value = copy.deepcopy(release)
                 if drift and reads == 2:
@@ -115,7 +119,7 @@ def test_exact_capture_preserves_identity_and_only_gets(
     receipt, calls = execute(monkeypatch, tmp_path, phase=phase, release=release)
     assert receipt["release"] == release and receipt["source"] == SOURCE and receipt["publisher"] == PUBLISHER
     assert receipt["phase"] == phase and receipt["run_id"] == "99" and receipt["run_attempt"] == "1"
-    expected = AUTHORITY.expected_release_assets("v0.19.1.post1") if phase == "initial" and populated else set()
+    expected = AUTHORITY.expected_release_assets(TAG) if phase == "initial" and populated else set()
     assert {p.name for p in (tmp_path / "draft-capture/assets").iterdir()} == expected
     assert len(calls) == 3 + len(expected)
 
@@ -131,7 +135,7 @@ def test_capture_rejects_wrong_dispatch(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
 
 @pytest.mark.parametrize("change", [
-    {"id": 1}, {"tag_name": "v0.19.0"}, {"target_commitish": PUBLISHER}, {"prerelease": True},
+    {"id": True}, {"tag_name": "v0.19.0"}, {"target_commitish": "b" * 40}, {"prerelease": True},
     {"immutable": True}, {"published_at": "2026-09-09"}, {"assets": {}},
 ])
 def test_capture_rejects_changed_release(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, change: dict[str, Any]) -> None:
@@ -147,6 +151,26 @@ def test_capture_rejects_missing_ambiguous_or_truncated_listing(
 ) -> None:
     with pytest.raises(SystemExit, match="release_draft_capture"):
         execute(monkeypatch, tmp_path, listing=listing)
+
+
+def test_capture_derives_positive_release_id_from_exact_tag_match(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    release = document(release_id=987654321)
+    receipt, calls = execute(monkeypatch, tmp_path, release=release)
+    assert receipt["release_id"] == 987654321
+    assert [request.full_url for request in calls].count(
+        "https://api.github.com/repos/Seabass-up/Algo-cli/releases/987654321"
+    ) == 2
+
+
+def test_capture_rejects_boolean_detail_id_for_numeric_listing_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    release = document(release_id=1)
+    release["id"] = True
+    with pytest.raises(SystemExit, match="release_draft_capture"):
+        execute(monkeypatch, tmp_path, release=release, listing=[document(release_id=1)])
 
 
 @pytest.mark.parametrize("change", [
@@ -181,7 +205,7 @@ def test_draft_snapshot_routes_only_bound_release_data(monkeypatch: pytest.Monke
     api = AUTHORITY.draft_snapshot_api(receipt, environment=os.environ,
                                        api_get=lambda endpoint: requests.append(endpoint) or "live")
     assert api("repos/Seabass-up/Algo-cli/releases?per_page=100") == receipt["listing"]
-    assert api("repos/Seabass-up/Algo-cli/releases/386125544") == receipt["release"]
+    assert api(f"repos/Seabass-up/Algo-cli/releases/{RELEASE_ID}") == receipt["release"]
     assert api("repos/Seabass-up/Algo-cli/branches/main") == "live"
     assert requests == ["repos/Seabass-up/Algo-cli/branches/main"]
     with pytest.raises(AUTHORITY.ReleaseAuthorityRejected, match="release_draft_snapshot_endpoint"):
@@ -192,7 +216,7 @@ def test_signed_asset_download_does_not_receive_credentials(monkeypatch: pytest.
     receipt, calls = execute(monkeypatch, tmp_path, release=document(populated=True),
                              redirect="https://release-assets.githubusercontent.com/asset?signature=synthetic")
     downloads = [r for r in calls if r.full_url.startswith("https://release-assets.githubusercontent.com/")]
-    assert len(downloads) == len(AUTHORITY.expected_release_assets("v0.19.1.post1"))
+    assert len(downloads) == len(AUTHORITY.expected_release_assets(TAG))
     assert all(r.get_header("Authorization") is None for r in downloads)
     assert receipt["release"]["draft"] is True
 
@@ -220,6 +244,20 @@ def test_draft_snapshot_rejects_stale_or_misbound_receipts(
     receipt[key] = value
     with pytest.raises(AUTHORITY.ReleaseAuthorityRejected, match="release_draft_snapshot"):
         AUTHORITY.draft_snapshot_api(receipt, environment=os.environ, api_get=lambda _: pytest.fail("unexpected API"))
+
+
+@pytest.mark.parametrize("source", [None, "main", "A" * 40])
+def test_draft_snapshot_requires_exact_environment_revision(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source: str | None,
+) -> None:
+    receipt, _ = execute(monkeypatch, tmp_path)
+    environment = dict(os.environ)
+    if source is None:
+        environment.pop("GITHUB_SHA", None)
+    else:
+        environment["GITHUB_SHA"] = source
+    with pytest.raises(AUTHORITY.ReleaseAuthorityRejected, match="release_draft_snapshot"):
+        AUTHORITY.draft_snapshot_api(receipt, environment=environment, api_get=lambda _: pytest.fail("unexpected API"))
 
 
 @pytest.mark.parametrize("age,passed", [(0, True), (119, True), (121, False), (-10, False)])

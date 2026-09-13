@@ -30,12 +30,11 @@ installation's owning tool: pipx, `uv tool`, standalone `uv pip`, or the current
 Python environment's pip. Custom `uv tool` directories are resolved through uv
 before standalone `uv pip` environments are identified from the distribution's
 installer metadata. Standalone environments do not need a bundled pip module.
-It does not pull GitHub commits. Version `0.19.1.post1` was published on
-2026-09-10 and is available to compatible `0.18.0` installations; see
-[the release and qualification record](docs/henry-release-0.19.1.md).
-[PyPI](https://pypi.org/project/algo-cli-runtime/) lists the current published
-version. Changes listed as Unreleased in the changelog require a future package
-release before this command can install them.
+It does not pull GitHub commits. [PyPI](https://pypi.org/project/algo-cli-runtime/)
+lists the current published version, and the
+[release records](https://github.com/Seabass-up/Algo-cli/releases) bind each
+published package to its qualified source. Changes listed as Unreleased in the
+changelog require a future package release before this command can install them.
 It leaves configuration, credentials, memory, and other files under
 `~/.algo_cli` untouched. Set `ALGO_CLI_UPDATE_MANAGER=pipx`, `uv`, `uv-pip`, or
 `pip` only when automatic installation detection needs an explicit override.

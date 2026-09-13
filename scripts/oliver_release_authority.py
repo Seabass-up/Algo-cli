@@ -1838,19 +1838,31 @@ def verify_pypi_state(
 
 def draft_snapshot_api(value: Any, *, environment: Mapping[str, str], api_get: ApiGet) -> ApiGet:
     """Bind captured private release data without lending write authority to validators."""
+    release_id = value.get("release_id") if type(value) is dict else None
+    source = environment.get("GITHUB_SHA")
+    listing = value.get("listing") if type(value) is dict else None
+    matches = (
+        [row for row in listing if type(row) is dict and row.get("tag_name") == "v0.19.2"]
+        if type(listing) is list
+        else []
+    )
     if (
         type(value) is not dict
         or set(value) != {"schema_version", "phase", "tag", "release_id", "publisher", "source",
                           "run_id", "run_attempt", "captured_at", "listing", "release"}
         or value.get("schema_version") != 1 or value.get("phase") != "initial"
-        or value.get("tag") != "v0.19.1.post1" or value.get("release_id") != 386125544
-        or value.get("publisher") != environment.get("GITHUB_SHA")
-        or value.get("source") != "09428d131cbd11fa76268cb17e394368dc3f6934"
+        or value.get("tag") != "v0.19.2"
+        or type(release_id) is not int or release_id < 1
+        or type(source) is not str or _REVISION_RE.fullmatch(source) is None
+        or value.get("publisher") != source or value.get("source") != source
         or value.get("run_id") != environment.get("GITHUB_RUN_ID")
         or value.get("run_attempt") != environment.get("GITHUB_RUN_ATTEMPT")
         or type(value.get("captured_at")) is not int
         or not 0 <= datetime.now(timezone.utc).timestamp() - value["captured_at"] <= 600
+        or type(listing) is not list or len(listing) >= 100
+        or len(matches) != 1 or matches[0].get("id") != release_id
         or type(value.get("release")) is not dict
+        or type(value["release"].get("id")) is not int
         or value["release"].get("id") != value["release_id"]
         or value["release"].get("tag_name") != value["tag"]
         or value["release"].get("target_commitish") != value["source"]
@@ -1860,7 +1872,7 @@ def draft_snapshot_api(value: Any, *, environment: Mapping[str, str], api_get: A
     def get(endpoint: str) -> Any:
         if endpoint == f"repos/{REPOSITORY}/releases?per_page=100":
             return value["listing"]
-        if endpoint == f"repos/{REPOSITORY}/releases/386125544":
+        if endpoint == f"repos/{REPOSITORY}/releases/{release_id}":
             return value["release"]
         if endpoint.startswith(f"repos/{REPOSITORY}/releases"):
             _reject("release_draft_snapshot_endpoint")

@@ -4,6 +4,8 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-09-13
+
 ### Fixed
 
 - Detect standalone `uv pip` installations from distribution metadata and
@@ -17,6 +19,12 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
   explicit validation failures. Only HTTP 404 represents an absent version.
 - Correct release documentation to distinguish the published package from
   later development changes.
+- Refresh the Boron managed-browser package, checksum, release observation, and
+  coupled test fixtures for Chrome `153.0.8010.36`, including the generated
+  Debian package lock used by hosted Linux builds.
+- Bind protected draft capture to the exact `v0.19.2` tag and protected-main
+  source while deriving GitHub's assigned release ID from one unambiguous,
+  bounded release listing.
 
 ## [0.19.1.post1] - 2026-09-10
 
