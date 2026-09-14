@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import textwrap
+import time
 from typing import Any
 
 import pytest
@@ -160,6 +161,16 @@ def _post_publish_validator(workflow: str) -> str:
 
 def _environment_authority_validator(workflow: str) -> str:
     marker = 'STATE="${state}" ACTOR_ID="${GITHUB_ACTOR_ID}" python -I -B -S - <<\'PY\''
+    marker_at = workflow.index(marker)
+    script_at = workflow.index("\n", marker_at) + 1
+    script_end = workflow.index("\n          PY", script_at)
+    return textwrap.dedent(workflow[script_at:script_end]) + "\n"
+
+
+def _pre_pypi_snapshot_validator(workflow: str) -> str:
+    marker = (
+        'SNAPSHOT="${RUNNER_TEMP}/draft-publish-capture/snapshot.json" python -I -B -S - > "${state}/release.json"'
+    )
     marker_at = workflow.index(marker)
     script_at = workflow.index("\n", marker_at) + 1
     script_end = workflow.index("\n          PY", script_at)
@@ -2054,6 +2065,8 @@ def test_release_workflow_is_draft_first_least_privilege_and_durable() -> None:
     assert 'source_get "repos/Seabass-up/Algo-cli/releases/${RELEASE_ID}"' not in publish
     assert "needs.draft-publish-capture.outputs.artifact-id" in publish
     assert "time.time() - value['captured_at'] <= 120" in publish
+    assert "release_draft_snapshot_expired" in publish
+    assert '"mismatches":mismatches' in publish
     assert "contents: write" not in publish
     assert "if remote != local:" in publish
     assert "https://pypi.org/pypi/algo-cli-runtime/${version}/json" in publish
@@ -2246,12 +2259,79 @@ def test_immediate_pre_pypi_asset_validator_rejects_missing_or_conflicting_asset
     assert validate(release).returncode == 0
     missing = copy.deepcopy(release)
     missing["assets"].pop()
-    assert validate(missing).returncode != 0
+    missing_result = validate(missing)
+    assert missing_result.returncode != 0
+    missing_payload = json.loads(missing_result.stderr.strip().splitlines()[-1])
+    assert missing_payload["reason_code"] == "release_pre_pypi_authority"
+    assert missing_payload["mismatches"]
     conflicting = copy.deepcopy(release)
     conflicting["assets"][0]["digest"] = "sha256:" + "f" * 64
-    assert validate(conflicting).returncode != 0
+    conflict_result = validate(conflicting)
+    assert conflict_result.returncode != 0
+    conflict_payload = json.loads(conflict_result.stderr.strip().splitlines()[-1])
+    assert conflict_payload["reason_code"] == "release_pre_pypi_authority"
+    name = conflicting["assets"][0]["name"]
+    assert name in conflict_payload["mismatches"]
+    assert conflict_payload["mismatches"][name]["remote"][0] == "sha256:" + "f" * 64
+    assert conflict_payload["mismatches"][name]["local"][0] != conflict_payload["mismatches"][name]["remote"][0]
     (package / next(name for name in SCRIPT.expected_release_assets(TAG) if name.endswith(".whl"))).unlink()
     assert validate(release).returncode != 0
+
+
+
+
+@pytest.mark.parametrize("age,passed", [(0, True), (119, True), (121, False), (140, False), (-10, False)])
+def test_immediate_pre_pypi_snapshot_reports_expired_age(tmp_path: Path, age: int, passed: bool) -> None:
+    workflow = (ROOT / ".github/workflows/oliver-release.yml").read_text(encoding="utf-8")
+    validator = _pre_pypi_snapshot_validator(workflow)
+    snapshot = {
+        "schema_version": 1,
+        "phase": "before-pypi",
+        "publisher": REVISION,
+        "source": REVISION,
+        "run_id": "34793549112",
+        "run_attempt": "1",
+        "tag": TAG,
+        "release_id": 301,
+        "captured_at": int(time.time()) - age,
+        "release": {"id": 301, "tag_name": TAG, "draft": True},
+    }
+    path = tmp_path / "snapshot.json"
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "SNAPSHOT": str(path),
+            "GITHUB_SHA": REVISION,
+            "SOURCE_SHA": REVISION,
+            "GITHUB_RUN_ID": "34793549112",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "RELEASE_TAG": TAG,
+            "RELEASE_ID": "301",
+        }
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-S", "-"],
+        input=validator,
+        env=environment,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+    )
+    if passed:
+        assert result.returncode == 0
+        assert json.loads(result.stdout)["id"] == 301
+        return
+    assert result.returncode == 2
+    if age < 0:
+        return
+    payload = json.loads(result.stderr.strip().splitlines()[-1])
+    assert payload["reason_code"] == "release_draft_snapshot_expired"
+    assert payload["status"] == "blocked"
+    assert payload["age_s"] >= 120
 
 
 def test_immediate_pypi_validator_handles_exact_partial_absent_and_yanked(tmp_path: Path) -> None:
