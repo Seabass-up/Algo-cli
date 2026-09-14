@@ -14,7 +14,6 @@ import re
 import subprocess
 import sys
 import textwrap
-import time
 from typing import Any
 
 import pytest
