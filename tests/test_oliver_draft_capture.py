@@ -135,7 +135,7 @@ def test_capture_rejects_wrong_dispatch(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
 
 @pytest.mark.parametrize("change", [
-    {"id": True}, {"tag_name": "v0.19.0"}, {"target_commitish": "b" * 40}, {"prerelease": True},
+    {"id": True}, {"tag_name": "v0.19.0"}, {"target_commitish": "main"}, {"prerelease": True},
     {"immutable": True}, {"published_at": "2026-09-09"}, {"assets": {}},
 ])
 def test_capture_rejects_changed_release(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, change: dict[str, Any]) -> None:
@@ -210,6 +210,21 @@ def test_draft_snapshot_routes_only_bound_release_data(monkeypatch: pytest.Monke
     assert requests == ["repos/Seabass-up/Algo-cli/branches/main"]
     with pytest.raises(AUTHORITY.ReleaseAuthorityRejected, match="release_draft_snapshot_endpoint"):
         api("repos/Seabass-up/Algo-cli/releases/123")
+
+
+def test_capture_preserves_tagged_source_when_publisher_main_advances(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    tagged_source = "b" * 40
+    release = document(populated=True)
+    release["target_commitish"] = tagged_source
+    receipt, _ = execute(monkeypatch, tmp_path, release=release)
+    assert receipt["publisher"] == PUBLISHER
+    assert receipt["source"] == tagged_source
+    api = AUTHORITY.draft_snapshot_api(
+        receipt, environment=os.environ, api_get=lambda endpoint: endpoint,
+    )
+    assert api(f"repos/Seabass-up/Algo-cli/releases/{RELEASE_ID}")["target_commitish"] == tagged_source
 
 
 def test_signed_asset_download_does_not_receive_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

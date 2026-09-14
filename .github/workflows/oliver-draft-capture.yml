@@ -69,7 +69,7 @@ jobs:
           root.mkdir(mode=0o700)
           assets_dir = root / 'assets'
           assets_dir.mkdir(mode=0o700)
-          source = os.environ['GITHUB_SHA']
+          publisher = os.environ['GITHUB_SHA']
           expected = {
               'algo_cli_runtime-0.19.2-py3-none-any.whl', 'algo_cli_runtime-0.19.2.tar.gz',
               'algo-cli-runtime.lock.cdx.json', 'SHA256SUMS',
@@ -113,9 +113,11 @@ jobs:
                   fail()
               return payload if binary else json.loads(payload, object_pairs_hook=pairs)
 
-          def identity(document):
+          def identity(document, expected_source=None):
+              source = document.get('target_commitish') if expected_source is None else expected_source
               if (type(document) is not dict or type(document.get('id')) is not int
                   or document.get('id') != release_id or document.get('tag_name') != tag
+                  or type(source) is not str or re.fullmatch('[0-9a-f]{40}', source) is None
                   or document.get('target_commitish') != source or document.get('prerelease') is not False
                   or not ((document.get('draft') is True and document.get('immutable') is False and document.get('published_at') is None)
                           or (phase == 'initial' and document.get('draft') is False and document.get('immutable') is True
@@ -140,7 +142,8 @@ jobs:
                   fail()
               if sum(row['size'] for row in result.values()) > 536870912:
                   fail()
-              return {key: document.get(key) for key in ('id', 'tag_name', 'target_commitish', 'draft', 'immutable', 'published_at')}, result
+              return ({key: document.get(key) for key in ('id', 'tag_name', 'target_commitish', 'draft', 'immutable', 'published_at')},
+                      result, source)
 
           try:
               listing = fetch('releases?per_page=100')
@@ -154,7 +157,7 @@ jobs:
                   fail()
               allowed_release = 'releases/' + str(release_id)
               first = fetch(allowed_release)
-              first_identity, assets = identity(first)
+              first_identity, assets, source = identity(first)
               if phase == 'initial':
                   for name, row in assets.items():
                       endpoint = 'releases/assets/' + str(row['id'])
@@ -164,10 +167,10 @@ jobs:
                           fail()
                       (assets_dir / name).write_bytes(payload)
               final = fetch(allowed_release)
-              if identity(final) != (first_identity, assets):
+              if identity(final, source) != (first_identity, assets, source):
                   fail()
               receipt = {'schema_version': 1, 'phase': phase, 'tag': tag, 'release_id': release_id,
-                         'publisher': os.environ['GITHUB_SHA'], 'source': source,
+                         'publisher': publisher, 'source': source,
                          'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
                          'captured_at': int(time.time()), 'listing': listing, 'release': final}
               payload = canonical(receipt) + b'\n'

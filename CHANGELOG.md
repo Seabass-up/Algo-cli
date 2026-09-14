@@ -22,9 +22,10 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 - Refresh the Boron managed-browser package, checksum, release observation, and
   coupled test fixtures for Chrome `153.0.8010.36`, including the generated
   Debian package lock used by hosted Linux builds.
-- Bind protected draft capture to the exact `v0.19.2` tag and protected-main
-  source while deriving GitHub's assigned release ID from one unambiguous,
-  bounded release listing.
+- Bind protected draft capture to the exact `v0.19.2` tag while deriving
+  GitHub's assigned release ID from one unambiguous, bounded release listing.
+  Preserve the immutable tagged source separately from the current protected-main
+  publisher so exact-asset recovery remains possible after `main` advances.
 
 ## [0.19.1.post1] - 2026-09-10
 

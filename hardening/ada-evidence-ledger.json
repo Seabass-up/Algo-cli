@@ -4070,6 +4070,15 @@
           "timestamp": "2026-09-13T23:49:49Z",
           "scope": "source digest sha256:9667c94845faff899b4a9b16828b39da63b3398a55e1c7de380209d2a64fb6aa binds committed release-preparation source bdbbfdbe8bebc9012e7f5fc184ad98a704955f59, exact 0.19.2 draft authority, current adversarial denominators, and unchanged browser security requirements",
           "limitations": "Local deterministic evidence does not establish hosted qualification of the candidate, external-browser completion, native signing, publication, or broader M8 completion; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after review of later-main release recovery",
+          "digest": "sha256:cf76ffc78b2c1a638d80e37234d2fee2b6c2426433034c691f63ad41bfbca591",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-14T00:10:08Z",
+          "scope": "source digest sha256:19a9c97f46bce6a2034d1827c09a8157f65aa688276a0a24abc1e072c4f54588 binds separate exact tagged-source and protected-main publisher identities, dynamic release identity checks, current adversarial denominators, and unchanged browser security requirements",
+          "limitations": "Local deterministic evidence does not establish hosted qualification of the candidate, external-browser completion, native signing, publication, or broader M8 completion; HARD-080 remains in progress"
         }
       ]
     },
@@ -6192,6 +6201,15 @@
           "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
           "timestamp": "2026-09-13T23:49:49Z",
           "scope": "source digest sha256:9667c94845faff899b4a9b16828b39da63b3398a55e1c7de380209d2a64fb6aa binds five local token-efficiency repetitions with median schema reduction 83.615 percent and typed-program reduction 96.644 percent under unchanged thresholds",
+          "limitations": "Synthetic local token estimates do not establish task completion, provider quality, comparative performance, external-browser completion, hosted qualification of the candidate, publication, or cross-harness superiority; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after review of later-main release recovery",
+          "digest": "sha256:cf76ffc78b2c1a638d80e37234d2fee2b6c2426433034c691f63ad41bfbca591",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-14T00:10:08Z",
+          "scope": "source digest sha256:19a9c97f46bce6a2034d1827c09a8157f65aa688276a0a24abc1e072c4f54588 binds five local token-efficiency repetitions with median schema reduction 83.615 percent and typed-program reduction 96.644 percent under unchanged thresholds",
           "limitations": "Synthetic local token estimates do not establish task completion, provider quality, comparative performance, external-browser completion, hosted qualification of the candidate, publication, or cross-harness superiority; HARD-081 remains in progress"
         }
       ]
