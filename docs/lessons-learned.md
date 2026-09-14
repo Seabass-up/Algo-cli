@@ -353,6 +353,43 @@ path. This is local source validation using user-supplied live release evidence,
 not a hosted image build, qualification, publication, or deployment. The durable
 prevention lesson is in the global `wiki-general/lessons-learned/cross-cutting.md`.
 
+## 2026-09-13: New Release Could Not Use Fixed Prior Draft Identity
+
+**Issue:** The protected draft-capture child could authorize only the historical
+`v0.19.1.post1` tag, source revision, release ID, and distribution filenames, so
+it could not capture a newly created `v0.19.2` draft. Review then found that the
+first generalization incorrectly required the immutable release source to equal
+the current publisher SHA, blocking exact-asset recovery after `main` advanced.
+
+**Cause:** The least-privilege recovery path correctly fixed the prior release's
+identity, but GitHub assigns each new draft a new numeric release ID. Carrying
+that old ID into the next release made the otherwise reusable publisher reject
+the new draft. A release's tagged source and a later protected-main recovery
+publisher are also distinct identities and must not be collapsed.
+
+**Repair:** Bind capture to exact tag `v0.19.2`; bind the publisher to the
+protected-main workflow SHA; and preserve the release's exact lowercase commit
+target as its source. Derive the numeric release ID from exactly one matching
+row in the bounded release listing, require a positive non-boolean integer, and
+allow only that detail endpoint and the validated asset endpoints. The read-only
+validator repeats the tag, separate source and publisher SHAs, listing, release
+ID, receipt-age, and endpoint bindings before authority resolves the tag.
+
+**Verification:** The complete release-authority focused group passed after a
+frozen non-editable environment refresh, covering dynamic release IDs, missing,
+ambiguous, truncated, and drifted listings, malformed identities, credential-free
+signed-asset redirects, exact filenames and digests, source binding, native
+version mapping, updater smoke fixtures, and a later-main recovery publisher
+with an unchanged tagged source. `git diff --check` also passed.
+
+**Prevention and limits:** A fixed recovery identity is not a reusable release
+identity. For each release, keep the tag allowlist exact and derive only the
+server-assigned ID from a unique bounded observation. Keep tagged source and
+current publisher separate, require both to be exact commit SHAs, and prove the
+ancestor and CI relationships before recovery. This is a tested local repair
+and prepared `0.19.2` candidate; hosted qualification and public publication
+are still required before calling it released or upgradeable.
+
 ## Repair Log Checklist
 
 - Date and component.
