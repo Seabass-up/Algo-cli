@@ -8,6 +8,39 @@ The [changelog](../CHANGELOG.md) and [release history](henry-release-0.19.1.md)
 retain the earlier reliability, model-discovery, Echo, Windows, and browser
 qualification repairs; this log adds the verified release-closeout lessons.
 
+## 2026-09-13: Pre-PyPI Snapshot Expiry Misread As Asset Digest Mismatch
+
+**Issue:** Protected publisher run
+[34793549112](https://github.com/Seabass-up/Algo-cli/actions/runs/34793549112)
+failed at `Recheck and revoke policy authority immediately before PyPI` with
+opaque exit 2 / `release_pre_pypi_authority`. The failure was read as a draft
+asset digest+size mismatch. PyPI `algo-cli-runtime/0.19.2` and `algo-cli/0.19.2`
+stayed 404.
+
+**Cause:** The before-pypi snapshot was captured at `2026-09-14T00:54:10Z` and
+the publish job's `release-authority` approval plus setup reached the freshness
+check at `2026-09-14T00:56:30Z` (140s). The 120-second window failed first. All
+17 draft assets matched retained local bytes: GitHub `digest` is
+`sha256:` plus lowercase hex and compared equal to local SHA-256, including
+sizes. The asset compare never ran. v0.19.1 Draft and immutable Latest
+`v0.19.1.post1` were not touched.
+
+**Repair:** Keep the 120-second snapshot bound and the digest+size equality
+check. Report `release_draft_snapshot_expired` with age when the snapshot is
+stale, and name the exact local/remote digest+size pairs when those differ.
+Do not recapture, widen the window, or upload.
+
+**Verification:** Live draft 388084902, same-run snapshot, and retained
+`oliver-verified-release-assets-34793549112-1` compared equal for every asset.
+Focused authority tests cover 119s pass, 121s/140s expiry, and named digest
+mismatches.
+
+**Prevention:** Read the snapshot age before assuming a digest mismatch. A retry
+must be a new `workflow_dispatch` attempt 1. Approve the publish job's
+`release-authority` environment (URL `https://pypi.org/p/algo-cli-runtime`)
+within 120 seconds of `draft-publish-capture` completing. Do not re-run the
+failed attempt.
+
 ## 2026-09-10: Public Release And Upgrade Recovery
 
 **Issue:** Source development had advanced while `algo-cli update` still saw

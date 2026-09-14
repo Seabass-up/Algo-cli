@@ -1523,7 +1523,7 @@ jobs:
           fi
           source_get "repos/Seabass-up/Algo-cli/commits/${RELEASE_TAG}" "${state}/tag.json"
           SNAPSHOT="${RUNNER_TEMP}/draft-publish-capture/snapshot.json" python -I -B -S - > "${state}/release.json" <<'PY'
-          import json, os, stat, time
+          import json, os, stat, sys, time
           from pathlib import Path
           path = Path(os.environ['SNAPSHOT'])
           info = path.lstat()
@@ -1537,13 +1537,16 @@ jobs:
               or value.get('run_attempt') != os.environ['GITHUB_RUN_ATTEMPT']
               or value.get('tag') != os.environ['RELEASE_TAG']
               or value.get('release_id') != int(os.environ['RELEASE_ID'])
-              or type(value.get('captured_at')) is not int
-              or not 0 <= time.time() - value['captured_at'] <= 120):
+              or type(value.get('captured_at')) is not int):
+              raise SystemExit(2)
+          age = time.time() - value['captured_at']
+          if not 0 <= age <= 120:
+              print(json.dumps({"reason_code":"release_draft_snapshot_expired","status":"blocked","age_s":int(age),"captured_at":value["captured_at"]}), file=sys.stderr)
               raise SystemExit(2)
           print(json.dumps(value['release']))
           PY
           STATE="${state}" ASSETS="${RUNNER_TEMP}/verified-release-assets" PACKAGE="${RUNNER_TEMP}/package/bound-dist" RELEASE_ID="${RELEASE_ID}" RELEASE_TAG="${RELEASE_TAG}" SOURCE_SHA="${SOURCE_SHA}" python -I -B -S - <<'PY'
-          import hashlib, json, os, re, stat
+          import hashlib, json, os, re, stat, sys
           from pathlib import Path
           state, source = Path(os.environ["STATE"]), os.environ["SOURCE_SHA"]
           branch = json.loads((state / "branch.json").read_bytes())
@@ -1607,6 +1610,12 @@ jobs:
                   raise SystemExit(2)
               remote[name] = (asset.get("digest"), asset.get("size"))
           if remote != local:
+              mismatches = {
+                  name: {"local": list(local[name]) if name in local else None, "remote": list(remote[name]) if name in remote else None}
+                  for name in sorted(set(local) | set(remote))
+                  if local.get(name) != remote.get(name)
+              }
+              print(json.dumps({"reason_code":"release_pre_pypi_authority","status":"blocked","mismatches":mismatches}), file=sys.stderr)
               raise SystemExit(2)
           PY
           revoke_token || fail
