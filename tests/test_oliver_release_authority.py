@@ -2283,7 +2283,14 @@ def test_immediate_pre_pypi_asset_validator_rejects_missing_or_conflicting_asset
 @pytest.mark.parametrize("age,passed", [(0, True), (119, True), (121, False), (140, False), (-10, False)])
 def test_immediate_pre_pypi_snapshot_reports_expired_age(tmp_path: Path, age: int, passed: bool) -> None:
     workflow = (ROOT / ".github/workflows/oliver-release.yml").read_text(encoding="utf-8")
-    validator = _pre_pypi_snapshot_validator(workflow)
+    # Freeze wall clock inside the -I -B -S subprocess so int(captured_at) vs
+    # float(time.time()) cannot flake near the 120s bound (e.g. 119s + frac).
+    frozen_now = 1_700_000_000.0
+    validator = (
+        "import time\n"
+        f"time.time = lambda: {frozen_now!r}\n"
+        + _pre_pypi_snapshot_validator(workflow)
+    )
     snapshot = {
         "schema_version": 1,
         "phase": "before-pypi",
@@ -2293,7 +2300,7 @@ def test_immediate_pre_pypi_snapshot_reports_expired_age(tmp_path: Path, age: in
         "run_attempt": "1",
         "tag": TAG,
         "release_id": 301,
-        "captured_at": int(time.time()) - age,
+        "captured_at": int(frozen_now) - age,
         "release": {"id": 301, "tag_name": TAG, "draft": True},
     }
     path = tmp_path / "snapshot.json"
