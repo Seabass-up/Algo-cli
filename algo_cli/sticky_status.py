@@ -32,7 +32,7 @@ def _enabled(stream: TextIO) -> bool:
 
 def _size() -> tuple[int, int]:
     size = shutil.get_terminal_size(fallback=(80, 24))
-    return max(20, size.columns), max(4, size.rows)
+    return max(20, size.columns), max(4, size.lines)
 
 
 def _write(stream: TextIO, data: str) -> None:
@@ -40,22 +40,34 @@ def _write(stream: TextIO, data: str) -> None:
     stream.flush()
 
 
-def _paint_locked(stream: TextIO, line: str) -> None:
+def _paint_locked(stream: TextIO, line: str, *, initial: bool = False) -> None:
     global _last_line, _rows
     cols, rows = _size()
+    previous_rows = _rows
     _rows = rows
     visible = line.replace("\n", " ").replace("\r", " ")
     if len(visible) > cols - 1:
         visible = visible[: max(0, cols - 4)] + "..."
+    resize_cleanup = ""
+    if previous_rows and previous_rows != rows:
+        # Reset the old margin before moving the footer. CUP safely clamps when
+        # the terminal became shorter, so a stale status row cannot remain.
+        resize_cleanup = f"\033[r\033[{previous_rows};1H\033[2K"
+    restore = "\0338"
+    if initial:
+        # Generation starts after the submitted prompt. Keep subsequent output
+        # inside the scroll region even when that prompt occupied the last row.
+        restore += f"\033[{rows - 1};1H"
     _write(
         stream,
         (
             "\0337"
+            f"{resize_cleanup}"
             f"\033[1;{rows - 1}r"
             f"\033[{rows};1H"
             "\033[2K"
             f"{visible}"
-            "\0338"
+            f"{restore}"
         ),
     )
     _last_line = visible
@@ -88,7 +100,9 @@ def start(render: Callable[[], str], *, stream: TextIO | None = None) -> None:
     global _render, _stream, _active, _refresh_thread, _stop_event
     if is_active():
         stop()
-    target = stream or sys.__stderr__
+    target = stream if stream is not None else sys.__stderr__
+    if target is None:
+        return
     with _lock:
         _render = render
         _stream = target
@@ -98,7 +112,7 @@ def start(render: Callable[[], str], *, stream: TextIO | None = None) -> None:
         _active = True
         _stop_event = threading.Event()
         try:
-            _paint_locked(target, render())
+            _paint_locked(target, render(), initial=True)
         except Exception:
             _active = False
             _render = None

@@ -423,6 +423,45 @@ ancestor and CI relationships before recovery. This is a tested local repair
 and prepared `0.19.2` candidate; hosted qualification and public publication
 are still required before calling it released or upgradeable.
 
+## 2026-09-20: Sticky Footer Was Silently Disabled and Broke the Hosted Suite
+
+**Issue:** PR #64's generation footer passed its four focused tests but did not
+activate on a real terminal. The Ubuntu suite later stopped inside pytest's own
+progress reporter, source-bound qualification was stale, and the dependency
+audit rejected `anyio 4.13.0`.
+
+**Confirmed causes:** The implementation read `os.terminal_size.rows`, although
+the real API exposes `lines`; `start()` swallowed the resulting `AttributeError`
+and disabled the footer. The tests supplied a fake `rows` attribute and patched
+the process-wide `shutil.get_terminal_size`, which leaked into pytest reporting.
+Resize repainting also did not clear the old footer row. Separately, CI reported
+CVE-2026-63374 and CVE-2026-64847 in `anyio 4.13.0`, fixed in `4.14.2`. The local
+Swift toolchain used the owned `AustinCoreTests.xctest` bundle while the crash
+qualifier recognized only the older aggregate bundle name.
+
+**Repair:** Use the real `terminal_size.lines` contract, keep generation output
+inside the reserved scroll region, clear the prior row on resize, and patch only
+the module-local size helper in tests. Bind the new runtime module and tests into
+Nathan and M8 source manifests. Refresh the lock to `anyio 4.14.2` on supported
+Python versions. Recognize both known Swift test bundles only when a resolved
+argument remains inside Austin's `.build` tree and publisher ancestry matches.
+
+**Verification:** The non-editable installed/source parity check passed with 285
+Python files and no divergence. The exact dependency audit reported no known
+vulnerabilities. The ten-trial Alice process-kill/restart receipt passed. Nathan
+passed 17/17 probes and 31/31 workloads with no policy escapes, duplicate
+mutations, or unverified completions. M8 passed all 9 local metrics while
+retaining 5 external blockers and no failures. The current final suite passed
+6,126 tests with 41 platform skips and no failures/errors; repository Ruff and
+mypy over 287 source files passed. Hosted checks for the pushed revision remain
+the authority for Linux, Windows, and GitHub policy state.
+
+**Prevention and limits:** Exercise real standard-library return types, avoid
+monkeypatching shared stdlib modules in tests, bind every new runtime path into
+qualification manifests, and treat dependency advisories as independent gate
+failures. A fake TTY validates emitted control sequences, not every terminal
+emulator, resize race, multiplexor, or remote shell.
+
 ## Repair Log Checklist
 
 - Date and component.

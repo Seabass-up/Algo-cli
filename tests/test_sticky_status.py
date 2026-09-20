@@ -52,28 +52,57 @@ class _TtyStream(StringIO):
         return True
 
 
+def test_size_uses_the_real_terminal_size_contract() -> None:
+    columns, lines = sticky_status._size()
+    assert columns >= 20
+    assert lines >= 4
+
+
 def test_sticky_status_paints_and_clears_on_tty(monkeypatch) -> None:
     sticky_status._test_reset()
 
     class _Size:
         columns = 80
-        rows = 24
+        lines = 24
 
-    monkeypatch.setattr(
-        sticky_status.shutil,
-        "get_terminal_size",
-        lambda fallback=(80, 24): _Size(),
-    )
+    monkeypatch.setattr(sticky_status, "_size", lambda: (_Size.columns, _Size.lines))
     stream = _TtyStream()
     sticky_status.start(lambda: "● model · local · tools 8", stream=stream)
     assert sticky_status.is_active() is True
     painted = stream.getvalue()
     assert "● model · local · tools 8" in painted
     assert "\033[1;23r" in painted
+    assert painted.endswith("\0338\033[23;1H")
     sticky_status.stop()
     cleared = stream.getvalue()
     assert "\033[r" in cleared
     assert sticky_status.is_active() is False
+
+
+def test_sticky_status_moves_and_clears_old_row_after_resize(monkeypatch) -> None:
+    sticky_status._test_reset()
+    dimensions = [24]
+
+    class _Size:
+        columns = 80
+
+        @property
+        def lines(self) -> int:
+            return dimensions[0]
+
+    monkeypatch.setattr(sticky_status, "_size", lambda: (_Size.columns, _Size().lines))
+    stream = _TtyStream()
+    sticky_status.start(lambda: "model · local", stream=stream)
+    before_resize = len(stream.getvalue())
+
+    dimensions[0] = 30
+    sticky_status.refresh()
+
+    resized = stream.getvalue()[before_resize:]
+    assert "\033[r\033[24;1H\033[2K" in resized
+    assert "\033[1;29r" in resized
+    assert "\033[30;1H" in resized
+    sticky_status.stop()
 
 
 def test_agent_loop_starts_and_stops_sticky(monkeypatch) -> None:
