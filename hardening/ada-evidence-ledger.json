@@ -4106,6 +4106,15 @@
           "timestamp": "2026-09-20T19:46:06Z",
           "scope": "source digest sha256:6d028713b6bc0acbb6511f2cdead83812b87a8e57184fc2637f3b62daea3c999 binds the sticky-footer runtime and tests, both known owned Swift test bundle identities, current adversarial denominators, and unchanged browser security requirements",
           "limitations": "Local deterministic evidence does not establish hosted qualification, external-browser completion, production terminal compatibility, native signing, publication, or broader M8 completion; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after sticky-footer terminal-lifecycle hardening",
+          "digest": "sha256:1826021ebf0a4a6c92e0b4e25547477afe5743ce72ef118ea8c41eed35f8fa44",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-20T20:29:01Z",
+          "scope": "source digest sha256:8ac82111907341dece6be5cece42edbf6d8992e2f7efc4eab1886b961ce8814a binds selected-stream terminal sizing, normalized repaint checks, JSON suppression, runtime-cap display, fail-closed VT detection, signal cleanup, current adversarial denominators, and unchanged browser security requirements",
+          "limitations": "Local deterministic evidence does not establish hosted qualification, external-browser completion, every terminal emulator, native signing, publication, or broader M8 completion; HARD-080 remains in progress"
         }
       ]
     },
@@ -6274,6 +6283,24 @@
           "timestamp": "2026-09-20T19:46:06Z",
           "scope": "source digest sha256:6d028713b6bc0acbb6511f2cdead83812b87a8e57184fc2637f3b62daea3c999 binds five local token-efficiency repetitions with median schema reduction 83.615 percent and typed-program reduction 96.644 percent under unchanged thresholds",
           "limitations": "Synthetic local token estimates do not establish task completion, provider quality, production terminal compatibility, comparative performance, external-browser completion, hosted qualification, publication, or cross-harness superiority; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json refreshed after sticky-footer terminal-lifecycle hardening",
+          "digest": "sha256:3f82d5eab733f36b1619459541bc28b58eee8615596382a2b850a9022e3c4bcd",
+          "result": "status pass: 17 of 17 correctness probes and 31 of 31 workloads pass; zero policy escapes, duplicate mutations, or unverified completions; public_claim_eligible is false",
+          "timestamp": "2026-09-20T20:27:50Z",
+          "scope": "source digest sha256:e93009133c9b515cb4acc3873e1496edeeeec7674cb69d7c3df684054f822eba and report digest sha256:b4df47e71722c1c62d9f05e339902e83f49f3badab7fb74e2fa21d9325393f5a bind the deterministic Agent runtime benchmark; local agent workload p95 is 26.21025 ms",
+          "limitations": "Deterministic local fixtures do not establish provider quality, production terminal compatibility, external-browser completion, hosted Windows or Linux execution, publication, or cross-harness superiority; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated after sticky-footer terminal-lifecycle hardening",
+          "digest": "sha256:1826021ebf0a4a6c92e0b4e25547477afe5743ce72ef118ea8c41eed35f8fa44",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics remain blocked, 0 fail or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-20T20:29:01Z",
+          "scope": "source digest sha256:8ac82111907341dece6be5cece42edbf6d8992e2f7efc4eab1886b961ce8814a binds five local token-efficiency repetitions with median schema reduction 83.615 percent and typed-program reduction 96.644 percent under unchanged thresholds",
+          "limitations": "Synthetic local token estimates do not establish task completion, provider quality, every terminal emulator, comparative performance, external-browser completion, hosted qualification, publication, or cross-harness superiority; HARD-081 remains in progress"
         }
       ]
     },

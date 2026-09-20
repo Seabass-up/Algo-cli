@@ -704,9 +704,18 @@ def format_status_toolbar_plain(cfg: Config) -> str:
         parts.append("▣ ctx ?")
     else:
         warn = " ⚠" if int(pct_left) < 20 else ""
-        parts.append(
-            f"▣ {_format_short_count(used)}/{_format_short_count(total)} {pct_left}%{warn}"
-        )
+        context = f"▣ {_format_short_count(used)}/{_format_short_count(total)} {pct_left}%{warn}"
+        native = RUNTIME_STATUS.get("context_native")
+        runtime_cap = RUNTIME_STATUS.get("context_runtime_cap")
+        if (
+            isinstance(native, int)
+            and native > 0
+            and isinstance(runtime_cap, int)
+            and runtime_cap > 0
+            and native > runtime_cap
+        ):
+            context += f" · cap {_format_short_count(runtime_cap)}"
+        parts.append(context)
 
     tool_max = RUNTIME_STATUS.get(
         "max_tool_iterations", max(1, int(cfg.max_tool_iterations))
@@ -2927,7 +2936,9 @@ def agent_loop(
     """Run one interactive turn; keep status bar visible for the whole generation."""
     from . import sticky_status
 
-    sticky_status.start(lambda: format_status_toolbar_plain(cfg))
+    show_sticky_status = json_sink() is None
+    if show_sticky_status:
+        sticky_status.start(lambda: format_status_toolbar_plain(cfg))
     try:
         _agent_loop_body(
             client,
@@ -2937,7 +2948,8 @@ def agent_loop(
             _receipt_anchor_store=_receipt_anchor_store,
         )
     finally:
-        sticky_status.stop()
+        if show_sticky_status:
+            sticky_status.stop()
 
 
 def _agent_loop_body(
@@ -4669,14 +4681,16 @@ def _force_utf8_console() -> None:
             kernel32.SetConsoleOutputCP(65001)
             kernel32.SetConsoleCP(65001)
             # Best-effort: enable VT processing so Rich can paint colors/unicode
-            mode = ctypes.c_uint32()
-            if kernel32.GetConsoleMode(kernel32.GetStdHandle(-11), ctypes.byref(mode)):
-                ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
-                if not (mode.value & ENABLE_VIRTUAL_TERMINAL_PROCESSING):
-                    kernel32.SetConsoleMode(
-                        kernel32.GetStdHandle(-11),
-                        mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING,
-                    )
+            ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+            for handle_id in (-11, -12):  # stdout and stderr
+                mode = ctypes.c_uint32()
+                handle = kernel32.GetStdHandle(handle_id)
+                if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                    if not (mode.value & ENABLE_VIRTUAL_TERMINAL_PROCESSING):
+                        kernel32.SetConsoleMode(
+                            handle,
+                            mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+                        )
     except Exception:
         # Never let codec setup crash startup; log and fall through.
         try:

@@ -428,23 +428,36 @@ are still required before calling it released or upgradeable.
 **Issue:** PR #64's generation footer passed its four focused tests but did not
 activate on a real terminal. The Ubuntu suite later stopped inside pytest's own
 progress reporter, source-bound qualification was stale, and the dependency
-audit rejected `anyio 4.13.0`.
+audit rejected `anyio 4.13.0`. Post-push review also found that redirected JSON
+runs could emit terminal controls, narrow terminals repainted continuously, the
+plain footer omitted the runtime-cap warning, and abrupt POSIX exit or suspend
+could strand a restricted scroll region in the caller's shell.
 
 **Confirmed causes:** The implementation read `os.terminal_size.rows`, although
 the real API exposes `lines`; `start()` swallowed the resulting `AttributeError`
 and disabled the footer. The tests supplied a fake `rows` attribute and patched
 the process-wide `shutil.get_terminal_size`, which leaked into pytest reporting.
-Resize repainting also did not clear the old footer row. Separately, CI reported
-CVE-2026-63374 and CVE-2026-64847 in `anyio 4.13.0`, fixed in `4.14.2`. The local
-Swift toolchain used the owned `AustinCoreTests.xctest` bundle while the crash
-qualifier recognized only the older aggregate bundle name.
+Resize repainting also did not clear the old footer row. Terminal dimensions
+were queried through the process default rather than the selected output
+stream, and refresh compared untruncated input with stored truncated output.
+The wrapper did not distinguish a JSON sink, and the signal path initially used
+buffered stderr recursively; an immediate SIGTERM could interrupt that stream
+write and prevent cleanup. Separately, CI reported CVE-2026-63374 and
+CVE-2026-64847 in `anyio 4.13.0`, fixed in `4.14.2`. The local Swift toolchain
+used the owned `AustinCoreTests.xctest` bundle while the crash qualifier
+recognized only the older aggregate bundle name.
 
-**Repair:** Use the real `terminal_size.lines` contract, keep generation output
-inside the reserved scroll region, clear the prior row on resize, and patch only
-the module-local size helper in tests. Bind the new runtime module and tests into
-Nathan and M8 source manifests. Refresh the lock to `anyio 4.14.2` on supported
-Python versions. Recognize both known Swift test bundles only when a resolved
-argument remains inside Austin's `.build` tree and publisher ancestry matches.
+**Repair:** Use the real `terminal_size.lines` contract and the selected stream's
+file descriptor, keep generation output inside the reserved scroll region,
+clear the prior row on resize, compare equally truncated output, and patch only
+the module-local size helper in tests. Suppress the footer for JSON sinks, mirror
+the runtime-cap chip, require VT support, and restore terminal margins before
+SIGTSTP, SIGTERM, and SIGHUP. The emergency reset uses unbuffered descriptor I/O
+plus a bounded drain/settle step so an interrupted buffered write cannot swallow
+it. Bind the new runtime module and tests into Nathan and M8 source manifests.
+Refresh the lock to `anyio 4.14.2` on supported Python versions. Recognize both
+known Swift test bundles only when a resolved argument remains inside Austin's
+`.build` tree and publisher ancestry matches.
 
 **Verification:** The non-editable installed/source parity check passed with 285
 Python files and no divergence. The exact dependency audit reported no known
@@ -452,15 +465,23 @@ vulnerabilities. The ten-trial Alice process-kill/restart receipt passed. Nathan
 passed 17/17 probes and 31/31 workloads with no policy escapes, duplicate
 mutations, or unverified completions. M8 passed all 9 local metrics while
 retaining 5 external blockers and no failures. The current final suite passed
-6,126 tests with 41 platform skips and no failures/errors; repository Ruff and
-mypy over 287 source files passed. Hosted checks for the pushed revision remain
-the authority for Linux, Windows, and GitHub policy state.
+6,132 tests with 41 platform skips and no failures/errors in 96.032 seconds;
+repository Ruff, mypy over 288 source files, and compileall passed. Ten
+consecutive immediate-SIGTERM pseudo-terminal trials observed both footer paint
+and terminal-margin reset before process exit. M9 accepted the current Nathan,
+M8, and ledger bindings while preserving 13 known external blockers. Hosted
+checks for the next pushed revision remain the authority for Linux, Windows,
+and GitHub policy state.
 
 **Prevention and limits:** Exercise real standard-library return types, avoid
 monkeypatching shared stdlib modules in tests, bind every new runtime path into
 qualification manifests, and treat dependency advisories as independent gate
-failures. A fake TTY validates emitted control sequences, not every terminal
-emulator, resize race, multiplexor, or remote shell.
+failures. Use a real pseudo-terminal for terminal lifecycle checks; a fake TTY
+does not cover signal-time buffered-I/O races, every terminal emulator, resize
+race, multiplexor, or remote shell. The repository still carries an optional
+Echo Veil dependency for legacy qualification even though Echo is retired as a
+memory authority. This repair made no Echo memory call or write; removing that
+legacy CI/runtime integration remains separate continuity-migration work.
 
 ## Repair Log Checklist
 

@@ -7,10 +7,12 @@ agent_loop the prompt is idle, so this module reserves the last terminal row
 
 from __future__ import annotations
 
-import shutil
+import os
+import signal
 import sys
 import threading
-from typing import Callable, TextIO
+import time
+from typing import Any, Callable, TextIO
 
 _render: Callable[[], str] | None = None
 _stream: TextIO | None = None
@@ -20,18 +22,41 @@ _last_line = ""
 _rows = 0
 _refresh_thread: threading.Thread | None = None
 _stop_event = threading.Event()
+_signal_handlers: dict[int, Any] = {}
 _REFRESH_SECONDS = 0.4
+
+
+def _supports_vt(stream: TextIO) -> bool:
+    if sys.platform != "win32":
+        stream.fileno()
+        terminal = os.environ.get("TERM", "").strip().casefold()
+        return bool(terminal and terminal != "dumb")
+    try:
+        import ctypes
+        import msvcrt
+
+        mode = ctypes.c_uint32()
+        handle = msvcrt.get_osfhandle(stream.fileno())
+        enabled = ctypes.windll.kernel32.GetConsoleMode(  # type: ignore[attr-defined]
+            handle, ctypes.byref(mode)
+        )
+        return bool(enabled and mode.value & 0x0004)
+    except (AttributeError, OSError, ValueError):
+        return False
 
 
 def _enabled(stream: TextIO) -> bool:
     try:
-        return bool(stream.isatty())
+        return bool(stream.isatty()) and _supports_vt(stream)
     except Exception:
         return False
 
 
-def _size() -> tuple[int, int]:
-    size = shutil.get_terminal_size(fallback=(80, 24))
+def _size(stream: TextIO) -> tuple[int, int]:
+    try:
+        size = os.get_terminal_size(stream.fileno())
+    except (AttributeError, OSError, ValueError):
+        size = os.terminal_size((80, 24))
     return max(20, size.columns), max(4, size.lines)
 
 
@@ -40,14 +65,25 @@ def _write(stream: TextIO, data: str) -> None:
     stream.flush()
 
 
-def _paint_locked(stream: TextIO, line: str, *, initial: bool = False) -> None:
-    global _last_line, _rows
-    cols, rows = _size()
-    previous_rows = _rows
-    _rows = rows
+def _visible_line(line: str, cols: int) -> str:
     visible = line.replace("\n", " ").replace("\r", " ")
     if len(visible) > cols - 1:
-        visible = visible[: max(0, cols - 4)] + "..."
+        return visible[: max(0, cols - 4)] + "..."
+    return visible
+
+
+def _paint_locked(
+    stream: TextIO,
+    line: str,
+    *,
+    initial: bool = False,
+    dimensions: tuple[int, int] | None = None,
+) -> None:
+    global _last_line, _rows
+    cols, rows = dimensions or _size(stream)
+    previous_rows = _rows
+    _rows = rows
+    visible = _visible_line(line, cols)
     resize_cleanup = ""
     if previous_rows and previous_rows != rows:
         # Reset the old margin before moving the footer. CUP safely clamps when
@@ -75,7 +111,7 @@ def _paint_locked(stream: TextIO, line: str, *, initial: bool = False) -> None:
 
 def _clear_locked(stream: TextIO) -> None:
     global _last_line, _rows
-    _cols, rows = _size()
+    _cols, rows = _size(stream)
     _rows = rows
     _write(
         stream,
@@ -88,6 +124,97 @@ def _clear_locked(stream: TextIO) -> None:
         ),
     )
     _last_line = ""
+
+
+def _drain_terminal(stream: TextIO) -> None:
+    drain = getattr(os, "tcdrain", None)
+    if not callable(drain):
+        return
+    try:
+        drain(stream.fileno())
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
+def _clear_for_signal(stream: TextIO) -> None:
+    """Reset margins without re-entering a buffered stream interrupted by a signal."""
+    global _last_line, _rows
+    descriptor = stream.fileno()
+    _cols, rows = _size(stream)
+    payload = f"\0337\033[r\033[{rows};1H\033[2K\0338".encode("ascii")
+    offset = 0
+    while offset < len(payload):
+        written = os.write(descriptor, payload[offset:])
+        if written <= 0:
+            raise OSError("terminal reset write did not advance")
+        offset += written
+    _last_line = ""
+    _rows = rows
+
+
+def _resume_signal_handler(signum: int, previous: Any) -> None:
+    if not _active or _stream is None or _render is None:
+        return
+    signal.signal(signum, _handle_signal)
+    _signal_handlers[signum] = previous
+    _paint_locked(_stream, _render(), initial=True)
+
+
+def _handle_signal(signum: int, frame: Any) -> None:
+    """Restore terminal state, then preserve the handler that was installed before us."""
+    with _lock:
+        if _active and _stream is not None:
+            try:
+                _clear_for_signal(_stream)
+                _drain_terminal(_stream)
+            except Exception:
+                pass
+        previous = _signal_handlers.get(signum, signal.SIG_DFL)
+
+    try:
+        signal.signal(signum, previous)
+        if previous == signal.SIG_IGN:
+            pass
+        elif callable(previous):
+            previous(signum, frame)
+        else:
+            # Pseudo-terminals can discard their final queued bytes when the
+            # slave closes immediately after a default terminating signal.
+            time.sleep(0.01)
+            os.kill(os.getpid(), signum)
+    finally:
+        # SIGTSTP resumes here after SIGCONT. A custom termination handler can
+        # also return, so restore the sticky state whenever the process lives.
+        with _lock:
+            try:
+                _resume_signal_handler(signum, previous)
+            except Exception:
+                pass
+
+
+def _install_signal_handlers() -> None:
+    if os.name != "posix" or threading.current_thread() is not threading.main_thread():
+        return
+    for name in ("SIGTSTP", "SIGTERM", "SIGHUP"):
+        signum = getattr(signal, name, None)
+        if signum is None or signum in _signal_handlers:
+            continue
+        previous = signal.getsignal(signum)
+        signal.signal(signum, _handle_signal)
+        _signal_handlers[signum] = previous
+
+
+def _restore_signal_handlers() -> None:
+    if threading.current_thread() is not threading.main_thread():
+        return
+    handlers = list(_signal_handlers.items())
+    _signal_handlers.clear()
+    for signum, previous in handlers:
+        try:
+            if signal.getsignal(signum) is _handle_signal:
+                signal.signal(signum, previous)
+        except (OSError, ValueError):
+            pass
 
 
 def _refresh_loop() -> None:
@@ -113,10 +240,12 @@ def start(render: Callable[[], str], *, stream: TextIO | None = None) -> None:
         _stop_event = threading.Event()
         try:
             _paint_locked(target, render(), initial=True)
+            _install_signal_handlers()
         except Exception:
             _active = False
             _render = None
             _stream = None
+            _restore_signal_handlers()
             return
         _refresh_thread = threading.Thread(
             target=_refresh_loop,
@@ -133,9 +262,10 @@ def refresh() -> None:
             return
         try:
             line = _render()
-            cols_rows = _size()
-            if line != _last_line or cols_rows[1] != _rows:
-                _paint_locked(_stream, line)
+            dimensions = _size(_stream)
+            visible = _visible_line(line, dimensions[0])
+            if visible != _last_line or dimensions[1] != _rows:
+                _paint_locked(_stream, line, dimensions=dimensions)
         except Exception:
             pass
 
@@ -152,6 +282,7 @@ def stop() -> None:
         _active = False
         _render = None
         _stream = None
+    _restore_signal_handlers()
     if thread is not None and thread is not threading.current_thread():
         thread.join(timeout=1.0)
     if was_active and stream is not None:
