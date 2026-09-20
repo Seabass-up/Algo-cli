@@ -548,6 +548,10 @@ def refresh_runtime_status(cfg: Config, client: Any | None = None, *, force: boo
     if last_metrics is not None:
         RUNTIME_STATUS["last_metrics"] = last_metrics
 
+    from . import sticky_status
+
+    sticky_status.refresh()
+
 
 def _ftr_chip(text: str, fg: str, *, bold: bool = False) -> str:
     inner = escape(text)
@@ -676,6 +680,70 @@ def build_status_toolbar(cfg: Config):
     return HTML("".join(parts))
 
 
+def format_status_toolbar_plain(cfg: Config) -> str:
+    """Plain-text twin of build_status_toolbar for the generation sticky footer."""
+    parts: list[str] = []
+    if routes_to_xai(cfg) or routes_to_chatgpt(cfg) or cfg.cloud:
+        parts.append("●")
+    else:
+        cached = SERVER_READY_CACHE.get(cfg.host)
+        if cached and cached[1]:
+            parts.append("●")
+        elif cached:
+            parts.append("○")
+        else:
+            parts.append("·")
+
+    parts.append(str(RUNTIME_STATUS.get("model", cfg.model)))
+    parts.append(str(RUNTIME_STATUS.get("mode", "local")))
+
+    used = RUNTIME_STATUS.get("context_used")
+    total = RUNTIME_STATUS.get("context_total")
+    pct_left = RUNTIME_STATUS.get("context_pct_left")
+    if not total or pct_left is None:
+        parts.append("▣ ctx ?")
+    else:
+        warn = " ⚠" if int(pct_left) < 20 else ""
+        context = f"▣ {_format_short_count(used)}/{_format_short_count(total)} {pct_left}%{warn}"
+        native = RUNTIME_STATUS.get("context_native")
+        runtime_cap = RUNTIME_STATUS.get("context_runtime_cap")
+        if (
+            isinstance(native, int)
+            and native > 0
+            and isinstance(runtime_cap, int)
+            and runtime_cap > 0
+            and native > runtime_cap
+        ):
+            context += f" · cap {_format_short_count(runtime_cap)}"
+        parts.append(context)
+
+    tool_max = RUNTIME_STATUS.get(
+        "max_tool_iterations", max(1, int(cfg.max_tool_iterations))
+    )
+    reflect = RUNTIME_STATUS.get("tool_think_every", max(1, int(cfg.tool_think_every)))
+    parts.append(f"tools {tool_max}")
+    parts.append(f"reflect {reflect}")
+
+    metrics = RUNTIME_STATUS.get("last_metrics") or {}
+    if isinstance(metrics, dict):
+        timestamp = metrics.get("timestamp")
+        if timestamp and (time.time() - float(timestamp)) <= FOOTER_METRICS_FRESHNESS_SECONDS:
+            try:
+                count = float(metrics.get("eval_count") or 0)
+                duration_s = float(metrics.get("eval_duration") or 0) / 1_000_000_000.0
+                if count > 0 and duration_s > 0:
+                    parts.append(f"{count / duration_s:.0f} tok/s")
+            except (TypeError, ValueError):
+                pass
+
+    if not RUNTIME_STATUS.get("safe_mode", cfg.safe_mode):
+        parts.append("safe off")
+    if RUNTIME_STATUS.get("auto_mode", cfg.auto_approve_active):
+        parts.append("auto on")
+
+    return " · ".join(parts)
+
+
 def build_prompt_style(palette: dict[str, str]) -> Style:
     return Style.from_dict(
         {
@@ -692,6 +760,9 @@ def build_prompt_style(palette: dict[str, str]) -> Style:
 
 def invalidate_prompt_toolbar(session: Any | None) -> None:
     """Repaint the persistent footer after context/metrics change."""
+    from . import sticky_status
+
+    sticky_status.refresh()
     if session is None:
         return
     try:
@@ -2862,6 +2933,33 @@ def agent_loop(
     _receipt_key_store: Any | None = None,
     _receipt_anchor_store: Any | None = None,
 ) -> None:
+    """Run one interactive turn; keep status bar visible for the whole generation."""
+    from . import sticky_status
+
+    show_sticky_status = json_sink() is None
+    if show_sticky_status:
+        sticky_status.start(lambda: format_status_toolbar_plain(cfg))
+    try:
+        _agent_loop_body(
+            client,
+            cfg,
+            user_message,
+            _receipt_key_store=_receipt_key_store,
+            _receipt_anchor_store=_receipt_anchor_store,
+        )
+    finally:
+        if show_sticky_status:
+            sticky_status.stop()
+
+
+def _agent_loop_body(
+    client: Client,
+    cfg: Config,
+    user_message: str,
+    *,
+    _receipt_key_store: Any | None = None,
+    _receipt_anchor_store: Any | None = None,
+) -> None:
     agent_loop_started = time.perf_counter()
     from .elsie_echo_preflight import (
         EchoAuxiliaryPreflightError,
@@ -4583,14 +4681,16 @@ def _force_utf8_console() -> None:
             kernel32.SetConsoleOutputCP(65001)
             kernel32.SetConsoleCP(65001)
             # Best-effort: enable VT processing so Rich can paint colors/unicode
-            mode = ctypes.c_uint32()
-            if kernel32.GetConsoleMode(kernel32.GetStdHandle(-11), ctypes.byref(mode)):
-                ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
-                if not (mode.value & ENABLE_VIRTUAL_TERMINAL_PROCESSING):
-                    kernel32.SetConsoleMode(
-                        kernel32.GetStdHandle(-11),
-                        mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING,
-                    )
+            ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+            for handle_id in (-11, -12):  # stdout and stderr
+                mode = ctypes.c_uint32()
+                handle = kernel32.GetStdHandle(handle_id)
+                if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                    if not (mode.value & ENABLE_VIRTUAL_TERMINAL_PROCESSING):
+                        kernel32.SetConsoleMode(
+                            handle,
+                            mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+                        )
     except Exception:
         # Never let codec setup crash startup; log and fall through.
         try:

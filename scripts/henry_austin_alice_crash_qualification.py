@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shlex
 import signal
 import stat
 import subprocess
@@ -37,6 +38,7 @@ LIMITATIONS = (
     "installed XPC, TCC, Keychain, ScreenCaptureKit, sudden-power-loss, or secure-erasure path."
 )
 SOURCE_PATHS = (
+    "native/austin/Package.swift",
     "native/austin/Sources/AustinTCCAdapter/AustinAliceCaptureArtifact.swift",
     "native/austin/Tests/AustinCoreTests/AustinAliceCaptureArtifactTests.swift",
     "scripts/henry_austin_alice_crash_qualification.py",
@@ -177,13 +179,38 @@ def _process_parent_and_command(process_id: int) -> tuple[int, str]:
     return parent, command
 
 
+def _has_owned_test_bundle(command: str) -> bool:
+    """Recognize native SwiftPM and swiftbuild bundles within this build tree."""
+    try:
+        build_root = (AUSTIN / ".build").resolve(strict=True)
+        arguments = shlex.split(command)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    bundle_names = {"AustinNativeControlPackageTests.xctest", "AustinCoreTests.xctest"}
+    for argument in arguments:
+        candidate = Path(argument)
+        if not candidate.is_absolute():
+            continue
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(build_root)
+            for parent in (resolved, *resolved.parents):
+                if parent == build_root:
+                    break
+                if parent.name in bundle_names and parent.is_dir():
+                    return True
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return False
+
+
 def _assert_owned_test_process(publisher_id: int, test_process_id: int) -> None:
     if publisher_id <= 1 or test_process_id <= 1 or publisher_id == test_process_id:
         raise _failure("alice_crash_process_identity")
     current = test_process_id
     for depth in range(16):
         parent, command = _process_parent_and_command(current)
-        if depth == 0 and ("AustinNativeControlPackageTests.xctest" not in command or "xctest" not in command):
+        if depth == 0 and not _has_owned_test_bundle(command):
             raise _failure("alice_crash_process_identity")
         if parent == publisher_id:
             return

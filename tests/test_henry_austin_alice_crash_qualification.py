@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 
 import pytest
@@ -23,6 +24,50 @@ assert SPEC is not None and SPEC.loader is not None
 SCRIPT = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = SCRIPT
 SPEC.loader.exec_module(SCRIPT)
+
+
+@pytest.mark.parametrize("bundle", ["AustinNativeControlPackageTests.xctest", "AustinCoreTests.xctest"])
+def test_both_build_engines_require_owned_bundle_and_publisher_ancestry(tmp_path, monkeypatch, bundle):
+    austin = tmp_path / "native" / "austin"
+    executable = austin / ".build" / "debug" / bundle / "Contents" / "MacOS" / bundle.removesuffix(".xctest")
+    executable.parent.mkdir(parents=True)
+    executable.write_text("test fixture", encoding="utf-8")
+    monkeypatch.setattr(SCRIPT, "AUSTIN", austin)
+    command = f"/toolchain/swiftpm-testing-helper --test-bundle-path {shlex.quote(str(executable))}"
+    monkeypatch.setattr(SCRIPT, "_process_parent_and_command", lambda pid: (100, command))
+    SCRIPT._assert_owned_test_process(100, 200)
+
+    monkeypatch.setattr(SCRIPT, "_process_parent_and_command", lambda pid: (1, command))
+    with pytest.raises(SCRIPT.AliceCrashQualificationError, match="alice_crash_process_identity"):
+        SCRIPT._assert_owned_test_process(100, 200)
+
+
+def test_foreign_bundle_and_symlink_escape_cannot_authorize_process_kill(tmp_path, monkeypatch):
+    austin = tmp_path / "native" / "austin"
+    build = austin / ".build"
+    build.mkdir(parents=True)
+    foreign = tmp_path / "foreign" / "AustinCoreTests.xctest" / "Contents" / "MacOS" / "AustinCoreTests"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text("foreign fixture", encoding="utf-8")
+    monkeypatch.setattr(SCRIPT, "AUSTIN", austin)
+    alias = build / "AustinCoreTests.xctest"
+    alias.symlink_to(foreign.parents[2], target_is_directory=True)
+    for candidate in (foreign, alias / "Contents" / "MacOS" / "AustinCoreTests"):
+        command = f"xctest {shlex.quote(str(candidate))}"
+        monkeypatch.setattr(SCRIPT, "_process_parent_and_command", lambda pid: (100, command))
+        with pytest.raises(SCRIPT.AliceCrashQualificationError, match="alice_crash_process_identity"):
+            SCRIPT._assert_owned_test_process(100, 200)
+
+
+def test_unrecognized_or_malformed_bundle_never_authorizes_process_kill(tmp_path, monkeypatch):
+    austin = tmp_path / "AustinCoreTests.xctest" / "native" / "austin"
+    unrelated = austin / ".build" / "OtherTests.xctest"
+    unrelated.mkdir(parents=True)
+    monkeypatch.setattr(SCRIPT, "AUSTIN", austin)
+    for command in (f"xctest {shlex.quote(str(unrelated))}", 'xctest "unterminated'):
+        monkeypatch.setattr(SCRIPT, "_process_parent_and_command", lambda pid: (100, command))
+        with pytest.raises(SCRIPT.AliceCrashQualificationError, match="alice_crash_process_identity"):
+            SCRIPT._assert_owned_test_process(100, 200)
 
 
 def test_alice_crash_evidence_output_is_bounded_and_female_named() -> None:
