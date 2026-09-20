@@ -46,6 +46,10 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 - Accept both current owned Swift test-bundle identities without weakening path
   or process-ancestry checks, and update the dependency lock past known `anyio`
   advisories.
+- Pin release upgrade qualification to the actual published `0.19.2`
+  predecessor and its exact public wheel bytes instead of the obsolete
+  `0.18.0` baseline, including the real published updater for pipless
+  `uv-pip` installations instead of a manual bootstrap bypass.
 
 ### Release Limits
 

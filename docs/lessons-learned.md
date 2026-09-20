@@ -912,6 +912,42 @@ Echo Veil dependency for legacy qualification even though Echo is retired as a
 memory authority. This repair made no Echo memory call or write; removing that
 legacy CI/runtime integration remains separate continuity-migration work.
 
+## 2026-09-20 - Upgrade Qualification Used a Stale Predecessor and Bypassed `uv-pip`
+
+**Component and symptom:** The `v0.20.0` delivery preflight initially passed
+upgrade tests from published `0.18.0`, even though PyPI's current predecessor is
+`0.19.2`. After correcting that pin, the pipless `uv-pip` case failed because
+the smoke test expected the installed updater to identify the environment as
+`pip`, then replaced the package through a test-owned `uv pip install` command.
+
+**Confirmed cause:** The release fixture's version, wheel URL, digest, and size
+were never advanced after the `0.18.0` release. Its special `uv-pip` branch
+preserved a one-time bootstrap workaround for behavior that public `0.19.2`
+already fixed, so that branch did not exercise the published updater at all.
+
+**Repair:** Pin the exact public `0.19.2` wheel by version, URL, SHA-256, and
+size. Require its installed updater to identify every manager accurately. Keep
+the pipless-environment probe, but make `uv-pip` run the same real
+`algo-cli update` entrypoint as the other POSIX managers. Remove the manual
+upgrade bypass and report that no bootstrap is required. Add a regression test
+that rejects a return to the bypass.
+
+**Verification:** The focused upgrade-test module passed 40 tests and scoped
+Ruff passed. Real isolated macOS upgrades from the pinned `0.19.2` wheel to the
+locally built `0.20.0` wheel passed for `pip`, `pipx` with both `pip` and `uv`
+backends, `uv tool`, and pipless `uv-pip`. Every run verified 329 predecessor
+files and 333 candidate files against wheel bytes, preserved 11 seeded state
+files plus SQLite integrity, and passed a repeat update. Final rebuilt artifact
+digests, the full suite, hosted operating-system jobs, and publication remain
+pending.
+
+**Prevention and limits:** Every release must advance the predecessor fixture
+to the live PyPI latest version and pin its exact immutable bytes. A passing
+upgrade from an older package is not predecessor qualification, and a
+test-owned package-manager command is not evidence that `algo-cli update`
+works. Local macOS manager coverage does not substitute for hosted Windows and
+Linux qualification or public post-publication install and upgrade checks.
+
 ## Repair Log Checklist
 
 - Date and component.
