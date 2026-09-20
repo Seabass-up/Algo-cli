@@ -4187,6 +4187,15 @@
           "timestamp": "2026-09-20T21:25:30Z",
           "scope": "source digest sha256:a9caef5e86a9d92a337a8b475a4c48cb9cfeced61cee79e01ae7a943106542a5 binds the combined YOLO, sticky-footer, slash-policy, model-profile, native-crash, and focused adversarial source",
           "limitations": "Local deterministic evidence does not qualify hosted operating systems, external browsers, every terminal emulator, signed native lifecycle, live providers, public publication, or measured YOLO effectiveness; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json regenerated for committed v0.20.0 release candidate 3e7ddc8",
+          "digest": "sha256:4599f1cc7e622d3b9c63e434c593d5f719f4880ec6b874e5c93a4123e9c200d8",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-09-20T21:39:48Z",
+          "scope": "source digest sha256:3a6b12dd0585728c2adf6158bcf477ea8775bbf6e0934aaf99f6a3dce527d41f binds committed v0.20.0 source, protected release identity, YOLO and sticky-footer runtime, slash-policy repair, model context handling, native-crash coverage, and the focused adversarial suite",
+          "limitations": "Local deterministic evidence does not qualify hosted operating systems, external browsers, every terminal emulator, signed native lifecycle, live providers, public publication, or measured YOLO effectiveness; HARD-080 remains in progress"
         }
       ]
     },
@@ -6516,6 +6525,24 @@
           "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics, and public_claim_eligible is false",
           "timestamp": "2026-09-20T21:25:30Z",
           "scope": "source digest sha256:a9caef5e86a9d92a337a8b475a4c48cb9cfeced61cee79e01ae7a943106542a5 binds five local token-efficiency repetitions and the combined focused runtime suite",
+          "limitations": "Synthetic local estimates do not establish live provider quality, every terminal emulator, comparative performance, external-browser completion, hosted qualification, publication, or measured YOLO effectiveness; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json regenerated for committed v0.20.0 release candidate 3e7ddc8",
+          "digest": "sha256:8b729ddeb2aa2a974d69c46fdb6a3fc9ebe8e8fc8c4a49a457d7d1e022b543b5",
+          "result": "status pass: 17 correctness probes and 31 deterministic workloads pass with zero policy escapes, duplicate mutations, or unverified completions; public_claim_eligible is false",
+          "timestamp": "2026-09-20T21:38:26Z",
+          "scope": "source revision 3e7ddc8c4f08243302602480ce18b767f1313e83, source digest sha256:37e46fb263b01788db20bfa8f8e4a116c1922e8d89179c80e4b47bd6e8562b08, and report digest sha256:d03211873d0b3f4f75d9b2d9562a250f359740a81068562a88006198ea80001f bind the committed deterministic runtime benchmark",
+          "limitations": "Model-free local fixtures do not establish live provider behavior, production terminal compatibility, comparative performance, hosted qualification, publication, or measured YOLO effectiveness; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json efficiency and focused matrix for committed v0.20.0 release candidate 3e7ddc8",
+          "digest": "sha256:4599f1cc7e622d3b9c63e434c593d5f719f4880ec6b874e5c93a4123e9c200d8",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics, and public_claim_eligible is false",
+          "timestamp": "2026-09-20T21:39:48Z",
+          "scope": "source digest sha256:3a6b12dd0585728c2adf6158bcf477ea8775bbf6e0934aaf99f6a3dce527d41f binds five local token-efficiency repetitions and the committed v0.20.0 focused runtime suite",
           "limitations": "Synthetic local estimates do not establish live provider quality, every terminal emulator, comparative performance, external-browser completion, hosted qualification, publication, or measured YOLO effectiveness; HARD-081 remains in progress"
         }
       ]
