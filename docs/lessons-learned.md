@@ -761,18 +761,32 @@ not captured and still require the normal policy path. Keep the existing
 command-specific `/config`, `/google`, `/kernel`, and `/plugins` rules. Assert
 the native context is present before assigning the already-validated value.
 
-**Verification to date:** Adversarial tests cover the misleading `status`,
-`show`, `clear`, `resume`, and free-text forms, plus output capture for both
-read-only and mutating commands. The changed-test set passed 845 tests with 4
-skips; the focused slash/tool suite, scoped Ruff, and scoped mypy passed. The
-fresh M8 receipt, M9 audit, repository-wide suite, hosted matrix, and public
-release remain pending and must not be inferred from these local checks.
+**Verification:** Adversarial tests cover the misleading `status`, `show`,
+`clear`, `resume`, and free-text forms, plus output capture for both read-only
+and mutating commands. The first candidate-wide run passed 6,230 tests with 41
+skips and failed only the intentionally strict stale-M8 check after the release
+version and workflow changed. Alice was regenerated with 10 successful
+publish/kill/restart recoveries; Nathan passed 17/17 probes and 31/31 workloads
+with zero policy escapes, duplicate mutations, or unverified completions; M8
+passed 9 local metrics with 5 external metrics still blocked and none failed or
+unverified; M9 accepted the current bindings with 29 verified, 13 blocked, and
+none failed. The exact installed `0.20.0` source parity check found 286 Python
+files with no divergence. Ruff, compileall, public-source scan, the locked
+dependency audit, the legacy compatibility dependency audit, and mypy over 77
+source files passed. The final suite passed 6,231 tests with 41 skips and no
+failures in 104.87 seconds. Hosted qualification and public release remain
+pending and must not be inferred from these local checks.
 
 **Prevention and limits:** Read-only status is a handler-specific contract, not
 a property of an argument word. Any command family added to output capture must
 include negative tests for its mutating forms. Generated qualification JSON
 must be written with the runner's explicit `--output` option; stdout from a
-passing run does not update the checked-in receipt.
+passing run does not update the checked-in receipt. Provider-shaped fake tokens
+are also public-source and public-history findings. Use non-provider-shaped
+placeholders before committing fixtures. The first local feature commit retained
+such a fake in its blob history, so the release candidate was rebuilt as one
+reviewed squash on `release/v0.20.0`; a single-branch clone passed the history
+scan. The unpushed recovery branch remains local and must not be pushed.
 
 ## 2026-09-16 - Saved 131k Stamp Capped DeepSeek V4.1 Flash; /reload Dropped YOLO
 
