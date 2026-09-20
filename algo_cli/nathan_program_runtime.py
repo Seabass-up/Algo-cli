@@ -557,6 +557,40 @@ def _check_object_fields(value: Mapping[str, Any], allowed: frozenset[str], *, l
         raise ProgramValidationError(f"{location} has unsupported fields: {', '.join(sorted(unknown))}")
 
 
+_PROGRAM_OBJECT_FIELDS = frozenset({"version", "steps", "outputs"})
+_PROGRAM_SHAPE_HINT = (
+    'Pass plan as a JSON object: {"version": 1, "steps": [{"id": "s1", "kind": "action", '
+    '"action": "run_shell", "args": {"command": "python -c \\"assert True\\""}}], '
+    '"outputs": ["s1"]}. Do not pass version or steps as sibling tool arguments.'
+)
+
+
+def coerce_program_plan(raw: Any, *, sibling_fields: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Normalize common model-authored shapes into the version-1 program object.
+
+    Accepted: the documented object; a JSON string of that object; a bare step list;
+    sibling ``version``/``steps``/``outputs`` tool arguments when ``plan`` is omitted;
+    and ``plan`` used as the step-list field name when ``steps`` is absent.
+    """
+    if raw is None and sibling_fields is not None:
+        extracted = {key: sibling_fields[key] for key in _PROGRAM_OBJECT_FIELDS if key in sibling_fields}
+        if extracted:
+            raw = extracted
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ProgramValidationError(f"program must be a JSON object. {_PROGRAM_SHAPE_HINT}") from exc
+    if isinstance(raw, list):
+        raw = {"version": PROGRAM_SCHEMA_VERSION, "steps": raw}
+    if not isinstance(raw, Mapping):
+        raise ProgramValidationError(f"program must be a JSON object. {_PROGRAM_SHAPE_HINT}")
+    plan = dict(raw)
+    if "steps" not in plan and isinstance(plan.get("plan"), list):
+        plan["steps"] = plan.pop("plan")
+    return plan
+
+
 def _normalized_compiled_plan(
     steps: Sequence[ProgramStep],
     outputs: Sequence[StepReference],
@@ -686,6 +720,31 @@ def _validate_annotation(value: Any, annotation: Any, *, location: str) -> None:
                 _validate_annotation(item, args[0], location=f"{location}[{index}]")
         return
     raise ProgramValidationError(f"{location} uses an unsupported runtime annotation")
+
+
+def _normalize_action_args(action: str, args: dict[str, Any], *, cwd: str, location: str) -> dict[str, Any]:
+    normalized = dict(args)
+    if "cwd" not in normalized:
+        return normalized
+    if tool_runtime_args(action, {}, Config(cwd=cwd)).get("cwd") != cwd:
+        raise ProgramValidationError(f"{location} attempts to set runtime-owned fields: cwd")
+    supplied = normalized.pop("cwd")
+    if supplied is None:
+        return normalized
+    if not isinstance(supplied, str) or not supplied.strip():
+        raise ProgramValidationError(f"{location}.cwd must name the runtime-owned workspace or be omitted")
+    try:
+        path = Path(supplied).expanduser()
+        if not path.is_absolute():
+            path = Path(cwd) / path
+        matches = str(path.resolve()) == cwd
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ProgramValidationError(f"{location}.cwd cannot resolve the runtime-owned workspace") from exc
+    if not matches:
+        raise ProgramValidationError(
+            f"{location}.cwd conflicts with the runtime-owned workspace; omit cwd and use an authorized path"
+        )
+    return normalized
 
 
 def _validate_action_args(action: str, args: Mapping[str, Any], *, location: str) -> None:
@@ -860,9 +919,7 @@ def compile_program(
     if not isinstance(safe_mode, bool):
         raise ProgramValidationError("program safe_mode must be a runtime-owned boolean")
     canonical_cwd = _canonical_program_cwd(cwd)
-    if not isinstance(plan, Mapping):
-        raise ProgramValidationError("program must be a JSON object")
-    plan_dict = dict(plan)
+    plan_dict = coerce_program_plan(plan)
     plan_bytes = len(_canonical_json(plan_dict).encode("utf-8"))
     if plan_bytes > limits.max_plan_bytes:
         raise ProgramValidationError(f"program is {plan_bytes} bytes; maximum is {limits.max_plan_bytes}")
@@ -907,6 +964,7 @@ def compile_program(
             if not isinstance(args, dict):
                 raise ProgramValidationError(f"{location}.args must be an object")
             _validate_json_and_refs(args, available=earlier, location=f"{location}.args")
+            args = _normalize_action_args(action, args, cwd=canonical_cwd, location=f"{location}.args")
             preflight = _build_action_preflight(
                 step_id,
                 action,
@@ -969,10 +1027,10 @@ def compile_program(
         available.add(step_id)
 
     raw_outputs = plan_dict.get("outputs")
-    if raw_outputs is None:
+    if raw_outputs is None or (isinstance(raw_outputs, list) and not raw_outputs):
         raw_outputs = [compiled_steps[-1].step_id]
-    if not isinstance(raw_outputs, list) or not raw_outputs:
-        raise ProgramValidationError("program outputs must be a non-empty list")
+    if not isinstance(raw_outputs, list):
+        raise ProgramValidationError("program outputs must be a list of step references; omit it to return the final step")
     if len(raw_outputs) > limits.max_outputs:
         raise ProgramValidationError(f"program has {len(raw_outputs)} outputs; maximum is {limits.max_outputs}")
     all_steps = frozenset(available)
@@ -1413,7 +1471,7 @@ def _action_result_status(result: str) -> str:
         return "cancelled"
     if lowered.startswith(("blocked by runtime authority", "blocked by runtime policy chain", "user denied")):
         return "denied"
-    if lowered.startswith("skipped repeated failed attempt"):
+    if lowered.startswith("skipped repeated"):
         return "skipped"
     return classify_tool_status(result)
 

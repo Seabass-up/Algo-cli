@@ -2423,7 +2423,9 @@ def test_models_command_force_refreshes_runtime_after_switch(monkeypatch, tmp_pa
     monkeypatch.setattr(main, "refresh_runtime_status", fake_refresh)
     monkeypatch.setattr(main, "invalidate_prompt_toolbar", lambda _session: None)
 
-    handled, returned_client = main.handle_command("/models", cfg, old_client)  # type: ignore[arg-type]
+    handled, returned_client = main.handle_command(
+        "/models", cfg, old_client, user_initiated=True
+    )  # type: ignore[arg-type]
 
     assert handled is True
     assert returned_client is new_client

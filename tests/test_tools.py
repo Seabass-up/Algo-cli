@@ -683,6 +683,45 @@ def test_observation_churn_preserves_unresolved_retry_barrier(tmp_path):
     assert tool_runtime.find_failed_attempt(cfg, signature) is not None
 
 
+def test_fresh_workspace_observation_reconciles_uncertain_workspace_attempt(tmp_path):
+    cfg = Config(cwd=str(tmp_path))
+    shell_args = {"command": "python3 s10_metadata.py"}
+    signature = tool_runtime.tool_attempt_signature("run_shell", shell_args)
+    tool_runtime.record_tool_attempt(cfg, name="run_shell", args=shell_args, result="unknown",
+                                     status="unknown_outcome", retry_allowed=False)
+    assert tool_runtime.find_failed_attempt(cfg, signature) is not None
+    # A fresh observation within the affected workspace reconciles it...
+    tool_runtime.record_tool_attempt(cfg, name="read_file", args={"path": "s10_metadata.py"},
+                                     result="contents", status="worked")
+    assert tool_runtime.find_failed_attempt(cfg, signature) is None
+    # ...and reconciliation survives the persisted-ledger sanitizer round trip.
+    from algo_cli.config import sanitize_attempt_ledger
+    cfg.attempt_ledger = sanitize_attempt_ledger(cfg.attempt_ledger)
+    assert tool_runtime.find_failed_attempt(cfg, signature) is None
+
+
+def test_workspace_observation_reconciles_only_matching_target_scope(tmp_path):
+    cfg = Config(cwd=str(tmp_path))
+    write_args = {"path": "target_file.txt", "content": "x"}
+    write_signature = tool_runtime.tool_attempt_signature("write_file", write_args)
+    tool_runtime.record_tool_attempt(cfg, name="write_file", args=write_args, result="unknown",
+                                     status="unknown_outcome", retry_allowed=False)
+    memory_args = {"fact": "bounded"}
+    memory_signature = tool_runtime.tool_attempt_signature("remember", memory_args)
+    tool_runtime.record_tool_attempt(cfg, name="remember", args=memory_args, result="unknown",
+                                     status="unknown_outcome", retry_allowed=False)
+    # Reading an unrelated file reconciles neither uncertainty.
+    tool_runtime.record_tool_attempt(cfg, name="read_file", args={"path": "other.txt"},
+                                     result="contents", status="worked")
+    assert tool_runtime.find_failed_attempt(cfg, write_signature) is not None
+    assert tool_runtime.find_failed_attempt(cfg, memory_signature) is not None
+    # Reading the affected file reconciles only the matching write uncertainty.
+    tool_runtime.record_tool_attempt(cfg, name="read_file", args={"path": "target_file.txt"},
+                                     result="contents", status="worked")
+    assert tool_runtime.find_failed_attempt(cfg, write_signature) is None
+    assert tool_runtime.find_failed_attempt(cfg, memory_signature) is not None
+
+
 def test_classify_tool_status_marks_tool_errors_failed():
     assert tool_runtime.classify_tool_status("Error: file not found: missing.txt") == "failed"
     assert tool_runtime.classify_tool_status("Tool error for read_file: boom") == "failed"
@@ -690,7 +729,19 @@ def test_classify_tool_status_marks_tool_errors_failed():
     assert tool_runtime.classify_tool_status("tests passed\n[exit code: 0]") == "worked"
     assert tool_runtime.classify_tool_status('{"ok": false, "message": "denied"}') == "failed"
     assert tool_runtime.classify_tool_status('{"error": {"code": "boom"}}') == "failed"
-    assert tool_runtime.classify_tool_status('{"status": "timed_out"}') == "failed"
+    # Typed structured statuses are preserved instead of flattened to failed:
+    # relabeling a reported denial or uncertainty misclassifies the outer
+    # dispatch of an action that never applied its effect.
+    assert tool_runtime.classify_tool_status('{"status": "timed_out"}') == "timed_out"
+    assert tool_runtime.classify_tool_status('{"status": "denied", "outputs": []}') == "denied"
+    assert tool_runtime.classify_tool_status('{"status": "skipped"}') == "skipped"
+    assert tool_runtime.classify_tool_status('{"status": "cancelled"}') == "cancelled"
+    assert (
+        tool_runtime.classify_tool_status('{"status": "unknown_outcome", "error": "uncertain"}')
+        == "unknown_outcome"
+    )
+    assert tool_runtime.classify_tool_status('{"status": "failed", "error": "boom"}') == "failed"
+    assert tool_runtime.classify_tool_status('{"status": "error"}') == "failed"
     assert (
         tool_runtime.classify_tool_status(
             '{"error": "this is file content"}',
@@ -1686,7 +1737,19 @@ def test_git_tools_run_read_only_status_and_diff_commands(tmp_path, monkeypatch)
     assert "ollama_cli/main.py" in tools.git_diff(cwd=str(tmp_path), names_only=True)
 
     assert calls[0] == ["git", "status", "--short", "--branch"]
-    assert calls[1] == ["git", "diff", "--no-ext-diff", "--name-only", "HEAD"]
+    assert calls[1] == ["git", "rev-parse", "--verify", "HEAD"]
+    assert calls[2] == ["git", "diff", "--no-ext-diff", "--name-only", "HEAD"]
+
+
+def test_git_diff_reports_unborn_repository_without_head(tmp_path, monkeypatch):
+    def fake_run(command, **_kwargs):
+        if command[:3] == ["git", "rev-parse", "--verify"]:
+            return SimpleNamespace(returncode=128, stdout="", stderr="fatal: Needed a single revision\n")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(tools.subprocess, "run", fake_run)
+    result = tools.git_diff(cwd=str(tmp_path))
+    assert result.startswith("Error: git repository has no commits yet")
 
 
 def test_read_file_missing_and_present(tmp_path):

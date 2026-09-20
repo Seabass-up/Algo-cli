@@ -55,7 +55,7 @@ jobs:
             pip-audit \
             --requirement "${RUNNER_TEMP}/algo-cli-auditable-requirements.txt" \
             --require-hashes --disable-pip --strict --progress-spinner off
-      - name: Echo Veil pinned-source and installed RECORD audit (blocking)
+      - name: Legacy Echo compatibility pinned-source audit (blocking)
         run: >-
           uv run --frozen --no-editable --extra dev --extra supply-chain
           --group echo-veil --link-mode copy python -I scripts/henry_echo_veil_dependency_audit.py
@@ -63,6 +63,7 @@ jobs:
         run: >-
           uv run --frozen --no-editable --extra dev --extra supply-chain --group echo-veil mypy
           algo_cli/main.py
+          algo_cli/sticky_status.py
           algo_cli/tools.py
           algo_cli/harness.py
           algo_cli/embedding_binding.py
@@ -76,6 +77,14 @@ jobs:
           algo_cli/james_dispatch.py
           algo_cli/agent_threads.py
           algo_cli/run_contract.py
+          algo_cli/session_mode.py
+          algo_cli/session_commands.py
+          algo_cli/samuel_policy_engine.py
+          algo_cli/ada_memory_d057.py
+          algo_cli/intelligence/permission_modes.py
+          algo_cli/model_info.py
+          algo_cli/model_profile.py
+          algo_cli/context_budget.py
           algo_cli/task_router.py
           algo_cli/arthur_control_doctor.py
           algo_cli/arthur_control_readiness.py

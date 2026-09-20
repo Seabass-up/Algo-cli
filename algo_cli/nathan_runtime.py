@@ -312,6 +312,9 @@ def _prepared_grant(
     *,
     now: float,
 ) -> ConsentGrant | None:
+    from .session_mode import active_mode
+
+    yolo = active_mode(cfg) == "yolo"
     session = authority_session_for(cfg)
     if session.baseline_allows(action):
         # Each in-flight observation owns one use; overlapping reads must not share it.
@@ -321,16 +324,47 @@ def _prepared_grant(
             now=now,
             ttl_seconds=_BASELINE_GRANT_SECONDS,
         )
+    if (
+        yolo
+        and action.name in _BASELINE_ACTIONS
+        and action.effect_class is EffectClass.OBSERVE
+        and action.confirmation_mode is ConfirmationMode.NONE
+        and action.target_scope is TargetScope.WORKSPACE
+        and _BASELINE_CAPABILITIES.contains(CapabilityMask(action.capability_mask))
+        and action.target.startswith("workspace:")
+        and action.target != "workspace:unresolved"
+    ):
+        # Owner activation permits ordinary observations beyond cwd, not writes.
+        return session.issue(
+            action,
+            source="user-yolo-preapproval",
+            now=now,
+            maximum_action_count=1,
+            ttl_seconds=120.0,
+        )
+    if yolo and action.confirmation_mode in {
+        ConfirmationMode.SESSION_PREAPPROVAL,
+        ConfirmationMode.ACTION_TIME,
+    }:
+        if action.target_scope is not TargetScope.WORKSPACE or session._workspace_target_allowed(action.target):
+            # Activation is explicit user consent; each preflight owns one use.
+            return session.issue(
+                action,
+                source="user-yolo-preapproval",
+                now=now,
+                maximum_action_count=1,
+                ttl_seconds=120.0,
+            )
     grant = session.matching_grant(action, now)
-    if grant is not None:
+    if grant is not None and (grant.source != "user-yolo-preapproval" or yolo):
         return grant
     auto_preapproved = _approval_mode(cfg) == "auto" or bool(cfg.auto_approve_active)
     if action.confirmation_mode is ConfirmationMode.SESSION_PREAPPROVAL and auto_preapproved:
         return session.issue(
             action,
-            source="trusted-auto-preapproval",
+            source="user-yolo-preapproval" if yolo else "trusted-auto-preapproval",
             now=now,
-            maximum_action_count=_SESSION_GRANT_ACTIONS,
+            maximum_action_count=1 if yolo else _SESSION_GRANT_ACTIONS,
         )
     return None
 
@@ -366,7 +400,19 @@ class RuntimeToolPreflight:
 
     @property
     def blocked_result(self) -> str:
-        reasons = [*self.policy.reasons, *self.guardrail_reasons]
+        if (
+            self.policy.eligible
+            and len(self.guardrail_reasons) == 1
+            and self.guardrail_reasons[0].startswith("ProgramValidationError:")
+        ):
+            return f"Invalid action program: {self.guardrail_reasons[0]}."
+        if self.policy.eligible:
+            # An eligible confirmation would have been resolved at the authority
+            # step; only the guardrails actually blocked this call, so the block
+            # message must not blame pending confirmation or auto approval.
+            reasons = list(self.guardrail_reasons) or list(self.policy.reasons)
+        else:
+            reasons = [*self.policy.reasons, *self.guardrail_reasons]
         reason = "; ".join(reasons) or "runtime authority rejected the call"
         return f"Blocked by runtime authority: {reason}."
 
@@ -446,7 +492,20 @@ def completion_recovery_prompt(cfg: Config, *, block_output: bool = False) -> st
             "to another directory cannot verify this workspace. Custom verification must fail "
             "on mismatch: use a healthcheck/check/verify script, or Python -c with assertions. "
         )
+    from .session_mode import unlimited_work
+
     final_label = "final ## Block Output" if block_output else "final answer"
+    if unlimited_work(cfg):
+        budget = (
+            "YOLO does not end verification recovery after a round cap. "
+            "Keep calling one admitted verifier until it passes, or report the remaining "
+            f"blocker without claiming success. Then give a concise {final_label} grounded in actual evidence."
+        )
+    else:
+        budget = (
+            f"At most {MAX_COMPLETION_RECOVERY_ROUNDS} recovery model rounds remain, within the "
+            f"existing work budget. Then give a concise {final_label} grounded in actual evidence."
+        )
     return (
         "[Internal completion gate] Do not claim completion yet. The last workspace mutation "
         "has no successful post-mutation verifier. "
@@ -454,27 +513,65 @@ def completion_recovery_prompt(cfg: Config, *, block_output: bool = False) -> st
         "Successful discovery, transforms, read_file, or source substring checks are not "
         "functional verification. If no permitted verifier is available, report the blocker "
         "and unverified work without claiming success. "
-        f"At most {MAX_COMPLETION_RECOVERY_ROUNDS} recovery model rounds remain, within the "
-        f"existing work budget. Then give a concise {final_label} grounded in actual evidence."
+        f"{budget}"
     )
+
+
+def _mode_tool_error(name: str, args: dict[str, Any], cfg: Config) -> str | None:
+    from .samuel_policy_engine import normalize_session_command
+    from .session_mode import active_mode
+
+    if name in {"session_command", "session_slash"}:
+        if normalize_session_command(str(args.get("command") or "")) == ("/mode", "yolo"):
+            return "Only the user may enter YOLO with /mode yolo in the interactive CLI."
+    if active_mode(cfg) == "yolo":
+        if name in {"session_command", "session_slash"}:
+            command, argument = normalize_session_command(str(args.get("command") or ""))
+            if command in {"/safe", "/policy"} and argument not in {"status", "show", "?", "help"}:
+                return "Only direct user input may change protection settings in YOLO mode."
+        action = resolve_action(name, args, cwd=cfg.cwd)
+        if action.capability_mask & Capability.CREDENTIAL.value:
+            return "Credential operations are unavailable in YOLO mode."
+        if action.target_scope is TargetScope.WORKSPACE and action.target.startswith("workspace:"):
+            if name != "run_shell" and execution_guardrails.is_sensitive_path(action.target.removeprefix("workspace:")):
+                return "Sensitive paths are unavailable in YOLO mode."
+    return None
 
 
 def _pre_dispatch_tool_error(name: str, args: dict[str, Any], cfg: Config) -> str | None:
     """Reject known unavailable operations before approval or effect dispatch."""
     from .irene_memory_path_policy import UNQUALIFIED_BROWSER_ACTIONS, protected_tool_policy_error
+    from .ada_memory_d057 import selected
+
+    if selected(cfg) and (
+        name in {"update_user_profile", "write_knowledge_graph_note"}
+        or name.startswith(("intuition_", "echo_veil_"))
+    ):
+        return "This continuity action is unavailable with D-57; no alternate memory authority or plaintext shadow is permitted."
+
+    mode_error = _mode_tool_error(name, args, cfg)
+    if mode_error is not None:
+        return mode_error
 
     protected_error = protected_tool_policy_error(name, args, cfg)
     if protected_error is not None:
         return protected_error
     if name == "action_program":
-        from .nathan_program_runtime import ActionProgramStep, ProgramAuthorization, compile_program
+        from .nathan_program_runtime import (
+            ActionProgramStep,
+            ProgramAuthorization,
+            ProgramValidationError,
+            coerce_program_plan,
+            compile_program,
+        )
 
         authorization = getattr(cfg, "_algo_program_authorization", None)
         if not isinstance(authorization, ProgramAuthorization):
             return "Runtime program authorization was not bound"
-        plan = args.get("plan")
-        if not isinstance(plan, dict):
-            return "ProgramValidationError: program must be a JSON object"
+        try:
+            plan = coerce_program_plan(args.get("plan"), sibling_fields=args)
+        except ProgramValidationError as exc:
+            return f"ProgramValidationError: {exc}"
         try:
             compiled = compile_program(
                 plan,
@@ -543,6 +640,18 @@ def preflight_runtime_tool(
             )
             if not path_decision.allowed:
                 guardrail_reasons.append(path_decision.reason)
+            elif (
+                name == "write_file"
+                and not bool(signature_args.get("overwrite"))
+                and path_decision.resolved_path is not None
+                and path_decision.resolved_path.exists()
+            ):
+                # A refused overwrite-less write is a typed pre-effect denial, never
+                # an unknown outcome: the destination was provably untouched.
+                guardrail_reasons.append(
+                    f"{path_decision.resolved_path} already exists. "
+                    "Re-run with overwrite=true if intended"
+                )
             else:
                 requires_read = name in {"edit_file", "batch_edit"}
                 if name == "write_file" and bool(signature_args.get("overwrite")):
@@ -604,6 +713,8 @@ def ask_approval(
 
     current = preflight or preflight_runtime_tool(name, args, cfg)
     current_args = tool_runtime_args(name, args, cfg)
+    if _mode_tool_error(name, current_args, cfg) is not None:
+        return False
     current_action = resolve_action(name, current_args, cwd=cfg.cwd)
     if (
         current.signature_args != current_args
@@ -625,10 +736,30 @@ def ask_approval(
 
     session = authority_session_for(cfg)
     grant = session.grant_by_id(current.policy.grant_id, now) if current.policy.grant_id else None
+    from .session_mode import active_mode
+
+    if grant is not None and grant.source == "user-yolo-preapproval" and active_mode(cfg) != "yolo":
+        return False
     confirmation: ConfirmationReceipt | None = None
     mode = _approval_mode(cfg)
     review_authority = (cfg.cwd, cfg.safe_mode, cfg.auto_approve_active, mode)
-    needs_prompt = grant is None or action.confirmation_mode is ConfirmationMode.ACTION_TIME
+    yolo_preapproved = (
+        not force
+        and grant is not None
+        and grant.source == "user-yolo-preapproval"
+        and active_mode(cfg) == "yolo"
+    )
+    if yolo_preapproved and action.confirmation_mode is ConfirmationMode.ACTION_TIME:
+        confirmation = ConfirmationReceipt(
+            receipt_id=f"yolo-confirmation-{uuid.uuid4().hex}",
+            action_digest=action.action_digest,
+            confirmation_mode=ConfirmationMode.ACTION_TIME,
+            confirmed_at=now,
+            expires_at=now + 120.0,
+        )
+    needs_prompt = grant is None or (
+        action.confirmation_mode is ConfirmationMode.ACTION_TIME and not yolo_preapproved
+    )
 
     if needs_prompt:
         if mode != "interactive" or action.confirmation_mode is ConfirmationMode.NONE:
@@ -714,6 +845,9 @@ def ask_approval(
 
 def run_tool(name: str, args: dict[str, Any], cfg: Config) -> str:
     call_args = tool_runtime_args(name, args, cfg)
+    mode_error = _mode_tool_error(name, call_args, cfg)
+    if mode_error is not None:
+        return f"Error: {mode_error}"
     from .irene_memory_path_policy import protected_tool_policy_error
 
     protected_path_error = protected_tool_policy_error(name, call_args, cfg)
@@ -787,7 +921,92 @@ def tool_attempt_signature(name: str, args: dict[str, Any]) -> str:
     return keyed_action_fingerprint(name, args)
 
 
+def _program_effect_targets(args: dict[str, Any], *, cwd: str) -> tuple[str, ...]:
+    """Best-effort workspace effect scope for an action program's mutating steps."""
+    plan = args.get("plan")
+    if not isinstance(plan, dict):
+        return ()
+    steps = plan.get("steps")
+    if not isinstance(steps, list):
+        return ()
+    targets: list[str] = []
+    for step in steps:
+        if not isinstance(step, dict) or step.get("kind") != "action":
+            continue
+        step_name = str(step.get("action") or "")
+        step_args = step.get("args")
+        if not step_name or not isinstance(step_args, dict):
+            continue
+        try:
+            action = resolve_action(step_name, step_args, cwd=cwd)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            continue
+        if (
+            action.effect_class is not EffectClass.OBSERVE
+            and action.target.startswith("workspace:")
+            and action.target != "workspace:unresolved"
+        ):
+            targets.append(action.target)
+    return tuple(dict.fromkeys(targets))
+
+
+def _workspace_target_digest(target: str) -> str | None:
+    """Content-free stable digest for one workspace-scoped effect target."""
+    if not target.startswith("workspace:") or target == "workspace:unresolved":
+        return None
+    try:
+        return keyed_action_fingerprint("workspace_target", {"target": target})
+    except (PrivacyProjectionError, TypeError, ValueError):
+        return None
+
+
+def _observed_target_digest_chain(observed_target: str) -> frozenset[str]:
+    """Digests of one observed workspace target and all of its ancestors."""
+    if not observed_target.startswith("workspace:") or observed_target == "workspace:unresolved":
+        return frozenset()
+    try:
+        path = Path(observed_target.removeprefix("workspace:"))
+        candidates = [path, *path.parents]
+    except (OSError, RuntimeError, ValueError):
+        return frozenset()
+    digests: set[str] = set()
+    for candidate in candidates:
+        digest = _workspace_target_digest(f"workspace:{candidate}")
+        if digest is not None:
+            digests.add(digest)
+    return frozenset(digests)
+
+
+def _reconcile_uncertain_attempts(cfg: Config, *, observed_target: str) -> None:
+    """Let one fresh in-scope observation mark uncertain workspace effects retryable.
+
+    The runtime cannot prove what an interrupted mutation did; the ledger only
+    requires a fresh observation of the affected scope before the same action
+    may run again. Targets persist as content-free digests, so reconciliation
+    survives restarts without retaining workspace paths. The actor owns the
+    judgment of what the observation shows; memory-store and external
+    uncertainty stay unreconciled because workspace reads cannot observe them.
+    """
+    chain = _observed_target_digest_chain(observed_target)
+    if not chain:
+        return
+    reconciled_at = time.time()
+    for item in cfg.attempt_ledger:
+        if item.get("status") != "unknown_outcome" or item.get("reconciled"):
+            continue
+        candidate_digests: list[str] = []
+        if item.get("target_digest"):
+            candidate_digests.append(str(item.get("target_digest")))
+        candidate_digests.extend(str(digest) for digest in (item.get("target_digests") or ()))
+        if any(digest in chain for digest in candidate_digests):
+            item["reconciled"] = True
+            item["reconciled_at"] = reconciled_at
+
+
 def _is_nonretryable_attempt(item: dict[str, Any]) -> bool:
+    if item.get("reconciled"):
+        # A fresh in-scope observation retired this uncertain attempt.
+        return False
     return item.get("status") == "unknown_outcome" or (
         item.get("status") == "failed" and item.get("retry_allowed") is False
     )
@@ -834,6 +1053,9 @@ def _find_failed_attempt_unlocked(cfg: Config, signature: str) -> dict[str, Any]
         if item.get("signature") != signature:
             continue
         status = item.get("status")
+        if item.get("reconciled"):
+            # A fresh in-scope observation retired this uncertain attempt.
+            continue
         if status in {"skipped", "denied"}:
             # Neither outcome reconciles an earlier uncertain/nonretryable effect.
             skipped = skipped or status == "skipped"
@@ -933,6 +1155,32 @@ def _structured_result_failed(result: str, *, name: str = "") -> bool:
     return isinstance(status_code, int) and not isinstance(status_code, bool) and status_code >= 400
 
 
+def _structured_result_status(result: str, *, name: str = "") -> str | None:
+    """Preserve a typed structured status instead of flattening it to failed.
+
+    Program and bridge results carry their own outcome status. Collapsing a
+    reported ``denied`` or ``unknown_outcome`` to ``failed`` would mislabel the
+    outer dispatch of an action that never applied its effect.
+    """
+    text = str(result).strip()
+    if name in _OPAQUE_JSON_RESULT_TOOLS or len(text) > 64 * 1024 or not text.startswith("{"):
+        return None
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    status = str(value.get("status") or "").strip().casefold()
+    if status in {"cancelled", "canceled"}:
+        return "cancelled"
+    if status in {"timed_out", "timeout"}:
+        return "timed_out"
+    if status in {"denied", "skipped", "unknown_outcome"}:
+        return status
+    return None
+
+
 def classify_tool_status(
     result: str,
     *,
@@ -947,6 +1195,9 @@ def classify_tool_status(
     lowered = str(result).strip().lower()
     if lowered.startswith(("error:", "tool error", "tool argument error", "unknown tool")):
         return "failed"
+    preserved_status = _structured_result_status(result, name=name)
+    if preserved_status is not None:
+        return preserved_status
     if _structured_result_failed(result, name=name):
         return "failed"
     exit_matches = _SHELL_EXIT_CODE_RE.findall(str(result))
@@ -1048,6 +1299,19 @@ def _record_tool_attempt_unlocked(
             # Coalesce nonexecutions so repeated requests cannot evict their barrier.
             # Each request still has a typed dispatch/performance receipt.
             return
+    try:
+        recorded_action = resolve_action(name, args, cwd=cfg.cwd)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        recorded_action = None
+    if recorded_action is not None and status == "worked" and invoked:
+        if (
+            recorded_action.effect_class is EffectClass.OBSERVE
+            and recorded_action.target.startswith("workspace:")
+            and recorded_action.target != "workspace:unresolved"
+        ):
+            # A fresh observation of the affected scope is the promised
+            # reconciliation path for uncertain workspace effects.
+            _reconcile_uncertain_attempts(cfg, observed_target=recorded_action.target)
     entry: dict[str, Any] = {
         "timestamp": time.time(),
         "signature": signature,
@@ -1058,6 +1322,18 @@ def _record_tool_attempt_unlocked(
     }
     if retry_allowed is not None:
         entry["retry_allowed"] = bool(retry_allowed)
+    if recorded_action is not None:
+        target_digest = _workspace_target_digest(recorded_action.target)
+        if target_digest is not None:
+            entry["target_digest"] = target_digest
+        if name == "action_program":
+            program_digests = tuple(
+                digest
+                for target in _program_effect_targets(args, cwd=cfg.cwd)
+                if (digest := _workspace_target_digest(target)) is not None
+            )
+            if program_digests:
+                entry["target_digests"] = list(program_digests)
     cfg.attempt_ledger.append(entry)
     barriers = _retry_barrier_indices(cfg)
     recent = [index for index in range(len(cfg.attempt_ledger)) if index not in barriers]

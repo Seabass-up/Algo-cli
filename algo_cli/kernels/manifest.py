@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -673,6 +674,28 @@ def get_kernel(name: str) -> KernelSpec | None:
 
 def kernel_names() -> list[str]:
     return [spec.name for spec in _KERNELS]
+
+
+def kernel_runtime_snapshot() -> dict[str, Any]:
+    """Return the live kernel catalog for runtime discovery surfaces."""
+
+    specs = list_kernels()
+    counts: dict[str, int] = {}
+    for spec in specs:
+        counts[spec.status] = counts.get(spec.status, 0) + 1
+    return {
+        "total": len(specs),
+        "counts": counts,
+        "kernels": [
+            {
+                "name": spec.name,
+                "status": spec.status,
+                "safety_level": spec.safety_level,
+                "description": spec.description,
+            }
+            for spec in specs
+        ],
+    }
 
 
 def audit_kernel(spec: KernelSpec) -> KernelAudit:

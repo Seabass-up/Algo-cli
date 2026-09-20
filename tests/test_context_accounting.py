@@ -91,6 +91,18 @@ def test_user_ctx_override_wins_over_adaptive():
     assert runtime_cap == 4096
 
 
+def test_footer_uses_promoted_deepseek_flash_window():
+    cfg = Config(model="deepseek-v4.1-flash", cloud=True, num_ctx=131072, model_adaptive=True)
+    _used, total, _remaining, runtime_cap, native = context_budget.context_status(
+        cfg,
+        model_info={"context_length": 1_048_576},
+        runtime_status={},
+    )
+    assert native == 1_048_576
+    assert total == 1_048_576
+    assert runtime_cap == 1_048_576
+
+
 def test_compaction_fires_against_real_window(monkeypatch):
     """History at ~9k tokens with an 8k request window must compact, even
     though the native window is 131k (the old code compared against native)."""

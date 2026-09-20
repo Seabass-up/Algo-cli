@@ -62,7 +62,12 @@ def prepare_echo_auxiliary_state(
     from .grace_memory_receipts import ElsieReceiptAuthority
 
     if not echo_veil_authority_selected(config):
-        harness.configure_protected_memory_authority(False)
+        from .ada_memory_d057 import selected
+
+        d057 = selected(config)
+        harness.configure_protected_memory_authority(d057)
+        if d057:
+            identity.clear_plaintext_identity_cache()
         return {"protected": False, "invalidated_skill_records": 0}
     try:
         authority = (

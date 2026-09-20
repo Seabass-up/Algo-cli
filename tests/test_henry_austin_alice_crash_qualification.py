@@ -60,6 +60,7 @@ def test_foreign_bundle_and_symlink_escape_cannot_authorize_process_kill(tmp_pat
 
 
 def test_unrecognized_or_malformed_bundle_never_authorizes_process_kill(tmp_path, monkeypatch):
+    # An ancestor outside .build must not count as the owned test bundle.
     austin = tmp_path / "AustinCoreTests.xctest" / "native" / "austin"
     unrelated = austin / ".build" / "OtherTests.xctest"
     unrelated.mkdir(parents=True)

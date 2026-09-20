@@ -2068,6 +2068,12 @@ def test_parse_agent_team_invocation_rejects_unbounded_or_duplicate_roles():
 
 def test_agent_team_fans_out_specialists_then_passes_bounded_handoff(monkeypatch):
     cfg = Config()
+    from algo_cli import session_mode
+    from algo_cli.nathan_runtime import authority_session_for, approval_mode_for_config
+
+    session_mode.select_mode(cfg, "yolo", user_initiated=True)
+    authority_session_for(cfg)  # The parent now owns locks that cannot be deep-copied.
+    cfg._nathan_approval_mode = "never"
     captured: dict[str, Any] = {}
     roles_seen: list[str] = []
     barrier = threading.Barrier(3)
@@ -2075,6 +2081,12 @@ def test_agent_team_fans_out_specialists_then_passes_bounded_handoff(monkeypatch
     monkeypatch.setattr(agent_pipeline, "create_client", lambda _cfg: object())
 
     def fake_run_block(block, **_kwargs):
+        child_cfg = _kwargs["cfg"]
+        assert child_cfg is not cfg
+        assert session_mode.active_mode(child_cfg) == "explore"
+        assert approval_mode_for_config(child_cfg) == "never"
+        assert not hasattr(child_cfg, "_nathan_authority_session")
+        assert not hasattr(child_cfg, "_yolo_activation")
         roles_seen.append(block.role)
         barrier.wait(timeout=2)
         block.status = "complete"

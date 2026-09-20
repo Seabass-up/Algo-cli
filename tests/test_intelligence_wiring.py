@@ -1,11 +1,37 @@
 from __future__ import annotations
 
+import json
+
 from algo_cli import tool_runtime
 from algo_cli.config import Config
 from algo_cli import main as main_module
 from algo_cli import oliver_slash_dispatch as slash_dispatch
 from algo_cli import session_commands
 from algo_cli import tools
+
+
+def test_status_reports_intelligence_and_available_kernels(monkeypatch):
+    printed: list[str] = []
+
+    class _Console:
+        def print(self, value="") -> None:
+            printed.append(str(value))
+
+    monkeypatch.setattr(main_module, "console", _Console())
+    monkeypatch.setattr(
+        main_module,
+        "context_status",
+        lambda cfg, client=None: (0, 0, 0, 0, 0),
+    )
+
+    main_module.handle_status_command(Config(), None)
+
+    joined = "\n".join(printed)
+    assert "Intelligence" in joined
+    assert "wired" in joined
+    assert "build_project_graph" in joined
+    assert "Kernels" in joined
+    assert "active" in joined
 
 
 def test_intelligence_command_is_listed():
@@ -98,3 +124,22 @@ def test_intelligence_is_available_to_agent_runtime():
     assert tool_runtime.session_command_requires_approval("/intelligence reindex") is True
     assert get_action_spec("/intelligence").kind == "slash"
     assert get_action_spec("/intel").replacement == "/intelligence"
+
+
+def test_available_actions_exposes_intelligence_runtime_and_kernels():
+    intel = json.loads(tools.available_actions("intel"))
+    kernels = json.loads(tools.available_actions("kernel"))
+    catalog = json.loads(tools.available_actions())
+
+    snapshot = intel["focused"]["intelligence_runtime"]
+    assert snapshot["wired"] is True
+    assert snapshot["module"] == "algo_cli.intelligence"
+    assert snapshot["exports"] > 0
+    assert "build_project_graph" in snapshot["capabilities"]
+    assert "GraphRAGIndex" in snapshot["capabilities"]
+    names = {row["name"] for row in kernels["focused"]["kernels"]["kernels"]}
+    assert "repo-intelligence" in names
+    assert "benchmark" in names
+    assert kernels["focused"]["kernels"]["total"] == len(names)
+    assert catalog["intelligence_runtime"]["wired"] is True
+    assert catalog["kernels"]["total"] >= 17

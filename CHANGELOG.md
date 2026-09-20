@@ -4,6 +4,58 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-09-20
+
+### Added
+
+- Add explicit, session-only `/mode yolo` activation with an owner, process,
+  and workspace binding. YOLO is never saved, inherited by child agents, or
+  enabled by a prompt, copied configuration, or harness refresh.
+- Add fail-closed D-57 memory routing when D-57 is explicitly selected, with
+  verified native writes, recall, restart persistence, and corrupt-tip refusal.
+- Keep the normal model, context, tool, reflection, and safety status visible
+  during generation and tool execution on supported interactive terminals.
+
+### Changed
+
+- Let user-activated YOLO preapprove registered in-scope actions while retaining
+  safe-mode denials, credential and direct-send restrictions, protected memory
+  boundaries, target checks, child isolation, and post-mutation verification.
+- Allow curated owner-bound read-only observation outside the active workspace
+  in YOLO without extending cross-workspace mutation authority.
+- Normalize an empty typed-program output list to the final step and ignore only
+  redundant active-workspace `cwd` fields owned by the runtime. Conflicting
+  workspaces and invalid plans remain rejected.
+- Remove the ordinary tool-round and verification-recovery ceilings while YOLO
+  is active; saved `/toolmax` behavior is unchanged after leaving YOLO.
+- Preserve live YOLO activation through `/reload` without persisting it, and use
+  native cloud-model context limits instead of stale catalog stamps.
+
+### Fixed
+
+- Distinguish compiler-format failures from missing runtime authority so valid
+  YOLO programs are not reported as approval failures.
+- Classify slash-command inspection by each handler's real argument contract.
+  Mutating `/host`, `/model`, `/system`, `/goal`, `/google`, and related forms
+  no longer inherit read-only output capture or inspection treatment.
+- Preserve `/memories` output capture and keep mutating command output on the
+  normal non-captured policy path.
+- Restore terminal scroll margins on normal completion, resize, suspension,
+  termination, and hangup; suppress terminal controls for JSON output and
+  terminals without VT support.
+- Accept both current owned Swift test-bundle identities without weakening path
+  or process-ancestry checks, and update the dependency lock past known `anyio`
+  advisories.
+
+### Release Limits
+
+- The legacy optional Echo qualification group remains test-only; Echo is not
+  the active memory authority and no Echo memory call or write is part of this
+  release qualification.
+- M8 retains five blocked external-browser metrics and M9 retains thirteen
+  blocked requirements. This release does not claim external-browser or model-
+  quality qualification from local deterministic evidence.
+
 ## [0.19.2] - 2026-09-13
 
 ### Fixed

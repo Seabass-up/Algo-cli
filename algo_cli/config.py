@@ -123,8 +123,18 @@ def sanitize_attempt_ledger(value: Any) -> list[dict[str, Any]]:
         "status",
         "summary",
         "retry_allowed",
+        "target_digest",
+        "target_digests",
+        "reconciled",
+        "reconciled_at",
     }
-    required_keys = allowed_keys - {"retry_allowed"}
+    required_keys = allowed_keys - {
+        "retry_allowed",
+        "target_digest",
+        "target_digests",
+        "reconciled",
+        "reconciled_at",
+    }
     for item in value[-ATTEMPT_LEDGER_MAX_ENTRIES:]:
         if not isinstance(item, dict) or not required_keys.issubset(item) or not set(item).issubset(allowed_keys):
             continue
@@ -164,6 +174,31 @@ def sanitize_attempt_ledger(value: Any) -> list[dict[str, Any]]:
             continue
         if "retry_allowed" in item and not isinstance(item.get("retry_allowed"), bool):
             continue
+        if "target_digest" in item and (
+            not isinstance(item.get("target_digest"), str)
+            or _HMAC_RECEIPT_RE.fullmatch(item["target_digest"]) is None
+        ):
+            continue
+        target_digests = item.get("target_digests")
+        if "target_digests" in item and (
+            not isinstance(target_digests, list)
+            or not target_digests
+            or len(target_digests) > 16
+            or any(
+                not isinstance(digest, str) or _HMAC_RECEIPT_RE.fullmatch(digest) is None
+                for digest in target_digests
+            )
+        ):
+            continue
+        if "reconciled" in item and not isinstance(item.get("reconciled"), bool):
+            continue
+        if "reconciled_at" in item and (
+            not isinstance(item.get("reconciled_at"), (int, float))
+            or isinstance(item.get("reconciled_at"), bool)
+            or not math.isfinite(float(item["reconciled_at"]))
+            or not 0 <= float(item["reconciled_at"]) <= 100_000_000_000
+        ):
+            continue
         clean: dict[str, Any] = {
             "timestamp": float(timestamp),
             "signature": signature,
@@ -174,6 +209,14 @@ def sanitize_attempt_ledger(value: Any) -> list[dict[str, Any]]:
         }
         if "retry_allowed" in item:
             clean["retry_allowed"] = item["retry_allowed"]
+        if "target_digest" in item:
+            clean["target_digest"] = item["target_digest"]
+        if "target_digests" in item:
+            clean["target_digests"] = item["target_digests"]
+        if "reconciled" in item:
+            clean["reconciled"] = item["reconciled"]
+        if "reconciled_at" in item:
+            clean["reconciled_at"] = float(item["reconciled_at"])
         sanitized.append(clean)
     return sanitized
 
@@ -203,15 +246,20 @@ def _config_selects_echo_authority(config: object) -> bool:
 
 
 def echo_authority_selected_for_persistence(config: object) -> bool:
-    """Expose the config-only authority check without importing the adapter."""
+    """Compatibility name for the external-memory persistence boundary."""
 
-    return _config_selects_echo_authority(config)
+    return _config_selects_memory_authority(config)
+
+
+def _config_selects_memory_authority(config: object) -> bool:
+    d057 = config.get("d057_enabled", False) if isinstance(config, dict) else getattr(config, "d057_enabled", False)
+    return bool(d057) or _config_selects_echo_authority(config)
 
 
 def persisted_session_summary(config: object) -> str:
     """Return only summary text whose protected provenance is recoverable."""
 
-    if _config_selects_echo_authority(config):
+    if _config_selects_memory_authority(config):
         return ""
     if isinstance(config, dict):
         value = config.get("session_summary", "")
@@ -237,6 +285,8 @@ def _protected_persisted_tool_call(
     echo_authority: bool,
 ) -> bool:
     if _echo_tool_name(name):
+        return True
+    if echo_authority and str(name or "").strip().casefold() in {"remember", "append_lesson"}:
         return True
     if str(name or "").strip().casefold() != "session_command":
         return False
@@ -2353,6 +2403,10 @@ class Config:
     harness_embed_model: str = "qwen3-embedding:latest"  # Local Ollama embed model for harness + lessons RAG
     embed_dimensions: int | None = None  # Optional override; None lets the model decide (e.g. 4096 for qwen3-embedding)
     echo_veil_enabled: bool = False  # Select Echo as the sole ordinary-memory backend
+    d057_enabled: bool = False  # Explicit alternative authority, never inferred from a skill
+    d057_adapter: str = "d057-algo"
+    d057_package_root: str = ""
+    d057_cli: str = ""
     echo_veil_capacity: int = 400  # Maximum active Echo Veil memories before decay
     echo_veil_protection: str = "optional"  # required also binds the exact qualified runtime identity
     echo_veil_profile: str = "echo-universal-qwen3-v1"  # Shared local Echo authority
@@ -2403,7 +2457,7 @@ class Config:
     reasoning_auto_reflexion: bool = False  # Auto-apply Reflexion on failed blocks
     reasoning_auto_verify: bool = False  # Auto-verify implement blocks with neuro-symbolic
     index_compute_lab_auto_inject: bool = False
-    session_mode: str = "explore"  # execute | explore | publish
+    session_mode: str = "explore"  # execute | explore | publish | yolo (transient)
     keep_alive: str = "30m"
     cwd: str = field(default_factory=lambda: str(Path.cwd()))
     session_summary: str = ""
@@ -2419,7 +2473,9 @@ class Config:
     @property
     def auto_approve_active(self) -> bool:
         """True when approvals are skipped, persistently (/auto) or for this session ('a')."""
-        return self.auto_mode or self.session_auto_approve
+        from .session_mode import MODE_POLICIES, active_mode
+
+        return self.auto_mode or self.session_auto_approve or MODE_POLICIES[active_mode(self)].session_preapproval
 
     def save(self) -> None:
         _ensure_private_config_parent(CONFIG_FILE)
@@ -2427,12 +2483,19 @@ class Config:
         self.session_summary = persisted_session_summary(self)
         self.attempt_ledger = sanitize_attempt_ledger(self.attempt_ledger)
         data = asdict(self)
+        from .session_mode import persisted_mode
+
+        data["session_mode"] = persisted_mode(self)
         data.pop("messages", None)
         data.pop("memories", None)
         data.pop("session_auto_approve", None)
         _atomic_write_text(CONFIG_FILE, json.dumps(data, indent=2))
 
     def save_memories(self) -> None:
+        from .ada_memory_d057 import selected
+
+        if selected(self):
+            raise RuntimeError("plaintext memory persistence is disabled while D-57 is authoritative")
         if self.echo_veil_enabled or self.echo_veil_protection.strip().casefold() == "required":
             raise RuntimeError("plaintext memory persistence is disabled while Echo Veil is authoritative")
         with _exclusive_state_lock(MEMORY_FILE):
@@ -2443,6 +2506,10 @@ class Config:
         fact = str(fact).strip()
         if not fact:
             return False
+        from . import ada_memory_d057
+
+        if ada_memory_d057.selected(self):
+            return ada_memory_d057.remember_fact(self, fact)
         from .ada_memory_echo_veil import (
             echo_veil_authority_selected,
             remember_with_echo_veil,
@@ -2478,6 +2545,10 @@ class Config:
         Fact bodies are deliberately absent from the returned telemetry.
         """
 
+        from .ada_memory_d057 import selected
+
+        if selected(self):
+            raise RuntimeError("legacy plaintext reconciliation is prohibited while D-57 is authoritative")
         if self.echo_veil_enabled or self.echo_veil_protection.strip().casefold() == "required":
             raise RuntimeError("legacy plaintext reconciliation is prohibited while Echo Veil is authoritative")
 
@@ -2515,6 +2586,10 @@ class Config:
 
     def forget_memory_index(self, index: int) -> str:
         """Remove a memory by zero-based index against the latest persisted list."""
+        from .ada_memory_d057 import selected
+
+        if selected(self):
+            raise RuntimeError("D-57 is append-only; no plaintext memory was changed")
         if self.echo_veil_enabled or self.echo_veil_protection.strip().casefold() == "required":
             raise RuntimeError("legacy plaintext deletion is prohibited while Echo Veil is authoritative")
         with _exclusive_state_lock(MEMORY_FILE):
@@ -2530,7 +2605,7 @@ class Config:
         path = HISTORY_DIR / f"{safe_name}.json"
         persisted_messages = project_messages_for_persistence(
             self.messages,
-            echo_authority=_config_selects_echo_authority(self),
+            echo_authority=_config_selects_memory_authority(self),
         )
         persisted_summary = persisted_session_summary(self)
         _atomic_write_text(
@@ -2561,7 +2636,7 @@ class Config:
         if isinstance(loaded, list):
             projected_messages = project_messages_for_persistence(
                 loaded,
-                echo_authority=_config_selects_echo_authority(self),
+                echo_authority=_config_selects_memory_authority(self),
             )
             self.messages = projected_messages
             self.session_summary = ""
@@ -2572,11 +2647,11 @@ class Config:
             messages = loaded.get("messages", [])
             projected_messages = project_messages_for_persistence(
                 messages,
-                echo_authority=_config_selects_echo_authority(self),
+                echo_authority=_config_selects_memory_authority(self),
             )
             self.messages = projected_messages
             summary = loaded.get("session_summary", "")
-            self.session_summary = "" if _config_selects_echo_authority(self) else sanitize_persisted_summary(summary)
+            self.session_summary = "" if _config_selects_memory_authority(self) else sanitize_persisted_summary(summary)
             context_state = loaded.get("context_state", {})
             self.context_state = context_state if isinstance(context_state, dict) else {}
             sanitized_document = {
@@ -2615,6 +2690,8 @@ class Config:
                 config_invalid = True
                 data = {}
             echo_enabled = data.get("echo_veil_enabled", False)
+            if type(data.get("d057_enabled", False)) is not bool:
+                raise RuntimeError("Invalid D-57 authority selection; startup refused.")
             echo_protection = data.get("echo_veil_protection", "optional")
             if type(echo_enabled) is not bool or not isinstance(echo_protection, str):
                 config_invalid = True
@@ -2635,6 +2712,9 @@ class Config:
             cfg.echo_veil_enabled = True
             cfg.echo_veil_protection = "required"
             cfg.skill_crystallize_enabled = False
+        # A file cannot grant the user-only, process-local YOLO activation.
+        if str(cfg.session_mode).strip().lower() == "yolo":
+            cfg.session_mode = "explore"
         cfg.session_summary = persisted_session_summary(cfg)
         cfg.attempt_ledger = sanitize_attempt_ledger(cfg.attempt_ledger)
         # Releases before the versioned consent gate persisted only a boolean,
@@ -2658,8 +2738,12 @@ class Config:
         # system prompts are preserved verbatim.
         if cfg.system == LEGACY_DEFAULT_SYSTEM:
             cfg.system = DEFAULT_SYSTEM
+        from .ada_memory_d057 import selected
+
+        d057_authority = selected(cfg)
         if (
-            not cfg.echo_veil_enabled
+            not d057_authority
+            and not cfg.echo_veil_enabled
             and cfg.echo_veil_protection.strip().casefold() != "required"
             and MEMORY_FILE.exists()
         ):

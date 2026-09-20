@@ -1761,6 +1761,18 @@ def command_text(
         raise MemorySystemError(f"Unable to parse /memory arguments: {exc}") from exc
     subcommand = parts[0].lower() if parts else "home"
     remainder = parts[1:]
+    from . import ada_memory_d057
+
+    if ada_memory_d057.selected(cfg):
+        try:
+            if subcommand == "doctor":
+                return json.dumps(ada_memory_d057.doctor(cfg), indent=2, sort_keys=True)
+            if subcommand in {"home", "status", "show-home", "help", "?"}:
+                facts = ada_memory_d057.recall_facts(cfg)
+                return f"D-57 memory authority: {len(facts)} facts. Use /remember, /memories, /memory doctor."
+            raise MemorySystemError("This catalog operation is unavailable with D-57; no plaintext fallback was used.")
+        except ada_memory_d057.D057MemoryError as exc:
+            raise MemorySystemError(str(exc)) from exc
     from .ada_memory_echo_veil import echo_veil_authority_selected
 
     if echo_veil_authority_selected(cfg):
@@ -1863,6 +1875,13 @@ def remember_fact(
     """Persist one fact through the configured authoritative memory store."""
 
     clean_fact = _validate_content(fact)
+    from . import ada_memory_d057
+
+    if ada_memory_d057.selected(cfg):
+        try:
+            return ada_memory_d057.remember_fact(cfg, clean_fact)
+        except ada_memory_d057.D057MemoryError as exc:
+            raise MemorySystemError(str(exc)) from exc
     from .ada_memory_echo_veil import (
         echo_veil_authority_selected,
         protection_required,
@@ -1925,6 +1944,10 @@ def _remove_legacy_fact(cfg: Config, fact: str) -> bool:
 def forget_memory_index(cfg: Config, index: int) -> str:
     """Apply fail-recoverable hard-delete semantics to both memory stores."""
 
+    from .ada_memory_d057 import selected
+
+    if selected(cfg):
+        raise MemorySystemError("D-57 is append-only; deletion is unavailable. No plaintext memory was changed.")
     from .ada_memory_echo_veil import (
         echo_veil_authority_selected,
         forget_with_echo_veil,
@@ -2022,7 +2045,9 @@ def capture_completed_user_turn(
     try:
         from .ada_memory_echo_veil import echo_veil_authority_selected
 
-        protected = echo_veil_authority_selected(cfg)
+        from .ada_memory_d057 import selected
+
+        protected = selected(cfg) or echo_veil_authority_selected(cfg)
         existing_memory = () if protected else tuple(str(item) for item in cfg.memories)
         return memory_candidates.process_memory_candidates(
             original_user_text,

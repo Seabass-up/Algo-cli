@@ -1611,6 +1611,28 @@ def git_diff(path: str | None = None, cwd: str | None = None, names_only: bool =
         names_only: Return only changed tracked file names when true.
     """
     workdir = _resolve(cwd or ".", None)
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=workdir,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+        )
+    except subprocess.TimeoutExpired:
+        return "Error: git diff timed out after 20 seconds."
+    except Exception as exc:
+        return f"Error running git diff: {exc}"
+    if head.returncode != 0:
+        detail = (head.stderr or head.stdout or "").strip().lower()
+        if "not a git repository" in detail:
+            return "Error: not a git repository."
+        return (
+            "Error: git repository has no commits yet, so git_diff cannot compare against HEAD. "
+            "Verify untracked files with read_file or a Python assertion."
+        )
     command = ["git", "diff", "--no-ext-diff"]
     if names_only:
         command.append("--name-only")
@@ -2822,6 +2844,11 @@ def append_lesson(text: str, cfg: Config | None = None) -> str:
     if not text or not text.strip():
         return "Error: lesson text was empty."
     if cfg is not None:
+        from . import ada_memory_d057
+
+        if ada_memory_d057.selected(cfg):
+            return remember(text, cfg=cfg)
+    if cfg is not None:
         from .ada_memory_echo_veil import (
             echo_veil_authority_selected,
             remember_with_echo_veil,
@@ -2863,6 +2890,11 @@ def update_user_profile(content: str, cfg: Config | None = None) -> str:
     """
     if not content or not content.strip():
         return "Error: refusing to overwrite USER.md with empty content."
+    if cfg is not None:
+        from .ada_memory_d057 import selected
+
+        if selected(cfg):
+            return "Error: profile continuity writes are unavailable with D-57; use an explicit memory write."
     if cfg is not None:
         from .ada_memory_echo_veil import echo_veil_authority_selected
 
@@ -3136,6 +3168,54 @@ def vision_describe(
     return content or "(empty response)"
 
 
+_INTELLIGENCE_CAPABILITY_NAMES = (
+    "build_project_graph",
+    "query_project_graph",
+    "GraphRAGIndex",
+    "DeepResearchEngine",
+    "LSPManager",
+    "TaskClassifier",
+    "MemoryEngine",
+)
+
+
+def intelligence_runtime_snapshot() -> dict[str, Any]:
+    """Return whether the intelligence package is importable in this runtime."""
+
+    try:
+        from . import intelligence
+    except Exception as exc:
+        return {
+            "wired": False,
+            "module": "",
+            "exports": 0,
+            "capabilities": [],
+            "error": type(exc).__name__,
+            "commands": [
+                "/intel status",
+                "/intel query TERM",
+                "/intel reindex",
+            ],
+        }
+    exports = list(getattr(intelligence, "__all__", ()) or [])
+    capabilities = [
+        name
+        for name in _INTELLIGENCE_CAPABILITY_NAMES
+        if name in set(exports) or hasattr(intelligence, name)
+    ]
+    return {
+        "wired": True,
+        "module": intelligence.__name__,
+        "exports": len(exports),
+        "capabilities": capabilities,
+        "commands": [
+            "/intel status",
+            "/intel query TERM",
+            "/intel reindex",
+        ],
+    }
+
+
 def available_actions(topic: str | None = None, cfg: Config | None = None) -> str:
     """Show the CLI's available commands, model-callable tools, and internal harness stats.
 
@@ -3164,7 +3244,7 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
             "/save NAME",
             "/load NAME",
             "/theme NAME",
-            "/mode [execute|explore|publish|status]",
+            "/mode [execute|explore|publish|yolo|status] (yolo is user-only)",
             "/exit",
         ],
         "tools": [
@@ -3398,7 +3478,13 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
         "Use x_account_* for X account actions through xurl; writes require explicit confirmation and separate X API OAuth.",
         "Treat memory/wiki as navigation; verify consequential facts against live files or endpoints.",
     ]
+    from .oliver_slash_dispatch import SLASH_COMMAND_ALIASES, SLASH_COMMANDS
+    from .kernels.manifest import kernel_runtime_snapshot
+
     stats = _harness_stats_for_config(cfg)
+
+    intelligence_runtime = intelligence_runtime_snapshot()
+    kernel_runtime = kernel_runtime_snapshot()
     payload: dict[str, Any] = {
         "topic": focus or "all",
         "commands": commands,
@@ -3406,6 +3492,10 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
         "slash_command_guidance": slash_guidance,
         "reasoning_mode_guidance": reasoning_guidance,
         "verification_layer": verification_layer,
+        "intelligence_runtime": intelligence_runtime,
+        "kernels": kernel_runtime,
+        "slash_registry": [{"command": command, "description": description} for command, description in SLASH_COMMANDS],
+        "slash_aliases": dict(SLASH_COMMAND_ALIASES),
         "harness_index": {
             "record_count": stats.get("record_count"),
             "generated": stats.get("generated"),
@@ -3433,6 +3523,13 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
             matching["when_to_use"] = slash_guidance
         if reason_focus:
             matching["reasoning_mode_guidance"] = reasoning_guidance
+        if focus in {"intel", "intelligence", "intelagence"}:
+            matching["intelligence_runtime"] = intelligence_runtime
+        if focus in {"kernel", "kernels"}:
+            matching["kernels"] = kernel_runtime
+        if slash_focus:
+            matching["slash_registry"] = payload["slash_registry"]
+            matching["slash_aliases"] = payload["slash_aliases"]
         payload["focused"] = matching
     return json.dumps(payload, indent=2)
 
@@ -3466,6 +3563,7 @@ _SESSION_OUTPUT_COMMANDS = frozenset(
         "/info",
         "/memories",
         "/model-check",
+        "/models",
         "/perf",
         "/route",
         "/selfcheck",
@@ -3562,6 +3660,9 @@ def _session_command_captures_output(command_line: str) -> bool:
         return False
     parts = stripped.split(maxsplit=1)
     root = parts[0].lower()
+    from .oliver_slash_dispatch import SLASH_COMMAND_ALIASES
+
+    root = SLASH_COMMAND_ALIASES.get(root, root)
     arg = parts[1].strip() if len(parts) > 1 else ""
     normalized_arg = arg.lower()
 
@@ -3581,6 +3682,10 @@ def _session_command_captures_output(command_line: str) -> bool:
     if root == "/google":
         subcommand = normalized_arg.split(maxsplit=1)[0] if normalized_arg else "help"
         return subcommand in _READ_ONLY_GOOGLE_SUBCOMMANDS
+    if root in {"/host", "/keepalive", "/model", "/system", "/theme"}:
+        return not normalized_arg
+    if root == "/goal":
+        return normalized_arg in {"", "status"}
     if root == "/kernel":
         subcommand = normalized_arg.split(maxsplit=1)[0] if normalized_arg else "list"
         return subcommand in {"?", "check", "help", "list", "show"}
@@ -3654,7 +3759,9 @@ def _direct_read_only_session_result(
     parts = (command_line or "").strip().split(maxsplit=1)
     if not parts:
         return None
-    root = parts[0].lower()
+    from .oliver_slash_dispatch import SLASH_COMMAND_ALIASES
+
+    root = SLASH_COMMAND_ALIASES.get(parts[0].lower(), parts[0].lower())
     arg = parts[1].strip() if len(parts) > 1 else ""
     if root == "/actions":
         return available_actions(arg or None, cfg=cfg)
@@ -3687,7 +3794,7 @@ def session_command(command: str, cfg: Any = None) -> str:
     - /status, /info — inspect model, cwd, context, and active toggles
     - /cloud on|off|status, /auto on|off|status, /safe on|off|status
     - /thinking on|off|status|efforts|effort [MODEL] LEVEL, /verify on|off|status, /policy on|off|status
-    - /mode execute|explore|publish|status — switch/check session mode
+    - /mode execute|explore|publish|status — switch/check session mode; only the user can enter yolo
     - /reason status|guide — inspect reasoning posture and mode-selection guidance
     - /reason react|reflexion|tot|got|mcts|qcr|neuro_symbolic|hybrid — set reasoning posture only for complex/failed/ambiguous/verification-heavy work
     - /reason depth N, /reason branches N — reasoning search-cost parameters
@@ -3718,6 +3825,13 @@ def session_command(command: str, cfg: Any = None) -> str:
     if cfg is None:
         return "Error: session_command must be invoked by the algo CLI runtime (not called directly)."
     normalized = command.strip()
+    from .samuel_policy_engine import normalize_session_command
+
+    command, argument = normalize_session_command(normalized)
+    if (command, argument) == ("/mode", "yolo"):
+        return "Error: only the user may enter YOLO with /mode yolo in the interactive CLI."
+    if command in {"/exit", "/quit"}:
+        return "Error: only the user may exit the interactive CLI."
     from .oliver_slash_dispatch import handle_command, unknown_command_message
     from .theodore_runtime_services import create_client
 
@@ -3754,7 +3868,7 @@ def session_command(command: str, cfg: Any = None) -> str:
             return unknown_command_message(normalized)
         return f"Executed: {normalized}"
     except EOFError:
-        return "Executed: exit command (session ended)."
+        return "Error: only the user may exit the interactive CLI."
     except Exception as exc:
         return f"Error executing {normalized}: {exc}"
 
@@ -3803,10 +3917,18 @@ def harness_refresh(cfg: Config | None = None) -> str:
 def _harness_stats_for_config(cfg: Config | None) -> dict[str, Any]:
     if cfg is None:
         return harness.stats()
-    return harness.stats(
+    result = harness.stats(
         model=harness.resolve_embed_model(cfg), dimensions=harness.resolve_embed_dimensions(cfg),
         embedding_identity=harness.resolve_embed_identity(cfg),
     )
+    from . import ada_memory_d057
+
+    if ada_memory_d057.selected(cfg):
+        try:
+            result["d057"] = {"enabled": True, **ada_memory_d057.doctor(cfg)}
+        except ada_memory_d057.D057MemoryError:
+            result["d057"] = {"enabled": True, "ok": False, "verify": False}
+    return result
 
 
 def harness_stats(cfg: Config | None = None) -> str:
@@ -4787,6 +4909,10 @@ def write_knowledge_graph_note(
         cfg: Runtime configuration injected by Algo CLI.
     """
     if cfg is not None:
+        from .ada_memory_d057 import selected
+
+        if selected(cfg):
+            return "Error: graph-note persistence is unavailable with D-57; use an explicit memory write."
         from .ada_memory_echo_veil import (
             echo_veil_authority_selected,
             remember_with_echo_veil,
@@ -5255,6 +5381,9 @@ def action_program(plan: dict, cfg: Any = None) -> str:
     ``kind: action``, ``action``, and ``args``. A transform step has ``id``,
     ``kind: transform``, ``op``, ``input``, and optional ``args``. References
     use ``{"$ref": "earlier_step", "path": ["optional", "keys"]}``.
+    Omitted, null, or empty ``outputs`` returns the final step automatically.
+    Omit ``cwd`` in action arguments; a redundant active-workspace value is
+    normalized away, but it cannot redirect execution to another workspace.
     Action arguments are static in version 1: observations may feed deterministic
     transforms and outputs, but may not become arguments to another action. All
     action schemas, exact effects, targets, and transform contracts are frozen
@@ -5266,12 +5395,23 @@ def action_program(plan: dict, cfg: Any = None) -> str:
     local hash-linked, tamper-evident records; they are not immutable or signed.
 
     Args:
-        plan: Typed version-1 plan object with bounded ordered steps and outputs.
+        plan: Typed version-1 JSON object ``{"version": 1, "steps": [...]}``.
+            Outputs default to the final step. Do not pass ``version`` or
+            ``steps`` as sibling tool arguments.
     """
 
     if cfg is None:
         return json.dumps({"status": "error", "error": "runtime config was not injected"})
-    from .nathan_program_runtime import ProgramAuthorization, execute_program
+    from .nathan_program_runtime import ProgramAuthorization, coerce_program_plan, execute_program
+
+    try:
+        plan = coerce_program_plan(plan)
+    except Exception as exc:
+        return json.dumps(
+            {"status": "error", "error": f"{type(exc).__name__}: {exc}"},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
     authorization = getattr(cfg, "_algo_program_authorization", None)
     if not isinstance(authorization, ProgramAuthorization):

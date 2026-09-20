@@ -60,23 +60,56 @@ _WORKSPACE_PATH_ARGUMENTS: dict[str, tuple[str, ...]] = {
     "write_file": ("path",),
 }
 
+_SLASH_ALIASES = {
+    "/hs": "/hsearch",
+    "/hr": "/hread",
+}
 _SAFE_SESSION_COMMANDS = frozenset(
     {
         "/actions",
         "/changes",
+        "/chatgpt-status",
+        "/credentials",
         "/dashboard",
         "/diff",
         "/doctor",
+        "/google-status",
         "/help",
         "/hread",
         "/hsearch",
         "/identity",
         "/info",
+        "/model-check",
+        "/models",
         "/perf",
+        "/route",
         "/selfcheck",
         "/status",
+        "/url-scheme",
+        "/xai-status",
     }
 )
+_READ_ONLY_GOOGLE_SUBCOMMANDS = frozenset(
+    {
+        "calendar-list",
+        "docs-get",
+        "drive-get",
+        "drive-list",
+        "drive-search",
+        "gmail-get",
+        "gmail-list",
+        "help",
+        "sheets-values",
+    }
+)
+_READ_ONLY_INSPECTION_ARGS = {
+    "/goal": frozenset({"", "status"}),
+    "/host": frozenset({""}),
+    "/keepalive": frozenset({""}),
+    "/model": frozenset({""}),
+    "/system": frozenset({""}),
+    "/theme": frozenset({""}),
+}
 _SAFE_SESSION_STATUS_COMMANDS = frozenset(
     {
         "/auto",
@@ -123,12 +156,20 @@ def session_command_requires_approval(command_line: str) -> bool:
     """Classify the exact model-invoked slash command, defaulting to protected."""
 
     command, arg = normalize_session_command(command_line)
+    command = _SLASH_ALIASES.get(command, command)
     if not command:
+        return True
+    if command in {"/exit", "/quit"}:
         return True
     if command in _SAFE_SESSION_COMMANDS or command in {"/read", "/ls", "/cwd"}:
         return False
     if command == "/cd":
         return True
+    if command == "/google":
+        subcommand = arg.split(maxsplit=1)[0] if arg else "help"
+        return subcommand not in _READ_ONLY_GOOGLE_SUBCOMMANDS
+    if command in _READ_ONLY_INSPECTION_ARGS:
+        return arg not in _READ_ONLY_INSPECTION_ARGS[command]
     if command in {"/intelligence", "/intel", "/intelagence"}:
         return not (arg in {"", "status", "show", "?", "guide", "help"} or arg.startswith("query "))
     if command == "/kernel":
@@ -163,6 +204,10 @@ def session_command_requires_approval(command_line: str) -> bool:
         return False
     if command == "/config" and arg in {"", "status", "show", "?", "help"}:
         return False
+    if command == "/credentials":
+        return False
+    if command == "/plugins":
+        return arg not in {"", "list", "status", "help", "?"}
     return True
 
 

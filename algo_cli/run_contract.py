@@ -52,6 +52,10 @@ _MAX_ITERATIONS_PER_BLOCK = agent_blocks.MAX_BLOCK_ITERATIONS
 _MAX_TOOL_CALLS = 2_048
 _MAX_PARALLELISM = 4
 _MAX_WALL_TIME_SECONDS = 7_200.0
+_YOLO_MAX_ITERATIONS_PER_BLOCK = 1_000_000
+_YOLO_MAX_TOOL_CALLS = 1_000_000
+_YOLO_MAX_WALL_TIME_SECONDS = 2_592_000.0
+_WALL_TIME_ABSOLUTE_MAX = _YOLO_MAX_WALL_TIME_SECONDS
 _MAX_TOKEN_BUDGET = 100_000_000
 _SENSITIVE_DIGEST_SCHEMES = frozenset({"sha256-v1", "hmac-sha256-v1"})
 _WORKSPACE_DIGEST_DOMAINS = {
@@ -368,13 +372,13 @@ class RunBudget:
             _positive_int(
                 self.max_iterations_per_block,
                 field="max_iterations_per_block",
-                maximum=_MAX_ITERATIONS_PER_BLOCK,
+                maximum=_YOLO_MAX_ITERATIONS_PER_BLOCK,
             ),
         )
         object.__setattr__(
             self,
             "max_tool_calls",
-            _positive_int(self.max_tool_calls, field="max_tool_calls", maximum=_MAX_TOOL_CALLS),
+            _positive_int(self.max_tool_calls, field="max_tool_calls", maximum=_YOLO_MAX_TOOL_CALLS),
         )
         object.__setattr__(
             self,
@@ -389,9 +393,9 @@ class RunBudget:
             isinstance(self.max_wall_time_seconds, bool)
             or not isinstance(self.max_wall_time_seconds, (int, float))
             or not math.isfinite(float(self.max_wall_time_seconds))
-            or not 1.0 <= float(self.max_wall_time_seconds) <= _MAX_WALL_TIME_SECONDS
+            or not 1.0 <= float(self.max_wall_time_seconds) <= _WALL_TIME_ABSOLUTE_MAX
         ):
-            raise RunContractError(f"max_wall_time_seconds must be finite from 1 to {_MAX_WALL_TIME_SECONDS:g}")
+            raise RunContractError(f"max_wall_time_seconds must be finite from 1 to {_WALL_TIME_ABSOLUTE_MAX:g}")
         object.__setattr__(self, "max_wall_time_seconds", float(self.max_wall_time_seconds))
         object.__setattr__(
             self,
@@ -525,7 +529,7 @@ class BlockRunContract:
             _positive_int(
                 self.max_iterations,
                 field="block max_iterations",
-                maximum=_MAX_ITERATIONS_PER_BLOCK,
+                maximum=_YOLO_MAX_ITERATIONS_PER_BLOCK,
             ),
         )
         if type(self.requires_change) is not bool:
@@ -548,7 +552,7 @@ class BlockRunContract:
         recovery_iterations = _nonnegative_int(
             self.recovery_max_iterations,
             field="recovery max iterations",
-            maximum=_MAX_ITERATIONS_PER_BLOCK,
+            maximum=_YOLO_MAX_ITERATIONS_PER_BLOCK,
         )
         if recovery_attempts:
             if not self.requires_change:
@@ -1068,9 +1072,15 @@ def compile_agent_run_contract(
         protected=echo_veil_authority_selected(cfg),
         key_store=receipt_key_store,
     )
+    from .session_mode import unlimited_work
+
     recommendation = spawn_budget.compute_budget(route, task)
     recommended_iterations = recommendation.max_iterations_per_block
-    configured_ceiling = max(1, min(int(cfg.max_tool_iterations), _MAX_ITERATIONS_PER_BLOCK))
+    yolo_work = unlimited_work(cfg)
+    iteration_ceiling = _YOLO_MAX_ITERATIONS_PER_BLOCK if yolo_work else _MAX_ITERATIONS_PER_BLOCK
+    tool_call_ceiling = _YOLO_MAX_TOOL_CALLS if yolo_work else _MAX_TOOL_CALLS
+    wall_ceiling = _YOLO_MAX_WALL_TIME_SECONDS if yolo_work else _MAX_WALL_TIME_SECONDS
+    configured_ceiling = iteration_ceiling if yolo_work else max(1, min(int(cfg.max_tool_iterations), iteration_ceiling))
     block_contracts: list[BlockRunContract] = []
     recoverable_codes = (
         "max_iterations",
@@ -1086,10 +1096,14 @@ def compile_agent_run_contract(
             cfg.safe_mode,
             approval_mode == "auto" or cfg.auto_approve_active,
         )
-        max_iterations = min(
-            max(1, int(block.max_iterations)),
-            configured_ceiling,
-            recommended_iterations or _MAX_ITERATIONS_PER_BLOCK,
+        max_iterations = (
+            configured_ceiling
+            if yolo_work
+            else min(
+                max(1, int(block.max_iterations)),
+                configured_ceiling,
+                recommended_iterations or iteration_ceiling,
+            )
         )
         output_verifier = "final_output" if block.role == "final" else "block_output"
         verifiers = (
@@ -1136,7 +1150,7 @@ def compile_agent_run_contract(
         )
     maximum_iterations = max(block.max_iterations for block in block_contracts)
     max_tool_calls = min(
-        _MAX_TOOL_CALLS,
+        tool_call_ceiling,
         max(
             1,
             sum(
@@ -1162,7 +1176,7 @@ def compile_agent_run_contract(
         ),
     )
     wall_time = min(
-        _MAX_WALL_TIME_SECONDS,
+        wall_ceiling,
         max(60.0, float(max_tool_calls * 120)),
     )
     has_mutation = any(block.requires_change for block in block_contracts)

@@ -198,6 +198,13 @@ def test_synthesize_xai_info_shape():
     assert "error" not in info
 
 
+def test_synthesize_xai_info_uses_family_context_windows():
+    assert model_info.synthesize_xai_info("grok-4.3")["context_length"] == 1_000_000
+    assert model_info.synthesize_xai_info("grok-4.20-0309-reasoning")["context_length"] == 1_000_000
+    assert model_info.synthesize_xai_info("grok-4-latest")["context_length"] == 131_072
+    assert model_info.synthesize_xai_info("grok-4.3")["supports_vision"] is True
+
+
 def test_synthesize_chatgpt_info_uses_model_context_window():
     assert model_info.synthesize_chatgpt_info("gpt-5.6-sol")["context_length"] == 272_000
     assert model_info.synthesize_chatgpt_info("gpt-5.6-terra")["supports_vision"] is True
@@ -221,6 +228,25 @@ def test_cloud_model_hints_minimax():
     assert hints["supports_thinking"] is True
 
 
+def test_cloud_model_hints_deepseek_v4_1_flash():
+    for name in (
+        "deepseek-v4.1-flash",
+        "deepseek-v4.1-flash:cloud",
+        "deepseek-v4.1-flash:671b-cloud",
+        "DeepSeek-V4.1-Flash:cloud",
+    ):
+        hints = model_info.cloud_model_hints(name)
+        assert hints["context_length"] == 1_000_000, name
+        assert hints["supports_thinking"] is True
+        assert hints["supports_vision"] is True
+
+
+def test_cloud_model_hints_do_not_confuse_v3_and_v4():
+    assert model_info.cloud_model_hints("deepseek-v3.1:671b-cloud")["context_length"] == 131_072
+    assert model_info.cloud_model_hints("deepseek-v4-flash:cloud")["context_length"] == 1_000_000
+    assert model_info.cloud_model_hints("deepseek-v4-pro:cloud")["context_length"] == 1_000_000
+
+
 def test_merge_model_hints_fills_missing_context():
     merged = model_info.merge_model_hints({"name": "minimax-m3:cloud"}, "minimax-m3:cloud")
     assert merged["context_length"] == 524_288
@@ -236,6 +262,33 @@ def test_effective_context_limits_caps_user_num_ctx():
     )
     assert runtime == 8192
     assert native == 524_288
+
+
+def test_effective_context_limits_promotes_stale_deepseek_flash_stamp():
+    from algo_cli.config import Config
+
+    cfg = Config(model="deepseek-v4.1-flash", cloud=True, num_ctx=131072, model_adaptive=True)
+    runtime, native = model_info.effective_context_limits(cfg, {"context_length": 1_048_576})
+    assert native == 1_048_576
+    assert runtime == 1_048_576
+
+
+def test_effective_context_limits_promotes_stamp_without_adaptive():
+    from algo_cli.config import Config
+
+    cfg = Config(model="deepseek-v4.1-flash", cloud=True, num_ctx=131072, model_adaptive=False)
+    runtime, native = model_info.effective_context_limits(cfg, {"context_length": 1_048_576})
+    assert runtime == 1_048_576
+    assert native == 1_048_576
+
+
+def test_v31_stamp_matching_native_is_not_inflated():
+    from algo_cli.config import Config
+
+    cfg = Config(model="deepseek-v3.1:671b-cloud", cloud=True, num_ctx=131072)
+    runtime, native = model_info.effective_context_limits(cfg, {"context_length": 131_072})
+    assert runtime == 131_072
+    assert native == 131_072
 
 
 def test_resolve_model_info_cloud_without_client():
@@ -258,8 +311,18 @@ def test_resolve_model_info_prefers_cli_metadata_over_fallback(monkeypatch):
         lambda model, **kwargs: {"name": model, "context_length": 131_072, "source": "ollama-show"},
     )
     info = model_info.resolve_model_info(_Cfg(), None)
-    assert info["context_length"] == 131_072
+    assert info["context_length"] == 524_288
     assert info["source"] == "ollama-show"
+
+
+def test_merge_model_hints_upgrades_underreported_deepseek_flash_context():
+    merged = model_info.merge_model_hints(
+        {"name": "deepseek-v4.1-flash:cloud", "context_length": 131_072, "source": "ollama-show"},
+        "deepseek-v4.1-flash:cloud",
+    )
+    assert merged["context_length"] == 1_000_000
+    assert merged["supports_thinking"] is True
+    assert merged["supports_vision"] is True
 
 
 def test_parse_ollama_show_output_minimax():

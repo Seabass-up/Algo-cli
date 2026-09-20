@@ -73,14 +73,31 @@ _SHOW_QUANT_RE = re.compile(r"^\s*quantization\s+(\S*)\s*$", re.IGNORECASE | re.
 _VALID_QUANT_RE = re.compile(r"^(?=.*[A-Z])(?=.*\d)[A-Z0-9_]+$", re.ASCII)
 _KNOWN_CAPABILITIES = {"completion", "tools", "tool", "thinking", "vision", "embedding", "insert"}
 
-# Static fallbacks only when ``ollama show`` and client.show() both fail.
+# Documented native windows used when show() is missing or under-reports.
+# Keys are matched longest-prefix against the bare model name.
 _CLOUD_MODEL_HINTS: dict[str, dict[str, Any]] = {
     "minimax-m3": {"context_length": 524_288, "supports_thinking": True},
     "glm-5.2": {"context_length": 1_000_000, "supports_thinking": True},
     "glm-5.1": {"context_length": 202_752},
     "glm-5": {"context_length": 202_752},
+    "glm-4.6": {"context_length": 202_752},
     "qwen3-coder": {"context_length": 262_144},
+    "qwen3-vl": {"context_length": 262_144, "supports_vision": True},
     "qwen3": {"context_length": 262_144},
+    "deepseek-v4.1-flash": {
+        "context_length": 1_000_000,
+        "supports_thinking": True,
+        "supports_vision": True,
+    },
+    "deepseek-v4.1": {"context_length": 1_000_000, "supports_thinking": True},
+    "deepseek-v4-flash": {"context_length": 1_000_000, "supports_thinking": True},
+    "deepseek-v4-pro": {"context_length": 1_000_000, "supports_thinking": True},
+    "deepseek-v4": {"context_length": 1_000_000, "supports_thinking": True},
+    "deepseek-flash": {
+        "context_length": 1_000_000,
+        "supports_thinking": True,
+        "supports_vision": True,
+    },
     "deepseek-v3.1": {"context_length": 131_072},
 }
 
@@ -243,7 +260,7 @@ def fetch_model_info(client: Any | None, model: str, *, cloud: bool = False) -> 
         else:
             info = {"name": model, "error": "model metadata unavailable", "fetched_at": time.time()}
 
-    return merge_model_hints(info, model)
+    return merge_model_hints(info, model, cloud=cloud)
 
 
 def load_model_info(model: str) -> dict[str, Any] | None:
@@ -274,7 +291,7 @@ def ensure_model_info(client: Any, model: str, *, cloud: bool = False) -> dict[s
     """Return cached model info, fetching via ollama show / SDK if needed."""
     info = load_model_info(model)
     if info and "error" not in info and get_context_length(info):
-        return merge_model_hints(info, model)
+        return merge_model_hints(info, model, cloud=cloud)
     info = fetch_model_info(client, model, cloud=cloud)
     if "error" not in info and get_context_length(info):
         save_model_info(model, info)
@@ -352,14 +369,36 @@ def cloud_model_hints(model: str) -> dict[str, Any]:
     """Static metadata from Ollama library when show() returns incomplete fields."""
     bare = _bare_model_name(model)
     hinted = _CLOUD_MODEL_HINTS.get(bare)
-    return dict(hinted) if hinted else {}
+    if hinted:
+        return dict(hinted)
+    matches = [
+        key
+        for key in _CLOUD_MODEL_HINTS
+        if bare == key or bare.startswith(f"{key}-") or bare.startswith(f"{key}.")
+    ]
+    if not matches:
+        return {}
+    return dict(_CLOUD_MODEL_HINTS[max(matches, key=len)])
 
 
-def merge_model_hints(info: dict[str, Any], model: str) -> dict[str, Any]:
-    """Fill missing context/thinking fields from cloud hints without overwriting API data."""
+def merge_model_hints(info: dict[str, Any], model: str, *, cloud: bool = False) -> dict[str, Any]:
+    """Fill missing fields from documented native metadata.
+
+    Cloud ``ollama show`` output often reports a truncated GGUF window. When a
+    documented native context is larger, use that as the model ceiling for
+    cloud-tagged names. Local installs keep the reported window.
+    """
     merged = dict(info)
+    cloudish = cloud or is_cloud_model_name(model)
     for key, value in cloud_model_hints(model).items():
-        if merged.get(key) in (None, "", 0):
+        current = merged.get(key)
+        if key == "context_length" and isinstance(value, int) and value > 0:
+            if not isinstance(current, int) or current <= 0:
+                merged[key] = value
+            elif cloudish and current < value:
+                merged[key] = value
+            continue
+        if current in (None, "", 0) and value not in (None, "", 0):
             merged[key] = value
     return merged
 
@@ -385,14 +424,14 @@ def resolve_model_info(cfg: Any, client: Any | None) -> dict[str, Any]:
 
     cli_info = fetch_model_info_from_cli(model, cloud=cloud)
     if cli_info:
-        merged = merge_model_hints(cli_info, model)
+        merged = merge_model_hints(cli_info, model, cloud=cloud)
         if "error" not in merged:
             save_model_info(model, merged)
         return merged
 
     cached = load_model_info(model)
     if cached and "error" not in cached:
-        return merge_model_hints(cached, model)
+        return merge_model_hints(cached, model, cloud=cloud)
 
     fetched = fetch_model_info(client, model, cloud=cloud)
     if fetched and "error" not in fetched:
@@ -431,6 +470,25 @@ def effective_context_limits(
     native = get_context_length(model_info or {})
     if native is None:
         return cfg_limit, None
+    if native > cfg_limit:
+        try:
+            from . import model_profile as _model_profile
+
+            if _model_profile.is_stale_remote_context_stamp(cfg, cfg_limit, native):
+                cfg_limit = native
+        except Exception:
+            provider = "cloud" if bool(getattr(cfg, "cloud", False)) else "local"
+            if provider in {"cloud", "xai", "chatgpt"} and cfg_limit in {
+                16_384,
+                32_768,
+                65_536,
+                131_072,
+                262_144,
+                524_288,
+                1_000_000,
+                1_048_576,
+            }:
+                cfg_limit = native
     return min(cfg_limit, native), native
 
 
@@ -549,17 +607,38 @@ def synthesize_chatgpt_info(model: str) -> dict[str, Any]:
     }
 
 
+_XAI_CONTEXT_LENGTHS: dict[str, int] = {
+    "grok-4.20": 1_000_000,
+    "grok-4.3": 1_000_000,
+    "grok-4": 131_072,
+}
+
+
+def _xai_context_length(model: str) -> int:
+    bare = _bare_model_name(model)
+    matches = [
+        key
+        for key in _XAI_CONTEXT_LENGTHS
+        if bare == key or bare.startswith(f"{key}-") or bare.startswith(f"{key}.")
+    ]
+    if not matches:
+        return 131_072
+    return _XAI_CONTEXT_LENGTHS[max(matches, key=len)]
+
+
 def synthesize_xai_info(model: str) -> dict[str, Any]:
     """Build a model_info dict for xAI Grok models (no client.show() available)."""
+    bare = _bare_model_name(model)
+    vision = bare.startswith("grok-4.3") or bare.startswith("grok-4.20")
     return {
         "name": model,
         "family": "grok",
         "families": ["grok"],
         "parameter_size": "",
         "quantization": "",
-        "context_length": 131072,
+        "context_length": _xai_context_length(model),
         "supports_thinking": True,
-        "supports_vision": False,
+        "supports_vision": vision,
         "supports_tools": True,
         "provider": "xai",
     }

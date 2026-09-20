@@ -17,6 +17,7 @@ from algo_cli.nathan_program_runtime import (
     ProgramStoreError,
     ProgramValidationError,
     authorization_for_actions,
+    coerce_program_plan,
     compile_program,
     execute_program,
     verify_receipt_chain,
@@ -49,6 +50,60 @@ def _read_plan(*, outputs=None):
     if outputs is not None:
         plan["outputs"] = outputs
     return plan
+
+
+def test_compile_accepts_sibling_version_steps_and_json_string_plan():
+    authorization = _authorization("read_file")
+    expected = compile_program(_read_plan(), authorization=authorization)
+    sibling = coerce_program_plan(None, sibling_fields={"version": 1, "steps": _read_plan()["steps"]})
+    assert compile_program(sibling, authorization=authorization) == expected
+    as_json = json.dumps(_read_plan())
+    assert compile_program(as_json, authorization=authorization) == expected
+    nested = {"version": 1, "plan": _read_plan()["steps"]}
+    assert compile_program(nested, authorization=authorization) == expected
+    bare_steps = _read_plan()["steps"]
+    assert compile_program(bare_steps, authorization=authorization) == expected
+
+
+def test_compile_still_rejects_non_object_program():
+    with pytest.raises(ProgramValidationError, match="JSON object"):
+        compile_program(1, authorization=_authorization("read_file"))
+
+
+@pytest.mark.parametrize("selection", ["omitted", "null", "empty"])
+def test_default_outputs_normalize_to_explicit_final_step(selection):
+    plan = _read_plan()
+    if selection != "omitted":
+        plan["outputs"] = None if selection == "null" else []
+    explicit = _read_plan(outputs=["source"])
+    authorization = _authorization("read_file")
+    assert compile_program(plan, authorization=authorization) == compile_program(explicit, authorization=authorization)
+
+
+@pytest.mark.parametrize("outputs", ["source", "", {}, 0, True])
+def test_wrongly_typed_outputs_are_not_defaulted(outputs):
+    with pytest.raises(ProgramValidationError, match="program outputs must"):
+        compile_program(_read_plan(outputs=outputs), authorization=_authorization("read_file"))
+
+
+@pytest.mark.parametrize("cwd_value", ["absolute", "relative", "null"])
+def test_redundant_action_cwd_normalizes_without_changing_plan_binding(tmp_path, cwd_value):
+    plan = _read_plan()
+    explicit = _read_plan()
+    plan["steps"][0]["args"]["cwd"] = {"absolute": str(tmp_path), "relative": ".", "null": None}[cwd_value]
+    authorization = _authorization("read_file")
+    assert compile_program(plan, authorization=authorization, cwd=str(tmp_path)) == compile_program(
+        explicit, authorization=authorization, cwd=str(tmp_path),
+    )
+    assert "cwd" in plan["steps"][0]["args"]  # Compilation must not mutate the caller's plan.
+
+
+@pytest.mark.parametrize("cwd_value", ["..", "", True, {"$ref": "source"}])
+def test_conflicting_or_invalid_action_cwd_stays_rejected(tmp_path, cwd_value):
+    plan = _read_plan()
+    plan["steps"][0]["args"]["cwd"] = cwd_value
+    with pytest.raises(ProgramValidationError):
+        compile_program(plan, authorization=_authorization("read_file"), cwd=str(tmp_path))
 
 
 def test_compile_rejects_forward_refs_and_recursive_meta_calls() -> None:
@@ -763,7 +818,8 @@ def test_observations_cannot_flow_into_effectful_action_arguments(tmp_path, acti
         )
 
 
-def test_mutation_structure_is_single_final_and_directly_returned(tmp_path) -> None:
+@pytest.mark.parametrize("default_outputs", ["omitted", "null", "empty"])
+def test_mutation_structure_is_single_final_and_directly_returned(tmp_path, default_outputs) -> None:
     two_effects = {
         "version": 1,
         "steps": [
@@ -805,6 +861,9 @@ def test_mutation_structure_is_single_final_and_directly_returned(tmp_path) -> N
         "outputs": [{"$ref": "write", "path": [0]}],
     }
 
+    if default_outputs != "omitted":
+        for plan in (two_effects, mutation_then_transform):
+            plan["outputs"] = None if default_outputs == "null" else []
     with pytest.raises(ProgramValidationError, match="at most one"):
         compile_program(
             two_effects,

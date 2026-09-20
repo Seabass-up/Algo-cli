@@ -3,6 +3,17 @@ from __future__ import annotations
 from algo_cli.config import Config
 
 
+def test_kernel_runtime_snapshot_lists_available_kernels() -> None:
+    from algo_cli.kernels.manifest import kernel_runtime_snapshot
+
+    snapshot = kernel_runtime_snapshot()
+
+    assert snapshot["total"] >= 17
+    names = {row["name"] for row in snapshot["kernels"]}
+    assert "repo-intelligence" in names
+    assert snapshot["counts"]["active"] >= 1
+
+
 def test_kernel_manifest_loads() -> None:
     from algo_cli.kernels.manifest import KernelSpec, list_kernels
 

@@ -593,7 +593,7 @@ def show_session_overview(
     total_tokens: int,
     summary_active: bool,
     tool_think_every: int,
-    max_tool_iterations: int,
+    max_tool_iterations: int | str,
     memory_count: int,
     provider_mode: str | None = None,
     system_prompt: str | None = None,

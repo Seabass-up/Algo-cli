@@ -88,3 +88,30 @@ def test_known_remote_model_uses_native_context_window():
     )
     assert profile.provider == "cloud"
     assert profile.num_ctx == 1_000_000
+
+
+def test_stale_saved_remote_stamp_yields_to_native_window():
+    cfg = Config(model="deepseek-v4.1-flash", cloud=True, num_ctx=131072)
+    info = {"context_length": 1_048_576}
+    params = mp.effective_params(cfg, info)
+    assert params.num_ctx == 1_048_576
+    assert "num_ctx" in params.adapted_fields
+    assert mp.promote_stale_remote_context(cfg, info) is True
+    assert cfg.num_ctx == 1_048_576
+
+
+def test_explicit_custom_ctx_below_native_is_kept():
+    cfg = Config(model="deepseek-v4.1-flash", cloud=True, num_ctx=12_000)
+    params = mp.effective_params(cfg, {"context_length": 1_048_576})
+    assert params.num_ctx == 12_000
+    assert "num_ctx" not in params.adapted_fields
+    assert mp.promote_stale_remote_context(cfg, {"context_length": 1_048_576}) is False
+    assert cfg.num_ctx == 12_000
+
+
+def test_local_saved_stamp_is_not_promoted():
+    cfg = Config(num_ctx=131072)
+    info = {"parameter_size": "671B", "context_length": 131072}
+    params = mp.effective_params(cfg, info)
+    assert params.num_ctx == 131072
+    assert mp.promote_stale_remote_context(cfg, info) is False

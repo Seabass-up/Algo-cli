@@ -243,7 +243,7 @@ def test_selfcheck_surfaces_action_registry_runtime_audit(monkeypatch):
     assert "Runtime quality diagnostics" in joined
     assert "reasoning quality: not_collected" in joined
     assert "READY" in joined
-    assert observed == [cfg, cfg]
+    assert observed == [cfg, cfg, cfg, cfg]
 
 
 def test_harness_status_alias_prints_harness_stats(monkeypatch):

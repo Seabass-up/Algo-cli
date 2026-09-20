@@ -25,6 +25,10 @@ from .model_routing import resolved_model_provider
 DEFAULT_NUM_CTX = 8192
 DEFAULT_TEMPERATURE = 0.4
 DEFAULT_TOOL_THINK_EVERY = 10
+# Saved windows that usually came from a previous model's native stamp, not /ctx.
+REMOTE_CONTEXT_STAMPS = frozenset(
+    {16_384, 32_768, 65_536, 131_072, 262_144, 524_288, 1_000_000, 1_048_576}
+)
 
 # Size bands in billions of parameters.
 SMALL_MAX_B = 9.0  # <=9B  -> small
@@ -58,6 +62,34 @@ def _provider(cfg: Any) -> str:
     if provider == "chatgpt":
         return "chatgpt"
     return "cloud" if getattr(cfg, "cloud", False) else "local"
+
+
+def is_stale_remote_context_stamp(cfg: Any, current_ctx: int, native_ctx: int | None) -> bool:
+    """True when a leftover remote native stamp is smaller than the live native window.
+
+    ``/ctx 12000`` and other non-catalog values are kept. Local GGUF allocations
+    are also kept: only cloud/xAI/ChatGPT stamps are eligible for promotion.
+    """
+    return (
+        _provider(cfg) in {"cloud", "xai", "chatgpt"}
+        and isinstance(native_ctx, int)
+        and native_ctx > current_ctx > 0
+        and current_ctx in REMOTE_CONTEXT_STAMPS
+    )
+
+
+def promote_stale_remote_context(cfg: Any, model_info: dict[str, Any] | None) -> bool:
+    """Write the native remote window onto cfg.num_ctx when the saved value is a stamp.
+
+    Does not persist. Callers that want disk updated must ``cfg.save()``.
+    """
+    current_ctx = int(getattr(cfg, "num_ctx", DEFAULT_NUM_CTX) or DEFAULT_NUM_CTX)
+    native_ctx = _model_info_module.get_context_length(model_info or {})
+    if not is_stale_remote_context_stamp(cfg, current_ctx, native_ctx):
+        return False
+    assert native_ctx is not None
+    cfg.num_ctx = native_ctx
+    return True
 
 
 def recommend_profile(cfg: Any, model_info: dict[str, Any] | None) -> ModelProfile:
@@ -132,12 +164,15 @@ def effective_params(cfg: Any, model_info: dict[str, Any] | None) -> EffectivePa
     profile = recommend_profile(cfg, model_info)
     adapted: list[str] = []
 
-    if int(getattr(cfg, "num_ctx", DEFAULT_NUM_CTX)) == DEFAULT_NUM_CTX:
+    current_ctx = int(getattr(cfg, "num_ctx", DEFAULT_NUM_CTX) or DEFAULT_NUM_CTX)
+    native_ctx = _model_info_module.get_context_length(model_info or {})
+    stale_remote_stamp = is_stale_remote_context_stamp(cfg, current_ctx, native_ctx)
+    if current_ctx == DEFAULT_NUM_CTX or stale_remote_stamp:
         num_ctx = profile.num_ctx
-        if num_ctx != DEFAULT_NUM_CTX:
+        if num_ctx != current_ctx:
             adapted.append("num_ctx")
     else:
-        num_ctx = int(cfg.num_ctx)
+        num_ctx = current_ctx
 
     if float(getattr(cfg, "temperature", DEFAULT_TEMPERATURE)) == DEFAULT_TEMPERATURE:
         temperature = profile.temperature

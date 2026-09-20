@@ -860,10 +860,10 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
     _spec(
         "capability.tier",
         "kernel",
-        "Assign the least-privileged runtime capability tier.",
+        "Describe the compatibility capability tier; runtime authority uses scoped grants.",
         "kernel",
         ("policy", "capability", "tier", "least-privilege"),
-        "Ensures each tool's capability mask fits its structural permission tier.",
+        "Capability tiers describe masks but cannot authorize actions or expand scoped grants.",
         "low",
         False,
         False,

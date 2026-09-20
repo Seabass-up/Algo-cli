@@ -963,7 +963,8 @@ def dispatch_action(
     if previous:
         prior_status = str(previous.get("status") or "failed")
         result = (
-            "Skipped repeated action with an unresolved outcome. Reconcile it before retrying."
+            "Skipped repeated action with an unresolved outcome. Reconcile it before retrying: "
+            "observe the affected state with a fresh read or listing, then retry."
             if prior_status == "unknown_outcome"
             else "Skipped repeated failed attempt. "
             f"Prior outcome: {previous.get('summary', 'same tool path already failed or was denied')}."

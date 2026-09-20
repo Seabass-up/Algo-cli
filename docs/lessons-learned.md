@@ -423,6 +423,421 @@ ancestor and CI relationships before recovery. This is a tested local repair
 and prepared `0.19.2` candidate; hosted qualification and public publication
 are still required before calling it released or upgradeable.
 
+## 2026-09-16 - User-Only YOLO Activation and Preapproval Isolation
+
+**Component and symptom:** Session modes, runtime grants, and B51 permissions.
+The research wiring spec could not edit the runtime, and assumed a live editable
+install. `/mode yolo` was absent. The active command actually imports a
+non-editable `0.19.1.post1` release environment. B51's helper replaced explicitly
+empty tool/spawn sets with default permissions. Team delegation deep-copied
+runtime Config attributes, including authority locks once preflight ran.
+
+**Confirmed cause:** Posture enums had no YOLO entry; compatibility capability
+tiers are not grants. Empty and omitted allowlists used the same truthiness
+test. A first implementation allowed copied or delegated configurations to
+reuse a parent's prepared preapproval, which the new transition tests exposed.
+
+**Repair:** Add explicit interactive user activation bound to its Config owner
+and workspace, exclude activation from saves/copies, suppress it during agent
+execution, and issue distinguishable one-use preapprovals rejected outside the
+owner's active mode. Preserve action-time approval, safe mode, Echo Veil,
+workspace restrictions, and completion verification. Deny credential actions
+and sensitive typed paths in YOLO. Copy declared Config fields for specialists
+and explicitly preserve their review mode/channel. Preserve empty B51 sets
+using `None` for omitted defaults. Ship a bounded posture resource and a
+discoverable skill; correct B51's wildcard and enforcement claims.
+
+**Verification:** The 18 new boundary tests and the 224-test focused runtime
+group passed. Repository-wide Ruff passed; mypy passed for 11 affected source
+files. Frozen non-editable installation passed installed-source parity and
+the pinned Echo dependency audit. Build of the source archive and wheel from
+that archive succeeded, and Twine accepted both. The isolated installed-package
+smoke exercised `/mode yolo`, `/mode status`, system-prompt injection, restart
+and tool-entry denial, `/harness refresh`, `/harness status`, skill search/read,
+and mode exit without changing the user's config.
+The final `ALGO_TEST_REQUIRE_RIPGREP=1 .venv/bin/pytest tests
+--junitxml=/tmp/algo-yolo-final-suite.xml` run passed 6,097 tests with 41 skips
+and no failures (111.77 seconds), including current evidence checks.
+The Nathan runtime receipt passed 17/17 correctness probes and every gate;
+the regenerated M8 receipt passed 9 local metrics with 5 external metrics
+blocked and none failed. M9 accepted the fresh ledger bindings with
+`--expect-blocked`; no external requirement was marked complete.
+
+**Prevention and limits:** A prompt or wildcard cannot grant authority. Check
+the installed import, test transitions using already-prepared grants, and
+distinguish omitted permissions from explicit denial. Record measured benefit
+separately from boundary correctness. At this initial YOLO qualification stage
+the repair was local to the worktree and the ordinary PATH command had not been
+replaced. Hosted platforms have not been qualified, and no YOLO performance or
+provider-quality gain has been measured.
+The isolated harness smoke used keyword retrieval with embeddings pending.
+
+**Backend correction (2026-09-16):** The handoff incorrectly described Echo
+Veil as the current host's memory backend. Live config has
+`echo_veil_enabled=false` and `echo_veil_protection=optional`. The installed
+D-57 skill and `~/.local/bin/d057-algo-cli` provide a CLI/skill bridge;
+`d057-algo-cli doctor` passed store verification at sequence 39 with the key
+and tip anchor in Keychain. Echo compatibility tests do not establish the
+active host backend. No config, memory store, or launcher was changed.
+The saved config currently lacks the D-57 attachment fields, and the installed
+Config declares none; its dataclass-only save cannot preserve those undeclared
+fields. The specific event that removed them is unknown. Built-in memory
+routing to D-57 remains unverified; the healthy bridge alone does not prove it.
+Before further runtime changes, qualify the selected D-57 path rather than
+re-enabling Echo or inferring integration from a skill, shim, or static label.
+
+**Follow-up repair:** Declare and persist explicit D-57 settings and route
+Config/tool/slash memory writes, native `/memories`, and prompt recall through
+the existing shared CLI. Reject competing authority selection, invalid flags,
+unverified projections, backend failure, and legacy catalog mutation without
+fallback. Serialize Algo snapshot updates, verify readback, and never retry an
+uncertain append automatically. Keep old memory files untouched and do not
+silently migrate or inject them. Suppress plaintext Intuition and alternate
+continuity writes; retain action-time authority policies and child isolation.
+The build is labeled `0.19.2+local.d057.yolo.20260916`, not a public release.
+
+**Shared writer repair:** The D-57 CLI previously replaced the archive
+atomically without serializing its archive/key/tip transaction. The shared
+entrypoint now uses a cooperative store lock for all commands. Its 45-test
+suite passed, including 16 concurrent Algo/Pi appends, verification of all 17
+records including bootstrap, and recall of every task. The raw codec API is
+outside this CLI concurrency guarantee; Windows locking remains unqualified.
+See the D-57 package's `docs/lessons-learned.md`.
+
+**Follow-up qualification:** The focused Algo group passed 172 tests with
+21 skips. The isolated installed-wheel probe passed native write/recall,
+restart, `/lesson`, `/memories`, YOLO, harness refresh, and corrupt-tip refusal
+without touching live memory or creating plaintext memory files. Source parity,
+repository Ruff, scoped mypy (9 files), source-archive/wheel build, and Twine
+checks passed. M8's first refresh exposed a production-native-release fixture
+that improperly used the local CLI version; the fixture now uses a release
+version and an explicit test retains local-build rejection. The packager was
+not weakened. The final installed-wheel run, `ALGO_TEST_REQUIRE_RIPGREP=1
+~/Code/Algo-cli-local-20260916-d057-yolo/.venv/bin/pytest
+tests --junitxml=/tmp/algo-d057-final-suite.xml`, passed 6,119 tests with
+41 skips, no failures, and current postwrite evidence checks (124.04 seconds).
+The refreshed Nathan receipt passed 17/17 correctness probes. The final M8
+receipt passed 9 local metrics with 5 external metrics blocked, none failed;
+M9 accepted the refreshed bindings while retaining 13 blocked requirements.
+
+**Local activation and live refresh:** The normal `~/.local/bin/algo-cli`
+now points to the separately installed exact wheel at
+`~/Code/Algo-cli-local-20260916-d057-yolo/.venv/bin/algo-cli`.
+`algo-cli --version` reports `0.19.2+local.d057.yolo.20260916`.
+Private config and old-launcher backups were created before enabling the four
+D-57 settings. Echo remains disabled and optional; the saved workspace is
+preserved. A read-only installed-runtime probe passed D-57 doctor and prompt
+recall, refreshed the real harness, and found/read the new YOLO skill under
+protected retrieval. It observed sequence 41 unchanged across the probe and
+unchanged configuration, monitored credential files, and memory-store bytes;
+no live memory write was performed. Sequence 39 above is the earlier doctor
+observation, not a claim that no other actor has appended since then.
+The eligible index has 789 records, with 220 embeddings ready and 569 pending.
+YOLO remains user-activated and session-only; restart did not activate it.
+
+**Delivery limits:** This is an activated local development build, not a
+GitHub/PyPI release. The previous release environment remains intact, and
+already-running CLI processes need restarting to load the new code. Legacy
+memory was not automatically imported. External M8 browser requirements,
+Windows D-57 locking, raw-API concurrency, and daemon recovery were not
+qualified. Harness refresh indexes resources; it does not install runtime code
+or prove a measured effectiveness gain.
+
+## 2026-09-16 - YOLO Still Prompted and Completion Recovery Stopped Early
+
+**Observed symptom and confirmed cause:** The activated YOLO build still
+prompted for shell commands. Its implementation only issued preapproval for
+actions already classified as session-preapproval; the tests explicitly
+expected shell/file prompts instead of the user's observable no-prompt
+workflow. Separately, a second premature model answer ended verification
+recovery immediately despite the configured four-round recovery window.
+New regression tests reproduced both defects. The exact sequence of the user's
+failed research run was not recovered, so a rejected verifier is not asserted
+as that run's confirmed cause.
+
+**Repair:** Following explicit user authorization, issue independent one-use
+YOLO grants for registered session/action-time actions within scope, and
+generate exact runtime confirmation receipts from the live user activation.
+Retain forced reviews, handoff/credential restrictions, existing path and
+safe-mode denials, backend protections, child isolation, and verifier evidence.
+Only direct user input changes protection settings. Continue premature-answer
+recovery within both the four-round and configured work-iteration budgets;
+exhaustion preserves changes and reports the actual verification limit rather
+than claiming success.
+
+**Verification observed:** The new actual-dispatch test writes a real file,
+runs Python assertions through the real shell tool without requesting input,
+and clears the completion gate only after the successful check. Tests cover
+concurrent independent grants, forced review, copy/child/exit/workspace
+revocation, retained safe mode, later successful recovery, and failed verification.
+The isolated installed-package D-57 probe also passes real shell/write dispatch
+with input configured to fail if any approval is requested. Repository Ruff,
+scoped mypy (4 files), sdist/wheel-from-sdist, Twine, and installed-source parity
+passed. Nathan passed 17/17 deterministic probes; M8 passed 9 local metrics with
+5 external metrics blocked, none failed; M9 accepted current bindings.
+The final exact-wheel suite passed 6,129 tests with 41 skips and no failures
+in 129.11 seconds (`/tmp/algo-yolo-approval-fix-final-suite.xml`). Normal
+`algo-cli --version` now reports `0.19.2+local.d057.yolo.20260916.1` from the
+separate `Algo-cli-local-20260916-yolo-approval-fix/.venv` installation.
+Activation passed current parity and M9 verification, preserved config bytes,
+and verified live D-57 at sequence 41 without a memory write. The prior launcher
+is retained at `~/.local/bin/algo-cli.pre-yolo-approval-fix-20260916`.
+The first activation preflight rejected a missing M9 report-path argument before
+any mutation; correcting the wrapper argument did not change a qualification
+rule. Existing CLI processes must exit/relaunch to load the corrected code.
+The final real-home refresh passed protected retrieval of the corrected YOLO
+skill and verified D-57 prompt recall. Monitored config, credential, and memory
+bytes remained unchanged; the index has 789 eligible records with embeddings
+still partially pending.
+
+**Prevention and limits:** Specify user-visible acceptance criteria first:
+activate through the interactive dispatcher, execute an actual shell command,
+and prove that no approval channel is used. A large passing suite can preserve
+the wrong requirement. Test premature answers as well as tool-heavy recovery.
+The new local build is `0.19.2+local.d057.yolo.20260916.1`. Workspace-bound
+consent is not an OS sandbox: shell processes retain the user's system
+permissions. Unknown/unavailable actions are not made supported, and unverified
+work is not relabeled as verified. No live memory or research artifact was
+changed by qualification, and no paid provider run or public release was used.
+
+### Follow-up - Cross-Workspace Read-Only Actions Had No YOLO Grant
+
+**Component, symptom, and confirmed cause:** Nathan's observation baseline was
+cwd-scoped, while YOLO only granted session/action-time policies. Ordinary
+read-only actions use `ConfirmationMode.NONE`, so sibling D-177 reads and
+listings had no grant. Eight new cases reproduced the denial before repair.
+The previous no-prompt tests did not cover cross-workspace observations.
+
+**Repair:** Genuine owner-bound activation now issues independent one-use,
+concrete-target grants for curated read-only workspace observations beyond
+cwd. Ordinary modes retain cwd-scoped baselines. File mutations remain
+workspace-scoped. Sensitive targets, backend safeguards, caller ceilings,
+changed-target checks, consumed-grant denial, and child/copy/exit/workspace
+revocation remain enforced. Clarify these boundaries in B51, the shipped
+YOLO skill, and posture text rather than recommending shell workarounds.
+
+**Verification observed:** Source and exact-wheel focused suites passed
+124 tests each. Ruff, scoped mypy (2 files), sdist/wheel-from-sdist, Twine,
+and installed parity passed. The exact wheel successfully dispatched real
+D-177 report reading, listing, search, and read-only slash aliases from the
+saved `codec-research-fork` workspace, with zero prompts. Monitored config,
+credentials, D-57 store, report, and seal bytes remained unchanged. Doctor
+reported healthy sequence 42 throughout that probe. The isolated installed
+D-57 write/recall/restart and corrupt-tip refusal probe passed. Nathan passed
+17/17; M8 passed 9 local metrics with 5 external blockers and no failures;
+M9 accepted current bindings (29 verified, 13 blocked, none failed).
+
+**Prevention and remaining limits:** Test sibling folders with absolute,
+relative, and home-expanded paths through actual dispatch, not raw tools or
+mode-only assertions. New grants are read authority, not external-write
+permission or an OS sandbox. The final exact-wheel suite passed 6,143 tests,
+41 skips, and no failures in 111.92 seconds
+(`/tmp/algo-yolo-cross-workspace-final-suite.xml`). Normal PATH was activated
+after fresh parity and M9 verification and now reports
+`0.19.2+local.d057.yolo.20260916.2` from the separate
+`Algo-cli-local-20260916-yolo-cross-workspace/.venv` wheel installation.
+Config bytes and the saved workspace were preserved, D-57 remained healthy,
+and the prior launcher is retained as
+`~/.local/bin/algo-cli.pre-yolo-cross-workspace-20260916`. The post-activation
+actual D-177 dispatch probe passed with zero prompts and unchanged monitored
+state. Real-home refresh retrieved the corrected skill and D-57 prompt,
+preserving monitored credentials/config/memory bytes (sequence 42). There are
+789 index records; embeddings remain partly pending. Running CLI processes
+must quit/relaunch and re-enter YOLO; refresh cannot replace loaded code.
+No public release or paid provider benchmark was performed. External browser
+qualification is unchanged, and no model-quality benefit is claimed.
+
+### Follow-up - Action-Program Format Was Misreported as Missing Authority
+
+**Component and observed symptom:** YOLO `action_program` stopped with
+`program outputs must be a non-empty list` and `attempts to set runtime-owned
+fields: cwd`. Both results misleadingly began `Blocked by runtime authority`
+despite valid outer grant/confirmation, and the model claimed noninteractive
+trusted approval was unavailable.
+
+**Confirmed cause and evidence boundary:** Omitted/null outputs already
+defaulted to the final step, but an explicit empty list did not. The compiler
+forbade every nested cwd value, even one matching the active workspace.
+Regression programs reproduced both failures before repair. The user's full
+plans were truncated: empty outputs and redundant cwd are reproduced causes,
+not proof of the hidden values. The reported compiler errors do not establish
+the model's claimed approval failure.
+
+**Repair:** Normalize empty outputs to the existing final-step default and
+redundant active-workspace/null cwd for runtime-cwd-bound tools before freezing
+the program. Preserve the caller's plan and equivalent frozen binding. Retain
+conflicting-workspace, cfg/safe-mode, invalid type/reference, caller-ceiling,
+effect-finality, and nested-authority checks. Label compiler errors separately
+from missing outer authority, and teach the schema, A12b, skill, and prompt
+to correct format within existing authority. Write and verifier remain separate
+supported version-1 calls; no effect restriction was removed.
+
+**Verification observed:** Source and exact-wheel focused suites each passed
+245 tests. Ruff, scoped mypy (2 files), sdist/wheel-from-sdist, Twine, installed
+parity, and Nathan 17/17 passed. Actual YOLO dispatch runs shell programs with
+omitted/null/empty outputs and writes/verifies a temporary file with matching
+nested cwd and empty outputs, using input that fails on any prompt. The
+isolated D-57 write/recall/restart/corrupt-tip probe passed those programs too.
+Actual D-177 sibling read/list/search dispatch still passed with monitored
+config, credentials, memory, report, and seal unchanged (healthy sequence 42).
+M8 passed 9 local metrics, with 5 external blockers and no failures; M9 accepted
+current evidence bindings. The final exact-wheel suite passed 6,165 tests,
+41 skips, and zero failures in 113.40 seconds
+(`/tmp/algo-yolo-program-compat-final-suite.xml`). Fresh parity and M9 checks
+passed before activation. Normal PATH now launches the separately installed
+`Algo-cli-local-20260916-yolo-program-compat/.venv` wheel and reports
+`0.19.2+local.d057.yolo.20260916.3`, superseding the prior `.2` local build.
+The previous launcher is retained at
+`~/.local/bin/algo-cli.pre-yolo-program-compat-20260916`. Activation preserved
+config bytes and the saved codec workspace, with D-57 healthy at sequence 42.
+Post-activation isolated program write/verification, actual D-177 read-only
+dispatch, and real-home harness refresh/retrieval of the updated skill and
+D-57 prompt passed. Monitored config, credentials, memory, report, and seal
+bytes stayed unchanged in the relevant live probes. The index has 789 records
+with embeddings partly pending.
+
+**Prevention and limits:** Qualify model-shaped composite plans through real
+outer and nested dispatch, not only direct actions. Distinguish optional-field
+normalization, malformed arguments, inner authority, forced review, and missing
+verification. Do not auto-retry uncertain effects to repair schema errors.
+No S-10 script or its claimed research results were created by qualification,
+and no public release or live provider effectiveness test was performed.
+Existing CLI processes require a restart after installation; refresh indexes
+resources but does not replace loaded code.
+
+### Follow-up - Known write refusals, denied programs, and unbounded YOLO work
+
+**Observed symptom:** In YOLO, `write_file` on an existing path was labeled
+`unknown_outcome` and created a retry barrier. A later `action_program` that
+reported `denied` still carried an "Unknown outcome" warning. After a failed
+script run, the same command was skipped until an unresolved outcome was
+reconciled. Independently, the default 24-round `/toolmax` (hard-capped at 128)
+stopped long YOLO sessions before the work finished.
+
+**Confirmed cause:** Invoked `UNKNOWN_POSSIBLE` mutations were flattened to
+unknown even for controlled `Error:` file refusals and structured program
+`failed`/`denied` JSON. Observation did not retire workspace-unknown ledger
+entries. The interactive loop always used `min(128, max_tool_iterations)`.
+
+**Repair:** Existing-file writes without overwrite are preflight denials.
+Structured program statuses are preserved. File-tool `Error:` results stay
+failed, not unknown. A fresh workspace read/list reconciles unknown workspace
+effects so the same action may run again. Live YOLO now returns no tool/model
+round cap (`work_iteration_limit` is `None`) and no verification-recovery
+round cap; children and ordinary modes keep the saved `/toolmax` and four
+recovery rounds. Shell mutations still require an explicit workspace verifier.
+Saved `max_tool_iterations` is unchanged and applies after YOLO exit.
+
+**Verification observed:** Focused source tests covering YOLO mode, dispatch,
+Arthur outcomes, run contracts, progress recovery, and slash/overview helpers
+passed, including a six-tool YOLO chat with `/toolmax` 2 and a YOLO run
+contract at the unbounded work ceiling. Scoped Ruff and mypy of the touched
+modules passed. This is not a full-suite, M8, or hosted qualification.
+
+**Prevention and limits:** Do not treat every `Error:` prefix as a known
+no-effect failure; browser adapter losses remain unknown. Unlimited YOLO work
+is session-only and is not inherited. Ctrl+C still stops a run. No public
+release.
+
+### Follow-up - Release preflight found unsafe slash inspection and capture rules
+
+**Observed symptom:** The release-preflight suite reported that `/memories`
+output was not captured, while mutating `/google gmail-draft ...` output was
+captured. Review then showed that arguments such as `/host status`, `/model
+status`, `/system status`, and `/goal show` could be classified as inspection
+even though those handlers treat nonempty arguments as mutations. Scoped mypy
+also rejected assigning an optional native context value to `num_ctx`.
+
+**Confirmed cause:** A shared output-capture allowlist had grown to include
+whole command families whose read and write forms use the same command name.
+The policy engine also reused generic inspection words across handlers with
+different argument contracts. Type narrowing occurred through a helper that
+mypy could not prove at the assignment site.
+
+**Repair:** Restore `/memories` capture and classify output per command and
+argument. Empty `/host`, `/keepalive`, `/model`, `/system`, and `/theme` calls
+are read-only; `/goal status` is read-only; mutating or ambiguous arguments are
+not captured and still require the normal policy path. Keep the existing
+command-specific `/config`, `/google`, `/kernel`, and `/plugins` rules. Assert
+the native context is present before assigning the already-validated value.
+
+**Verification to date:** Adversarial tests cover the misleading `status`,
+`show`, `clear`, `resume`, and free-text forms, plus output capture for both
+read-only and mutating commands. The changed-test set passed 845 tests with 4
+skips; the focused slash/tool suite, scoped Ruff, and scoped mypy passed. The
+fresh M8 receipt, M9 audit, repository-wide suite, hosted matrix, and public
+release remain pending and must not be inferred from these local checks.
+
+**Prevention and limits:** Read-only status is a handler-specific contract, not
+a property of an argument word. Any command family added to output capture must
+include negative tests for its mutating forms. Generated qualification JSON
+must be written with the runner's explicit `--output` option; stdout from a
+passing run does not update the checked-in receipt.
+
+## 2026-09-16 - Saved 131k Stamp Capped DeepSeek V4.1 Flash; /reload Dropped YOLO
+
+**Component and symptom:** After the catalog listed DeepSeek V4.1 Flash as a
+1M native window, the live footer still showed `cap 131.1k`. `/reload` then
+left the session in `execute` even when the user had typed `/mode yolo`.
+
+**Confirmed cause:** Saved `num_ctx: 131072` (a leftover V3.1/remote stamp)
+was treated as an explicit `/ctx` override and beat the native 1,048,576
+window. `/reload` copied disk `session_mode: execute` onto the live config.
+Separately, `reload_runtime()` reloads `algo_cli.session_mode`, replacing
+`_YoloActivation`; an `isinstance` check against the new class dropped a
+still-valid this-process marker.
+
+**Repair:** Remote catalog stamps smaller than the live native window no longer
+cap cloud/xAI/ChatGPT models; custom `/ctx` values that are not those stamps
+are kept, and local GGUF allocations stay conservative. Live YOLO is skipped
+when copying disk `session_mode`, re-bound after the module reload, and
+recognized by duck-typed activation fields so class identity is not required.
+YOLO remains session-only and is not persisted or inherited.
+
+**Verification observed:** Focused source tests covering model profile, model
+info, context accounting, YOLO activation, and `/reload` passed. Scoped Ruff
+of the touched modules passed. This is not a full-suite, M8, or hosted
+qualification. Existing CLI processes require a restart after installation.
+
+**Prevention and limits:** Footer and compaction must use
+`effective_context_limits`, not raw `cfg.num_ctx`. Do not treat `/reload` as a
+session-mode reset. No public release.
+
+## 2026-09-16 - Alice Crash Qualifier Assumed the Old SwiftPM Bundle
+
+**Component and symptom:** Native Alice process-kill qualification failed with
+`alice_crash_process_identity` in both M8's focused suite and the broad suite.
+The initial broad run had 6,090 passing tests, 41 skips, one failure, and two
+postwrite evidence checks deferred. No failed metric was counted as passing.
+
+**Confirmed cause:** This Mac's toolchain defaults to `swiftbuild`, launching
+`swiftpm-testing-helper` with the declared `AustinCoreTests.xctest` bundle.
+The ownership checker only recognized the older native SwiftPM aggregate
+`AustinNativeControlPackageTests.xctest`. A live owned-publisher diagnostic
+showed both normal and wide `ps` output; truncation was not the cause.
+
+**Repair:** Recognize the two known test bundles only when a resolved command
+argument points into this checkout's `.build` tree. Preserve the publisher
+ancestry check before SIGKILL, reject foreign/symlinked-outside bundles and
+unknown/malformed commands, and exclude bundle-like ancestors outside `.build`.
+Bind `Package.swift` into the crash receipt's source digest.
+
+**Verification:** The focused crash-test group passed, including the actual
+process-kill/restart test. Repository-wide Ruff and scoped mypy passed.
+`scripts/henry_austin_alice_crash_qualification.py --trials 10` regenerated
+the DEBUG receipt with 10 publishes, 10 process kills, and 10 orphan recoveries.
+`scripts/henry_m8_qualification.py` then passed all 9 local metrics, with
+5 external metrics blocked and none failed. The fresh artifacts are bound in
+the evidence ledger; `scripts/arthur_m9_completion_audit.py --write-report
+--expect-blocked --quiet` succeeded without lifting the external blockers.
+The final full suite passed 6,097 tests with 41 skips and no failures; the
+current crash receipt and postwrite evidence checks were included.
+
+**Prevention and limits:** Test-runner identity depends on the build engine.
+Validate known products and owned paths plus ancestry instead of accepting any
+XCTest-looking process, or weakening the ownership check. This is DEBUG test
+process evidence; it does not qualify a signed production service, TCC,
+Keychain, power-loss durability, or secure erasure.
 ## 2026-09-20: Sticky Footer Was Silently Disabled and Broke the Hosted Suite
 
 **Issue:** PR #64's generation footer passed its four focused tests but did not

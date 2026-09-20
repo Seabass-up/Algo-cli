@@ -10,7 +10,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -37,6 +37,7 @@ from . import model_info as _model_info_module
 from . import nathan_provider_protocol
 from . import chatgpt_client
 from . import context_budget
+from .session_mode import active_mode, delegated_scope
 from . import tools as tools_module
 from .model_routing import routes_to_chatgpt
 from .chat_protocol import (
@@ -238,6 +239,7 @@ def _agent_execution_scope():
         _execution_state.depth = depth
 
 
+@delegated_scope()
 def run_agent_block(
     block: agent_blocks.AgentBlock,
     *,
@@ -409,7 +411,7 @@ def run_agent_block(
 
     mercury = harness.resolve_mercury_stop_conditions(
         user_message=task,
-        session_mode=cfg.session_mode,
+        session_mode=active_mode(cfg),
         include_external=cfg.external_harness_sources_enabled,
     )
     system_parts = [block.prompt]
@@ -1745,6 +1747,7 @@ def _finish_thread_record(
         return False
 
 
+@delegated_scope()
 def run_agent_pipeline(
     task: str,
     cfg: Config,
@@ -2786,6 +2789,7 @@ def _run_contract_bound_specialist(
     return block
 
 
+@delegated_scope()
 def run_agent_team(
     task: str,
     cfg: Config,
@@ -2889,7 +2893,12 @@ def run_agent_team(
     )
 
     def run_specialist(role: str) -> agent_blocks.AgentBlock:
-        member_cfg = copy.deepcopy(cfg)
+        # Copy persisted fields only, never locks, scoped grants, or YOLO activation.
+        member_cfg = copy.deepcopy(replace(cfg, session_mode=active_mode(cfg)))
+        setattr(member_cfg, "_nathan_approval_mode", approval_mode_for_config(cfg))
+        approval_channel = getattr(cfg, "_nathan_approval_channel", None)
+        if approval_channel is not None:
+            setattr(member_cfg, "_nathan_approval_channel", approval_channel)
         member_cfg.messages = []
         member_cfg.session_summary = ""
         member_cfg.attempt_ledger = []

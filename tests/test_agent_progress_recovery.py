@@ -23,7 +23,17 @@ def call(name, args, turn):
     return {"tool_calls": [{"id": f"call-{turn}", "function": {"name": name, "arguments": args}}]}
 
 
-def run_script(monkeypatch, tmp_path, responses, *, max_iterations=25, approve=None, invoke=None, safe_mode=True):
+def run_script(
+    monkeypatch,
+    tmp_path,
+    responses,
+    *,
+    max_iterations=25,
+    approve=None,
+    invoke=None,
+    safe_mode=True,
+    configure=None,
+):
     _patch_agent_loop_for_tool_policy_test(monkeypatch)
     cfg = config_module.Config(
         cwd=str(tmp_path),
@@ -33,6 +43,8 @@ def run_script(monkeypatch, tmp_path, responses, *, max_iterations=25, approve=N
         skill_crystallize_enabled=False,
         code_rag_enabled=False,
     )
+    if configure is not None:
+        configure(cfg)
     monkeypatch.setattr(config_module.Config, "load", classmethod(lambda cls: cfg))
     monkeypatch.setattr(main, "json_sink", display.json_sink)
     monkeypatch.setattr(main, "show_tool_call", display.show_tool_call)

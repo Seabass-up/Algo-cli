@@ -33,6 +33,40 @@ def test_failed_unknown_possible_mutation_is_not_flattened_to_failure(tmp_path) 
     assert "Do not retry automatically" in outcome.model_text()
 
 
+def test_controlled_write_refusal_stays_failed_not_unknown(tmp_path) -> None:
+    action = resolve_action("write_file", {"path": "s10.py", "content": "x"}, cwd=str(tmp_path))
+    outcome = normalize_action_outcome(
+        action,
+        "Error: s10.py already exists. Re-run with overwrite=true if intended.",
+        reported_status="failed",
+        invoked=True,
+    )
+
+    assert outcome.status is OutcomeStatus.FAILED
+    assert "Unknown outcome" not in outcome.model_text()
+
+
+def test_denied_or_failed_program_json_is_not_relabeled_unknown(tmp_path) -> None:
+    action = resolve_action("action_program", {"plan": {"version": 1, "steps": []}}, cwd=str(tmp_path))
+    denied = normalize_action_outcome(
+        action,
+        '{"status":"denied","outputs":[],"error":"Blocked by runtime authority"}',
+        reported_status="denied",
+        invoked=True,
+    )
+    failed = normalize_action_outcome(
+        action,
+        '{"status":"failed","outputs":[],"error":"write_file returned failed"}',
+        reported_status="failed",
+        invoked=True,
+    )
+
+    assert denied.status is OutcomeStatus.DENIED
+    assert "Unknown outcome" not in denied.model_text()
+    assert failed.status is OutcomeStatus.FAILED
+    assert "Unknown outcome" not in failed.model_text()
+
+
 def test_preinvoke_denial_can_never_be_unknown(tmp_path) -> None:
     action = resolve_action("write_file", {"path": "x", "content": "y"}, cwd=str(tmp_path))
     outcome = normalize_action_outcome(

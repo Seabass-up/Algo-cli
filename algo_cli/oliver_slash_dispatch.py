@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
@@ -136,7 +137,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/plugins", "Inspect plugin manifests without executing plugin code"),
     ("/credentials", "List helpers or check a named helper key (value redacted)"),
     ("/url-scheme", "Parse an algo-cli:// deep link: /url-scheme <url> | help"),
-    ("/mode", "Session mode: execute | explore | publish"),
+    ("/mode", "Session mode: execute | explore | publish | yolo (user-only, scoped)"),
     ("/exit", "Exit"),
     ("/quit", "Exit"),
 ]
@@ -268,7 +269,9 @@ def _parse_toggle_arg(arg: str, current: bool) -> tuple[bool, bool] | None:
     return None
 
 
-def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -> tuple[bool, Client]:
+def handle_command(
+    raw: str, cfg: Config, client: Client, session: Any = None, *, user_initiated: bool = False,
+) -> tuple[bool, Client]:
     from . import main as m
 
     def refresh_after_model_change(updated_client: Client) -> None:
@@ -337,13 +340,19 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             client = m.create_client(cfg)
             refresh_after_model_change(client)
         else:
+            if user_initiated:
+                if m.model_picker(cfg):
+                    client = m.create_client(cfg)
+                    refresh_after_model_change(client)
+            else:
+                m.show_model_inventory(cfg)
+    elif command == "/models":
+        if user_initiated:
             if m.model_picker(cfg):
                 client = m.create_client(cfg)
                 refresh_after_model_change(client)
-    elif command == "/models":
-        if m.model_picker(cfg):
-            client = m.create_client(cfg)
-            refresh_after_model_change(client)
+        else:
+            m.show_model_inventory(cfg)
     elif command == "/host":
         if arg:
             cfg.host = arg
@@ -570,6 +579,8 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 m.show_info("Performance metrics reset.")
     elif command == "/dashboard":
         installed_models, running_models, event_lines = m.collect_dashboard_state(client, cfg)
+        from . import session_mode
+
         used, total, _remaining, _runtime_cap, _native = m.context_status(cfg, client=client)
         m.show_session_overview(
             model=cfg.model,
@@ -585,7 +596,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             total_tokens=total,
             summary_active=bool(cfg.session_summary.strip()),
             tool_think_every=max(1, int(cfg.tool_think_every)),
-            max_tool_iterations=max(1, int(cfg.max_tool_iterations)),
+            max_tool_iterations=session_mode.work_iteration_label(cfg),
             memory_count=len(cfg.memories),
             system_prompt=cfg.system,
             messages=cfg.messages,
@@ -606,6 +617,12 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             else:
                 m.console.print(f"  [muted]{row['name']:<20}  missing[/]")
     elif command == "/lesson":
+        from . import ada_memory_d057
+        from . import tools as tools_module
+
+        if ada_memory_d057.selected(cfg):
+            m.show_info(tools_module.append_lesson(arg, cfg=cfg))
+            return True, client
         if not arg:
             m.show_error("Usage: /lesson <text>")
         else:
@@ -891,6 +908,14 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 else:
                     m.show_info("Memory already stored.")
     elif command == "/memories":
+        from . import ada_memory_d057
+
+        if ada_memory_d057.selected(cfg):
+            try:
+                display.show_memory(ada_memory_d057.recall_facts(cfg))
+            except ada_memory_d057.D057MemoryError as exc:
+                m.show_error(str(exc))
+            return True, client
         from .ada_memory_echo_veil import (
             echo_veil_authority_selected,
             list_echo_veil_memories,
@@ -935,16 +960,19 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
 
         sub = arg.strip().lower() or "status"
         if sub in session_mode.VALID_MODES:
-            previous = cfg.session_mode
-            cfg.session_mode = sub
-            for note in session_mode.apply_mode_side_effects(cfg, sub, previous=previous):
+            try:
+                notes = session_mode.select_mode(cfg, sub, user_initiated=user_initiated)
+            except ValueError as exc:
+                m.show_error(str(exc))
+                return True, client
+            for note in notes:
                 m.show_info(note)
             cfg.save()
             m.show_info(session_mode.status_line(cfg))
         elif sub == "status":
             m.console.print(session_mode.describe(cfg))
         else:
-            m.show_error("Usage: /mode [execute|explore|publish|status]")
+            m.show_error("Usage: /mode [execute|explore|publish|yolo|status]")
     elif command == "/plugins":
         from .william_plugins import discover_plugins, plugin_status
 
@@ -1193,6 +1221,8 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 m.show_error("Usage: /temp <number from 0.0 to 2.0>")
         m.show_info(f"Temperature: {cfg.temperature}")
     elif command == "/toolmax":
+        from .session_mode import unlimited_work, work_iteration_label
+
         if arg:
             try:
                 requested_tool_limit = int(arg)
@@ -1202,7 +1232,14 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 cfg.save()
             except ValueError:
                 m.show_error("Usage: /toolmax <1-128>")
-        m.show_info(f"Max tool iterations: {cfg.max_tool_iterations}")
+        live = work_iteration_label(cfg)
+        if unlimited_work(cfg):
+            m.show_info(
+                f"Max tool iterations: {live} while YOLO is active "
+                f"(saved /toolmax {cfg.max_tool_iterations} applies after exit)."
+            )
+        else:
+            m.show_info(f"Max tool iterations: {live}")
     elif command == "/thinkevery":
         if arg:
             try:
@@ -1328,6 +1365,8 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 )
             )
         else:
+            from . import session_mode
+
             info_used, info_total, *_rest = m.context_status(cfg, client=client)
             m.show_session_overview(
                 model=cfg.model,
@@ -1343,7 +1382,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 total_tokens=info_total,
                 summary_active=bool(cfg.session_summary.strip()),
                 tool_think_every=max(1, int(cfg.tool_think_every)),
-                max_tool_iterations=max(1, int(cfg.max_tool_iterations)),
+                max_tool_iterations=session_mode.work_iteration_label(cfg),
                 memory_count=len(cfg.memories),
                 system_prompt=cfg.system,
                 messages=cfg.messages,
@@ -1477,6 +1516,10 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         m.console.print()
         m.console.print(render_runtime_quality_snapshot(cfg))
         m.console.print()
+        m.console.print(available_actions("intel", cfg=cfg))
+        m.console.print()
+        m.console.print(available_actions("kernel", cfg=cfg))
+        m.console.print()
         m.console.print(available_actions("harness", cfg=cfg))
         m.console.print()
         for query in (
@@ -1491,16 +1534,35 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             m.console.print()
     elif command == "/reload":
         from .elsie_echo_preflight import EchoAuxiliaryPreflightError
+        from . import session_mode
 
+        yolo_live = session_mode.unlimited_work(cfg)
+        yolo_workspace = None
+        yolo_previous = None
+        if yolo_live:
+            activation = getattr(cfg, "_yolo_activation", None)
+            yolo_workspace = getattr(activation, "workspace", None)
+            yolo_previous = getattr(activation, "previous", None)
         try:
             reloaded_cfg = m.reload_runtime()
         except EchoAuxiliaryPreflightError:
             m.show_error("Echo-protected auxiliary state could not be prepared safely; reload was refused.")
             return True, client
+        skip = {"messages", "session_summary", "context_state", "attempt_ledger"}
+        if yolo_live:
+            skip.add("session_mode")
         for field in fields(Config):
-            if field.name in {"messages", "session_summary", "context_state", "attempt_ledger"}:
+            if field.name in skip:
                 continue
             setattr(cfg, field.name, getattr(reloaded_cfg, field.name))
+        if yolo_live:
+            # ``reload_runtime`` reloads session_mode; re-bind using the new class.
+            live_session_mode = sys.modules.get("algo_cli.session_mode") or session_mode
+            live_session_mode.restore_yolo_activation(
+                cfg,
+                workspace=yolo_workspace,
+                previous=yolo_previous,
+            )
         client = m.create_client(cfg)
         m.show_info("Reloaded config, tools, and harness index.")
         m.show_info(

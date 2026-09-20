@@ -13,7 +13,7 @@ import shlex
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, Iterator
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -275,8 +275,9 @@ def _intuition_engine_for(cfg: Config) -> Any:
 
     global _intuition_engine
     from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .ada_memory_d057 import selected
 
-    if echo_veil_authority_selected(cfg):
+    if selected(cfg) or echo_veil_authority_selected(cfg):
         # Drop any prior in-memory plaintext authority when a reload selects
         # Echo.  A later explicit transition away from Echo may construct a
         # fresh engine, but protected runs never retain or inspect it.
@@ -292,8 +293,9 @@ def _drop_plaintext_intuition_if_protected(cfg: Config) -> None:
 
     global _intuition_engine
     from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .ada_memory_d057 import selected
 
-    if echo_veil_authority_selected(cfg):
+    if selected(cfg) or echo_veil_authority_selected(cfg):
         _discard_plaintext_intuition_engine()
 
 
@@ -301,8 +303,9 @@ def _scaffold_plaintext_identity_if_allowed(cfg: Config) -> list[Path]:
     """Create legacy identity files only when Echo does not own continuity."""
 
     from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .ada_memory_d057 import selected
 
-    if echo_veil_authority_selected(cfg):
+    if selected(cfg) or echo_veil_authority_selected(cfg):
         return []
     return identity.scaffold_if_needed()
 
@@ -315,12 +318,18 @@ def _changed_plaintext_identity_files(*, protected: bool) -> list[Path]:
 
 CLOUD_MODEL_CHOICES = [
     "glm-4.6:cloud",
+    "glm-5.1:cloud",
+    "glm-5.2:cloud",
     "gpt-oss:20b-cloud",
     "gpt-oss:120b-cloud",
     "qwen3-coder:480b-cloud",
     "qwen3:235b-cloud",
     "qwen3-vl:235b-cloud",
+    "minimax-m3:cloud",
     "deepseek-v3.1:671b-cloud",
+    "deepseek-v4-flash:cloud",
+    "deepseek-v4-pro:cloud",
+    "deepseek-v4.1-flash:cloud",
 ]
 # xAI Grok models route through xAI's documented API-key authentication.  These
 # are fallback names when an explicitly requested model-list check is unavailable.
@@ -524,6 +533,8 @@ def refresh_runtime_status(cfg: Config, client: Any | None = None, *, force: boo
         mode = "cloud"
     else:
         mode = "local"
+    from . import session_mode
+
     RUNTIME_STATUS.update(
         {
             "context": context,
@@ -541,7 +552,7 @@ def refresh_runtime_status(cfg: Config, client: Any | None = None, *, force: boo
             "auto_mode": cfg.auto_approve_active,
             "safe_mode": cfg.safe_mode,
             "tool_think_every": max(1, int(cfg.tool_think_every)),
-            "max_tool_iterations": max(1, int(cfg.max_tool_iterations)),
+            "max_tool_iterations": session_mode.work_iteration_label(cfg),
             "memory_count": len(cfg.memories),
         }
     )
@@ -656,7 +667,9 @@ def build_status_toolbar(cfg: Config):
     parts.append(sep)
     parts.append(_context_chip(palette))
 
-    tool_max = RUNTIME_STATUS.get("max_tool_iterations", max(1, int(cfg.max_tool_iterations)))
+    from . import session_mode as _session_mode
+
+    tool_max = RUNTIME_STATUS.get("max_tool_iterations", _session_mode.work_iteration_label(cfg))
     reflect = RUNTIME_STATUS.get("tool_think_every", max(1, int(cfg.tool_think_every)))
     parts.append(sep)
     parts.append(_ftr_chip(f"tools {tool_max}", palette["muted"]))
@@ -781,7 +794,7 @@ def build_status_rprompt(cfg: Config):
     memory_count = RUNTIME_STATUS.get("memory_count", len(cfg.memories))
     from . import session_mode
 
-    mode_label = session_mode.normalize_mode(cfg.session_mode)
+    mode_label = session_mode.active_mode(cfg)
     parts = [
         _ftr_chip(cwd, palette["muted"]),
         sep,
@@ -1862,6 +1875,33 @@ def choose_from_menu(title: str, choices: list[tuple[str, str]], default: int = 
         console.print("[red]Choice out of range.[/]")
 
 
+def show_model_inventory(cfg: Config) -> None:
+    """Print the current model and selectable catalogs without opening a picker."""
+
+    show_info(f"Current model: {cfg.model}")
+    local_names = local_model_names(cfg)
+    if local_names:
+        console.print("[muted]Local/Ollama:[/] " + ", ".join(local_names))
+    cloud_names = [name for name in cloud_model_names() if name not in local_names]
+    if cloud_names:
+        console.print("[muted]Ollama Cloud:[/] " + ", ".join(cloud_names))
+    chatgpt_names, chatgpt_authed = chatgpt_model_names()
+    if chatgpt_authed and chatgpt_names:
+        console.print("[muted]ChatGPT/Codex:[/] " + ", ".join(chatgpt_names))
+    elif not chatgpt_authed:
+        console.print("[muted]ChatGPT/Codex:[/] not authenticated")
+    xai_names, xai_authed = xai_model_names()
+    if xai_authed and xai_names:
+        console.print("[muted]xAI Grok:[/] " + ", ".join(xai_names))
+    elif not xai_authed:
+        console.print("[muted]xAI Grok:[/] not configured")
+    if not local_names and not cloud_names and not chatgpt_names and not xai_names:
+        show_error(
+            "No models are selectable yet. Pull a local model with `ollama pull qwen3`, "
+            "or run /login and pull/select a :cloud model through local Ollama."
+        )
+
+
 def model_picker(cfg: Config, *, first_run: bool = False) -> bool:
     local_names = local_model_names(cfg)
     choices: list[tuple[str, str]] = []
@@ -1989,6 +2029,26 @@ def handle_status_command(cfg: Config, client: Any | None = None) -> None:
         ctx_line += f" · runtime cap {runtime_cap:,}"
     console.print(f"[bold primary]Context:[/] {ctx_line}")
     console.print(f"[bold primary]Features:[/] {', '.join(features) if features else 'none'}")
+    from .tools import intelligence_runtime_snapshot
+    from .kernels.manifest import kernel_runtime_snapshot
+
+    intelligence = intelligence_runtime_snapshot()
+    if intelligence.get("wired"):
+        caps = ", ".join(intelligence.get("capabilities") or []) or "none"
+        console.print(
+            f"[bold primary]Intelligence:[/] wired · {intelligence.get('exports', 0)} exports · {caps}"
+        )
+    else:
+        console.print(f"[bold primary]Intelligence:[/] unavailable ({intelligence.get('error', 'import failed')})")
+    kernels = kernel_runtime_snapshot()
+    counts = kernels.get("counts") or {}
+    console.print(
+        "[bold primary]Kernels:[/] "
+        f"{int(counts.get('active', 0))} active · "
+        f"{int(counts.get('preview', 0))} preview · "
+        f"{int(counts.get('planned', 0))} planned "
+        f"({int(kernels.get('total', 0))} total)"
+    )
 
 
 def small_maintenance_client(cfg: Config, fallback_client: Client | None = None) -> tuple[Client, str]:
@@ -2364,8 +2424,9 @@ def capture_intuition_block(
     force: bool = False,
 ) -> str | None:
     from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .ada_memory_d057 import selected
 
-    if echo_veil_authority_selected(cfg):
+    if selected(cfg) or echo_veil_authority_selected(cfg):
         return None
     intuition_engine = _intuition_engine_for(cfg)
     if intuition_engine is None:
@@ -2925,6 +2986,18 @@ def ensure_lessons_index(cfg: Config) -> bool:
     return False
 
 
+def _model_round_indices(max_iterations: int | None) -> Iterator[int]:
+    """Yield work-round indices; a bounded budget adds one extra finalization round."""
+
+    if max_iterations is None:
+        index = 0
+        while True:
+            yield index
+            index += 1
+    else:
+        yield from range(max_iterations + 1)
+
+
 def agent_loop(
     client: Client,
     cfg: Config,
@@ -2981,6 +3054,16 @@ def _agent_loop_body(
     )
 
     echo_memory_authority = echo_veil_authority_selected(cfg)
+    from . import ada_memory_d057
+
+    try:
+        d057_memory_authority = ada_memory_d057.selected(cfg)
+        if d057_memory_authority:
+            ada_memory_d057.doctor(cfg)
+    except ada_memory_d057.D057MemoryError:
+        show_error("D-57 memory preflight failed; this turn stopped before model execution. No memory fallback was used.")
+        return
+    external_memory_authority = echo_memory_authority or d057_memory_authority
     required_memory_protection = protection_required(cfg)
     if json_sink() is None:
         console.rule(style="border")
@@ -3051,15 +3134,15 @@ def _agent_loop_body(
     if not cfg.cloud and not routes_to_xai(cfg) and not routes_to_chatgpt(cfg):
         _turn_local_models = local_model_names(cfg)
 
-    retrieved_lessons: list[str] | None = [] if echo_memory_authority else None
-    if not echo_memory_authority and ensure_lessons_index(cfg):
+    retrieved_lessons: list[str] | None = [] if external_memory_authority else None
+    if not external_memory_authority and ensure_lessons_index(cfg):
         retrieved_lessons = identity.retrieve_lessons(
             context_query_message, _shared_embed, _embed_model, k=LESSONS_TOP_K
         )
     # Governed memory recall is independent from the optional Intuition layer.
     # Pinned facts are already injected by context_budget; only curated/history
     # records are retrieved here so the prompt does not contain duplicates.
-    if not echo_memory_authority:
+    if not external_memory_authority:
         try:
             memory_catalog = memory_runtime.MemoryCatalog()
             memory_catalog.sync_legacy_facts(cfg.memories, authoritative=False)
@@ -3083,9 +3166,9 @@ def _agent_loop_body(
         except memory_runtime.MemorySystemError as exc:
             logger.debug("Governed memory recall failed: %s", exc)
     retrieved_context: list[dict[str, Any]] | None = None
-    from .session_mode import normalize_mode
+    from .session_mode import active_mode, completion_recovery_limit, work_iteration_limit
 
-    _session_mode = normalize_mode(cfg.session_mode)
+    _session_mode = active_mode(cfg)
     harness_tools_available = any(getattr(tool, "__name__", "").startswith("harness_") for tool in active_tools)
     if (
         _session_mode != "execute"
@@ -3099,13 +3182,13 @@ def _agent_loop_body(
             dimensions=configured_embed_dimensions(cfg),
             k=HARNESS_TOP_K,
             pattern_context=harness.runtime_pattern_context(active_tools=active_tools),
-            index=harness.retrieval_index(protected_memory=echo_memory_authority),
+            index=harness.retrieval_index(protected_memory=external_memory_authority),
         )
         context_block = harness.format_retrieved_context(retrieved_context or [])
         if context_block:
             optional_context_blocks.append(OptionalContextBlock("harness", "Relevant Context", context_block))
     intuition_engine = _intuition_engine_for(cfg)
-    if intuition_engine is not None and not echo_memory_authority:
+    if intuition_engine is not None and not external_memory_authority:
         try:
             recalled_blocks = intuition_engine.recall(
                 context_query_message,
@@ -3120,7 +3203,7 @@ def _agent_loop_body(
                     context_query_message = f"{context_query_message}\n\n{injection}"
         except Exception as exc:
             logger.debug("Intuition run failed: %s", exc)
-    if cfg.index_compute_lab_auto_inject and not echo_memory_authority:
+    if cfg.index_compute_lab_auto_inject and not external_memory_authority:
         from . import index_compute_lab
 
         lab_block = index_compute_lab.context_for_query(context_query_message)
@@ -3278,11 +3361,19 @@ def _agent_loop_body(
         }
     active_user_message = {"role": "user", "content": persisted_user_message}
     cfg.messages.append(active_user_message)
-    max_iterations = max(1, min(128, int(cfg.max_tool_iterations)))
+    max_iterations = work_iteration_limit(cfg)
+    recovery_limit = completion_recovery_limit(cfg, bounded_default=MAX_COMPLETION_RECOVERY_ROUNDS)
     # Model-aware params: adapt num_ctx/temperature/reflection cadence to the
     # active model's size + provider, honoring any explicit user overrides.
     if getattr(cfg, "model_adaptive", True):
         _profile_params = model_profile.effective_params(cfg, _active_model_info)
+        if model_profile.promote_stale_remote_context(cfg, _active_model_info):
+            _profile_params = model_profile.EffectiveParams(
+                num_ctx=int(cfg.num_ctx),
+                temperature=_profile_params.temperature,
+                tool_think_every=_profile_params.tool_think_every,
+                adapted_fields=_profile_params.adapted_fields,
+            )
         if _profile_params.adapted_fields and json_sink() is None:
             show_info(
                 f"↳ model-adaptive ({', '.join(_profile_params.adapted_fields)}): "
@@ -3449,10 +3540,16 @@ def _agent_loop_body(
         # one tool-free response turn when the final capped iteration leaves a
         # verified state. This prevents a correct run from being reported as
         # partial solely because its verifier consumed the last work turn.
-        for _ in range(max_iterations + 1):
+        # YOLO leaves the work and verification-recovery ceilings unset so the
+        # model can keep calling tools until it finishes or the user interrupts.
+        for _ in _model_round_indices(max_iterations):
             context_build_started = agent_loop_started if iterations_used == 0 else time.perf_counter()
-            recovery_finalization = completion_nudged and completion_recovery_rounds >= MAX_COMPLETION_RECOVERY_ROUNDS
-            if recovery_finalization and _ < max_iterations:
+            recovery_finalization = (
+                completion_nudged
+                and recovery_limit is not None
+                and completion_recovery_rounds >= recovery_limit
+            )
+            if recovery_finalization and (max_iterations is None or _ < max_iterations):
                 completion = execution_guardrails.completion_decision()
                 if not completion.allowed:
                     completion = execution_guardrails.auto_verify_working_tree(cfg.cwd)
@@ -3462,24 +3559,30 @@ def _agent_loop_body(
                     final_content = ""
                     show_error(
                         "Completion blocked: verification recovery exhausted after "
-                        f"{MAX_COMPLETION_RECOVERY_ROUNDS} model rounds. Workspace changes are retained; "
+                        f"{recovery_limit} model rounds. Workspace changes are retained; "
                         "no successful task completion is claimed."
                     )
                     break
-            finalization_turn = _ == max_iterations or recovery_finalization
+            finalization_turn = recovery_finalization or (
+                max_iterations is not None and _ == max_iterations
+            )
             if finalization_turn:
                 if no_progress_tool_rounds:
                     show_error(
-                        f"Max tool iterations reached ({max_iterations}) with actions still blocked "
-                        "before execution. No successful task completion is claimed."
+                        "Max tool iterations reached "
+                        f"({max_iterations if max_iterations is not None else 'unlimited'}) "
+                        "with actions still blocked before execution. No successful task completion is claimed."
                     )
                     break
                 completion = execution_guardrails.completion_decision()
                 if not completion.allowed:
-                    show_error(
-                        f"Max tool iterations reached ({max_iterations}) before successful "
+                    limit_hint = (
+                        "Verification recovery is exhausted before a passing workspace verifier."
+                        if recovery_limit is not None and max_iterations is None
+                        else f"Max tool iterations reached ({max_iterations}) before successful "
                         "post-mutation verification. Use /toolmax to raise or lower the limit."
                     )
+                    show_error(limit_hint)
                     break
                 optional_context_blocks.clear()
                 cfg.messages.append(
@@ -3798,7 +3901,7 @@ def _agent_loop_body(
                     turn_completed_normally = True
                     break
                 if not completion_nudged:
-                    if _ + 1 >= max_iterations:
+                    if max_iterations is not None and _ + 1 >= max_iterations:
                         final_content = ""
                         show_error(
                             "Completion blocked: the tool-iteration budget ended before successful "
@@ -3831,9 +3934,27 @@ def _agent_loop_body(
                     turn_completed_normally = True
                     break
                 final_content = ""
+                if (max_iterations is None or _ + 1 < max_iterations) and (
+                    recovery_limit is None or completion_recovery_rounds < recovery_limit
+                ):
+                    next_round_trigger = "program_completed"
+                    optional_context_blocks.clear()
+                    show_info(
+                        "Verification is still missing; continuing bounded recovery. "
+                        f"Automatic structural verification was unavailable: {auto_decision.reason}."
+                    )
+                    cfg.messages.append(
+                        {
+                            "role": "user",
+                            "content": completion_recovery_prompt(cfg)
+                            + f" Automatic structural verification did not qualify: {auto_decision.reason}.",
+                        }
+                    )
+                    continue
                 show_error(
-                    "Completion blocked: the model stopped twice without successful verification "
-                    "after its last workspace mutation."
+                    "Completion blocked: the available verification recovery budget ended "
+                    "without successful verification after the last workspace mutation. "
+                    f"Workspace changes are retained. {auto_decision.reason}."
                 )
                 break
 
@@ -4803,7 +4924,9 @@ def main() -> None:
     skills.ensure_dirs()
     from .ada_memory_echo_veil import echo_veil_authority_selected
 
-    if not echo_veil_authority_selected(cfg):
+    from .ada_memory_d057 import selected
+
+    if not selected(cfg) and not echo_veil_authority_selected(cfg):
         from . import index_compute_lab
 
         if index_compute_lab.ensure_harness_roots_file():
@@ -4997,7 +5120,7 @@ def main() -> None:
         user_input = sanitize_prompt_text(user_input)
         if user_input.startswith("/"):
             try:
-                handled, client = handle_command(user_input, cfg, client, session)
+                handled, client = handle_command(user_input, cfg, client, session, user_initiated=True)
             except EOFError:
                 console.print("\n[dim]Bye.[/]")
                 break

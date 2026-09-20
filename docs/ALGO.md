@@ -1074,7 +1074,16 @@ BM25 action discovery
 The compiler rejects forward references, recursive/meta actions, open-ended or
 malformed action schemas, observation-derived action arguments, oversized plans,
 excessive steps/outputs, non-finite JSON, policy/target drift, and actions outside
-the runtime ceiling. Version 1 allows multiple observations but at most one
+the runtime ceiling.
+Outputs omitted, null, or an empty list normalize to the final step before
+the plan hash and effect checks are computed. This avoids a format-only stop
+without widening action authority; explicit references and wrongly typed
+output selections are still validated.
+Redundant nested action cwd values canonicalizing to the active workspace
+normalize away before hashing. Other workspace selections, cfg/safe-mode
+overrides, and observation-derived action inputs remain prohibited. Program
+format errors are reported separately from missing runtime authority.
+Version 1 allows multiple observations but at most one
 state-changing, code-execution, or external action; that action must be the final
 step and the sole direct output. This prevents page, tool, or file content from
 becoming a shell command, credential value, upload, message, or publication
@@ -4653,7 +4662,34 @@ class HashDedupIndex:
 
 ### B51. Declarative Permission Modes + Structural Spawn Safety (aloop Pattern)
 
-**Use for:** safer agent spawning — prevent permission escalation structurally via config, not runtime checks.
+**Use for:** safer agent spawning with declarative allowlists enforced by the runtime.
+
+**Status:** wired (bounded session posture; benefit unmeasured).
+
+**Wiring (2026-09-16):** The bounded `/mode yolo` session posture is wired
+in `algo_cli/session_mode.py`, not a machine-wide permission grant. Only direct
+interactive user input can activate it. Activation is bound to its Config owner
+and workspace, is not persisted or copied, and is suppressed during delegated
+execution. Its one-use session-preapproval grants are rejected outside the active
+owner's mode. Registered actions, including shell and file edits, are preapproved
+within scope by explicit user activation. Routine action-time prompts are not
+required; runtime-generated exact confirmation receipts remain auditable.
+Curated read-only workspace observations also receive fresh concrete-target
+grants outside cwd, so sibling-project reads, listings, searches, and read-only
+slash aliases do not fail merely because they cross a workspace boundary.
+Ordinary modes retain workspace-only baseline grants; file mutations in YOLO
+remain workspace-scoped. Sensitive-target and selected memory-backend denials
+are checked independently before dispatch.
+Explicit forced reviews, handoff requirements, safe mode, configured memory
+safeguards, path restrictions, and completion verifiers remain enforced. Capability tiers
+are compatibility metadata, not authority. See `tests/test_yolo_mode.py`.
+
+**Calibration:** Local boundary tests demonstrate permission behavior; they do
+not measure model quality, completion speed, or a harness-effectiveness gain.
+Benefit remains unknown pending a controlled benchmark. The generic helper in
+`algo_cli/intelligence/permission_modes.py` preserves explicit empty tool/spawn
+allowlists; omitted values alone receive defaults. This is not a general
+configuration-driven replacement for the scoped authority engine.
 
 **Source:** `zackham/aloop` — embeddable Python agent loop with declarative permissions and structural spawn safety.
 
@@ -4668,15 +4704,15 @@ class PermissionMode:
     path_restrictions: dict = field(default_factory=dict)
 
 class PermissionRegistry:
-    """Structural permission enforcement — no runtime checks needed."""
+    """Declarative allowlists require runtime checks at dispatch and spawn."""
     def can_spawn(self, parent: str, child: str) -> bool:
         parent_mode = self.modes[parent]
         return child in parent_mode.spawnable_modes
 
     def can_write(self, mode: str, path: Path) -> bool:
         m = self.modes[mode]
-        if "*" in m.tools:
-            return True  # full access mode
+        if "*" not in m.tools and "write_file" not in m.tools:
+            return False
         write_globs = m.path_restrictions.get("write", [])
         return any(path.match(g) for g in write_globs)
 ```
@@ -4703,7 +4739,11 @@ class PermissionRegistry:
 }
 ```
 
-**Harness use:** A read-only mode cannot list a write-capable mode in its `spawnable_modes`. The escalation boundary is the config itself — auditable, structural, no runtime checks. Add `/permissions list` and `/permissions mode NAME`.
+**Harness use:** Validate spawn allowlists so a read-only mode cannot spawn a
+write-capable mode. Wildcard tool availability does not lift path restrictions
+or confer runtime authority. Enforce the declared boundary at execution and
+spawn, and preserve every independent protection. `/permissions list` and
+`/permissions mode NAME` are proposed surfaces, not current commands.
 
 ---
 

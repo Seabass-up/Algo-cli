@@ -158,6 +158,10 @@ SOURCE_PATHS = (
     "algo_cli/reasoning/react.py",
     "algo_cli/samuel_policy_engine.py",
     "algo_cli/session_commands.py",
+    "algo_cli/session_mode.py",
+    "algo_cli/ada_memory_d057.py",
+    "algo_cli/intelligence/permission_modes.py",
+    "algo_cli/resources/prompts/yolo_mode.md",
     "algo_cli/skills.py",
     "algo_cli/small_context.py",
     "algo_cli/tool_context.py",
@@ -243,6 +247,9 @@ SOURCE_PATHS = (
     "tests/test_arthur_control_readiness.py",
 )
 FOCUSED_TESTS = (
+    "tests/test_yolo_mode.py",
+    "tests/test_ada_memory_d057.py",
+    "tests/test_session_mode.py",
     "tests/test_harness_embedding_dimensions.py",
     "tests/test_harness_embedding_recovery.py",
     "tests/test_harness_capability_coverage.py",
