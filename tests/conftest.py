@@ -105,6 +105,19 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 
 @pytest.fixture(autouse=True)
+def no_native_continuum(monkeypatch):
+    """Tests never reach the developer's real Continuum store; CI has no native command either."""
+    from algo_cli import continuum_memory
+
+    def unavailable():
+        raise continuum_memory.ContinuumMemoryError(
+            "Install the native continuum-memory command before selecting Continuum."
+        )
+
+    monkeypatch.setattr(continuum_memory, "_native_cli", unavailable)
+
+
+@pytest.fixture(autouse=True)
 def clean_state():
     """Wipe the test config dir and reset module-level caches around every test."""
     shutil.rmtree(_TEST_CONFIG_DIR, ignore_errors=True)

@@ -146,7 +146,8 @@ def _child(monkeypatch, source):
 
 
 def test_real_child_receives_json_on_stdin_and_returns_it(monkeypatch):
-    _child(monkeypatch, 'import json,sys; print(json.dumps({"ok": True, "received": json.load(sys.stdin)}))')
+    # Read bytes like the real companion; text-mode stdin uses the Windows code page.
+    _child(monkeypatch, 'import json,sys; print(json.dumps({"ok": True, "received": json.load(sys.stdin.buffer)}))')
     assert jev._invoke(Config(), "contract", {"text": "unicode \u2603"})["received"] == {"text": "unicode \u2603"}
 
 

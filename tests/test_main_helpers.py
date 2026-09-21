@@ -184,6 +184,7 @@ def test_echo_authority_excludes_legacy_lessons_from_system_prompt(
     lessons.write_text(canary, encoding="utf-8")
     monkeypatch.setattr(identity, "LESSONS_PATH", lessons)
     identity._CACHE.clear()
+    monkeypatch.setattr("algo_cli.continuum_memory.prompt_context", lambda _cfg, _query: "{}")
     cfg = Config(continuum_enabled=True)
 
     prompt = context_budget.build_system_prompt(cfg, retrieved_lessons=None)
@@ -206,6 +207,7 @@ def test_echo_authority_excludes_local_identity_from_prompt_and_cache_key(
         "identity_mtime_key",
         lambda: (_ for _ in ()).throw(AssertionError("protected cache key statted local identity")),
     )
+    monkeypatch.setattr("algo_cli.continuum_memory.prompt_context", lambda _cfg, _query: "{}")
     cfg = Config(continuum_enabled=True)
 
     prompt = context_budget.build_system_prompt(cfg)

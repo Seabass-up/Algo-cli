@@ -93,7 +93,11 @@ def test_protected_read_binds_validation_to_open(tmp_path, monkeypatch, alias_ki
 
 
 @pytest.mark.parametrize("tracked", [False, True])
-@pytest.mark.parametrize("filename", ["ordinary.txt", " space.txt", "\nnewline.txt"])
+@pytest.mark.parametrize("filename", [
+    "ordinary.txt",
+    " space.txt",
+    pytest.param("\nnewline.txt", marks=pytest.mark.skipif(os.name == "nt", reason="Windows forbids newlines in names")),
+])
 def test_real_git_refuses_hardlink_aliases(tmp_path, monkeypatch, tracked, filename):
     from algo_cli import git_evidence
 

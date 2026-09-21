@@ -452,7 +452,7 @@ def test_explicit_memory_config_repair_preserves_unrelated_values_and_exact_back
         },
         indent=1,
     )
-    config.CONFIG_FILE.write_text(original, encoding="utf-8")
+    config.CONFIG_FILE.write_bytes(original.encode("utf-8"))
 
     result = config.repair_memory_configuration()
     repaired = json.loads(config.CONFIG_FILE.read_text(encoding="utf-8"))

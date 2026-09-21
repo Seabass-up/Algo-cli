@@ -177,7 +177,8 @@ def test_config_memory_repair_reports_retained_backup(monkeypatch, tmp_path) -> 
     assert result == 0
     output = captured.get()
     assert "Native Continuum memory is repaired" in output
-    assert backup.name in output
+    # Rich wraps long paths at the console width.
+    assert backup.name in output.replace("\n", "")
 
 
 def test_config_memory_goal_repair_reports_blocked_successor(monkeypatch, tmp_path) -> None:
