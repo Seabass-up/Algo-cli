@@ -583,11 +583,9 @@ def test_ci_uses_frozen_lock_native_security_gates_and_separate_publish_artifact
     assert crash_qualification.index("set -euo pipefail") < crash_qualification.index("| tee")
     assert "algo_cli/ada_uninstall_recovery.py" in ci
     for workflow in (ci, release):
-        assert "--group echo-veil" in workflow
-        assert "--extra echo-veil" not in workflow
-        assert "--no-emit-package echo-veil" in workflow
+        assert "echo-veil" not in workflow
         assert "--require-hashes --disable-pip --strict" in workflow
-        assert "python -I scripts/henry_echo_veil_dependency_audit.py" in workflow
+        assert "henry_echo_veil_dependency_audit.py" not in workflow
     assert "uv sync --frozen --no-editable" in ci
     assert "--cov=algo_cli" not in ci and 'source_pkgs = ["algo_cli"]' in project
     assert "ada_supply_chain_manifest.py sbom" in ci

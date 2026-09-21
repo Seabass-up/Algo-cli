@@ -1,6 +1,6 @@
 # 0.20.0 Release Scope
 
-State: prepared release candidate. Publication requires exact-source local and
+State: local repair candidate, not yet qualified. Publication requires exact-source local and
 hosted qualification, an immutable `v0.20.0` tag, protected release-authority
 approval, exact artifact verification, public registry verification, and clean
 install and predecessor-upgrade checks.
@@ -14,8 +14,10 @@ install and predecessor-upgrade checks.
   diagnostics under the existing safety and verification boundaries.
 - Unbounded interactive work and verification-recovery rounds only while YOLO
   is active; ordinary modes retain their configured ceilings.
-- Explicit fail-closed D-57 memory selection and native routing. Legacy Echo
-  qualification support remains disabled as a runtime authority.
+- Explicit fail-closed Continuum selection and direct native routing, scoped
+  context and revision-bound writes. Retired memory backends, dependencies,
+  tools and active qualification branches are removed. Historical state remains
+  unchanged; retired configuration cannot implicitly select Continuum.
 - Cloud-model context-cap correction and `/reload` preservation of live,
   nonpersistent YOLO activation.
 - Persistent generation status on supported TTYs, including resize, JSON,
@@ -23,14 +25,24 @@ install and predecessor-upgrade checks.
 - Slash-command inspection and output-capture correction, model-profile type
   narrowing, native crash-identity compatibility, and the fixed dependency
   lock inherited from the merged sticky-footer work.
+- Personal-library separation: `docs/ALGO.md` ships as an empty template;
+  each user's catalog lives at `~/.algo_cli/ALGO.md` and personal kernels in
+  `~/.algo_cli/kernels/`. The Acrobat, finance, and construction kernels are
+  removed from the package, and the public-release scan rejects populated
+  catalogs and personal kernel paths.
+- Optional advisory Jev kernel through the separately installed
+  `jev-workflows` companion, with local lint and approval-gated inference.
+- Compact `/` command menu, grouped `/help`, consistent prompt and in-progress
+  footer rendering, and bounded Continuum context-size retry at startup.
 
 ## Excluded Scope
 
 - The unfinished contained test runner is not stable release functionality.
 - M8 external-browser and native authority work that remains blocked is not
   represented as complete.
-- Legacy Echo removal is a separate migration; its optional qualification
-  fixtures are not an active memory path and must not be presented as one.
+- No retired memory backend is a supported option or a Continuum compatibility
+  layer. Historical records and fail-closed retired-input recognition are not
+  active backend support.
 - Historical tags and published artifacts remain immutable and unchanged.
 - No claim is made that local token estimates prove live provider quality,
   cross-harness superiority, or measured YOLO effectiveness.
@@ -47,7 +59,7 @@ install and predecessor-upgrade checks.
 - Build, wheel-from-sdist, metadata, SBOM, provenance, checksum, and immutable
   release-asset verification.
 - Clean public installation of `0.20.0` and an isolated real update from public
-  `0.19.2`, preserving configuration, credentials, D-57 and other memory state,
+  `0.19.2`, preserving configuration, credentials, Continuum and historical memory state,
   workspace settings, private files, file modes, and SQLite integrity.
 
 ## Publication Receipt

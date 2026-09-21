@@ -356,4 +356,4 @@ def test_existing_output_is_never_overwritten(tmp_path: Path, monkeypatch) -> No
 
 def test_local_cli_build_is_not_a_production_native_release():
     with pytest.raises(AustinReleaseRejected, match="austin_release_version"):
-        release._native_release_version(NATIVE_RELEASE_VERSION + "+local.d057.yolo")
+        release._native_release_version(NATIVE_RELEASE_VERSION + "+local.yolo")

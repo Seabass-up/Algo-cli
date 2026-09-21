@@ -13,8 +13,9 @@ Writes are atomic (tmp + os.replace) via config._atomic_write_text.
 
 from __future__ import annotations
 
-import json
+import hashlib
 import hmac
+import json
 import os
 import stat
 import time
@@ -46,6 +47,7 @@ LEGACY_PROTECTED_LEDGER_SCHEMA_VERSION = 2
 PROTECTED_LEDGER_SCHEMA_VERSION = 3
 MAX_LEDGER_BYTES = 1_048_576
 _LEDGER_MISSING = object()
+GOAL_STORE_CONFLICT_REASON = "goal_store_conflict_requires_repair"
 
 STATUS_RUNNING = "running"
 STATUS_COMPLETE = "complete"
@@ -57,7 +59,7 @@ STATUS_STOPPED = "stopped"  # user-interrupted or round cap reached
 class GoalRecord:
     # The goal is explicit user-authored operational state and intentionally
     # remains readable. Model-derived reasons/history are projected below when
-    # Echo is the selected memory authority.
+    # Continuum is the selected memory authority.
     goal: str
     status: str = STATUS_RUNNING
     rounds_done: int = 0
@@ -408,7 +410,7 @@ def prepare_protected_goal_store(
                 anchor_store=anchor_store,
             )
             if existing_head is not None:
-                raise ElsieReceiptError("legacy goal ledger conflicts with protected anchor")
+                raise ElsieReceiptError(GOAL_STORE_CONFLICT_REASON)
             payload = _protected_ledger_payload(
                 _protected_goal_payload(legacy, authority),
                 authority,
@@ -427,6 +429,93 @@ def prepare_protected_goal_store(
             anchor_store=anchor_store,
         )
         return recovered
+
+
+def repair_protected_goal_store_conflict(
+    *,
+    receipt_authority: ElsieReceiptAuthority | None = None,
+    anchor_store: Any | None = None,
+) -> dict[str, object]:
+    """Archive a conflicting legacy ledger and publish a blocked successor.
+
+    The existing external anchor is retained and advanced. Legacy progress is
+    never made resumable: only the user-authored goal and cwd survive, in a
+    blocked record that requires an explicit fresh goal before more work.
+    """
+
+    authority = receipt_authority or ElsieReceiptAuthority.from_existing_key_store()
+    with _exclusive_state_lock(LEDGER_PATH):
+        if _pending_goal_exists():
+            raise ElsieReceiptError("protected goal recovery is pending")
+        try:
+            raw = _state_descriptor_payload(LEDGER_PATH, max_bytes=MAX_LEDGER_BYTES)
+        except FileNotFoundError as exc:
+            raise ElsieReceiptError("protected goal ledger is missing") from exc
+        except OSError as exc:
+            raise ElsieReceiptError("protected goal ledger path is unsafe") from exc
+        try:
+            current = json.loads(raw.decode("utf-8", errors="strict"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ElsieReceiptError("protected goal ledger is malformed") from exc
+        if not isinstance(current, dict):
+            raise ElsieReceiptError("protected goal ledger is malformed")
+        if current.get("schema_version") == PROTECTED_LEDGER_SCHEMA_VERSION:
+            _validate_protected_ledger(
+                current,
+                authority,
+                anchor_store=anchor_store,
+            )
+            return {"changed": False, "backup_path": None, "source_sha256": ""}
+
+        legacy = _legacy_goal_for_protected_migration(current, authority)
+        head = load_elsie_store_anchor(
+            authority,
+            ReceiptNamespace.GOAL_STORE,
+            subject=_ledger_subject(),
+            anchor_store=anchor_store,
+        )
+        if head is None:
+            raise ElsieReceiptError("protected goal conflict is absent")
+
+        digest = hashlib.sha256(raw).hexdigest()
+        backup_path = (
+            CONFIG_DIR
+            / "recovery-backups"
+            / f"goal-ledger-conflict-{digest[:16]}"
+            / LEDGER_PATH.name
+        )
+        try:
+            backup = _state_descriptor_payload(backup_path, max_bytes=MAX_LEDGER_BYTES)
+        except FileNotFoundError:
+            _atomic_write_text(backup_path, raw.decode("utf-8", errors="strict"))
+        else:
+            if backup != raw:
+                raise ElsieReceiptError("protected goal recovery backup is inconsistent")
+
+        try:
+            pinned = _state_descriptor_payload(LEDGER_PATH, max_bytes=MAX_LEDGER_BYTES)
+        except OSError as exc:
+            raise ElsieReceiptError("protected goal ledger changed during repair") from exc
+        if not hmac.compare_digest(pinned, raw):
+            raise ElsieReceiptError("protected goal ledger changed during repair")
+
+        previous = "hmac-sha256:" + head.head_digest
+        payload = _protected_ledger_payload(
+            _protected_goal_payload(legacy, authority),
+            authority,
+            sequence=head.sequence + 1,
+            previous_store_receipt=previous,
+        )
+        _publish_protected_goal_payload_unlocked(
+            payload,
+            authority,
+            anchor_store=anchor_store,
+        )
+        return {
+            "changed": True,
+            "backup_path": backup_path,
+            "source_sha256": digest,
+        }
 
 
 def _publish_protected_goal_payload_unlocked(
@@ -522,7 +611,7 @@ def save_goal(
                         )
                         is not None
                     ):
-                        raise ElsieReceiptError("legacy goal ledger conflicts with protected anchor")
+                        raise ElsieReceiptError(GOAL_STORE_CONFLICT_REASON)
                 else:
                     raise ElsieReceiptError("unsupported protected goal ledger schema")
             else:
@@ -709,7 +798,7 @@ def load_goal(
         LEGACY_PROTECTED_LEDGER_SCHEMA_VERSION,
         PROTECTED_LEDGER_SCHEMA_VERSION,
     }:
-        # Protected records are safe to inspect structurally even after Echo is
+        # Protected records are safe to inspect structurally after Continuum is
         # disabled, but their content receipts are deliberately not reversed.
         if goal_data is None:
             return None

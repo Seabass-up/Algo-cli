@@ -38,11 +38,12 @@ _EXPLICIT_MEMORY_WRITE_ACTIONS = frozenset(
         "remember",
         "append_lesson",
         "write_knowledge_graph_note",
-        "echo_veil_remember",
-        "echo_veil_refresh_live",
-        "echo_veil_promote",
-        "echo_veil_forget",
-        "echo_veil_reindex",
+        "memory_init",
+        "memory_capture",
+        "memory_remember",
+        "memory_revoke",
+        "memory_resolve",
+        "memory_handoff",
     }
 )
 _MEMORY_MUTATION_SLASHES = frozenset({"/remember", "/forget"})

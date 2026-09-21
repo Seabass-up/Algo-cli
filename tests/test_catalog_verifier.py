@@ -24,7 +24,6 @@ Status: proposed
 """
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-ALGO_CATALOG = REPOSITORY_ROOT / "docs" / "ALGO.md"
 
 
 def test_parse_catalog() -> None:
@@ -225,8 +224,8 @@ def test_lint_catalog_rejects_declared_namespace_mismatch() -> None:
     assert "Q" in mismatch.message
 
 
-def test_repository_catalog_structure_is_valid() -> None:
-    markdown = ALGO_CATALOG.read_text(encoding="utf-8")
+def test_repository_catalog_structure_is_valid(personal_catalog: Path) -> None:
+    markdown = personal_catalog.read_text(encoding="utf-8")
 
     report = CatalogVerifier().lint_catalog(markdown)
 
@@ -240,8 +239,8 @@ def test_repository_catalog_structure_is_valid() -> None:
     assert "M5" not in by_id
 
 
-def test_repository_track_n_is_a_planned_anomaly_signal_contract() -> None:
-    markdown = ALGO_CATALOG.read_text(encoding="utf-8")
+def test_repository_track_n_is_a_planned_anomaly_signal_contract(personal_catalog: Path) -> None:
+    markdown = personal_catalog.read_text(encoding="utf-8")
     track_n = markdown.split("## Track N —", maxsplit=1)[1]
 
     assert track_n.startswith(" Black-Box Behavioral Anomaly Signals")
@@ -267,15 +266,15 @@ def test_repository_track_n_is_a_planned_anomaly_signal_contract() -> None:
         assert forbidden not in track_n
 
 
-def test_repository_catalog_documents_reserved_ranges() -> None:
-    markdown = ALGO_CATALOG.read_text(encoding="utf-8")
+def test_repository_catalog_documents_reserved_ranges(personal_catalog: Path) -> None:
+    markdown = personal_catalog.read_text(encoding="utf-8")
 
     assert "Reserved IDs `B215-B299`" in markdown
     assert "Reserved IDs `B432-B437`" in markdown
 
 
-def test_repository_catalog_documents_the_blocking_structural_gate() -> None:
-    markdown = ALGO_CATALOG.read_text(encoding="utf-8")
+def test_repository_catalog_documents_the_blocking_structural_gate(personal_catalog: Path) -> None:
+    markdown = personal_catalog.read_text(encoding="utf-8")
     h2 = markdown.split("### H2. Algorithm Catalog Verifier", maxsplit=1)[1].split("### H3.", maxsplit=1)[0]
 
     for required in (

@@ -49,13 +49,12 @@ For the full qualification suite, match `.github/workflows/oliver-ci.yml` rather
 than relying on a dev-extra-only environment:
 
 ```bash
-uv sync --frozen --no-editable --extra dev --extra supply-chain --group echo-veil --reinstall-package algo-cli-runtime --link-mode copy
-.venv/bin/python -I scripts/henry_echo_veil_dependency_audit.py
+uv sync --frozen --no-editable --extra dev --extra supply-chain --reinstall-package algo-cli-runtime --link-mode copy
 .venv/bin/python -I scripts/oliver_installed_source_parity.py
 ALGO_TEST_REQUIRE_RIPGREP=1 .venv/bin/pytest tests
 ```
 
-The pinned Echo dependency is a separate group. Reinstall after source edits
+Continuum is a separately installed native service. Reinstall after source edits
 before checking installed-source parity. Regenerate source-bound qualification
 reports through their real runners when relevant source changes; do not copy an
 old digest into a new receipt or count a blocked external metric as passing.

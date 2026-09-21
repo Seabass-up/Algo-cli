@@ -97,7 +97,7 @@ def _scan_tree(
             continue
         display = _display_path(path)
         label = f"history:{object_id[:12]}:{display}"
-        findings.update(f"{label}: {reason}" for reason in check_public_release._scan_name(display))
+        findings.update(f"{label}: {reason}" for reason in check_public_release._scan_name(display, personal_library=False))
         if object_id in seen_blobs:
             continue
         seen_blobs.add(object_id)
@@ -112,7 +112,7 @@ def _scan_tree(
             )
             continue
         data = _git_bytes(root, "cat-file", "blob", object_id)
-        findings.update(check_public_release._scan_item(label, data))
+        findings.update(check_public_release._scan_item(label, data, personal_library=False))
     return findings
 
 
@@ -265,7 +265,7 @@ def scan_history(
             )
             continue
         data = _git_bytes(root, "cat-file", "blob", object_id)
-        findings.update(check_public_release._scan_item(label, data))
+        findings.update(check_public_release._scan_item(label, data, personal_library=False))
     return sorted(findings)
 
 

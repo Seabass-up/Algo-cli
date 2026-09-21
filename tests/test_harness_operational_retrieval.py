@@ -46,7 +46,7 @@ def public_contracts(monkeypatch, tmp_path):
     monkeypatch.setattr(harness, "_PROTECTED_MEMORY_AUTHORITY", True)
     monkeypatch.setattr(harness, "load_index", lambda **_: index)
     monkeypatch.setattr(harness, "get_record", lambda rid: next((row for row in records if row["id"] == rid), None))
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     monkeypatch.setattr(harness, "resolve_embed_model", lambda _: "fixture")
     monkeypatch.setattr(main, "make_local_embed_fn", lambda *_args, **_kwargs: lambda _: [[1.0, 0.0]])
     return docs, records, cfg
@@ -62,7 +62,7 @@ def test_protected_tool_search_and_read_expose_source_verified_contract(public_c
     body = tools.harness_read(records[0]["id"], cfg=cfg)
     assert "User instructions and verified live files" in body
     assert "Shipped documentation; not agent memory" in body
-    assert "only through Echo Veil" in tools.harness_read("legacy-memory", cfg=cfg)
+    assert "only through Continuum Memory" in tools.harness_read("legacy-memory", cfg=cfg)
 
 
 @pytest.mark.parametrize("kind,harness_name", [(" MeMoRy ", " ALGO-CLI "), ("memory", "all"), ("memory", None)])
@@ -136,7 +136,7 @@ def alias_records(monkeypatch):
 )
 def test_tool_filter_aliases_match_ranker_scope(alias_records, alias, names, kind, use_hybrid):
     cfg = (
-        SimpleNamespace(echo_veil_enabled=False, echo_veil_protection="optional", harness_embed_model="fixture")
+        SimpleNamespace(continuum_enabled=False, harness_embed_model="fixture")
         if use_hybrid
         else None
     )
@@ -159,7 +159,7 @@ def test_alias_cannot_widen_protected_snapshot_or_bypass_kind_filter(alias_recor
     monkeypatch.setattr(harness, "retrieval_index", project)
     # Even a ranker returning outside or unfiltered rows cannot expand authority.
     monkeypatch.setattr(harness, "hybrid_search", lambda *_args, **_kwargs: alias_records)
-    cfg = SimpleNamespace(echo_veil_enabled=True, echo_veil_protection="required", harness_embed_model="fixture")
+    cfg = SimpleNamespace(continuum_enabled=True, harness_embed_model="fixture")
     output = tools.harness_search("guide", harness_name="openclaude", kind="wiki", cfg=cfg)
     returned = [line.removeprefix("- ") for line in output.splitlines() if line.startswith("- ")]
     assert returned == ["claude:wiki:guide"]
@@ -255,7 +255,10 @@ def test_record_metadata_cannot_grant_contract_access(public_contracts, field, v
     records[0][field] = value
     records[0]["source_kind"] = "shipped_product_documentation"
     assert harness.checked_product_contract(records[0]) is None
-    assert "only through Echo Veil" in tools.harness_read(records[0]["id"], cfg=cfg)
+    result = tools.harness_read(records[0]["id"], cfg=cfg)
+    assert "Continuum Memory" in result and (
+        result.startswith("Error:") or "legacy harness record was not read" in result
+    )
 
 
 @pytest.mark.parametrize("link", ["symlink", "hardlink", "directory_symlink"])
@@ -489,7 +492,7 @@ def test_query_embedding_timeout_reaches_both_local_transports(monkeypatch):
     assert captured == {"gateway_timeout": 10.0, "client_timeout": 10.0, "model": "fixture"}
 
 
-@pytest.mark.parametrize("name", ["harness_search", "harness_read", "echo_veil_doctor"])
+@pytest.mark.parametrize("name", ["harness_search", "harness_read", "memory_verify"])
 @pytest.mark.parametrize("form", ["Use {name}.", "Use `{name}`.", "Use {name}() now."])
 def test_explicit_tool_identifier_satisfies_specialist_intent(name, form):
     selected = tool_context.select_tools_for_prompt(form.format(name=name.upper()), tools.ALL_TOOLS)

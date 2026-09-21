@@ -7,10 +7,10 @@ from algo_cli import url_scheme
 
 class TestParseDeepLink:
     def test_parse_skill_route(self):
-        link = url_scheme.parse_deep_link("algo-cli://skill/echo-veil-integration")
+        link = url_scheme.parse_deep_link("algo-cli://skill/memory-recall-ritual")
         assert link is not None
         assert link.route == "skill"
-        assert link.path == "echo-veil-integration"
+        assert link.path == "memory-recall-ritual"
 
     def test_parse_memory_recall_with_query(self):
         link = url_scheme.parse_deep_link("algo-cli://memory/recall?q=rebrand")

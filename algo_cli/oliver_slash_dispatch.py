@@ -60,10 +60,10 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/status", "Show current model, context usage, and active features"),
     ("/identity", "Show identity file status"),
     ("/lesson", "Store an explicit lesson in the active memory authority"),
-    ("/lessons", "Show legacy lesson status or 'reindex' when Echo is off"),
+    ("/lessons", "Show legacy lesson status or 'reindex' when Continuum is off"),
     ("/skills", "Review quarantined skills; 'crystallize' / 'approve' / 'reject'"),
     ("/intuition", "Manage embedded memory recall"),
-    ("/intelligence", "Inspect repository intelligence: status, query, reindex"),
+    ("/intelligence", "Inspect repository intelligence and your library: status, query, reindex, init"),
     ("/intel", "Alias for /intelligence"),
     ("/intelagence", "Alias for /intelligence"),
     ("/kernel", "Kernel registry: /kernel list | show NAME | check [NAME]"),
@@ -147,6 +147,55 @@ SLASH_COMMAND_ALIASES: dict[str, str] = {
     "/hr": "/hread",
 }
 
+# Discovery is deliberately smaller than dispatch: saved commands and aliases
+# remain valid without crowding the first menu.
+COMMON_SLASH_COMMANDS = (
+    "/help", "/models", "/mode", "/status", "/agent", "/cd",
+    "/memory", "/context", "/clear", "/config", "/theme", "/quit",
+)
+COMMAND_GROUPS: dict[str, tuple[str, ...]] = {
+    "session": (
+        "/help", "/status", "/dashboard", "/mode", "/theme", "/clear", "/save", "/load",
+        "/info", "/reload", "/doctor", "/selfcheck", "/perf", "/metrics", "/exit", "/quit",
+    ),
+    "models": (
+        "/model", "/models", "/host", "/cloud", "/cloudauto", "/model-check", "/system",
+        "/thinking", "/keepalive", "/ctx", "/temp", "/embed",
+    ),
+    "workspace": ("/cd", "/ls", "/read", "/worktree", "/ship", "/diff", "/changes"),
+    "agent": (
+        "/agent", "/goal", "/route", "/context", "/auto", "/safe", "/policy", "/reflex",
+        "/reason", "/verify", "/toolmax", "/thinkevery",
+    ),
+    "knowledge": (
+        "/memory", "/memory-auto", "/remember", "/memories", "/forget", "/identity",
+        "/lesson", "/lessons", "/skills", "/intuition", "/intelligence", "/intel",
+        "/intelagence", "/kernel", "/icl", "/code-rag",
+    ),
+    "harness": ("/harness", "/hsearch", "/hread", "/hs", "/hr", "/actions"),
+    "integrations": ("/config", "/google", "/x-account", "/plugins", "/credentials", "/url-scheme"),
+    "media": ("/vision", "/pdf"),
+}
+COMMAND_GROUP_DESCRIPTIONS = {
+    "session": "Status, appearance, conversations, diagnostics",
+    "models": "Model selection, reasoning effort, provider settings",
+    "workspace": "Files, worktrees, diffs, publishing",
+    "agent": "Tasks, goals, execution policy, verification",
+    "knowledge": "Memory, skills, intelligence, kernels",
+    "harness": "Indexing, search, retrieval, capability checks",
+    "integrations": "Provider setup, accounts, plugins, credentials",
+    "media": "Images and PDFs",
+}
+
+
+def command_group(command: str) -> str:
+    root = command.split()[0]
+    return next((group for group, roots in COMMAND_GROUPS.items() if root in roots), "other")
+
+
+def is_command_alias(command: str, description: str) -> bool:
+    return command == "/exit" or command == "/harness rust" or description.startswith("Alias for ")
+
 
 class SlashCommandCompleter(Completer):
     def __init__(self, commands: list[tuple[str, str]]):
@@ -157,7 +206,19 @@ class SlashCommandCompleter(Completer):
         if not text.startswith("/"):
             return
         normalized = text.lower()
-        for command, description in self.commands:
+        if normalized.startswith("/help "):
+            candidates = [(f"/help {group}", description) for group, description in COMMAND_GROUP_DESCRIPTIONS.items()]
+            candidates.append(("/help all", "Full command reference, including compatibility aliases"))
+        elif normalized == "/":
+            descriptions = dict(self.commands)
+            candidates = [(command, descriptions[command]) for command in COMMON_SLASH_COMMANDS if command in descriptions]
+        else:
+            candidates = [
+                (command, description) for command, description in self.commands
+                if not is_command_alias(command, description)
+                and (" " in normalized or " " not in command)
+            ]
+        for command, description in candidates:
             if command.lower().startswith(normalized):
                 yield Completion(
                     command,
@@ -291,7 +352,10 @@ def handle_command(
     if command in {"/exit", "/quit"}:
         raise EOFError
     if command == "/help":
-        display.show_help()
+        if arg:
+            display.show_help(arg)
+        else:
+            display.show_help()
     elif command == "/model":
         if arg:
             if m.chatgpt_client.is_codex_subscription_model(arg):
@@ -617,44 +681,27 @@ def handle_command(
             else:
                 m.console.print(f"  [muted]{row['name']:<20}  missing[/]")
     elif command == "/lesson":
-        from . import ada_memory_d057
+        from . import continuum_memory
         from . import tools as tools_module
 
-        if ada_memory_d057.selected(cfg):
+        if continuum_memory.selected(cfg):
             m.show_info(tools_module.append_lesson(arg, cfg=cfg))
             return True, client
         if not arg:
             m.show_error("Usage: /lesson <text>")
         else:
-            from .ada_memory_echo_veil import (
-                echo_veil_authority_selected,
-                remember_with_echo_veil,
-            )
-
-            if echo_veil_authority_selected(cfg):
-                try:
-                    created = remember_with_echo_veil(
-                        cfg,
-                        arg,
-                        source="explicit_lesson_slash",
-                    )
-                except Exception:
-                    m.show_error("Protected lesson storage is unavailable; no plaintext lesson was written.")
-                else:
-                    m.show_info("Protected lesson saved." if created else "Protected lesson already stored.")
-            else:
-                path = identity.append_lesson(arg)
-                m.capture_intuition_block(cfg, "lesson", arg, source="/lesson")
-                m.show_info(f"Lesson saved to {path}")
+            path = identity.append_lesson(arg)
+            m.capture_intuition_block(cfg, "lesson", arg, source="/lesson")
+            m.show_info(f"Lesson saved to {path}")
     elif command == "/lessons":
-        from .ada_memory_echo_veil import echo_veil_authority_selected
+        from .continuum_memory import selected
 
         lessons_sub = arg.strip().lower()
-        if echo_veil_authority_selected(cfg):
+        if selected(cfg):
             if lessons_sub in {"", "status", "show", "?"}:
-                m.show_info("Legacy plaintext lesson retrieval is inactive while Echo Veil owns memory.")
+                m.show_info("Legacy plaintext lesson retrieval is inactive while Continuum Memory is authoritative.")
             elif lessons_sub == "reindex":
-                m.show_error("Legacy lesson reindexing is disabled while Echo Veil owns memory.")
+                m.show_error("Legacy lesson reindexing is disabled while Continuum Memory is authoritative.")
             else:
                 m.show_error("Usage: /lessons [status|reindex]")
         elif lessons_sub == "reindex":
@@ -685,9 +732,9 @@ def handle_command(
         else:
             m.show_error("Usage: /lessons [status|reindex]")
     elif command == "/skills":
-        from .ada_memory_echo_veil import echo_veil_authority_selected
+        from .continuum_memory import selected
 
-        protected = echo_veil_authority_selected(cfg)
+        protected = selected(cfg)
         skill_parts = arg.strip().split(maxsplit=1)
         sub = skill_parts[0].lower() if skill_parts else ""
         skill_name = skill_parts[1].strip() if len(skill_parts) > 1 else ""
@@ -732,7 +779,7 @@ def handle_command(
             if sub == "on" and protected:
                 cfg.skill_crystallize_enabled = False
                 cfg.save()
-                m.show_error("Skill crystallization cannot consume Echo-protected content-free history.")
+                m.show_error("Skill crystallization cannot consume Continuum-protected content-free history.")
                 return True, client
             cfg.skill_crystallize_enabled = sub == "on"
             cfg.save()
@@ -895,9 +942,9 @@ def handle_command(
                 m.show_error(str(exc))
             else:
                 if added:
-                    from .ada_memory_echo_veil import echo_veil_authority_selected
+                    from .continuum_memory import selected
 
-                    if not echo_veil_authority_selected(cfg):
+                    if not selected(cfg):
                         m.capture_intuition_block(
                             cfg,
                             "memory",
@@ -908,30 +955,17 @@ def handle_command(
                 else:
                     m.show_info("Memory already stored.")
     elif command == "/memories":
-        from . import ada_memory_d057
+        from . import continuum_memory
 
-        if ada_memory_d057.selected(cfg):
+        if continuum_memory.selected(cfg):
             try:
-                display.show_memory(ada_memory_d057.recall_facts(cfg))
-            except ada_memory_d057.D057MemoryError as exc:
+                report = continuum_memory.memory_status_report(cfg)
+                m.console.print(json.dumps(report, indent=2, sort_keys=True), markup=False)
+                display.show_memory(list(cfg.memories))
+            except continuum_memory.ContinuumMemoryError as exc:
                 m.show_error(str(exc))
             return True, client
-        from .ada_memory_echo_veil import (
-            echo_veil_authority_selected,
-            list_echo_veil_memories,
-        )
-
-        if echo_veil_authority_selected(cfg):
-            try:
-                records = list_echo_veil_memories(cfg)
-            except RuntimeError as exc:
-                m.show_error(f"Echo Veil memory is unavailable ({type(exc).__name__}).")
-            else:
-                display.show_memory(
-                    [str(record.get("payload") or "") for record in records if record.get("superseded_by") is None]
-                )
-        else:
-            display.show_memory(cfg.memories)
+        display.show_memory(cfg.memories)
     elif command == "/forget":
         try:
             display_index = int(arg)
@@ -940,9 +974,7 @@ def handle_command(
             from . import julia_memory_runtime as memory_runtime
 
             forgotten = memory_runtime.forget_memory_index(cfg, display_index - 1)
-            from .ada_memory_echo_veil import echo_veil_authority_selected
-
-            m.show_info("Protected memory forgotten." if echo_veil_authority_selected(cfg) else f"Forgot: {forgotten}")
+            m.show_info(f"Forgot: {forgotten}")
         except (ValueError, IndexError):
             m.show_error("Usage: /forget <number>")
         except Exception as exc:
@@ -1533,7 +1565,7 @@ def handle_command(
             m.console.print(harness_search(query=query, limit=5, cfg=cfg))
             m.console.print()
     elif command == "/reload":
-        from .elsie_echo_preflight import EchoAuxiliaryPreflightError
+        from .protected_memory_preflight import ProtectedMemoryPreflightError
         from . import session_mode
 
         yolo_live = session_mode.unlimited_work(cfg)
@@ -1545,8 +1577,8 @@ def handle_command(
             yolo_previous = getattr(activation, "previous", None)
         try:
             reloaded_cfg = m.reload_runtime()
-        except EchoAuxiliaryPreflightError:
-            m.show_error("Echo-protected auxiliary state could not be prepared safely; reload was refused.")
+        except ProtectedMemoryPreflightError:
+            m.show_error("Continuum-protected auxiliary state could not be prepared safely; reload was refused.")
             return True, client
         skip = {"messages", "session_summary", "context_state", "attempt_ledger"}
         if yolo_live:

@@ -14,6 +14,11 @@ MAX_UNTRACKED_FILES = 30
 _HASH_CHUNK_BYTES = 1024 * 1024
 
 
+def readonly_git_command(args: list[str]) -> list[str]:
+    """Keep repository configuration from launching a filesystem monitor."""
+    return ["git", "--no-pager", "-c", "core.fsmonitor=false", *args]
+
+
 @dataclass(frozen=True)
 class GitSnapshot:
     """Immutable Git state with bounded display output and full-state digests."""
@@ -34,17 +39,22 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
-def _untracked_state_digest(cwd: str | None, paths: tuple[str, ...]) -> str:
+def _untracked_state_digest(cwd: str | None, paths: tuple[str, ...], *, protected_memory: bool = False) -> str:
     """Hash untracked names and contents so edits to an existing file are visible."""
 
     if not paths:
         return _digest("")
     root = Path(cwd or ".").expanduser().resolve()
     digest = hashlib.sha256()
+    if protected_memory:
+        from .irene_memory_path_policy import protected_path_rules, require_allowed_path
+        from .irene_search import open_protected_file
+
+        rules = protected_path_rules()
     for relative in sorted(paths):
         digest.update(relative.encode("utf-8", errors="surrogateescape"))
         digest.update(b"\0")
-        candidate = (root / relative).resolve(strict=False)
+        candidate = require_allowed_path(relative, cwd=root, rules=rules) if protected_memory else root / relative
         try:
             candidate.relative_to(root)
         except ValueError:
@@ -56,7 +66,7 @@ def _untracked_state_digest(cwd: str | None, paths: tuple[str, ...]) -> str:
                 digest.update(candidate.readlink().as_posix().encode("utf-8", errors="surrogateescape"))
             elif candidate.is_file():
                 digest.update(b"file\0")
-                with candidate.open("rb") as handle:
+                with open_protected_file(candidate, rules) if protected_memory else candidate.open("rb") as handle:
                     while chunk := handle.read(_HASH_CHUNK_BYTES):
                         digest.update(chunk)
             else:
@@ -71,7 +81,7 @@ def _run_git(args: list[str], cwd: str | None = None, timeout: int = 20) -> tupl
     workdir = Path(cwd or ".").expanduser().resolve()
     try:
         proc = subprocess.run(
-            ["git", *args],
+            readonly_git_command(args),
             cwd=workdir,
             capture_output=True,
             text=True,
@@ -83,7 +93,9 @@ def _run_git(args: list[str], cwd: str | None = None, timeout: int = 20) -> tupl
         return 124, f"git command timed out after {timeout} seconds"
     except Exception as exc:
         return 1, f"git command failed: {exc}"
-    output = (proc.stdout or proc.stderr or "").strip()
+    output = proc.stdout or proc.stderr or ""
+    if "-z" not in args:
+        output = output.strip()
     return proc.returncode, output
 
 
@@ -100,8 +112,16 @@ def _cap_chars(text: str, limit: int) -> str:
     return text[:limit] + f"\n... ({len(text) - limit} more characters omitted)"
 
 
-def capture_git_snapshot(cwd: str | None = None) -> GitSnapshot:
+def capture_git_snapshot(cwd: str | None = None, *, protected_memory: bool = False) -> GitSnapshot:
     """Capture repository state without allowing display caps to hide changes."""
+
+    from .irene_memory_path_policy import ProtectedMemoryPathError, require_disjoint_git_worktree
+
+    if protected_memory:
+        try:
+            require_disjoint_git_worktree(cwd or ".")
+        except ProtectedMemoryPathError:
+            return GitSnapshot(False, "Git evidence is unavailable for a protected or overlapping workspace.", None, "", "", ())
 
     rc, in_tree = _run_git(["rev-parse", "--is-inside-work-tree"], cwd)
     if rc != 0 or in_tree.lower() != "true":
@@ -117,9 +137,12 @@ def capture_git_snapshot(cwd: str | None = None) -> GitSnapshot:
     head_rc, head_output = _run_git(["rev-parse", "--verify", "HEAD"], cwd)
     head = head_output if head_rc == 0 else None
 
-    status_rc, full_status = _run_git(["status", "--short", "--branch"], cwd)
-    diff_rc, full_diff = _run_git(["diff", "--no-ext-diff", "HEAD"], cwd)
-    untracked_rc, untracked_output = _run_git(["ls-files", "--others", "--exclude-standard"], cwd)
+    status_rc, full_status = _run_git(["status", "--short", "--branch", "--ignore-submodules=all"], cwd)
+    diff_rc, full_diff = _run_git(["diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "HEAD"], cwd)
+    untracked_args = ["ls-files", "--others", "--exclude-standard"]
+    if protected_memory:
+        untracked_args.append("-z")
+    untracked_rc, untracked_output = _run_git(untracked_args, cwd)
     if status_rc != 0 or diff_rc != 0 or untracked_rc != 0:
         error = full_status if status_rc != 0 else full_diff if diff_rc != 0 else untracked_output
         return GitSnapshot(
@@ -131,7 +154,16 @@ def capture_git_snapshot(cwd: str | None = None) -> GitSnapshot:
             untracked_files=(),
         )
 
-    all_untracked = tuple(line.strip() for line in untracked_output.splitlines() if line.strip())
+    all_untracked = (
+        tuple(path for path in untracked_output.split("\0") if path)
+        if protected_memory else tuple(line.strip() for line in untracked_output.splitlines() if line.strip())
+    )
+    try:
+        untracked_digest = _untracked_state_digest(cwd, all_untracked, protected_memory=protected_memory)
+        if protected_memory:
+            require_disjoint_git_worktree(cwd or ".")
+    except (OSError, ProtectedMemoryPathError):
+        return GitSnapshot(False, "Git evidence could not validate stable protected boundaries.", None, "", "", ())
     return GitSnapshot(
         available=True,
         error=None,
@@ -140,7 +172,7 @@ def capture_git_snapshot(cwd: str | None = None) -> GitSnapshot:
         tracked_diff=_cap_chars(full_diff, MAX_TRACKED_DIFF_CHARS),
         untracked_files=all_untracked[:MAX_UNTRACKED_FILES],
         tracked_diff_digest=_digest(full_diff),
-        untracked_digest=_untracked_state_digest(cwd, all_untracked),
+        untracked_digest=untracked_digest,
         untracked_total=len(all_untracked),
         status_digest=_digest(full_status),
     )

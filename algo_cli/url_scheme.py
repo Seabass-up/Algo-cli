@@ -166,7 +166,7 @@ def format_help() -> str:
         lines.append(f"    {info['description']}")
     lines.append("")
     lines.append("Examples:")
-    lines.append(f"  {URL_SCHEME}://skill/echo-veil-integration")
+    lines.append(f"  {URL_SCHEME}://skill/memory-recall-ritual")
     lines.append(f"  {URL_SCHEME}://memory/recall?q=rebrand")
     lines.append(f"  {URL_SCHEME}://session/new")
     lines.append(f"  {URL_SCHEME}://session/load?name=my-session")

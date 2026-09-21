@@ -191,6 +191,18 @@ def _spec(
 
 ACTION_SPECS: tuple[ActionSpec, ...] = (
     _spec(
+        "jev.status", "kernel", "Inspect Jev question-contract companion readiness.",
+        "kernel", ("jev", "read-only", "local"), "Checks compatibility without contacting TypeSafe.",
+        "low", False, False, True,
+        known_limitations=("Execute through jev_kernel_status; readiness does not verify provider connectivity.",),
+    ),
+    _spec(
+        "jev.question_contract", "kernel", "Lint or submit a bounded advisory Jev question contract.",
+        "kernel", ("jev", "advisory", "network"), "Typed judgments never authorize or execute actions.",
+        "medium", False, True, False, requires_network=True,
+        known_limitations=("Execute through jev_question_contract; lint is local, inference requires explicit setup.",),
+    ),
+    _spec(
         "read_file",
         "tool",
         "Read a local text/PDF-adjacent file.",
@@ -1390,6 +1402,7 @@ def _first_doc_line(obj: Any, fallback: str) -> str:
 
 def _generated_tool_spec(name: str, fn: Any) -> ActionSpec:
     policy = policy_for_action(name)
+    memory_tool = name.startswith("memory_")
     network = (
         name.startswith("web_")
         or name.startswith("x_")
@@ -1412,17 +1425,23 @@ def _generated_tool_spec(name: str, fn: Any) -> ActionSpec:
         name,
         "tool",
         _first_doc_line(fn, f"Runtime callable tool: {name}."),
-        "runtime",
-        (("curated-runtime", "runtime", "tool") if policy.curated else ("unclassified", "runtime", "tool")),
+        "memory" if memory_tool else "runtime",
+        (
+            ("continuum", "memory", "curated-runtime", "tool")
+            if memory_tool
+            else ("curated-runtime", "runtime", "tool")
+            if policy.curated
+            else ("unclassified", "runtime", "tool")
+        ),
         (
             "Curated runtime policy covers this callable even though it has no long-form registry entry."
             if policy.curated
             else "Unclassified runtime callable is denied until an explicit authority policy is added."
         ),
-        "high",
-        True,
-        True,
-        False,
+        cast(RiskLevel, policy.maximum_risk),
+        policy.mutates_state,
+        policy.requires_approval,
+        policy.safe_retry,
         requires_network=network,
         requires_provider=provider,
     )

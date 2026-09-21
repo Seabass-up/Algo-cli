@@ -95,13 +95,13 @@ def execute(command_line: str, cfg: Any, *, max_read_chars: int | None = None) -
 
     if command == "/ls":
         rel = parse_path_arg(remainder) or "."
-        return tools_module.list_directory(rel, cwd=getattr(cfg, "cwd", None), limit=40)
+        return tools_module.list_directory(rel, cwd=getattr(cfg, "cwd", None), limit=40, cfg=cfg)
 
     if command == "/read":
         rel = parse_path_arg(remainder)
         if not rel:
             return "Error: usage: /read PATH"
         limit = max_read_chars if max_read_chars is not None else tools_module.MAX_READ_CHARS
-        return tools_module.read_file(rel, cwd=getattr(cfg, "cwd", None), max_chars=limit)
+        return tools_module.read_file(rel, cwd=getattr(cfg, "cwd", None), max_chars=limit, cfg=cfg)
 
     return f"Error: unhandled command {command}"

@@ -211,32 +211,32 @@ def test_failed_keyring_readback_stays_failed(setup, monkeypatch):
 def test_real_protected_startup_and_restart_without_native_registry(setup, config_dir):
     from algo_cli import ada_task_ledger as task_ledger
     from algo_cli.config import Config
-    from algo_cli.elsie_echo_preflight import prepare_echo_auxiliary_state
+    from algo_cli.protected_memory_preflight import prepare_protected_auxiliary_state
 
     _backend, keys, anchors = setup
     anchors.provision()
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     task_ledger.save_goal(task_ledger.GoalRecord(goal="test migration"))
-    assert prepare_echo_auxiliary_state(cfg, receipt_key_store=keys)["protected"] is True
+    assert prepare_protected_auxiliary_state(cfg, receipt_key_store=keys)["protected"] is True
     assert anchors.status()["memory_heads"] >= 1
-    assert prepare_echo_auxiliary_state(cfg, receipt_key_store=keys)["protected"] is True
+    assert prepare_protected_auxiliary_state(cfg, receipt_key_store=keys)["protected"] is True
     assert keys.complete_inventory_snapshot() is None
 
 
 def test_deleted_anchor_bundle_does_not_reset_committed_store(setup, config_dir):
     from algo_cli import ada_task_ledger as task_ledger
     from algo_cli.config import Config
-    from algo_cli.elsie_echo_preflight import EchoAuxiliaryPreflightError, prepare_echo_auxiliary_state
+    from algo_cli.protected_memory_preflight import ProtectedMemoryPreflightError, prepare_protected_auxiliary_state
 
     backend, keys, anchors = setup
     anchors.provision()
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     task_ledger.save_goal(task_ledger.GoalRecord(goal="test migration"))
-    prepare_echo_auxiliary_state(cfg, receipt_key_store=keys)
+    prepare_protected_auxiliary_state(cfg, receipt_key_store=keys)
     backend.delete_password(keys.service, ELSIE_MEMORY_ANCHORS_LABEL)
     anchors.provision()
-    with pytest.raises(EchoAuxiliaryPreflightError):
-        prepare_echo_auxiliary_state(cfg, receipt_key_store=keys)
+    with pytest.raises(ProtectedMemoryPreflightError):
+        prepare_protected_auxiliary_state(cfg, receipt_key_store=keys)
 
 
 def test_memory_config_command_preserves_secrets_and_never_calls_native_initializer(setup, monkeypatch):

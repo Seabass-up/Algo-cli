@@ -8,13 +8,21 @@ agent_loop the prompt is idle, so this module reserves the last terminal row
 from __future__ import annotations
 
 import os
+import io
+from dataclasses import dataclass
 import signal
 import sys
 import threading
 import time
 from typing import Any, Callable, TextIO
 
-_render: Callable[[], str] | None = None
+@dataclass(frozen=True)
+class FooterLine:
+    formatted: Any
+    style: Any
+
+
+_render: Callable[[], str | FooterLine] | None = None
 _stream: TextIO | None = None
 _active = False
 _lock = threading.RLock()
@@ -65,7 +73,39 @@ def _write(stream: TextIO, data: str) -> None:
     stream.flush()
 
 
-def _visible_line(line: str, cols: int) -> str:
+def _visible_line(line: str | FooterLine, cols: int) -> str:
+    if isinstance(line, FooterLine):
+        from prompt_toolkit.data_structures import Size
+        from prompt_toolkit.formatted_text import to_formatted_text
+        from prompt_toolkit.output import ColorDepth
+        from prompt_toolkit.output.vt100 import Vt100_Output
+        from prompt_toolkit.renderer import print_formatted_text
+        from prompt_toolkit.styles import default_ui_style, merge_styles
+        from prompt_toolkit.utils import get_cwidth
+
+        remaining = cols
+        cropped = False
+        fragments: list[tuple[str, str]] = []
+        for style, text, *_ in to_formatted_text(line.formatted):
+            visible = ""
+            for char in text.replace("\n", " ").replace("\r", " "):
+                width = get_cwidth(char)
+                if width > remaining:
+                    cropped = True
+                    break
+                visible += char
+                remaining -= width
+            fragments.append((f"class:bottom-toolbar {style}", visible))
+            if cropped or not remaining:
+                break
+        fragments.append(("class:bottom-toolbar", " " * remaining))
+        buffer = io.StringIO()
+        output = Vt100_Output(
+            buffer, lambda: Size(rows=1, columns=cols), term=os.environ.get("TERM"),
+            default_color_depth=ColorDepth.from_env(),
+        )
+        print_formatted_text(output, fragments, merge_styles([default_ui_style(), line.style]))
+        return buffer.getvalue()
     visible = line.replace("\n", " ").replace("\r", " ")
     if len(visible) > cols - 1:
         return visible[: max(0, cols - 4)] + "..."
@@ -74,7 +114,7 @@ def _visible_line(line: str, cols: int) -> str:
 
 def _paint_locked(
     stream: TextIO,
-    line: str,
+    line: str | FooterLine,
     *,
     initial: bool = False,
     dimensions: tuple[int, int] | None = None,
@@ -222,7 +262,7 @@ def _refresh_loop() -> None:
         refresh()
 
 
-def start(render: Callable[[], str], *, stream: TextIO | None = None) -> None:
+def start(render: Callable[[], str | FooterLine], *, stream: TextIO | None = None) -> None:
     """Begin sticky footer for a generation. No-op when not a TTY."""
     global _render, _stream, _active, _refresh_thread, _stop_event
     if is_active():

@@ -36,8 +36,8 @@ def test_defaults():
     assert cfg.skill_crystallize_every >= 1
     assert cfg.runs_since_crystallize == 0
     assert cfg.algorithmic_tool_policy_enabled is True
-    assert cfg.echo_veil_capacity == 400
-    assert cfg.echo_veil_production is False
+    assert cfg.continuum_enabled is False
+    assert not hasattr(cfg, "echo_veil_enabled")
     assert cfg.memory_auto_capture_enabled is False
     assert cfg.memory_auto_capture_consent_version == 0
     assert memory_auto_capture_consent_granted(cfg) is False
@@ -60,8 +60,7 @@ def test_save_load_roundtrip():
     cfg.chat_stream_timeout_seconds = 45.0
     cfg.skill_crystallize_every = 7
     cfg.algorithmic_tool_policy_enabled = True
-    cfg.echo_veil_capacity = 12
-    cfg.echo_veil_production = True
+    cfg.continuum_enabled = True
     cfg.memory_auto_capture_enabled = True
     cfg.memory_auto_capture_consent_version = MEMORY_AUTO_CAPTURE_CONSENT_VERSION
     cfg.memory_auto_daily_limit = 3
@@ -79,8 +78,7 @@ def test_save_load_roundtrip():
     assert reloaded.chat_stream_timeout_seconds == 45.0
     assert reloaded.skill_crystallize_every == 7
     assert reloaded.algorithmic_tool_policy_enabled is True
-    assert reloaded.echo_veil_capacity == 12
-    assert reloaded.echo_veil_production is True
+    assert reloaded.continuum_enabled is True
     assert reloaded.memory_auto_capture_enabled is True
     assert memory_auto_capture_consent_granted(reloaded) is True
     assert reloaded.memory_auto_daily_limit == 3
@@ -225,12 +223,13 @@ def test_messages_and_memories_not_in_config_file():
     assert reloaded.messages == []
 
 
-def test_echo_config_load_save_drops_legacy_plaintext_attempts_and_summary() -> None:
+def test_retired_config_load_save_drops_legacy_plaintext_attempts_and_summary() -> None:
     canary = "LEGACY_RAW_ECHO_PAYLOAD_CANARY"
     config.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     config.CONFIG_FILE.write_text(
         json.dumps(
             {
+                "continuum_enabled": True,
                 "echo_veil_enabled": True,
                 "echo_veil_protection": "required",
                 "session_summary": canary,
@@ -253,26 +252,28 @@ def test_echo_config_load_save_drops_legacy_plaintext_attempts_and_summary() -> 
 
     assert loaded.session_summary == ""
     assert loaded.attempt_ledger == []
+    assert loaded.continuum_enabled is True
+    assert "echo_veil_enabled" not in persisted
+    assert "echo_veil_protection" not in persisted
     assert canary not in persisted
 
 
-def test_echo_conversation_persistence_projects_direct_wrapped_and_unpaired_tools() -> None:
+def test_protected_conversation_persistence_projects_direct_wrapped_and_unpaired_tools() -> None:
     args_canary = "PROTECTED_ARGUMENT_CANARY"
     result_canary = "PROTECTED_RESULT_WITHOUT_PROVIDER_MARKER"
     wrapped_canary = "WRAPPED_MEMORY_QUERY_CANARY"
     unpaired_canary = "UNPAIRED_TOOL_RESULT_CANARY"
     cfg = Config(
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
         session_summary=result_canary,
         messages=[
             {
                 "role": "assistant",
                 "tool_calls": [
                     {
-                        "id": "echo-call",
+                        "id": "memory-call",
                         "function": {
-                            "name": "echo_veil_recall",
+                            "name": "memory_search",
                             "arguments": json.dumps({"query": args_canary}),
                         },
                     }
@@ -280,7 +281,7 @@ def test_echo_conversation_persistence_projects_direct_wrapped_and_unpaired_tool
             },
             {
                 "role": "tool",
-                "tool_call_id": "echo-call",
+                "tool_call_id": "memory-call",
                 "content": json.dumps({"records": [{"payload": result_canary}]}),
             },
             {
@@ -322,10 +323,7 @@ def test_echo_conversation_persistence_projects_direct_wrapped_and_unpaired_tool
     legacy["messages"][-1]["content"] = unpaired_canary
     legacy["session_summary"] = result_canary
     path.write_text(json.dumps(legacy), encoding="utf-8")
-    loaded = Config(
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
-    )
+    loaded = Config(continuum_enabled=True)
     loaded.load_conversation("protected")
     migrated = path.read_text(encoding="utf-8")
 
@@ -404,7 +402,7 @@ def test_corrupt_memory_file_is_preserved_and_not_silently_deleted():
     assert config.MEMORY_FILE.with_suffix(config.MEMORY_FILE.suffix + ".corrupt").exists()
 
 
-def test_corrupt_config_is_not_duplicated_before_echo_authority_is_known() -> None:
+def test_corrupt_config_is_not_duplicated_before_protected_authority_is_known() -> None:
     canary = "CORRUPT_CONFIG_PROTECTED_CANARY"
     config.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     config.CONFIG_FILE.write_text(
@@ -415,11 +413,77 @@ def test_corrupt_config_is_not_duplicated_before_echo_authority_is_known() -> No
 
     loaded = Config.load()
 
-    assert loaded.echo_veil_enabled is True
-    assert loaded.echo_veil_protection == "required"
+    assert loaded.continuum_enabled is False
+    assert loaded.memory_config_error == "invalid_config"
+    assert not hasattr(loaded, "echo_veil_enabled")
     assert loaded.memories == []
     assert canary in config.CONFIG_FILE.read_text(encoding="utf-8")
     assert not config.CONFIG_FILE.with_suffix(".json.corrupt").exists()
+
+
+@pytest.mark.parametrize("value", ["require", "", "disabled", "unexpected", None, 1])
+def test_invalid_retired_protection_never_loads_plaintext_or_selects_backend(value):
+    from algo_cli.grace_memory_receipts import legacy_config_requires_protected_memory
+    from algo_cli.protected_memory_preflight import ProtectedMemoryPreflightError, prepare_protected_auxiliary_state
+
+    encoded = json.dumps({"echo_veil_protection": value})
+    config.CONFIG_FILE.write_text(encoded, encoding="utf-8")
+    config.MEMORY_FILE.write_text('["PRIVATE_CANARY"]', encoding="utf-8")
+    loaded = Config.load()
+    assert loaded.memory_config_error == "invalid_config"
+    assert loaded.continuum_enabled is False
+    assert loaded.memories == []
+    assert config.CONFIG_FILE.read_text(encoding="utf-8") == encoded
+    assert legacy_config_requires_protected_memory(config.CONFIG_DIR)
+    with pytest.raises(ProtectedMemoryPreflightError) as refused:
+        prepare_protected_auxiliary_state(loaded)
+    assert refused.value.reason_code == "memory_config_requires_repair"
+
+
+def test_explicit_memory_config_repair_preserves_unrelated_values_and_exact_backup() -> None:
+    original = json.dumps(
+        {
+            "model": "local-test-model",
+            "context_state": {"keep": [1, 2, 3]},
+            "d057_enabled": True,
+            "d057_adapter": "retired-adapter",
+            "echo_veil_enabled": False,
+            "echo_veil_protection": "optional",
+        },
+        indent=1,
+    )
+    config.CONFIG_FILE.write_text(original, encoding="utf-8")
+
+    result = config.repair_memory_configuration()
+    repaired = json.loads(config.CONFIG_FILE.read_text(encoding="utf-8"))
+    backup = result["backup_path"]
+
+    assert result["changed"] is True
+    assert result["removed_retired_keys"] == 4
+    assert isinstance(backup, Path)
+    assert backup.read_bytes() == original.encode("utf-8")
+    assert repaired == {
+        "model": "local-test-model",
+        "context_state": {"keep": [1, 2, 3]},
+        "continuum_enabled": True,
+    }
+    loaded = Config.load()
+    assert loaded.memory_config_error == ""
+    assert loaded.continuum_enabled is True
+    if os.name != "nt":
+        assert stat.S_IMODE(config.CONFIG_FILE.stat().st_mode) == 0o600
+        assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+
+
+def test_explicit_memory_config_repair_rejects_duplicate_keys_without_rewrite() -> None:
+    original = '{"d057_enabled":true,"d057_enabled":false}'
+    config.CONFIG_FILE.write_text(original, encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="valid JSON object"):
+        config.repair_memory_configuration()
+
+    assert config.CONFIG_FILE.read_text(encoding="utf-8") == original
+    assert not list(config.CONFIG_FILE.parent.glob("config.json.before-continuum-*.bak"))
 
 
 def test_unsafe_or_oversize_config_fails_closed_without_loading_plaintext_memory(
@@ -435,8 +499,9 @@ def test_unsafe_or_oversize_config_fails_closed_without_loading_plaintext_memory
     config.CONFIG_FILE.symlink_to(outside)
 
     symlinked = Config.load()
-    assert symlinked.echo_veil_enabled is True
-    assert symlinked.echo_veil_protection == "required"
+    assert symlinked.continuum_enabled is False
+    assert symlinked.memory_config_error == "invalid_config"
+    assert not hasattr(symlinked, "echo_veil_enabled")
     assert symlinked.memories == []
 
     config.CONFIG_FILE.unlink()
@@ -444,8 +509,9 @@ def test_unsafe_or_oversize_config_fails_closed_without_loading_plaintext_memory
         b'{"echo_veil_enabled":false,"padding":"' + (b"x" * (config.MAX_JSON_STATE_BYTES + 1)) + b'"}'
     )
     oversized = Config.load()
-    assert oversized.echo_veil_enabled is True
-    assert oversized.echo_veil_protection == "required"
+    assert oversized.continuum_enabled is False
+    assert oversized.memory_config_error == "invalid_config"
+    assert not hasattr(oversized, "echo_veil_enabled")
     assert oversized.memories == []
 
 
@@ -1232,7 +1298,9 @@ def test_has_legacy_data_and_migration_helpers(tmp_path, monkeypatch):
     assert ".ollama_cli.backup" in str(backup)
 
 
-def test_echo_selected_legacy_migration_projects_only_safe_configuration(tmp_path, monkeypatch) -> None:
+def test_retired_authority_migration_projects_only_safe_continuum_configuration(
+    tmp_path, monkeypatch
+) -> None:
     legacy = tmp_path / ".ollama_cli"
     current = tmp_path / ".algo_cli"
     backup = tmp_path / ".ollama_cli.backup"
@@ -1265,8 +1333,10 @@ def test_echo_selected_legacy_migration_projects_only_safe_configuration(tmp_pat
     assert config.perform_legacy_migration() is True
 
     migrated = json.loads((current / "config.json").read_text(encoding="utf-8"))
-    assert migrated["echo_veil_enabled"] is True
-    assert migrated["echo_veil_protection"] == "required"
+    assert migrated["continuum_enabled"] is False
+    assert migrated["memory_config_requires_repair"] is True
+    assert "echo_veil_enabled" not in migrated
+    assert "echo_veil_protection" not in migrated
     assert migrated["skill_crystallize_enabled"] is False
     assert "session_summary" not in migrated
     assert "attempt_ledger" not in migrated
@@ -1277,7 +1347,8 @@ def test_echo_selected_legacy_migration_projects_only_safe_configuration(tmp_pat
     assert not backup.exists()
     assert canary in (legacy / "memory.json").read_text(encoding="utf-8")
     receipt = json.loads((current / ".legacy_migration_receipt.json").read_text(encoding="utf-8"))
-    assert receipt["echo_authority_selected"] is True
+    assert receipt["schema_version"] == 2
+    assert receipt["protected_memory_selected"] is True
     assert receipt["original_retained"] is True
     assert receipt["backup_created"] is False
     assert receipt["explicit_review_required"] is True

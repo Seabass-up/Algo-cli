@@ -36,15 +36,15 @@ def test_cap_truncates():
     assert "truncated" in long
 
 
-def test_append_lesson_routes_to_echo_without_plaintext_shadow(monkeypatch):
-    from algo_cli import ada_memory_echo_veil, identity
+def test_append_lesson_routes_to_continuum_without_plaintext_shadow(monkeypatch):
+    from algo_cli import continuum_memory, identity
 
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     captured: dict[str, str] = {}
     monkeypatch.setattr(
-        ada_memory_echo_veil,
-        "remember_with_echo_veil",
-        lambda _cfg, fact, *, source: captured.update({"fact": fact, "source": source}) or True,
+        continuum_memory,
+        "remember_fact",
+        lambda _cfg, fact: captured.update({"fact": fact}) or True,
     )
     monkeypatch.setattr(
         identity,
@@ -52,21 +52,18 @@ def test_append_lesson_routes_to_echo_without_plaintext_shadow(monkeypatch):
         lambda _text: (_ for _ in ()).throw(AssertionError("plaintext lesson must not be written")),
     )
 
-    assert tools.append_lesson("  explicit lesson  ", cfg=cfg) == "Protected lesson saved."
-    assert captured == {
-        "fact": "explicit lesson",
-        "source": "explicit_lesson_tool",
-    }
+    assert tools.append_lesson("  explicit lesson  ", cfg=cfg) == "Continuum memory saved."
+    assert captured == {"fact": "explicit lesson"}
 
 
 def test_append_lesson_fails_closed_when_echo_write_is_unavailable(monkeypatch):
-    from algo_cli import ada_memory_echo_veil, identity
+    from algo_cli import continuum_memory, identity
 
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     monkeypatch.setattr(
-        ada_memory_echo_veil,
-        "remember_with_echo_veil",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("secret-canary")),
+        continuum_memory,
+        "remember_fact",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(continuum_memory.ContinuumMemoryError("unavailable")),
     )
     monkeypatch.setattr(
         identity,
@@ -75,7 +72,7 @@ def test_append_lesson_fails_closed_when_echo_write_is_unavailable(monkeypatch):
     )
 
     result = tools.append_lesson("secret-canary", cfg=cfg)
-    assert result == ("Error: protected lesson storage is unavailable; no plaintext lesson was written.")
+    assert result.startswith("Error:") and "unavailable" in result
     assert "secret-canary" not in result
 
 
@@ -83,7 +80,7 @@ def test_update_user_profile_refuses_echo_without_plaintext_write(monkeypatch):
     from algo_cli import identity
 
     canary = "PROTECTED_USER_PROFILE_CANARY"
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     monkeypatch.setattr(
         identity,
         "write_user_profile",
@@ -93,16 +90,14 @@ def test_update_user_profile_refuses_echo_without_plaintext_write(monkeypatch):
     result = tools.update_user_profile(canary, cfg=cfg)
 
     assert result == (
-        "Error: update_user_profile is unavailable while Echo Veil is the "
-        "exclusive memory authority; use an explicit reviewed Echo memory "
-        "action instead."
+        "Error: profile continuity writes are unavailable with Continuum Memory; use memory_remember explicitly."
     )
     assert canary not in result
 
 
 def test_update_user_profile_runtime_refuses_before_dispatch(monkeypatch):
     canary = "RUNTIME_PROTECTED_USER_PROFILE_CANARY"
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     invoked: list[bool] = []
     monkeypatch.setitem(
         tool_runtime.TOOL_MAP,
@@ -116,7 +111,7 @@ def test_update_user_profile_runtime_refuses_before_dispatch(monkeypatch):
         cfg,
     )
 
-    assert "update_user_profile is unavailable" in result
+    assert "unavailable" in result and "Continuum" in result
     assert canary not in result
     assert invoked == []
 
@@ -130,7 +125,7 @@ def test_update_user_profile_preserves_echo_disabled_compatibility(monkeypatch):
         "write_user_profile",
         lambda content: writes.append(content) or "/private/USER.md",
     )
-    cfg = Config(echo_veil_enabled=False, echo_veil_protection="optional")
+    cfg = Config(continuum_enabled=False)
 
     result = tool_runtime.run_tool(
         "update_user_profile",
@@ -142,15 +137,15 @@ def test_update_user_profile_preserves_echo_disabled_compatibility(monkeypatch):
     assert writes == ["# About the User\n\nCompatibility"]
 
 
-def test_knowledge_graph_note_routes_to_echo_without_plaintext_shadow(monkeypatch):
-    from algo_cli import ada_memory_echo_veil
+def test_knowledge_graph_note_refuses_implicit_memory_reroute_without_plaintext_shadow(monkeypatch):
+    from algo_cli import continuum_memory
 
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     captured: dict[str, str] = {}
     monkeypatch.setattr(
-        ada_memory_echo_veil,
-        "remember_with_echo_veil",
-        lambda _cfg, fact, *, source: captured.update({"fact": fact, "source": source}) or True,
+        continuum_memory,
+        "remember_fact",
+        lambda _cfg, fact: captured.update({"fact": fact}) or True,
     )
     monkeypatch.setattr(
         tools._index_compute_lab,
@@ -164,20 +159,17 @@ def test_knowledge_graph_note_routes_to_echo_without_plaintext_shadow(monkeypatc
         cfg,
     )
 
-    assert result == "Protected knowledge note saved."
-    assert captured == {
-        "fact": "Alias\n\nUse the protected name.",
-        "source": "explicit_knowledge_graph_note",
-    }
+    assert "unavailable" in result and "Continuum" in result
+    assert captured == {}
 
 
 def test_knowledge_graph_note_fails_closed_without_plaintext_fallback(monkeypatch):
-    from algo_cli import ada_memory_echo_veil
+    from algo_cli import continuum_memory
 
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     monkeypatch.setattr(
-        ada_memory_echo_veil,
-        "remember_with_echo_veil",
+        continuum_memory,
+        "remember_fact",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("private")),
     )
     monkeypatch.setattr(
@@ -188,7 +180,7 @@ def test_knowledge_graph_note_fails_closed_without_plaintext_fallback(monkeypatc
 
     result = tools.write_knowledge_graph_note("private", "canary", cfg=cfg)
 
-    assert result == ("Error: protected knowledge-note storage is unavailable; no plaintext graph note was written.")
+    assert "unavailable" in result and "Continuum" in result
     assert "canary" not in result
 
 
@@ -197,7 +189,7 @@ def test_x_search_under_echo_is_current_turn_only_and_never_cached(
 ) -> None:
     from algo_cli import xai_auth, xai_client
 
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     monkeypatch.setattr(xai_auth, "get_valid_token", lambda: "configured")
     monkeypatch.setattr(
         xai_client,
@@ -1195,7 +1187,7 @@ def test_plugin_load_and_credential_store_require_approval(monkeypatch, capsys):
 
 
 def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
-    from algo_cli import action_registry, memory_echo_veil
+    from algo_cli import action_registry, continuum_memory
     from algo_cli.evals import algorithm_effectiveness, harness_retrieval_benchmark
 
     monkeypatch.setattr(
@@ -1241,15 +1233,6 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
             "high_value_pending": 0,
             "complete": True,
         },
-        "echo_veil": {
-            "installed": False,
-            "enabled": False,
-            "write_wired": False,
-            "retrieval_wired": False,
-            "persistence_wired": False,
-            "readiness_source": "algo_cli.ada_memory_echo_veil.get_echo_veil_readiness",
-            "runtime": "cpython-test",
-        },
         "runtime_event_store": {
             "status": "ready",
             "initialized": True,
@@ -1259,18 +1242,15 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
             "compaction_needed": False,
         },
     }
-    monkeypatch.setattr(tools.harness, "stats", lambda: stats_payload)
-    echo_probe = {
-        **stats_payload["echo_veil"],
-        "live_probe_performed": False,
-    }
-    echo_probe_calls: list[tuple[object | None, bool]] = []
+    monkeypatch.setattr(tools.harness, "stats", lambda **_kwargs: dict(stats_payload))
+    continuum_probe = {"ok": True, "verify": True}
+    probe_calls: list[Config] = []
 
-    def probe_echo(config=None, *, live_probe=False):
-        echo_probe_calls.append((config, live_probe))
-        return dict(echo_probe)
+    def probe_memory(cfg):
+        probe_calls.append(cfg)
+        return dict(continuum_probe)
 
-    monkeypatch.setattr(memory_echo_veil, "get_echo_veil_readiness", probe_echo)
+    monkeypatch.setattr(continuum_memory, "doctor", probe_memory)
     monkeypatch.setattr(
         tools.harness,
         "search_index",
@@ -1384,56 +1364,32 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     assert capabilities["web tools"]["status"] == "pass"
     assert capabilities["google workspace wiring"]["status"] == "pass"
     assert all(item["scored"] is False for item in capabilities.values())
-    assert echo_probe_calls
-    assert all(live_probe is True for _config, live_probe in echo_probe_calls)
+    assert probe_calls == []
 
-    echo_probe.update(installed=True, enabled=True, live_probe_performed=True)
-    enabled_but_unwired = json.loads(tools.harness_scorecard())
-    enabled_statuses = {check["name"]: check["status"] for check in enabled_but_unwired["checks"]}
-    assert enabled_but_unwired["score"] == 8.5
-    assert enabled_but_unwired["overall_status"] == "blocked"
-    assert enabled_statuses["project memory/wiki coverage"] == "fail"
+    cfg = Config(continuum_enabled=True)
+    continuum_probe.update(ok=False, verify=False)
+    unavailable = json.loads(tools.harness_scorecard(cfg=cfg))
+    memory_check = next(check for check in unavailable["checks"] if check["name"] == "project memory/wiki coverage")
+    assert unavailable["overall_status"] == "blocked"
+    assert memory_check["status"] == "fail"
+    assert probe_calls == [cfg]
 
-    echo_probe.update(
-        write_wired=True,
-        retrieval_wired=True,
-        persistence_wired=True,
-    )
-    enabled_and_wired = json.loads(tools.harness_scorecard())
-    wired_check = next(
-        check for check in enabled_and_wired["checks"] if check["name"] == "project memory/wiki coverage"
-    )
-    assert enabled_and_wired["score"] == 9.5
-    assert enabled_and_wired["overall_status"] == "degraded"
-    assert wired_check["status"] == "pass"
-    assert wired_check["metrics"]["echo_live_probe_performed"] is True
-    assert wired_check["metrics"]["echo_probe_error"] == ""
-    assert wired_check["metrics"]["echo_initialization_error"] == ""
+    continuum_probe.update(ok=True, verify=True)
+    verified = json.loads(tools.harness_scorecard(cfg=cfg))
+    memory_check = next(check for check in verified["checks"] if check["name"] == "project memory/wiki coverage")
+    assert memory_check["status"] == "pass"
+    assert memory_check["metrics"]["continuum_selected"] is True
+    assert memory_check["metrics"]["continuum_readiness"]["verify"] is True
 
-    def unavailable_echo_probe(_config=None, *, live_probe=False):
-        assert live_probe is True
-        raise RuntimeError("synthetic probe failure")
+    def unavailable_probe(_cfg):
+        raise continuum_memory.ContinuumMemoryError("synthetic probe failure")
 
-    monkeypatch.setattr(
-        memory_echo_veil,
-        "get_echo_veil_readiness",
-        unavailable_echo_probe,
-    )
-    unavailable_echo = json.loads(tools.harness_scorecard())
-    unavailable_check = next(
-        check for check in unavailable_echo["checks"] if check["name"] == "project memory/wiki coverage"
-    )
-    assert unavailable_check["status"] == "unavailable"
-    assert unavailable_check["metrics"]["echo_probe_error"] == "RuntimeError"
-    monkeypatch.setattr(memory_echo_veil, "get_echo_veil_readiness", probe_echo)
-
-    echo_probe.update(
-        enabled=False,
-        live_probe_performed=False,
-        write_wired=False,
-        retrieval_wired=False,
-        persistence_wired=False,
-    )
+    monkeypatch.setattr(continuum_memory, "doctor", unavailable_probe)
+    failed_probe = json.loads(tools.harness_scorecard(cfg=cfg))
+    memory_check = next(check for check in failed_probe["checks"] if check["name"] == "project memory/wiki coverage")
+    assert memory_check["status"] == "fail"
+    assert memory_check["metrics"]["continuum_readiness"]["verify"] is False
+    monkeypatch.setattr(continuum_memory, "doctor", probe_memory)
 
     stats_payload["runtime_event_store"]["file_private"] = False
     unsafe_store = json.loads(tools.harness_scorecard())
@@ -1483,44 +1439,35 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
 
 
 def test_protected_harness_scorecard_never_reads_legacy_knowledge_graph(monkeypatch):
-    from algo_cli import memory_echo_veil
+    from algo_cli import continuum_memory
 
     calls: list[str] = []
 
     def forbidden_query(*_args, **_kwargs):
         calls.append("legacy-graph")
-        raise AssertionError("legacy graph must not be read under Echo authority")
+        raise AssertionError("legacy graph must not be read under Continuum authority")
 
     monkeypatch.setattr(tools, "query_knowledge_graph", forbidden_query)
     monkeypatch.setattr(
-        memory_echo_veil,
-        "get_echo_veil_readiness",
-        lambda _config=None, *, live_probe=False: {
-            "installed": True,
-            "enabled": True,
-            "write_wired": True,
-            "retrieval_wired": True,
-            "persistence_wired": True,
-            "readiness_source": "test-live-probe",
-            "runtime": "cpython-test",
-            "live_probe_performed": live_probe,
-        },
+        continuum_memory,
+        "doctor",
+        lambda _cfg: {"ok": True, "verify": True},
     )
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
 
     payload = json.loads(tools.harness_scorecard(cfg=cfg))
 
     graph_check = next(check for check in payload["checks"] if check["name"] == "knowledge graph")
     assert graph_check["status"] == "unavailable"
-    assert "disabled under Echo Veil" in graph_check["evidence"]
+    assert "disabled under Continuum Memory" in graph_check["evidence"]
     assert "Reindex" not in graph_check["recommendation"]
-    assert "Echo" in graph_check["recommendation"]
+    assert "Continuum" in graph_check["recommendation"]
     assert calls == []
 
 
 @pytest.mark.parametrize("tool_name", ["harness_scorecard", "harness_competitive_rating"])
 def test_scorecard_family_cfg_is_runtime_injected_and_hidden_from_schema(monkeypatch, tool_name):
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     seen: list[Config | None] = []
     registered = tools.TOOL_MAP[tool_name]
     monkeypatch.setitem(
@@ -1535,7 +1482,7 @@ def test_scorecard_family_cfg_is_runtime_injected_and_hidden_from_schema(monkeyp
 
 
 def test_direct_harness_scorecard_aliases_forward_runtime_cfg(monkeypatch):
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     seen: list[tuple[str, Config | None]] = []
     monkeypatch.setattr(
         tools,
@@ -1642,7 +1589,7 @@ def test_show_help_contains_current_slash_commands(monkeypatch):
     )
     monkeypatch.setattr(display, "console", test_console)
 
-    display.show_help()
+    display.show_help("all")
 
     text = output.getvalue()
     for command, _ in slash_dispatch.SLASH_COMMANDS:
@@ -1736,14 +1683,15 @@ def test_git_tools_run_read_only_status_and_diff_commands(tmp_path, monkeypatch)
     assert "ollama_cli/main.py" in tools.git_status(cwd=str(tmp_path))
     assert "ollama_cli/main.py" in tools.git_diff(cwd=str(tmp_path), names_only=True)
 
-    assert calls[0] == ["git", "status", "--short", "--branch"]
-    assert calls[1] == ["git", "rev-parse", "--verify", "HEAD"]
-    assert calls[2] == ["git", "diff", "--no-ext-diff", "--name-only", "HEAD"]
+    prefix = ["git", "--no-pager", "-c", "core.fsmonitor=false"]
+    assert calls[0] == [*prefix, "status", "--short", "--branch", "--ignore-submodules=all"]
+    assert calls[1] == [*prefix, "rev-parse", "--verify", "HEAD"]
+    assert calls[2] == [*prefix, "diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "--name-only", "HEAD"]
 
 
 def test_git_diff_reports_unborn_repository_without_head(tmp_path, monkeypatch):
     def fake_run(command, **_kwargs):
-        if command[:3] == ["git", "rev-parse", "--verify"]:
+        if command[-3:] == ["rev-parse", "--verify", "HEAD"]:
             return SimpleNamespace(returncode=128, stdout="", stderr="fatal: Needed a single revision\n")
         raise AssertionError(command)
 
@@ -2265,8 +2213,7 @@ def test_echo_authority_refuses_legacy_knowledge_graph_before_access(
     tool_name: str,
 ) -> None:
     cfg = Config(
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
     )
     monkeypatch.setattr(
         tools._index_compute_lab,
@@ -2284,7 +2231,7 @@ def test_echo_authority_refuses_legacy_knowledge_graph_before_access(
     args = {"question": "private graph"} if tool_name == "query_knowledge_graph" else {}
     result = tool_runtime.run_tool(tool_name, args, cfg)
 
-    assert "disabled while Echo Veil" in result
+    assert "disabled while Continuum Memory" in result
 
 
 def test_x_search_requires_auth(monkeypatch):

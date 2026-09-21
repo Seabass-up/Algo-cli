@@ -81,18 +81,18 @@ def test_direct_agent_boundaries_refuse_failed_echo_auxiliary_preflight(
     monkeypatch,
     team: bool,
 ) -> None:
-    from algo_cli import elsie_echo_preflight
+    from algo_cli import protected_memory_preflight
 
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     client = FakeClient(["## Block Output\nmust not run"])
     errors: list[str] = []
 
     def refuse(*_args, **_kwargs):
-        raise elsie_echo_preflight.EchoAuxiliaryPreflightError("private canary")
+        raise protected_memory_preflight.ProtectedMemoryPreflightError("private canary")
 
     monkeypatch.setattr(
-        elsie_echo_preflight,
-        "prepare_echo_auxiliary_state",
+        protected_memory_preflight,
+        "prepare_protected_auxiliary_state",
         refuse,
     )
     monkeypatch.setattr(agent_pipeline, "show_error", errors.append)
@@ -309,6 +309,10 @@ def test_final_claim_grounding_accepts_verified_mutation_claim() -> None:
 
 
 def _quiet_display(monkeypatch):
+    from algo_cli import continuum_memory
+
+    monkeypatch.setattr(continuum_memory, "doctor", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(continuum_memory, "prompt_context", lambda *_args, **_kwargs: "")
     def noop(*_args, **_kwargs):
         return None
 
@@ -370,7 +374,7 @@ def test_run_agent_pipeline_records_resumable_thread(monkeypatch):
 def test_run_agent_pipeline_fails_closed_when_required_echo_recall_fails(
     monkeypatch,
 ):
-    from algo_cli import ada_memory_echo_veil
+    from algo_cli import continuum_memory
 
     production_receipt_store_calls: list[str] = []
 
@@ -392,17 +396,16 @@ def test_run_agent_pipeline_fails_closed_when_required_echo_recall_fails(
         forbid_production_receipt_store("anchor"),
     )
     cfg = Config(
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
     )
     client = FakeClient(["## Block Output\nmust not run"])
     receipt_store = StaticKeyStore({PRIVACY_KEY_LABEL: b"r" * 32})
     errors: list[str] = []
     _quiet_display(monkeypatch)
     monkeypatch.setattr(
-        ada_memory_echo_veil,
-        "protected_prompt_context",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("sensitive backend detail")),
+        continuum_memory,
+        "prompt_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(continuum_memory.ContinuumMemoryError("sensitive backend detail")),
     )
     monkeypatch.setattr(
         agent_pipeline,
@@ -426,7 +429,7 @@ def test_run_agent_pipeline_fails_closed_when_required_echo_recall_fails(
     )
 
     assert result.status == "failed"
-    assert result.error == ("Agent run stopped because required protected memory recall is unavailable.")
+    assert result.error == ("Agent run stopped because required Continuum memory recall is unavailable.")
     assert client.calls == []
     assert production_receipt_store_calls == []
     assert errors == [result.error]
@@ -439,12 +442,11 @@ def test_run_agent_pipeline_fails_closed_when_required_echo_recall_fails(
 def test_echo_agent_two_block_run_keeps_protected_context_out_of_thread_store(
     monkeypatch,
 ) -> None:
-    from algo_cli import ada_memory_echo_veil
+    from algo_cli import continuum_memory
 
     canary = "ECHO_AGENT_CONTEXT_CANARY"
     cfg = Config(
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
     )
     client = FakeClient(
         [
@@ -455,8 +457,8 @@ def test_echo_agent_two_block_run_keeps_protected_context_out_of_thread_store(
     receipt_store = StaticKeyStore({PRIVACY_KEY_LABEL: b"s" * 32})
     _quiet_display(monkeypatch)
     monkeypatch.setattr(
-        ada_memory_echo_veil,
-        "protected_prompt_context",
+        continuum_memory,
+        "prompt_context",
         lambda *_args, **_kwargs: canary,
     )
 
@@ -487,7 +489,7 @@ def test_echo_agent_two_block_run_keeps_protected_context_out_of_thread_store(
 
 
 def test_echo_agent_run_never_loads_persisted_intuition_blocks(monkeypatch) -> None:
-    from algo_cli import ada_memory_echo_veil
+    from algo_cli import continuum_memory
 
     canary = "PERSISTED_INTUITION_AGENT_CANARY"
 
@@ -496,8 +498,7 @@ def test_echo_agent_run_never_loads_persisted_intuition_blocks(monkeypatch) -> N
             raise AssertionError(canary)
 
     cfg = Config(
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
         intuition_recall_enabled=True,
     )
     client = FakeClient(
@@ -510,8 +511,8 @@ def test_echo_agent_run_never_loads_persisted_intuition_blocks(monkeypatch) -> N
     _quiet_display(monkeypatch)
     monkeypatch.setattr(main, "_intuition_engine", ForbiddenIntuition())
     monkeypatch.setattr(
-        ada_memory_echo_veil,
-        "protected_prompt_context",
+        continuum_memory,
+        "prompt_context",
         lambda *_args, **_kwargs: "",
     )
 
@@ -560,8 +561,7 @@ def test_run_agent_block_injects_inference_harness_contract_for_eosd_task(monkey
 
 def test_run_agent_block_injects_required_echo_memory_contract(monkeypatch):
     cfg = Config(
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
     )
     client = FakeClient(contents=["## Block Output\ncomplete"])
     block = agent_blocks.AgentBlock(
@@ -580,11 +580,10 @@ def test_run_agent_block_injects_required_echo_memory_contract(monkeypatch):
     )
 
     system_prompt = client.calls[0]["messages"][0]["content"]
-    assert "Echo Veil is the exclusive mutable agent-memory authority" in system_prompt
-    assert "echo_veil_context" in system_prompt
-    assert "ranking_ambiguous=true" in system_prompt
-    assert "competing_memory_detected=true" in system_prompt
-    assert "Never consult or write a host plaintext fallback" in system_prompt
+    assert "Continuum Memory" in system_prompt
+    assert "memory_context" in system_prompt
+    assert "scope" in system_prompt
+    assert "plaintext fallback" in system_prompt
 
 
 def test_run_agent_block_skips_inference_harness_contract_for_ordinary_task(monkeypatch):
@@ -1531,7 +1530,7 @@ def test_run_agent_pipeline_passes_no_git_delta_to_review(monkeypatch):
         ),
     )
     monkeypatch.setattr(agent_pipeline, "resolve_pipeline_for_cli", lambda _name: ([implement, review, final], "test"))
-    monkeypatch.setattr(git_evidence, "capture_git_snapshot", lambda _cwd: snapshot)
+    monkeypatch.setattr(git_evidence, "capture_git_snapshot", lambda _cwd, **_kwargs: snapshot)
     monkeypatch.setattr(
         agent_pipeline,
         "should_recover_implementation",
@@ -1703,7 +1702,7 @@ def test_non_change_mutation_is_audited_without_status_gate(monkeypatch):
     _quiet_display(monkeypatch)
     monkeypatch.setattr(agent_pipeline, "resolve_pipeline_for_cli", lambda _name: ([review, final], "test"))
     monkeypatch.setattr(agent_pipeline, "_capture_thread_workspace", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(git_evidence, "capture_git_snapshot", lambda _cwd: next(snapshots))
+    monkeypatch.setattr(git_evidence, "capture_git_snapshot", lambda _cwd, **_kwargs: next(snapshots))
     monkeypatch.setattr(agent_pipeline, "show_info", lambda message: infos.append(message))
     monkeypatch.setattr(
         agent_pipeline,
@@ -2472,7 +2471,7 @@ def test_structured_resume_fails_closed_on_workspace_drift(
     monkeypatch.setattr(
         git_evidence,
         "capture_git_snapshot",
-        lambda _cwd: changed,
+        lambda _cwd, **_kwargs: changed,
     )
 
     result = agent_pipeline.execute_agent_command(
@@ -2487,7 +2486,7 @@ def test_structured_resume_fails_closed_on_workspace_drift(
 
 def test_protected_resume_reconciles_keyed_workspace_receipts(tmp_path) -> None:
     cfg = Config(cwd=str(tmp_path))
-    cfg.echo_veil_enabled = True
+    cfg.continuum_enabled = True
     task = "Review the protected runtime"
     pipeline = agent_blocks.review_pipeline()
     initial = git_evidence.GitSnapshot(
@@ -2579,11 +2578,9 @@ def test_pipeline_resume_refuses_digest_authority_changes_before_execution(
         (),
     )
     compile_cfg = Config(cwd=str(tmp_path))
-    compile_cfg.echo_veil_enabled = contract_protected
-    compile_cfg.echo_veil_protection = "required" if contract_protected else "optional"
+    compile_cfg.continuum_enabled = contract_protected
     active_cfg = Config(cwd=str(tmp_path))
-    active_cfg.echo_veil_enabled = active_protected
-    active_cfg.echo_veil_protection = "required" if active_protected else "optional"
+    active_cfg.continuum_enabled = active_protected
     store = StaticKeyStore({PRIVACY_KEY_LABEL: b"a" * 32})
     contract = run_contract.compile_agent_run_contract(
         task=task,
@@ -2609,7 +2606,7 @@ def test_pipeline_resume_refuses_digest_authority_changes_before_execution(
     monkeypatch.setattr(
         git_evidence,
         "capture_git_snapshot",
-        lambda _cwd: snapshot,
+        lambda _cwd, **_kwargs: snapshot,
     )
 
     result = agent_pipeline.run_agent_pipeline(
@@ -2652,7 +2649,7 @@ def test_protected_pipeline_resume_waits_for_anchor_synchronization(
             )
 
     cfg = Config(cwd=str(tmp_path))
-    cfg.echo_veil_enabled = True
+    cfg.continuum_enabled = True
     task = "Review the protected runtime"
     pipeline = agent_blocks.review_pipeline()
     snapshot = git_evidence.GitSnapshot(
@@ -2716,7 +2713,7 @@ def test_protected_pipeline_resume_waits_for_anchor_synchronization(
     monkeypatch.setattr(
         git_evidence,
         "capture_git_snapshot",
-        lambda _cwd: snapshot,
+        lambda _cwd, **_kwargs: snapshot,
     )
 
     result = agent_pipeline.run_agent_pipeline(
@@ -2937,7 +2934,7 @@ def test_agent_fork_creates_and_activates_isolated_worktree(monkeypatch, tmp_pat
     monkeypatch.setattr(
         agent_pipeline.worktree_runtime,
         "capture_workspace",
-        lambda _cwd: {"available": True, "clean": True, "head": "b" * 40},
+        lambda _cwd, **_kwargs: {"available": True, "clean": True, "head": "b" * 40},
     )
     monkeypatch.setattr(agent_pipeline.worktree_runtime, "create_worktree", fake_create)
     monkeypatch.setattr(agent_pipeline.worktree_runtime, "activate_worktree", fake_activate)
@@ -2992,7 +2989,7 @@ def test_agent_fork_refuses_to_drop_dirty_parent_state(monkeypatch, tmp_path):
     monkeypatch.setattr(
         agent_pipeline.worktree_runtime,
         "capture_workspace",
-        lambda _cwd: {"available": True, "clean": False},
+        lambda _cwd, **_kwargs: {"available": True, "clean": False},
     )
     monkeypatch.setattr(
         agent_pipeline.worktree_runtime,
@@ -3037,7 +3034,7 @@ def test_agent_fork_refuses_missing_or_invalid_verified_head(monkeypatch, tmp_pa
     monkeypatch.setattr(
         agent_pipeline.worktree_runtime,
         "capture_workspace",
-        lambda _cwd: {"available": True, "clean": True, "head": "not-an-oid"},
+        lambda _cwd, **_kwargs: {"available": True, "clean": True, "head": "not-an-oid"},
     )
     monkeypatch.setattr(
         agent_pipeline.worktree_runtime,
@@ -3069,7 +3066,7 @@ def test_thread_workspace_capture_uses_fresh_full_state_evidence(monkeypatch, tm
     }
     calls: list[str] = []
 
-    def fake_capture(cwd):
+    def fake_capture(cwd, **_kwargs):
         calls.append(cwd)
         return dict(evidence)
 

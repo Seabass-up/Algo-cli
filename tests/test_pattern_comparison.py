@@ -13,7 +13,11 @@ from algo_cli.evals import pattern_evidence as evidence
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_comparison_runs_real_ranker_without_replacing_live_index(monkeypatch, tmp_path):
+def test_comparison_runs_real_ranker_without_replacing_live_index(monkeypatch, tmp_path, personal_catalog):
+    catalog_dir = tmp_path / "config"
+    catalog_dir.mkdir()
+    (catalog_dir / "ALGO.md").write_bytes(personal_catalog.read_bytes())
+    monkeypatch.setattr(harness, "CONFIG_DIR", catalog_dir)
     sentinel = {"records": [{"id": "live"}]}
     monkeypatch.setattr(harness, "load_index", lambda **_kwargs: sentinel)
     report = comparison.run_comparison(ROOT, tmp_path, repetitions=2)

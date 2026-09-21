@@ -470,7 +470,7 @@ def test_public_search_empty_slice_does_not_probe_provider_metadata(public_ident
     monkeypatch.setattr(
         embedding_binding, "probe_ollama_identity", lambda *_args, **_kwargs: calls.append(True) or IDENTITY_A
     )
-    cfg = Config(echo_veil_enabled=False, harness_embed_model="fixture")
+    cfg = Config(continuum_enabled=False, harness_embed_model="fixture")
     result = tools.harness_search(
         "public", cfg=cfg, **{key: value for key, value in filters.items() if key != "empty_index"}
     )

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from difflib import get_close_matches
 import getpass
+import json
 import os
 import sys
 from collections.abc import Callable, Sequence
@@ -49,8 +50,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     env = subparsers.add_parser("env", help="Inspect the selected local runtime-env file.")
     env.add_argument("action", nargs="?", default="path", choices=("path",))
-    memory = subparsers.add_parser("memory", help="Provision or inspect OS-protected CLI memory receipts.")
-    memory.add_argument("action", choices=("status", "provision"))
+    memory = subparsers.add_parser(
+        "memory",
+        help="Repair Continuum selection or provision and inspect protected receipts.",
+    )
+    memory.add_argument("action", choices=("status", "provision", "repair", "repair-goal"))
+    jev = subparsers.add_parser("jev", help="Configure the advisory Jev question-contract companion.")
+    jev.add_argument("action", choices=("status", "enable", "disable"))
+    jev.add_argument("--cli", help="Absolute path to the installed jev-workflows executable.")
     return parser
 
 
@@ -360,6 +367,40 @@ def _run_auth(provider: str, action: str, provider_args: Sequence[str], *, input
 
 
 def _run_memory(action: str) -> int:
+    if action == "repair":
+        from .config import repair_memory_configuration
+
+        try:
+            result = repair_memory_configuration()
+        except (OSError, RuntimeError):
+            console.print(
+                "[red]Memory configuration repair failed safely. The original "
+                "configuration and any existing backup were not replaced.[/]"
+            )
+            return 1
+        state = "repaired" if result["changed"] else "already selected"
+        console.print(f"Native Continuum memory is {state}.")
+        console.print(f"Previous configuration retained at {result['backup_path']}.")
+        return 0
+
+    if action == "repair-goal":
+        from .ada_task_ledger import repair_protected_goal_store_conflict
+
+        try:
+            result = repair_protected_goal_store_conflict()
+        except (OSError, RuntimeError):
+            console.print(
+                "[red]Protected goal repair failed safely. The trusted anchor "
+                "and existing goal state were not reset or discarded.[/]"
+            )
+            return 1
+        if result["changed"]:
+            console.print("Protected goal conflict repaired as blocked, non-resumable state.")
+            console.print(f"Exact legacy ledger retained at {result['backup_path']}.")
+        else:
+            console.print("Protected goal state is already consistent.")
+        return 0
+
     from .elsie_keyring_anchors import ElsieKeyringAnchorStore
     from .grace_key_store import KeyringKeyStore
     from .irene_privacy_views import PRIVACY_KEY_LABEL
@@ -386,6 +427,37 @@ def _run_memory(action: str) -> int:
             "Existing keys and invalid credentials are not reset; no plaintext fallback was enabled.[/]"
         )
         return 1
+
+
+def _run_jev(action: str, cli: str | None) -> int:
+    from pathlib import Path
+
+    from .config import Config
+    from .jev_kernel import kernel_status
+
+    cfg = Config.load()
+    if cli is not None:
+        if action != "enable" or not Path(cli).expanduser().is_absolute():
+            console.print("Jev setup requires enable --cli with an absolute executable path.")
+            return 2
+        cfg.jev_kernel_cli = str(Path(cli).expanduser().resolve())
+    if action != "disable":
+        result = kernel_status(cfg)
+        console.print(json.dumps(result), markup=False)
+        if not result["ok"]:
+            return 1
+    if action in {"enable", "disable"}:
+        cfg.jev_kernel_enabled = action == "enable"
+        try:
+            cfg.save()
+        except (OSError, RuntimeError):
+            console.print("Jev setup could not be saved; repair the configuration before retrying.")
+            return 1
+        console.print(
+            "Jev enabled: explicit question packets may be sent to TypeSafe under normal tool policy."
+            if cfg.jev_kernel_enabled else "Jev inference disabled; local lint remains available."
+        )
+    return 0
 
 
 def run(
@@ -431,5 +503,7 @@ def run(
         return 0
     if namespace.command == "memory":
         return _run_memory(namespace.action)
+    if namespace.command == "jev":
+        return _run_jev(namespace.action, namespace.cli)
     parser.error(f"Unsupported config command: {namespace.command}")
     return 2

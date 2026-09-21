@@ -148,6 +148,7 @@ def seed_state(home: Path, workspace: Path) -> None:
                 "cwd": str(workspace),
                 "model": "release-smoke-local",
                 "theme": "tokyo-night",
+                # Historical published-package input, not a current backend.
                 "echo_veil_enabled": False,
                 "echo_veil_protection": "optional",
                 "memory_auto_capture_enabled": False,

@@ -197,7 +197,7 @@ def test_rendered_system_source_counts_are_content_free_and_do_not_recall_twice(
     monkeypatch, protected, automated, memory
 ):
     cfg = Config(
-        model="test-model", echo_veil_enabled=protected, echo_veil_protection="required" if protected else "optional"
+        model="test-model", continuum_enabled=protected
     )
     identity_calls = []
     memory_calls = []

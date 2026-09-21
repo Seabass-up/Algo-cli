@@ -1,8 +1,8 @@
 ---
 title: Echo Veil Security Status
-description: Authoritative adapter, entry-point classification, and promotion gate for protected Algo CLI memory.
+description: Historical retired-backend contract, preserved for provenance only.
 tags: [echo-veil, memory, security, encryption, readiness]
-status: active
+status: retired
 updated: 2026-08-10
 last_reviewed: 2026-08-10
 runtime_version: "Algo CLI v0.18.0"
@@ -10,6 +10,10 @@ verification_revision: "215d7cb044fd530809af7c9d0a375e1d3bb792d5"
 ---
 
 # Echo Veil Security Status
+
+> Historical record archived on 2026-09-21. The dated contract below is not
+> current runtime guidance. Echo Veil is retired; see
+> [Continuum Memory](../continuum-memory.md) for the native integration.
 
 Echo Veil is a security subsystem when
 `echo_veil_protection=required`, not a feature flag that may silently fall back.

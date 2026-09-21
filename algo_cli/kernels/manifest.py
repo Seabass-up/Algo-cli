@@ -4,12 +4,19 @@ The registry intentionally stores module paths as strings. A kernel manifest is
 discoverable metadata, not a workload launcher. ``preview`` and ``planned``
 actions are descriptive capability IDs; every ``active`` action must also have
 an ActionSpec so the runtime's risk/approval contract is explicit.
+
+Built-in kernels are the public framework. Each user keeps their own kernels in
+``<config dir>/kernels/kernels.json`` with importable modules beside it; those
+are loaded on that machine only and are never part of a release.
 """
 
 from __future__ import annotations
 
 import importlib
+import json
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -22,6 +29,14 @@ class KernelSpec:
     slash_commands: list[str]
     safety_level: str
     status: str
+    source: str = "built-in"
+
+
+@dataclass(frozen=True)
+class UserKernelCatalog:
+    path: Path
+    kernels: tuple[KernelSpec, ...]
+    issues: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -37,6 +52,15 @@ class KernelAudit:
 
 
 _KERNELS: tuple[KernelSpec, ...] = (
+    KernelSpec(
+        name="jev",
+        description="Bounded advisory Jev question contracts with local lint, review, run and followup.",
+        modules=["algo_cli.jev_kernel"],
+        actions=["jev.status", "jev.question_contract"],
+        slash_commands=["/kernel show jev", "/kernel check jev"],
+        safety_level="medium",
+        status="active",
+    ),
     KernelSpec(
         name="benchmark",
         description="Benchmark and compare agent/runtime behavior with repeatable evaluation metadata.",
@@ -236,23 +260,6 @@ _KERNELS: tuple[KernelSpec, ...] = (
         ],
         actions=["extension.inspect", "extension.validate"],
         slash_commands=["/kernel show extension"],
-        safety_level="medium",
-        status="preview",
-    ),
-    KernelSpec(
-        name="acrobat",
-        description="Describe Acrobat pipeline, runtime, workflow, manifest, and security capabilities.",
-        modules=[
-            "algo_cli.intelligence.acrobat_pipeline",
-            "algo_cli.intelligence.acrobat_runtime",
-            "algo_cli.intelligence.acrobat_workflows",
-            "algo_cli.intelligence.acrobat_config",
-            "algo_cli.intelligence.acrobat_security",
-            "algo_cli.intelligence.acrobat_models",
-            "algo_cli.intelligence.acrobat_manifests",
-        ],
-        actions=["acrobat.inspect", "acrobat.plan"],
-        slash_commands=["/kernel show acrobat"],
         safety_level="medium",
         status="preview",
     ),
@@ -657,23 +664,99 @@ def _copy_spec(spec: KernelSpec) -> KernelSpec:
         slash_commands=list(spec.slash_commands),
         safety_level=spec.safety_level,
         status=spec.status,
+        source=spec.source,
     )
 
 
+USER_KERNELS_FILENAME = "kernels.json"
+_USER_SPEC_FIELDS = ("name", "description", "modules", "actions", "slash_commands", "safety_level", "status")
+
+
+def user_kernels_dir() -> Path:
+    from .. import config
+
+    return Path(config.CONFIG_DIR) / "kernels"
+
+
+def _string_list(value: Any) -> list[str] | None:
+    if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+        return None
+    return [item.strip() for item in value]
+
+
+def load_user_kernels() -> UserKernelCatalog:
+    """Read this machine's personal kernel catalog; absent means empty, malformed entries are skipped."""
+
+    directory = user_kernels_dir()
+    path = directory / USER_KERNELS_FILENAME
+    if not path.is_file():
+        return UserKernelCatalog(path, (), ())
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return UserKernelCatalog(path, (), (f"{path.name}: unreadable: {type(exc).__name__}",))
+    rows = payload.get("kernels") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return UserKernelCatalog(path, (), (f'{path.name}: expected {{"kernels": [...]}}',))
+    built_in = {spec.name for spec in _KERNELS}
+    specs: list[KernelSpec] = []
+    issues: list[str] = []
+    for index, row in enumerate(rows):
+        label = f"kernels[{index}]"
+        if not isinstance(row, dict):
+            issues.append(f"{label}: expected an object")
+            continue
+        name = str(row.get("name") or "").strip().lower()
+        if not name:
+            issues.append(f"{label}: missing name")
+            continue
+        if name in built_in or any(spec.name == name for spec in specs):
+            issues.append(f"{name}: name is already registered")
+            continue
+        unknown = sorted(set(row) - set(_USER_SPEC_FIELDS))
+        lists = {key: _string_list(row.get(key, [])) for key in ("modules", "actions", "slash_commands")}
+        bad = [key for key, value in lists.items() if value is None]
+        if unknown or bad or not isinstance(row.get("description", ""), str):
+            issues.append(f"{name}: invalid fields: {', '.join(unknown + bad) or 'description'}")
+            continue
+        specs.append(
+            KernelSpec(
+                name=name,
+                description=str(row.get("description") or "").strip(),
+                modules=lists["modules"] or [],
+                actions=lists["actions"] or [],
+                slash_commands=lists["slash_commands"] or [],
+                safety_level=str(row.get("safety_level") or "medium"),
+                status=str(row.get("status") or "preview"),
+                source="user",
+            )
+        )
+    if specs:
+        # Appended, never prepended: a personal module cannot shadow the runtime or stdlib.
+        entry = str(directory)
+        if entry not in sys.path:
+            sys.path.append(entry)
+    return UserKernelCatalog(path, tuple(specs), tuple(issues))
+
+
+def _all_kernels() -> tuple[KernelSpec, ...]:
+    return _KERNELS + load_user_kernels().kernels
+
+
 def list_kernels() -> list[KernelSpec]:
-    return [_copy_spec(spec) for spec in _KERNELS]
+    return [_copy_spec(spec) for spec in _all_kernels()]
 
 
 def get_kernel(name: str) -> KernelSpec | None:
     normalized = (name or "").strip().lower()
-    for spec in _KERNELS:
+    for spec in _all_kernels():
         if spec.name == normalized:
             return _copy_spec(spec)
     return None
 
 
 def kernel_names() -> list[str]:
-    return [spec.name for spec in _KERNELS]
+    return [spec.name for spec in _all_kernels()]
 
 
 def kernel_runtime_snapshot() -> dict[str, Any]:
@@ -692,6 +775,7 @@ def kernel_runtime_snapshot() -> dict[str, Any]:
                 "status": spec.status,
                 "safety_level": spec.safety_level,
                 "description": spec.description,
+                "source": spec.source,
             }
             for spec in specs
         ],

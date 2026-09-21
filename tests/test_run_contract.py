@@ -49,7 +49,7 @@ def _compile(
 ) -> run_contract.RunContract:
     cfg = Config(cwd=str(tmp_path), model="qwen3", num_ctx=8_192)
     cfg.algorithmic_tool_policy_enabled = policy
-    cfg.echo_veil_enabled = protected
+    cfg.continuum_enabled = protected
     return run_contract.compile_agent_run_contract(
         task=task,
         route=task_router.route_task(task),
@@ -145,7 +145,7 @@ from algo_cli.irene_privacy_views import PRIVACY_KEY_LABEL
 cwd, key_hex = sys.argv[1:]
 task = "yes"
 cfg = Config(cwd=cwd, model="qwen3", num_ctx=8192)
-cfg.echo_veil_enabled = True
+cfg.continuum_enabled = True
 snapshot = git_evidence.GitSnapshot(
     available=True,
     error=None,

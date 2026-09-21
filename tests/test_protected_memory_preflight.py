@@ -7,15 +7,16 @@ import pytest
 from algo_cli import (
     agent_threads,
     code_rag,
-    elsie_echo_preflight,
     harness,
     identity,
     julia_memory_candidates as memory_candidates,
     skills,
     ada_task_ledger as task_ledger,
     tools,
+    protected_memory_preflight,
 )
 from algo_cli.config import Config
+from algo_cli.grace_memory_receipts import ElsieReceiptError
 from algo_cli.grace_key_store import StaticKeyStore
 from algo_cli.irene_privacy_views import PRIVACY_KEY_LABEL
 
@@ -24,8 +25,16 @@ def _receipt_store() -> StaticKeyStore:
     return StaticKeyStore({PRIVACY_KEY_LABEL: b"e" * 32})
 
 
+def test_goal_conflict_reason_is_safe_and_actionable() -> None:
+    error = protected_memory_preflight.ProtectedMemoryPreflightError.from_exception(
+        ElsieReceiptError(task_ledger.GOAL_STORE_CONFLICT_REASON)
+    )
+
+    assert error.reason_code == task_ledger.GOAL_STORE_CONFLICT_REASON
+
+
 def test_protected_preflight_quarantines_before_index_invalidation(monkeypatch) -> None:
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     events: list[str] = []
 
     def prepare(**_kwargs) -> dict[str, int]:
@@ -79,7 +88,7 @@ def test_protected_preflight_quarantines_before_index_invalidation(monkeypatch) 
     )
     monkeypatch.setattr(harness, "invalidate_user_skill_records", invalidate)
 
-    result = elsie_echo_preflight.prepare_echo_auxiliary_state(cfg)
+    result = protected_memory_preflight.prepare_protected_auxiliary_state(cfg)
 
     assert events == [
         "memory:True",
@@ -109,7 +118,7 @@ def test_protected_preflight_quarantines_before_index_invalidation(monkeypatch) 
 
 
 def test_unprotected_preflight_does_not_touch_auxiliary_stores(monkeypatch) -> None:
-    cfg = Config(echo_veil_enabled=False)
+    cfg = Config(continuum_enabled=False)
     monkeypatch.setattr(
         skills,
         "prepare_protected_skill_history",
@@ -127,7 +136,7 @@ def test_unprotected_preflight_does_not_touch_auxiliary_stores(monkeypatch) -> N
         lambda enabled: states.append(enabled) or 0,
     )
 
-    assert elsie_echo_preflight.prepare_echo_auxiliary_state(cfg) == {
+    assert protected_memory_preflight.prepare_protected_auxiliary_state(cfg) == {
         "protected": False,
         "invalidated_skill_records": 0,
     }
@@ -135,7 +144,7 @@ def test_unprotected_preflight_does_not_touch_auxiliary_stores(monkeypatch) -> N
 
 
 def test_protected_preflight_normalizes_failures_without_payload(monkeypatch) -> None:
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     canary = "PROTECTED_SKILL_CANARY"
     monkeypatch.setattr(
         skills,
@@ -144,15 +153,15 @@ def test_protected_preflight_normalizes_failures_without_payload(monkeypatch) ->
     )
 
     try:
-        elsie_echo_preflight.prepare_echo_auxiliary_state(cfg)
-    except elsie_echo_preflight.EchoAuxiliaryPreflightError as exc:
+        protected_memory_preflight.prepare_protected_auxiliary_state(cfg)
+    except protected_memory_preflight.ProtectedMemoryPreflightError as exc:
         assert canary not in str(exc)
     else:
         raise AssertionError("protected preflight must fail closed")
 
 
 def test_protected_preflight_retains_only_bounded_infrastructure_reason(monkeypatch) -> None:
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
 
     def fail_with_bounded_cause(**_kwargs):
         try:
@@ -162,22 +171,22 @@ def test_protected_preflight_retains_only_bounded_infrastructure_reason(monkeypa
 
     monkeypatch.setattr(skills, "prepare_protected_skill_history", fail_with_bounded_cause)
 
-    with pytest.raises(elsie_echo_preflight.EchoAuxiliaryPreflightError) as captured:
-        elsie_echo_preflight.prepare_echo_auxiliary_state(cfg)
+    with pytest.raises(protected_memory_preflight.ProtectedMemoryPreflightError) as captured:
+        protected_memory_preflight.prepare_protected_auxiliary_state(cfg)
 
     assert captured.value.reason_code == "credential_registry_unavailable"
     assert "private outer detail" not in str(captured.value)
 
     shaped_canary = "credential_secret_payload_canary_123"
-    rejected = elsie_echo_preflight.EchoAuxiliaryPreflightError.from_exception(RuntimeError(shaped_canary))
-    assert rejected.reason_code == "echo_auxiliary_unavailable"
+    rejected = protected_memory_preflight.ProtectedMemoryPreflightError.from_exception(RuntimeError(shaped_canary))
+    assert rejected.reason_code == "protected_auxiliary_unavailable"
     assert shaped_canary not in str(rejected)
 
 
 def test_protected_preflight_removes_cached_plaintext_skill_canary(
     config_dir,
 ) -> None:
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     skills.ensure_dirs()
     user_skill = skills.SKILLS_DIR / "legacy-canary.md"
     canary = "PROTECTED_CACHED_SKILL_RETRIEVAL_CANARY"
@@ -206,7 +215,7 @@ def test_protected_preflight_removes_cached_plaintext_skill_canary(
     assert harness.search_index(canary, limit=5)
 
     store = _receipt_store()
-    result = elsie_echo_preflight.prepare_echo_auxiliary_state(
+    result = protected_memory_preflight.prepare_protected_auxiliary_state(
         cfg,
         receipt_key_store=store,
         receipt_anchor_store=store,
@@ -224,7 +233,7 @@ def test_protected_preflight_purges_and_prevents_mutable_memory_index_records(
     tmp_path,
     config_dir,
 ) -> None:
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     memory_root = tmp_path / "external-memory"
     memory_root.mkdir()
     prompt_root = tmp_path / "openclaw-workspace"
@@ -294,7 +303,7 @@ def test_protected_preflight_purges_and_prevents_mutable_memory_index_records(
     )
     store = _receipt_store()
 
-    result = elsie_echo_preflight.prepare_echo_auxiliary_state(
+    result = protected_memory_preflight.prepare_protected_auxiliary_state(
         cfg,
         receipt_key_store=store,
         receipt_anchor_store=store,
@@ -314,20 +323,20 @@ def test_protected_preflight_purges_and_prevents_mutable_memory_index_records(
     assert canary not in json.dumps(rebuilt)
 
 
-def test_echo_preflight_on_then_off_restores_memory_source_policy(tmp_path) -> None:
+def test_protected_preflight_on_then_off_restores_memory_source_policy(tmp_path) -> None:
     memory_root = tmp_path / "memory"
     memory_root.mkdir()
     root = harness.SourceRoot("codex", "memory", memory_root, ("*.md",), 10)
     harness.SOURCE_ROOTS = (root,)
     store = _receipt_store()
 
-    elsie_echo_preflight.prepare_echo_auxiliary_state(
-        Config(echo_veil_enabled=True, echo_veil_protection="required"),
+    protected_memory_preflight.prepare_protected_auxiliary_state(
+        Config(continuum_enabled=True),
         receipt_key_store=store,
         receipt_anchor_store=store,
     )
     assert root not in harness.all_source_roots()
 
-    elsie_echo_preflight.prepare_echo_auxiliary_state(Config(echo_veil_enabled=False))
+    protected_memory_preflight.prepare_protected_auxiliary_state(Config(continuum_enabled=False))
 
     assert root in harness.all_source_roots()

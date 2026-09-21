@@ -42,7 +42,7 @@ def _contract(
     run_nonce: str = "journal-test-run",
 ) -> run_contract.RunContract:
     cfg = Config(cwd=str(tmp_path))
-    cfg.echo_veil_enabled = protected
+    cfg.continuum_enabled = protected
     return run_contract.compile_agent_run_contract(
         task=task,
         route=task_router.route_task(task),

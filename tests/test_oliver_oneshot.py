@@ -341,14 +341,14 @@ def test_run_oneshot_completes_cleanly_when_agent_loop_succeeds(monkeypatch):
 
 
 def test_run_oneshot_preflights_before_harness_or_model(monkeypatch):
-    from algo_cli import elsie_echo_preflight
+    from algo_cli import protected_memory_preflight
     from algo_cli import harness as harness_module
     from algo_cli import main as main_module
 
     events: list[str] = []
     monkeypatch.setattr(
-        elsie_echo_preflight,
-        "prepare_echo_auxiliary_state",
+        protected_memory_preflight,
+        "prepare_protected_auxiliary_state",
         lambda _cfg: events.append("preflight"),
     )
     monkeypatch.setattr(
@@ -364,7 +364,7 @@ def test_run_oneshot_preflights_before_harness_or_model(monkeypatch):
 
 
 def test_run_oneshot_preflight_failure_is_content_free_and_stops_runtime(monkeypatch):
-    from algo_cli import elsie_echo_preflight
+    from algo_cli import protected_memory_preflight
     from algo_cli import harness as harness_module
     from algo_cli import main as main_module
     from algo_cli import skills as skills_module
@@ -372,9 +372,9 @@ def test_run_oneshot_preflight_failure_is_content_free_and_stops_runtime(monkeyp
     canary = "STALE_PLAINTEXT_SKILL_CANARY"
 
     def refuse(_cfg):
-        raise elsie_echo_preflight.EchoAuxiliaryPreflightError(canary)
+        raise protected_memory_preflight.ProtectedMemoryPreflightError(canary)
 
-    monkeypatch.setattr(elsie_echo_preflight, "prepare_echo_auxiliary_state", refuse)
+    monkeypatch.setattr(protected_memory_preflight, "prepare_protected_auxiliary_state", refuse)
     monkeypatch.setattr(
         harness_module,
         "configure_context_sources",
@@ -399,11 +399,11 @@ def test_run_oneshot_preflight_failure_is_content_free_and_stops_runtime(monkeyp
     assert events[1] == {
         "type": "error",
         "class": "policy",
-        "message": "Echo-protected auxiliary state could not be prepared safely.",
+        "message": "Continuum-protected auxiliary state could not be prepared safely.",
     }
     assert events[-1]["type"] == "done"
     assert events[-1]["status"] == "failed"
-    assert events[-1]["status_reason"] == "echo_auxiliary_preflight_refused"
+    assert events[-1]["status_reason"] == "protected_memory_preflight_refused"
     assert canary not in serialized
 
 

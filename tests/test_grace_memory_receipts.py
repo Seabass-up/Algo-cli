@@ -19,7 +19,7 @@ from algo_cli.grace_memory_receipts import (
     advance_elsie_store_anchor,
     elsie_staging_path,
     inventory_legacy_tree,
-    legacy_config_selects_echo,
+    legacy_config_requires_protected_memory,
     publish_elsie_staged_file,
     read_pinned_legacy_artifact,
     require_elsie_store_anchor,
@@ -267,7 +267,7 @@ def test_echo_legacy_inventory_never_approves_raw_copy_and_sanitizes_config(
     (root / "memory_candidate_state.json").write_text("{}", encoding="utf-8")
     (root / "skill_quarantine" / "candidate.json").write_text("SECRET_SKILL_CANARY", encoding="utf-8")
 
-    assert legacy_config_selects_echo(root) is True
+    assert legacy_config_requires_protected_memory(root) is True
     inventory = inventory_legacy_tree(root)
     classifications = {item.relative_path: item.classification for item in inventory.artifacts}
     assert inventory.safe_automatic_copy_paths == ()
@@ -279,7 +279,9 @@ def test_echo_legacy_inventory_never_approves_raw_copy_and_sanitizes_config(
 
     sanitized = sanitized_legacy_config(root)
     serialized = json.dumps(sanitized, sort_keys=True)
-    assert sanitized["echo_veil_protection"] == "required"
+    assert sanitized["continuum_enabled"] is False
+    assert sanitized["memory_config_requires_repair"] is True
+    assert "echo_veil_protection" not in sanitized
     assert sanitized["skill_crystallize_enabled"] is False
     assert sanitized["model"] == "test-model"
     for canary in (
@@ -298,7 +300,7 @@ def test_unprotected_inventory_requires_pinned_approved_reads(tmp_path: Path) ->
     source = b'{"echo_veil_enabled": false}'
     (root / "config.json").write_bytes(source)
     (root / "unknown.bin").write_bytes(b"no")
-    inventory = inventory_legacy_tree(root, echo_selected=False)
+    inventory = inventory_legacy_tree(root, protected_memory_selected=False)
     config_artifact = next(item for item in inventory.artifacts if item.relative_path == "config.json")
     unknown_artifact = next(item for item in inventory.artifacts if item.relative_path == "unknown.bin")
 
@@ -314,7 +316,7 @@ def test_approved_legacy_read_rejects_external_hardlink(tmp_path: Path) -> None:
     source.write_text('{"echo_veil_enabled":false}', encoding="utf-8")
     alias = tmp_path / "outside-config-alias.json"
     os.link(source, alias)
-    inventory = inventory_legacy_tree(root, echo_selected=False)
+    inventory = inventory_legacy_tree(root, protected_memory_selected=False)
     artifact = next(item for item in inventory.artifacts if item.relative_path == "config.json")
 
     with pytest.raises(ElsieReceiptError, match="bounded regular file|identity could not be pinned"):
@@ -354,7 +356,7 @@ def test_windows_legacy_inventory_classifies_junction_without_descending(tmp_pat
     )
     assert completed.returncode == 0, completed.stderr.decode(errors="replace")
 
-    inventory = inventory_legacy_tree(root, echo_selected=False)
+    inventory = inventory_legacy_tree(root, protected_memory_selected=False)
     classified = {artifact.relative_path: artifact.classification for artifact in inventory.artifacts}
     assert classified["linked"] == LegacyArtifactClass.SYMLINK
     assert "linked/secret.json" not in classified
@@ -369,8 +371,8 @@ def test_fifo_legacy_config_is_rejected_without_blocking(tmp_path: Path) -> None
     os.mkfifo(root / "config.json")
     script = """
 from pathlib import Path
-from algo_cli.grace_memory_receipts import legacy_config_selects_echo
-print('protected' if legacy_config_selects_echo(Path(__import__('sys').argv[1])) else 'unprotected')
+from algo_cli.grace_memory_receipts import legacy_config_requires_protected_memory
+print('protected' if legacy_config_requires_protected_memory(Path(__import__('sys').argv[1])) else 'unprotected')
 """
 
     completed = subprocess.run(

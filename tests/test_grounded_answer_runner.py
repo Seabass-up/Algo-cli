@@ -19,7 +19,7 @@ pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX qualification sup
 
 @pytest.fixture
 def context(monkeypatch):
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     monkeypatch.setattr(Config, "load", classmethod(lambda cls: deepcopy(cfg)))
     case = evaluation.CASES[0]
     support = next(iter(case.claims.values()))[0]
@@ -39,7 +39,7 @@ def context(monkeypatch):
     def synthetic_model(*, prompt, approval_mode, cfg_overrides, stream):
         assert prompt == evaluation.prompt(case)
         assert approval_mode == "never"
-        assert cfg_overrides["echo_veil_protection"] == "required"
+        assert cfg_overrides["continuum_enabled"] is True
         assert not cfg_overrides["memory_auto_capture_enabled"]
         assert not cfg_overrides["intuition_capture_enabled"]
         runtime.run_tool("harness_search", {"query": "public fixture"}, cfg)
@@ -79,12 +79,12 @@ def test_public_fixture_runs_real_observation_and_grading(context, tmp_path):
     assert not report["model_output_included"]
 
 
-def test_required_run_does_not_require_changing_saved_optional_policy(context, tmp_path):
+def test_qualification_preserves_saved_memory_configuration(context, tmp_path):
     cfg, case, _, _ = context
-    cfg.echo_veil_protection = "optional"
+    original = runner.settings(cfg)
     report = runner.run_case(case, protocol(), tmp_path)
     assert report["passed"], report
-    assert cfg.echo_veil_protection == "optional"
+    assert runner.settings(cfg) == original
 
 
 def test_deadline_cancels_instead_of_becoming_a_transport_retry(context, monkeypatch, tmp_path):
@@ -102,8 +102,8 @@ def test_deadline_cancels_instead_of_becoming_a_transport_retry(context, monkeyp
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("echo_veil_enabled", False),
-        ("echo_veil_protection", "invalid"),
+        ("continuum_enabled", False),
+        ("memory_config_error", "invalid_config"),
         ("memory_auto_capture_enabled", True),
         ("intuition_capture_enabled", True),
     ],
@@ -141,7 +141,7 @@ def test_runtime_failures_are_retained_and_hooks_restored(context, monkeypatch, 
             raise KeyboardInterrupt
         code = original_model(**kwargs)
         if failure == "changed_settings":
-            cfg.echo_veil_embedding_gpu_layers += 1
+            cfg.num_ctx += 1
         elif failure == "changed_source":
             monkeypatch.setattr(runner, "freeze_sources", lambda: ({"public": "changed"}, frozenset()))
         else:

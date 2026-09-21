@@ -4,42 +4,25 @@ import copy
 
 import pytest
 
-from algo_cli import ada_memory_echo_veil as echo, context_budget, main
+from algo_cli import continuum_memory, context_budget, main
 from algo_cli.config import Config
 from algo_cli.tool_schema import estimate_tool_schema_tokens
 from test_main_helpers import _patch_agent_loop_for_tool_policy_test
 
 
 @pytest.mark.parametrize("oneshot", [False, True])
-@pytest.mark.parametrize("protection", ["optional", "required"])
 @pytest.mark.parametrize(
     "original",
     ["[Internal recovery boundary] is the literal text I need explained.", "", "Reply with exactly: CONTEXT_OK"],
 )
-def test_explicit_request_controls_recall_even_with_later_runtime_messages(monkeypatch, oneshot, protection, original):
+def test_explicit_request_controls_recall_even_with_later_runtime_messages(monkeypatch, oneshot, original):
     queries = []
-    doctors = []
     monkeypatch.setattr(context_budget, "json_sink", lambda: object() if oneshot else None)
     monkeypatch.setattr(context_budget.identity, "build_identity_block", lambda **_kwargs: "immutable identity")
-    monkeypatch.setattr(echo, "recall_with_echo_veil", lambda _cfg, query, **_kw: queries.append(query) or [])
-    monkeypatch.setattr(echo, "protected_prompt_context", lambda _cfg, query, **_kw: queries.append(query) or "")
-    monkeypatch.setattr(
-        echo,
-        "get_echo_veil_readiness",
-        lambda _cfg, **_kw: (
-            doctors.append(True)
-            or {
-                "healthy": True,
-                "all_records_shielded": True,
-                "local_protection_ready": True,
-                "protection_policy": "required",
-            }
-        ),
-    )
+    monkeypatch.setattr(continuum_memory, "prompt_context", lambda _cfg, query, **_kw: queries.append(query) or "")
     cfg = Config(
         model="test",
-        echo_veil_enabled=True,
-        echo_veil_protection=protection,
+        continuum_enabled=True,
         messages=[{"role": "user", "content": "[Internal finalization turn] Stop using tools."}],
         memories=["PLAINTEXT_FALLBACK_CANARY"],
         session_summary="PLAINTEXT_SUMMARY_CANARY",
@@ -47,18 +30,15 @@ def test_explicit_request_controls_recall_even_with_later_runtime_messages(monke
 
     prompt = context_budget.build_system_prompt(cfg, user_message=original)
 
-    exact_required = protection == "required" and original.startswith("Reply with exactly:")
-    assert queries == ([] if not original or exact_required else [original])
-    assert doctors == ([True] if exact_required else [])
+    assert queries == [original]
     assert "PLAINTEXT_FALLBACK_CANARY" not in prompt
     assert "PLAINTEXT_SUMMARY_CANARY" not in prompt
 
 
 @pytest.mark.parametrize("boundary", ["recovery", "finalization"])
 @pytest.mark.parametrize("compacted", [False, True])
-@pytest.mark.parametrize("protection", ["optional", "required"])
 def test_agent_loop_keeps_request_and_control_boundaries_separate(
-    monkeypatch, tmp_path, boundary, compacted, protection
+    monkeypatch, tmp_path, boundary, compacted
 ):
     _patch_agent_loop_for_tool_policy_test(monkeypatch)
     original = "Inspect the project using the current protected decision."
@@ -93,8 +73,7 @@ def test_agent_loop_keeps_request_and_control_boundaries_separate(
     monkeypatch.setattr(main, "json_sink", lambda: sink)
     monkeypatch.setattr(context_budget, "json_sink", lambda: sink)
     monkeypatch.setattr(context_budget.identity, "build_identity_block", lambda **_kw: "immutable identity")
-    monkeypatch.setattr(echo, "recall_with_echo_veil", lambda _cfg, query, **_kw: queries.append(query) or [])
-    monkeypatch.setattr(echo, "protected_prompt_context", lambda _cfg, query, **_kw: queries.append(query) or "")
+    monkeypatch.setattr(continuum_memory, "prompt_context", lambda _cfg, query, **_kw: queries.append(query) or "")
     monkeypatch.setattr(
         main.reconciliation,
         "guidance_for_prompt",
@@ -125,8 +104,7 @@ def test_agent_loop_keeps_request_and_control_boundaries_separate(
         skill_crystallize_enabled=False,
         memory_auto_capture_enabled=False,
         code_rag_enabled=False,
-        echo_veil_enabled=True,
-        echo_veil_protection=protection,
+        continuum_enabled=True,
         messages=[{"role": "user", "content": original}, {"role": "assistant", "content": "A prior completed turn."}],
     )
 

@@ -585,7 +585,7 @@ def test_benchmark_discovers_checkout_from_installed_module(
 
 def test_runtime_benchmark_source_manifest_covers_protected_execution_boundary() -> None:
     required = {
-        "algo_cli/ada_memory_echo_veil.py",
+        "algo_cli/continuum_memory.py",
         "algo_cli/agent_blocks.py",
         "algo_cli/agent_pipeline.py",
         "algo_cli/agent_run_journal.py",
@@ -593,17 +593,17 @@ def test_runtime_benchmark_source_manifest_covers_protected_execution_boundary()
         "algo_cli/chat_protocol.py",
         "algo_cli/config.py",
         "algo_cli/context_budget.py",
-        "algo_cli/elsie_echo_preflight.py",
+        "algo_cli/protected_memory_preflight.py",
         "algo_cli/git_evidence.py",
         "algo_cli/grace_key_store.py",
         "algo_cli/grace_memory_receipts.py",
         "algo_cli/irene_privacy_views.py",
         "algo_cli/ada_private_event_store.py",
         "algo_cli/run_contract.py",
-        "tests/test_ada_memory_echo_veil.py",
+        "tests/test_continuum_memory.py",
         "tests/test_agent_run_journal.py",
         "tests/test_agent_threads.py",
-        "tests/test_elsie_echo_preflight.py",
+        "tests/test_protected_memory_preflight.py",
         "tests/test_grace_key_store.py",
         "tests/test_grace_memory_receipts.py",
         "tests/test_run_contract.py",
@@ -906,7 +906,7 @@ def test_runtime_benchmark_passes_every_source_bound_probe(
     assert {
         "protected_contract_journal_recovery",
         "protected_thread_projection_recovery",
-        "echo_agent_preflight_refusal",
+        "protected_agent_preflight_refusal",
     } <= {row["id"] for row in report["correctness"]["probes"]}
     assert report["correctness"]["pass_rate"] == 1.0
     assert report["effectiveness"]["task_pass_rate"] == 1.0

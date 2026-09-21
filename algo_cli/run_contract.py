@@ -1066,10 +1066,10 @@ def compile_agent_run_contract(
     if route.read_only and any(block.requires_change for block in blocks):
         raise RunContractError("explicit read-only tasks cannot use a change-producing pipeline")
     mode: ContractMode = "enforced" if bool(cfg.algorithmic_tool_policy_enabled) else "shadow"
-    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .continuum_memory import selected
 
     sensitive_digests = compile_sensitive_digest_binding(
-        protected=echo_veil_authority_selected(cfg),
+        protected=selected(cfg),
         key_store=receipt_key_store,
     )
     from .session_mode import unlimited_work
@@ -1181,7 +1181,7 @@ def compile_agent_run_contract(
     )
     has_mutation = any(block.requires_change for block in block_contracts)
     required_verifiers = tuple(sorted({verifier for block in block_contracts for verifier in block.required_verifiers}))
-    initial_snapshot = snapshot or git_evidence.capture_git_snapshot(cfg.cwd)
+    initial_snapshot = snapshot or git_evidence.capture_git_snapshot(cfg.cwd, protected_memory=selected(cfg))
     return RunContract(
         schema_version=RUN_CONTRACT_SCHEMA_VERSION,
         run_nonce=run_nonce or uuid.uuid4().hex,

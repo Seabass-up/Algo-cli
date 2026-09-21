@@ -12,7 +12,7 @@ import re
 import shutil
 import stat
 import sys
-from typing import Any, Iterator
+from typing import Any, BinaryIO, Iterator
 
 from pathspec import GitIgnoreSpec
 from wcmatch import glob as wcglob
@@ -108,6 +108,42 @@ def _bound_directory(
 
 class _ScanLimit(Exception):
     pass
+
+
+@contextmanager
+def open_protected_file(path: Path, rules: ProtectedPathRules) -> Iterator[BinaryIO]:
+    """Read through a pinned parent and verify identity before releasing data."""
+    require_allowed_path(path, cwd=path.parent, rules=rules)
+    with _bound_directory(path.parent, rules) as directory:
+        before = directory.info(path.name)
+        if (
+            config._path_is_reparse_point(path, before)
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or rules.denies_identity(before)
+        ):
+            raise OSError(_UNSAFE)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+        fd = os.open(path if directory.fd is None else path.name, flags, dir_fd=directory.fd)
+        try:
+            opened = os.fstat(fd)
+            if _identity(opened) != _identity(before) or not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+                raise OSError(_UNSAFE)
+            if os.name == "nt":
+                final_path = config._windows_descriptor_final_path(fd)
+                if final_path is None or rules.denies(final_path) or os.fspath(final_path).casefold() != os.fspath(path).casefold():
+                    raise OSError(_UNSAFE)
+            with os.fdopen(fd, "rb", closefd=False) as handle:
+                yield handle
+            if (
+                _identity(os.fstat(fd)) != _identity(opened)
+                or _identity(directory.info(path.name)) != _identity(opened)
+                or rules != protected_path_rules()
+            ):
+                raise OSError(_UNSAFE)
+            directory.check()
+        finally:
+            os.close(fd)
 
 
 @dataclass

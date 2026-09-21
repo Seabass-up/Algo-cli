@@ -1,4 +1,4 @@
-"""Persistent, content-free Grace receipts for Echo-protected auxiliary state.
+"""Persistent, content-free Grace receipts for protected auxiliary state.
 
 Grace is deliberately smaller than the action/run receipt systems.  It gives
 memory-adjacent stores a single fail-closed HMAC authority and provides a
@@ -53,15 +53,7 @@ _SANITIZED_CONFIG_KEYS = frozenset(
         "cloud",
         "code_rag_consent_version",
         "code_rag_enabled",
-        "echo_veil_capacity",
-        "echo_veil_embedding_context_length",
-        "echo_veil_embedding_dimension",
-        "echo_veil_embedding_gpu_layers",
-        "echo_veil_embedding_keep_alive_seconds",
-        "echo_veil_enabled",
-        "echo_veil_profile",
-        "echo_veil_protection",
-        "echo_veil_scope",
+        "continuum_enabled",
         "embedding_backend",
         "external_harness_sources_enabled",
         "harness_embed_model",
@@ -834,7 +826,7 @@ class LegacyArtifact:
 @dataclass(frozen=True)
 class LegacyMigrationInventory:
     root: Path
-    echo_selected: bool
+    protected_memory_selected: bool
     artifacts: tuple[LegacyArtifact, ...]
     truncated: bool = False
 
@@ -974,7 +966,7 @@ def _open_pinned_file(root: Path, relative_path: str, *, max_bytes: int) -> byte
                 pass
 
 
-def legacy_config_selects_echo(root: Path | str) -> bool:
+def legacy_config_requires_protected_memory(root: Path | str) -> bool:
     """Content-bounded pre-load check; malformed configs fail closed."""
 
     try:
@@ -988,11 +980,23 @@ def legacy_config_selects_echo(root: Path | str) -> bool:
         return True
     if not isinstance(payload, Mapping):
         return True
-    enabled = payload.get("echo_veil_enabled", False)
-    protection = payload.get("echo_veil_protection", "optional")
-    if type(enabled) is not bool or not isinstance(protection, str):
+    continuum_enabled = payload.get("continuum_enabled", False)
+    retired_d057_enabled = payload.get("d057_enabled", False)
+    retired_enabled = payload.get("echo_veil_enabled", False)
+    retired_protection = payload.get("echo_veil_protection", "optional")
+    if (
+        type(continuum_enabled) is not bool
+        or type(retired_d057_enabled) is not bool
+        or type(retired_enabled) is not bool
+        or not isinstance(retired_protection, str)
+        or retired_protection.strip().casefold() not in {"optional", "required"}
+    ):
         return True
-    return enabled or protection.strip().casefold() == "required"
+    return (
+        bool(continuum_enabled or retired_enabled or retired_d057_enabled)
+        or retired_protection.strip().casefold() == "required"
+        or bool(payload.get("memory_config_requires_repair", False))
+    )
 
 
 def sanitized_legacy_config(root: Path | str) -> dict[str, Any]:
@@ -1015,12 +1019,25 @@ def sanitized_legacy_config(root: Path | str) -> dict[str, Any]:
         raise ElsieReceiptError("legacy config is malformed") from exc
     if not isinstance(payload, Mapping):
         raise ElsieReceiptError("legacy config is malformed")
-    enabled = payload.get("echo_veil_enabled", False)
-    protection = payload.get("echo_veil_protection", "optional")
-    if type(enabled) is not bool or not isinstance(protection, str):
-        raise ElsieReceiptError("legacy Echo selection is malformed")
-    if not (enabled or protection.strip().casefold() == "required"):
-        raise ElsieReceiptError("sanitized migration requires Echo selection")
+    continuum_enabled = payload.get("continuum_enabled", False)
+    retired_d057_enabled = payload.get("d057_enabled", False)
+    retired_enabled = payload.get("echo_veil_enabled", False)
+    retired_protection = payload.get("echo_veil_protection", "optional")
+    if (
+        type(continuum_enabled) is not bool
+        or type(retired_d057_enabled) is not bool
+        or type(retired_enabled) is not bool
+        or not isinstance(retired_protection, str)
+        or retired_protection.strip().casefold() not in {"optional", "required"}
+    ):
+        raise ElsieReceiptError("legacy protected-memory selection is malformed")
+    if not (
+        continuum_enabled
+        or retired_d057_enabled
+        or retired_enabled
+        or retired_protection.strip().casefold() == "required"
+    ):
+        raise ElsieReceiptError("sanitized migration requires protected-memory selection")
     projected: dict[str, Any] = {}
     for key in sorted(_SANITIZED_CONFIG_KEYS):
         value = payload.get(key)
@@ -1031,8 +1048,9 @@ def sanitized_legacy_config(root: Path | str) -> dict[str, Any]:
             projected[key] = value
         elif isinstance(value, float) and math.isfinite(value):
             projected[key] = value
-    projected["echo_veil_enabled"] = bool(enabled)
-    projected["echo_veil_protection"] = protection.strip().casefold()
+    projected["continuum_enabled"] = continuum_enabled
+    if not continuum_enabled:
+        projected["memory_config_requires_repair"] = True
     # Crystallization cannot consume protected history; preserve an explicit
     # opt-in only after the new runtime has established clean state.
     projected["skill_crystallize_enabled"] = False
@@ -1042,12 +1060,12 @@ def sanitized_legacy_config(root: Path | str) -> dict[str, Any]:
 def inventory_legacy_tree(
     root: Path | str,
     *,
-    echo_selected: bool | None = None,
+    protected_memory_selected: bool | None = None,
     max_entries: int = _MAX_INVENTORY_ENTRIES,
 ) -> LegacyMigrationInventory:
     """Classify a legacy tree without following links or mutating any path.
 
-    Echo-selected migrations allow only the bounded configuration file and
+    Protected-memory migrations allow only the bounded configuration file and
     recognized auth sidecars to be considered by the caller.  This function
     never copies or deletes anything; unknown and special paths stay blocked.
     """
@@ -1061,7 +1079,11 @@ def inventory_legacy_tree(
         raise ElsieReceiptError("legacy root is unavailable") from exc
     if config_module._path_is_reparse_point(base, root_info) or not stat.S_ISDIR(root_info.st_mode):
         raise ElsieReceiptError("legacy root must be a real directory")
-    selected = legacy_config_selects_echo(base) if echo_selected is None else bool(echo_selected)
+    selected = (
+        legacy_config_requires_protected_memory(base)
+        if protected_memory_selected is None
+        else bool(protected_memory_selected)
+    )
     bounded_limit = min(_MAX_INVENTORY_ENTRIES, max(0, int(max_entries)))
     artifacts: list[LegacyArtifact] = []
     truncated = False
@@ -1089,7 +1111,7 @@ def inventory_legacy_tree(
                 classification = LegacyArtifactClass.SPECIAL
             else:
                 classification = _classify_legacy_path(relative)
-            # Echo-selected trees are never copied automatically. The caller
+            # Protected-memory trees are never copied automatically. The caller
             # may use sanitized_legacy_config() for a strict settings-only
             # projection after separately revalidating the source identity.
             allowed = False
@@ -1147,7 +1169,7 @@ __all__ = [
     "elsie_staging_path",
     "inventory_legacy_tree",
     "is_hmac_receipt",
-    "legacy_config_selects_echo",
+    "legacy_config_requires_protected_memory",
     "load_elsie_store_anchor",
     "publish_elsie_staged_file",
     "read_pinned_legacy_artifact",

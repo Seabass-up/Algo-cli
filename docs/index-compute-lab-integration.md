@@ -15,7 +15,7 @@ concept: "concept:algo-cli"
 
 > **Evidence boundary:** Graph context is retrieval evidence, not proof. Verify consequential claims against the cited source files or live system before acting.
 
-> **Echo authority boundary:** While Echo Veil is selected as the exclusive mutable-memory authority, Algo does not read, query, reindex, auto-inject, or expose the legacy lab path. `/icl status` reports the inactive boundary and `/icl off` may disable the saved flag; `/icl on|ask|path`, `query_knowledge_graph`, and `reindex_knowledge_graph` refuse before lab file or subprocess access. The harness also purges lab records and cannot rebuild them until Echo is disabled.
+> **Continuum authority boundary:** While Continuum Memory is selected as the exclusive mutable-memory authority, Algo does not read, query, reindex, auto-inject, or expose the legacy lab path. `/icl status` reports the inactive boundary and `/icl off` may disable the saved flag; `/icl on|ask|path`, `query_knowledge_graph`, and `reindex_knowledge_graph` refuse before lab file or subprocess access. The harness also purges lab records and cannot rebuild them until Continuum is disabled.
 
 ## Seamless context (every model / provider)
 

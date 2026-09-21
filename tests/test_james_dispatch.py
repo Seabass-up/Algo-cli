@@ -45,16 +45,16 @@ def test_dispatch_normalizes_observation_success(tmp_path) -> None:
     assert calls[0][0] == "read_file"
 
 
-def test_successful_echo_memory_write_sets_semantic_receipt(monkeypatch, tmp_path) -> None:
+def test_successful_native_memory_write_sets_semantic_receipt(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("builtins.input", lambda _prompt: "y")
     cfg = Config(cwd=str(tmp_path), auto_mode=True)
     result = dispatch_action(
-        "echo_veil_remember",
-        {"payload": "protected fact"},
+        "memory_remember",
+        {"memory_id": "fact:1", "data": {"text": "protected fact"}, "scope": "private"},
         cfg,
         dependencies=_dependencies(
             tmp_path,
-            lambda *_args: '{"stored": true}',
+            lambda *_args: '{"ok": true, "status": "worked"}',
         ),
         render=False,
     )

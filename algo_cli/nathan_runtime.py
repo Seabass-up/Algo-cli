@@ -476,11 +476,11 @@ def _effective_tool_path(args: dict[str, Any]) -> Path | None:
 
 def completion_recovery_prompt(cfg: Config, *, block_output: bool = False) -> str:
     """Request only permitted verification, without granting new authority."""
-    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .continuum_memory import selected
 
-    if echo_veil_authority_selected(cfg):
+    if selected(cfg):
         verifier = (
-            "Echo Veil is the memory authority, so run_shell is unavailable. "
+            "Continuum Memory is authoritative, so run_shell is unavailable. "
             "Do not seek shell approval, retry it, or route around this restriction. "
             "Use git_diff only if admitted and able to verify the tracked workspace changes; "
             "it cannot verify new untracked files. "
@@ -541,13 +541,17 @@ def _mode_tool_error(name: str, args: dict[str, Any], cfg: Config) -> str | None
 def _pre_dispatch_tool_error(name: str, args: dict[str, Any], cfg: Config) -> str | None:
     """Reject known unavailable operations before approval or effect dispatch."""
     from .irene_memory_path_policy import UNQUALIFIED_BROWSER_ACTIONS, protected_tool_policy_error
-    from .ada_memory_d057 import selected
+    from .continuum_memory import ContinuumMemoryError, selected
 
-    if selected(cfg) and (
+    try:
+        protected = selected(cfg)
+    except ContinuumMemoryError:
+        return "Memory configuration requires repair before tool execution."
+    if protected and (
         name in {"update_user_profile", "write_knowledge_graph_note"}
-        or name.startswith(("intuition_", "echo_veil_"))
+        or name.startswith("intuition_")
     ):
-        return "This continuity action is unavailable with D-57; no alternate memory authority or plaintext shadow is permitted."
+        return "This legacy continuity action is unavailable with Continuum Memory; no alternate authority or plaintext shadow is permitted."
 
     mode_error = _mode_tool_error(name, args, cfg)
     if mode_error is not None:
@@ -859,24 +863,19 @@ def run_tool(name: str, args: dict[str, Any], cfg: Config) -> str:
         violation = reconciliation.structured_write_violation(name, call_args, cfg.messages)
         if violation:
             return f"Error: {violation}"
-    if name in (
+    if name.startswith("memory_") or name in (
+        "read_file",
+        "list_directory",
         "search_files",
         "remember",
-        "echo_veil_remember",
-        "echo_veil_refresh_live",
-        "echo_veil_promote",
-        "echo_veil_recall",
-        "echo_veil_context",
-        "echo_veil_list",
-        "echo_veil_forget",
-        "echo_veil_doctor",
-        "echo_veil_reindex",
         "append_lesson",
         "update_user_profile",
         "query_knowledge_graph",
         "reindex_knowledge_graph",
         "write_knowledge_graph_note",
         "x_search",
+        "jev_kernel_status",
+        "jev_question_contract",
         "session_command",
         "action_search",
         "action_program",

@@ -18,7 +18,7 @@ from .grace_memory_receipts import (
 )
 
 from rich.align import Align
-from rich.console import Capture, Console
+from rich.console import Capture, Console, ConsoleDimensions
 from rich.console import Group
 from rich.live import Live
 from rich.markdown import Markdown
@@ -175,7 +175,20 @@ THEME_MAP: dict[str, Theme] = {name: _theme(colors) for name, colors in THEME_CO
 _base_theme_name = DEFAULT_THEME_NAME if DEFAULT_THEME_NAME in THEME_MAP else "tokyo-night"
 _active_theme_name = _base_theme_name
 _theme_pushed = False
-console = Console(theme=THEME_MAP[_base_theme_name])
+class RuntimeConsole(Console):
+    @property
+    def size(self) -> ConsoleDimensions:
+        from . import sticky_status
+
+        size = super().size
+        # Rich's redraw region must fit above the reserved footer. Otherwise
+        # each full-height refresh scrolls the first answer line into history.
+        if sticky_status.is_active():
+            return ConsoleDimensions(size.width, max(1, size.height - 1))
+        return size
+
+
+console = RuntimeConsole(theme=THEME_MAP[_base_theme_name])
 register_spinners()  # make algo-* state spinners available to console.status
 _stream_live: Live | None = None
 _stream_buffer = ""
@@ -1442,7 +1455,7 @@ def show_memory(facts: list[str]) -> None:
     console.print(table)
 
 
-def show_help() -> None:
+def show_help(topic: str = "") -> None:
     table = Table.grid(padding=(0, 2), expand=True)
     table.add_column(style="muted", no_wrap=True)
     table.add_column(style="primary", no_wrap=True)
@@ -1450,128 +1463,34 @@ def show_help() -> None:
 
     from . import oliver_slash_dispatch as slash_dispatch
 
-    def _group(command: str) -> str:
-        if command in {
-            "/help",
-            "/dashboard",
-            "/status",
-            "/actions",
-            "/reload",
-            "/theme",
-            "/info",
-            "/safe",
-            "/auto",
-            "/policy",
-            "/thinking",
-            "/verify",
-            "/perf",
-            "/metrics",
-            "/doctor",
-            "/selfcheck",
-            "/exit",
-            "/quit",
-        }:
-            return "Session"
-        if command in {
-            "/model",
-            "/models",
-            "/host",
-            "/cloud",
-            "/cloudauto",
-            "/login",
-            "/keepalive",
-            "/ctx",
-            "/temp",
-            "/toolmax",
-            "/thinkevery",
-            "/system",
-        }:
-            return "Model"
-        if command.startswith("/google"):
-            return "Google"
-        if command.startswith("/chatgpt"):
-            return "ChatGPT"
-        if command.startswith("/xai") or command.startswith("/x-account"):
-            return "xAI"
-        if (
-            command.startswith("/harness")
-            or command.startswith("/hsearch")
-            or command.startswith("/hread")
-            or command in {"/hs", "/hr"}
-        ):
-            return "Harness"
-        if command in {
-            "/reason",
-            "/reflex",
-            "/goal",
-            "/agent",
-            "/route",
-            "/icl",
-            "/model-check",
-            "/context",
-        }:
-            return "Agent"
-        if command.startswith("/kernel"):
-            return "Knowledge"
-        if command in {
-            "/identity",
-            "/lesson",
-            "/lessons",
-            "/skills",
-            "/remember",
-            "/memories",
-            "/forget",
-            "/intuition",
-            "/intelligence",
-            "/intel",
-            "/intelagence",
-        }:
-            return "Knowledge"
-        if command in {"/cd", "/ls", "/read", "/save", "/load", "/diff", "/changes", "/clear", "/mode"}:
-            return "Workspace"
-        if command in {"/embed", "/vision", "/pdf"}:
-            return "Media"
-        if command in {"/config", "/plugins", "/credentials", "/url-scheme"}:
-            return "Integrations"
-        return "Other"
-
-    groups: dict[str, list[tuple[str, str]]] = {
-        "Session": [],
-        "Model": [],
-        "Workspace": [],
-        "Knowledge": [],
-        "Agent": [],
-        "xAI": [],
-        "Google": [],
-        "ChatGPT": [],
-        "Harness": [],
-        "Media": [],
-        "Integrations": [],
-        "Other": [],
-    }
-    for command, description in slash_dispatch.SLASH_COMMANDS:
-        groups[_group(command)].append((command, description))
-
-    for group in [
-        "Session",
-        "Model",
-        "Workspace",
-        "Knowledge",
-        "Agent",
-        "xAI",
-        "Google",
-        "ChatGPT",
-        "Harness",
-        "Media",
-        "Integrations",
-        "Other",
-    ]:
-        rows = groups[group]
-        if not rows:
-            continue
-        for index, (command, description) in enumerate(rows):
-            table.add_row(group if index == 0 else "", command, description)
+    topic = topic.strip().lower().removeprefix("/")
+    descriptions = dict(slash_dispatch.SLASH_COMMANDS)
+    if not topic:
+        for index, command in enumerate(slash_dispatch.COMMON_SLASH_COMMANDS):
+            table.add_row("Common" if index == 0 else "", command, descriptions[command])
         table.add_row("", "", "")
+        for index, (group, description) in enumerate(slash_dispatch.COMMAND_GROUP_DESCRIPTIONS.items()):
+            table.add_row("Categories" if index == 0 else "", f"/help {group}", description)
+        table.add_row("", "/help all", "Full reference, including compatibility aliases")
+    else:
+        # A category or exact command is addressable without printing the entire
+        # registry. Full help retains aliases for users of older releases.
+        rows = [
+            (command, description)
+            for command, description in slash_dispatch.SLASH_COMMANDS
+            if topic == "all" or (
+                not slash_dispatch.is_command_alias(command, description)
+                and (slash_dispatch.command_group(command) == topic or command.split()[0] == f"/{topic}")
+            )
+        ]
+        if not rows:
+            console.print(Text(f"Unknown help topic: {topic}. Use /help for categories or /help all."))
+            return
+        previous_group = ""
+        for command, description in rows:
+            group = slash_dispatch.command_group(command).title()
+            table.add_row(group if group != previous_group else "", command, description)
+            previous_group = group
     intro = Text.assemble(
         ("Ask naturally for ordinary work. ", "text"),
         ("Slash commands control the runtime and session.\n", "muted"),
@@ -1587,7 +1506,7 @@ def show_help() -> None:
     console.print(
         Panel(
             Group(intro, Text(""), table),
-            title="Command Reference",
+            title=f"Command Reference: {topic.title()}" if topic else "Command Reference",
             subtitle="[muted]type / to search inline[/]",
             border_style="border_accent",
             box=box.ROUNDED,

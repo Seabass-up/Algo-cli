@@ -163,7 +163,7 @@ def test_kernel_list_slash_includes_known_kernels(monkeypatch) -> None:
 
     assert handled is True
     output = "\n".join(printed)
-    assert "Kernels:" in output
+    assert "Built-in kernels:" in output
     assert "benchmark" in output
     assert "repo-intelligence" in output
 

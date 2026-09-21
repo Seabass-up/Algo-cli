@@ -89,22 +89,22 @@ def test_explicit_harness_search_intent_passes_specialist_gate() -> None:
     assert {"harness_search", "harness_stats"} <= names
 
 
-def test_echo_tools_require_explicit_memory_operation_intent() -> None:
+def test_continuum_tools_require_explicit_memory_operation_intent() -> None:
     general = _names(
         select_tools_for_prompt(
-            "What is the current Echo integration priority? Answer briefly.",
+            "What is the current Continuum integration priority? Answer briefly.",
             tools.ALL_TOOLS,
         )
     )
     explicit = _names(
         select_tools_for_prompt(
-            "Run the Echo memory doctor and list its protected inventory.",
+            "Run memory_verify and memory_status with scope shared.",
             tools.ALL_TOOLS,
         )
     )
 
-    assert not any(name.startswith("echo_veil_") for name in general)
-    assert {"echo_veil_doctor", "echo_veil_list"} <= explicit
+    assert not any(name in {"memory_verify", "memory_status"} for name in general)
+    assert {"memory_verify", "memory_status"} <= explicit
 
 
 def test_deferred_runtime_tools_are_always_visible_when_installed() -> None:

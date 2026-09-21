@@ -64,11 +64,6 @@ quantization = [
     "turbovec>=0.7",
 ]
 
-[dependency-groups]
-echo-veil = [
-    "echo-veil @ git+https://github.com/Seabass-up/echo-veil.git@cbee525687ac03c830d4b6632ff1d044b4b838fc",
-]
-
 [project.scripts]
 algo-cli = "algo_cli.main:main"
 algo-cli-control-install = "algo_cli.austin_install_finalizer:main"
@@ -119,7 +114,7 @@ path = "algo_cli/__init__.py"
 "docs/reflex-loop-v0.2.md" = "algo_cli/resources/docs/reflex-loop-v0.2.md"
 "docs/privacy-and-context.md" = "algo_cli/resources/docs/privacy-and-context.md"
 "docs/runtime-capability-catalog.md" = "algo_cli/resources/docs/runtime-capability-catalog.md"
-"docs/echo-veil-security-status.md" = "algo_cli/resources/docs/echo-veil-security-status.md"
+"docs/continuum-memory.md" = "algo_cli/resources/docs/continuum-memory.md"
 "docs/ada-algo-cli-memory-lifecycle-contract.md" = "algo_cli/resources/docs/ada-algo-cli-memory-lifecycle-contract.md"
 "docs/algo-cli-execution-verification-contract.md" = "algo_cli/resources/docs/algo-cli-execution-verification-contract.md"
 "docs/algo-cli-algorithm-evidence-contract.md" = "algo_cli/resources/docs/algo-cli-algorithm-evidence-contract.md"
@@ -152,7 +147,7 @@ include = [
     "/docs/reflex-loop-v0.2.md",
     "/docs/privacy-and-context.md",
     "/docs/runtime-capability-catalog.md",
-    "/docs/echo-veil-security-status.md",
+    "/docs/continuum-memory.md",
     "/docs/ada-algo-cli-memory-lifecycle-contract.md",
     "/docs/algo-cli-execution-verification-contract.md",
     "/docs/algo-cli-algorithm-evidence-contract.md",

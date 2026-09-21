@@ -96,4 +96,4 @@ def test_kernel_list_output_is_returned_to_the_runtime_agent(monkeypatch, tmp_pa
     monkeypatch.setattr("algo_cli.theodore_runtime_services.create_client", lambda _cfg: object())
     result = tools.session_command("/kernel list", Config(cwd=str(tmp_path)))
     assert "repo-intelligence" in result
-    assert "Kernels:" in result
+    assert "Built-in kernels:" in result

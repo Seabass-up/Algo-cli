@@ -948,6 +948,355 @@ test-owned package-manager command is not evidence that `algo-cli update`
 works. Local macOS manager coverage does not substitute for hosted Windows and
 Linux qualification or public post-publication install and upgrade checks.
 
+## 2026-09-21 - Whole-Codebase Jev-Assisted Review (Completed; Repairs Pending)
+
+**Component and scope:** Review the current `release/v0.20.0` working tree with
+separate hardening, bug-hunt, quality-of-life, and quality-of-service passes.
+The tree starts at `aed8e31b0d3be7358a25785a01f2fc7637261adf`, four commits
+ahead of `origin/main`, with uncommitted Continuum integration changes. This is
+a review checkpoint, not a repaired or release-qualified state.
+
+**Observed evidence:** Shared and private Continuum verification, status,
+and bounded context validation passed with no critical blockers or repair queue.
+Jev's first hotspot-ranking request was rejected because repository paths were
+invalid candidate IDs; a single corrected request used neutral IDs and ranked
+release/workflow authority, installation, packaging, and the large runtime/tool
+entry points highest for inspection. The focused Continuum tests passed 39
+tests and repository Ruff passed. The first full run passed 6,224 tests with 41
+skips and 26 failures: 24 exercised the still-required legacy Echo dependency in
+an environment where it was absent, and two correctly rejected qualification
+artifacts made stale by the dirty source tree. Mypy found a generated action-spec
+risk-type mismatch and an existing Python 3.10 `tomli` import-ignore problem.
+
+**Confirmed unresolved findings:** The maintainer confirmed that Echo Veil is retired and
+must no longer be a selectable Algo memory backend. The tree still contains Echo
+selection fields, runtime branches and tools in 23 production files, plus a
+required dependency group, 36 test files, qualification scripts/workflows and
+current documentation. Historical lessons may retain dated evidence, but active
+configuration, runtime, dependency and qualification surfaces require migration
+to Continuum or removal. This is not only dead-code cleanup: a temporary malformed
+`config.json` reproduction made `Config.load()` set `echo_veil_enabled: true` and
+`echo_veil_protection: required` while leaving Continuum disabled. Normal startup
+then enters the Echo auxiliary preflight, so corrupt or malformed configuration
+can still reproduce an Echo-branded startup stop after Echo retirement. The
+fail-closed branch must preserve continuity safety without selecting a retired
+backend. Jev supported this conclusion only after receiving the source trace and
+executed reproduction. Separately, `_reconciliation_counts()` reads only the
+first 128 lines of each accepted receipt file and does not mark that truncation
+as incomplete. A 129-line local reproduction placed an unresolved memory
+mutation on the final line; the function returned zero unresolved operations and
+`receipt_scan_incomplete: false`. The new Continuum adapter also rewrites falsey
+non-object `sources` and `depends_on` inputs with `value or {}`. An executed
+direct-call probe supplied empty lists and observed empty objects at the backend
+boundary, bypassing Continuum's canonical object-type rejection and weakening
+provenance validation. The action-program compiler rejects that type mismatch,
+but ordinary direct model tool dispatch does not enforce annotations. No repair
+has been applied yet.
+
+The Continuum cutover also does not inherit Irene's protected-root boundary.
+`protected_tool_policy_error()` returns immediately unless Echo is selected;
+the Continuum-specific preflight rejects several legacy memory actions but not
+protected filesystem access, `run_shell`, or the unqualified Cobalt browser.
+A synthetic owner-private `CONFIG_DIR` probe returned its canary through
+`read_file` with Continuum selected, while the same probe was refused with Echo
+selected. YOLO grants ordinary observations outside `cwd`, and the generic
+sensitive-path list does not classify `.algo_cli`, so this contradicts the
+documented claim that YOLO retains memory protections. Treat this as a
+release-blocking hardening regression until the backend-independent protection
+is restored and tested. Jev supported the finding after receiving the source
+trace and executed probe; it did not independently discover it.
+
+An end-to-end YOLO probe confirmed the same boundary loss through the ordinary
+shell path: after a user-initiated `yolo` mode selection, preflight allowed
+`run_shell`, the action was admitted without a prompt, and `cat` returned a
+canary from a synthetic `.algo_cli/private-memory.txt` outside the workspace.
+This is stronger evidence than the direct policy-function probe because it
+exercised mode selection, grant preparation, preflight, approval, and command
+execution together. The repair must therefore cover shell access as well as
+file-tool path checks.
+
+**Working lesson and remaining limits:** Jev ranking is an investigation order,
+not a defect, severity, or cleanliness verdict. Keep exact paths in candidate
+text and use bridge-safe neutral IDs. Every candidate finding still needs a
+source trace, caller/test inspection, and a deterministic reproduction or
+contract proof. Passing focused tests do not qualify the dirty tree, installed
+runtime, hosted operating systems, or release. A retired dependency must not be
+reinstalled merely to turn its obsolete contract green; first remove or replace
+the active contract and keep only explicitly justified compatibility handling.
+Bounded receipt scans must expose every omitted region as incomplete and must not
+report a clean reconciliation count after silent truncation. Update this entry
+with confirmed causes, verification, and any actual repairs instead of creating
+duplicate entries for the same review.
+
+For asynchronous and stateful behavior, build review packets around the complete
+transition: initiating action, pending operation, shared state, completion or
+failure handler, and displayed result. Run invariant-based adverse-order probes
+even when Jev rejects a candidate. Record whether Jev found the candidate before
+execution or only supported it after seeing the reproduction; the latter is
+evidence interpretation, not independent discovery. Retain a sanitized packet
+recipe with source hashes, exact ranges, question version, assumptions and probe
+IDs so the judgment can be reproduced without credentials or private payloads.
+The first post-reproduction Jev check supported the Continuum input finding; it
+did not discover it independently. A separate malformed-provider-call probe
+kept original, serialized, normalized and expected-result counts equal at four,
+including duplicate-ID quarantine. Therefore the nearby `zip()` calls are not a
+reported defect on current evidence; revisit only if a producer can mutate the
+retained call list between those operations.
+
+The core file tools exposed two separate bounded-work defects. `read_file()`
+uses `Path.read_text()` before applying `max_chars`; a 32 MiB temporary-file
+probe requested one returned character but reached about 67 MiB of traced peak
+allocation. Its output is bounded, but its I/O and memory use are not, and a
+non-default `start_line` adds another full-text split. `list_directory()` sorts
+the complete iterator before slicing: a `limit=1` probe consumed all 25 test
+entries. It also labels an exactly-full result as truncated and reports a
+nonempty directory as empty for `limit=0`. Stream or incrementally scan bounded
+file content, validate directory limits, inspect at most `limit + 1` entries,
+and test both resource consumption and honest truncation state. Jev supported
+the `read_file` conclusion after receiving the source and executed memory probe;
+it did not discover the defect independently.
+
+A Standard Codex Security scan was sealed as
+`394a543a-78c9-4b5e-b95b-7da92c6361ed` against snapshot
+`codex-security-snapshot/v1:sha256:53bebf5a84a6022484190379f5478b711ffe78bdbd24acb26f3a60c4d8d8b69e`.
+It reported the Continuum/YOLO protected-memory regression at medium severity
+and the file-inspection resource-exhaustion defect at low severity. Coverage was
+explicitly partial: seven security surfaces were reviewed across a 791-file
+inventory, but two independent security workers became nonresponsive and
+returned no usable results. The parent review validated both findings with
+source traces and bounded reproductions. Cobalt URL and tab-identifier handling
+remains deferred because the receiving browser service is outside this
+repository, so the client-side forwarding behavior alone does not establish a
+security impact. The scan's working-tree-change warning was emitted while this
+lessons entry was being updated; no product repair was applied during the
+review.
+
+Cross-language and delivery checks completed during this checkpoint: the
+focused Python release, upgrade, packaging, authority, and daemon suites passed;
+Go tests, race detection, 68.2% statement coverage, vet, and govulncheck passed;
+Rust formatting, Clippy, seven tests, and RustSec audit passed; Austin passed 89
+Swift tests; and the website passed its production build, eight Node tests,
+ESLint, and a zero-vulnerability npm audit. An exact `0.20.0` sdist and wheel
+built, and the isolated wheel smoke passed with 804 installed corpus records.
+All five workflow YAML files parsed and all 130 external action references were
+full-SHA pinned. These checks establish reviewed surfaces, not release
+qualification for the dirty tree.
+
+The installed `0.20.0` daemon is currently stopped. Its retained log records a
+second clean SIGTERM shutdown on 2026-09-11 after the 2026-09-10 restart, with
+bounded drain and no crash signature. Phase 1 intentionally has no launchd
+registration or automatic restart, so this is a persistence/operations gap,
+not a newly demonstrated daemon implementation failure. The signal sender is
+still unknown; no daemon restart was performed during this review.
+
+The Astra model-discovery repair is present in the current commit: the alias,
+subscription-model set, response-transport capability handling, picker label,
+and selection test all include `gpt-6-astra`. A live authenticated catalog call
+during this review returned Astra plus Sol, Terra, Luna, and `gpt-5.5`. The
+earlier missing-Astra symptom is therefore not reproduced in this checkout and
+should not be carried as an open defect. The static fallback-list comment is
+misleading because discovery failure intentionally returns no advertised
+models, as an existing test requires; this is documentation debt unless product
+policy changes to allow verified fallback selection.
+
+### 2026-09-21: Native Continuum Local Repair
+
+**Operational correction:** The working `.venv` was incorrectly assumed to be
+test-only. A late launcher check proved `~/.local/bin/algo-cli` points into
+`Algo-cli-yolo-mode/.venv/bin/algo-cli`, so the non-editable reinstall changed
+normal launches too. The earlier test-only/no-live-change statements were wrong.
+Resolve the normal launcher and interpreter before any environment sync.
+The saved config initially selected the retired adapter and was explicitly
+converted to native Continuum. At 15:59 CDT a later writer restored the retired
+Echo/D-57 fields and removed `continuum_enabled`; the writer is not identified,
+and no Algo process remained when the rewrite was diagnosed. Startup correctly
+returned `memory_config_requires_repair` instead of interpreting those fields as
+Continuum. The new explicit `algo-cli config memory repair` command validates a
+closed JSON object, retains an exact mode-0600 digest-named backup, removes only
+retired memory selectors/repair marker, and sets `continuum_enabled=true`. The
+live repair retained
+`~/.algo_cli/config.json.before-continuum-21b9946aa5285ed3.bak`; every unrelated
+value matched before and after, no retired selector remains, and the repaired
+config is mode 0600. A stale retired binary can still rewrite its old schema;
+close old Algo sessions before repair and treat a repeat as a distinct writer
+investigation rather than silently looping the migration.
+
+The actual normal launcher then exited 1 during protected auxiliary preparation:
+the goal ledger had schema 1 while schema 3 was required, and an existing trusted
+goal-store anchor was at sequence 1. The runtime correctly refused the conflict.
+No staged transaction existed and neither earlier recovery copy verified against
+that anchor. The new explicit `algo-cli config memory repair-goal` path archives
+the exact legacy bytes, preserves only the user-authored goal and cwd as blocked,
+non-resumable state, strips untrusted progress/reason text, and publishes the
+successor at anchor sequence 2. It never resets the anchor or silently resumes
+work. The live archive is under
+`~/.algo_cli/recovery-backups/goal-ledger-conflict-930dde63a7459101/`.
+After both repairs, the actual PATH `algo-cli doctor` completed with exit 0.
+Its `DEGRADED` result is limited to safe mode being off and auto-approval being
+on; all memory preparation reached normal startup. No model request was made.
+
+The first repair attempt incorrectly treated a retired adapter name as a
+Continuum compatibility contract. The maintainer explicitly corrected that assumption:
+Continuum is independent of D-57, and neither D-57 nor Echo Veil may be selected
+or used as a fallback. Current source now calls the native `continuum-memory`
+CLI directly with fixed project/harness identity and explicit scopes. Retired
+keys are input-detection only: ambiguous or malformed configuration stops before
+model execution and preserves the original file for repair. Historical stores
+and historical reports are unchanged. This remains unpublished source work;
+the normal-runtime activation problem is recorded above.
+
+The initial four native-memory/path/preflight suites passed 91 tests. A later
+full run found obsolete backend expectations and stale source-bound artifacts.
+Protected search also refused every ordinary request because `python -I` loaded
+an older non-editable package while the parent loaded the checkout. Installing
+this checkout into its test-only `.venv` restored the existing search suite;
+the root-identity check was not removed. Verify both normal and isolated Python
+imports before diagnosing such failures as product defects.
+
+The boundary investigation also exposed aggregate and nested routes: slash
+commands with file/browser side effects, Git diffs over protected descendants,
+parent-directory metadata, and same-inode filesystem aliases. New regressions
+exercise those routes with synthetic canaries and ordinary-workspace controls.
+Native receipt scanning now examines all rows in a bounded file, reporting
+incomplete scans rather than silently ignoring unknown outcomes outside a tail.
+The independent candidate review identified four surviving issues and new
+tests reproduced them: `symlink/..` validation/execution disagreement, Git
+hardlink aliases, replacement between text-read validation and open, and an
+unrecognized retired-protection string falling through to plaintext. The repair
+now inspects path components before normalization, validates Git metadata and
+NUL-delimited file inventory (including whitespace names), pins read descriptors
+and ancestry, and rejects ambiguous retired config without activating a backend.
+The regression fixtures use synthetic canaries; native Git exercises the alias
+case, and ordinary file/Git controls remain available. The scoped suites pass.
+
+The next full run reached 6,195 passes and 40 skips with only two stale-report
+failures. CI's complete mypy command passed 77 files; the three path/Git modules
+also passed an explicit check. Exact test-package/source parity passed for 285
+Python files with no missing or unexpected modules. A fresh isolated installed
+process exposes all 15 native tools, no retired backend modules/config fields,
+and successfully verifies/reads shared and Algo-private Continuum. Qualification
+reports are being regenerated through real runners; exact-commit hosted tests
+and public delivery remain separate gates. The release skill's outdated Echo
+audit instruction was corrected as part of the prevention work.
+
+The clean wheel installed successfully with 795 corpus records. The actual
+published `0.19.2` updater then upgraded to that local candidate through uv-pip
+without a pip module, preserved all 11 synthetic state files, and passed repeat
+update/payload checks. This is a macOS local-wheel test, not a public candidate
+release, production Keychain check or other-platform proof. The initial final
+installed suite had 6,197 passes and one expected successor-binding failure:
+M9 still referenced the old M8 bytes. Append actual new M8/Nathan ledger evidence,
+then regenerate and verify M9 before the last full suite. Keep the existing
+milestone statuses blocked; source-bound local evidence is not external-browser
+qualification. The first coverage run reached 67.87%, above the 57% floor,
+but its stale-M9 failure was not counted as a passing suite.
+
+Final verification after rebinding passed: the complete installed Python suite
+exited 0 with 67.87% combined line/branch coverage against the unchanged 57%
+floor; all 152 focused qualification checks passed; fresh Go race tests, seven
+Rust tests, 89 Swift tests, and the website build/eight tests passed. M8 retains
+nine passing local metrics and five blocked external metrics; M9 verifies that
+blocked state. No commit, push or tag was made. The late normal-launcher finding
+and the two explicit, evidence-preserving repairs above supersede the test-only
+assumption and the earlier statement that normal startup remained blocked.
+The read-only service smoke is not a full live agent mutation workflow, and
+clean-commit hosted macOS/Windows/Linux delivery, external Cobalt qualification
+and the daemon persistence decision remain open.
+
+Verification commands: `PYTHONDONTWRITEBYTECODE=1 ALGO_TEST_REQUIRE_RIPGREP=1
+.venv/bin/pytest tests --cov --cov-branch --cov-fail-under=57`, the configured
+CI mypy command, `ruff check algo_cli tests scripts`, `go test -race -count=1
+./...`, `cargo test --manifest-path harness-indexer/Cargo.toml --locked`,
+`swift test --package-path native/austin`, website `npm test`, and the isolated
+wheel/uv-pip upgrade runners. Final coverage XML is retained at
+`/tmp/algo-native-coverage-final.xml`; the upgrade receipt is
+`/tmp/algo-native-upgrade-uv-pip.json`. Keep log filenames outside
+`COVERAGE_FILE.*`: coverage's parallel-data cleanup removed the final run's
+redirected `.log` under that prefix. Its exit status and final XML were observed;
+the prior failed run's surviving console log was not relabeled as passing.
+
+Jev checked three bounded native-transport claims against source: it supported
+direct native dispatch, non-overridable scope, and revision/readback binding.
+It correctly left the all-callers recovery claim unresolved because the supplied
+packet did not contain every caller. The 2,932-input-token advisory call took
+about 356 ms with estimated provider cost $0.000123144. These judgments are not
+execution evidence. The prevention lesson is to verify the current backend's
+native contract and operation-expansion boundaries, not infer architecture from
+old labels or restore obsolete dependencies to satisfy obsolete tests.
+
+## 2026-09-21: Required Continuum Context Outgrew The Startup Budget
+
+**Issue and cause:** The installed launcher crashed while computing the startup
+footer. A live native request returned `REFUSE_BUDGET`: required shared records
+and receipt metadata needed 12,477 bytes, exceeding Algo's fixed 12,000-byte
+request. Private context at 6,000 bytes passed. Verification/status alone did
+not exercise packet construction, so the earlier doctor smoke missed this path.
+
+**Repair:** Retry only a validated size refusal, once per scope, preserving the
+query and all required records, with a 32,768-byte ceiling. Verify every accepted
+packet natively. Footer accounting now reports unavailable context without
+crashing the REPL; actual system-prompt assembly still fails closed. No store,
+trusted head, scope, record requirement, or fallback policy was changed.
+
+**Verification:** Live source `prompt_context(Config.load(), ...)` retrieved and
+validated shared context at 14,336 bytes and private context at 6,000 bytes.
+`tests/test_continuum_context_budget.py` covers exact retry size, malformed and
+oversized reports, bounded retry, verification refusal, UI recovery, and prompt
+blocking. The surrounding Continuum, context, footer, command-discovery, Jev,
+configuration, main-helper, tools and action-registry tests passed locally.
+Installed-launcher qualification is recorded below when completed; these results
+alone are not a public release or hosted-platform qualification.
+
+**Prevention:** Test the actual context operation, not only backend health. Keep
+required-state growth explicit and bounded; a display failure must not authorize
+a model call without required memory. Jev's bounded-retry/preservation review was
+advisory (736 input tokens, 350 ms); executable refusal tests are the evidence.
+
+## 2026-09-21: Compact Command Discovery And Stable Footer Styles
+
+**Issue and cause:** Completion and help rendered the entire slash registry,
+including child commands and aliases. During generation a separate plain-text
+footer renderer discarded the prompt's colors/styles. Rich's full-height live
+answer renderer also did not account for the reserved footer row.
+
+**Repair:** Keep runtime command compatibility, but show 12 common commands at
+`/`, canonical roots while typing, and children only after the parent plus a
+space. Default help shows common commands and eight categories; category/exact
+command help and `/help all` retain the full reference. Render generation footer
+content with the same prompt-toolkit theme/default styles and color-depth policy;
+size Rich live output to the available rows. Preserve non-TTY behavior.
+
+**Verification and limits:** The 79 command-discovery/footer/dispatch/display
+tests passed. Additional tools/action-registry tests passed in the broader run.
+Tests cover replacement offsets, aliases, every root's category/discoverability,
+background/bold/foreground styles, wide-character clipping, and long live answer
+height/completion. The reported repeated answer lines have a plausible viewport
+cause, but the original provider stream was unavailable; do not claim that trace
+proved a provider or rendering root cause. Jev reviewed discovery compatibility
+advisorially (631 input tokens, 458 ms); it did not replace execution tests.
+
+## 2026-09-21: Personal Catalog And Kernels Shipped In Public Packages
+
+**Symptom and cause:** The maintainer's populated `docs/ALGO.md` catalog was
+force-included in the wheel and sdist, and business-specific finance,
+construction, and Acrobat modules were part of the `algo_cli` package and
+kernel manifest. Nothing distinguished framework code from one user's library.
+
+**Repair:** `docs/ALGO.md` is now an empty template. The harness indexes
+`<config>/ALGO.md` when present; `/intelligence init` creates it from the
+template. Personal kernels load from `<config>/kernels/kernels.json`, appended
+to `sys.path` and unable to replace built-in names. The removed modules were
+preserved locally with checksums before deletion. `check_public_release.py`
+rejects any populated `ALGO.md` and personal-library paths in the tree and in
+built artifacts; `check_public_history.py` exempts only already-published
+history, per the owner's decision not to rewrite it.
+
+**Verification and limits:** 6281 installed-suite tests passed with 40 skipped;
+catalog-content tests read the developer's own catalog and skip in CI. Built
+wheel and sdist contain only the 1.7 KB template. Earlier tags, public Git
+history, and the published 0.19.2 files still contain the old catalog and
+modules; this repair does not retract them.
+
 ## Repair Log Checklist
 
 - Date and component.

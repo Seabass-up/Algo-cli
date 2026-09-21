@@ -128,11 +128,31 @@ def test_session_wrappers_declare_dynamic_exact_action_resolution() -> None:
         assert spec.dynamic_resolution is True
         assert policy.safe_retry is False
 
+    # Jev resolves per mode: local lint versus provider inference.
+    assert policy_for_action("jev_question_contract").dynamic_resolution is True
     assert all(
         not policy.dynamic_resolution
         for name, policy in CURATED_TOOL_POLICIES.items()
-        if name not in {"session_command", "session_slash"}
+        if name not in {"session_command", "session_slash", "jev_question_contract"}
     )
+
+
+@pytest.mark.parametrize("args", [{}, {"mode": "lint"}])
+def test_jev_lint_resolves_local_without_confirmation(args) -> None:
+    from algo_cli.samuel_policy_engine import resolve_action
+
+    action = resolve_action("jev_question_contract", args, cwd=".")
+    assert action.capability_mask == Capability.READ.value
+    assert action.confirmation_mode is ConfirmationMode.NONE
+
+
+@pytest.mark.parametrize("mode", ["review", "run", "followup", "LINT", "unknown", 1])
+def test_jev_inference_and_unrecognized_modes_keep_egress_policy(mode) -> None:
+    from algo_cli.samuel_policy_engine import resolve_action
+
+    action = resolve_action("jev_question_contract", {"mode": mode}, cwd=".")
+    assert action.capability_mask & Capability.DATA_EGRESS.value
+    assert action.confirmation_mode is ConfirmationMode.SESSION_PREAPPROVAL
 
 
 def test_capability_grant_checks_scope_expiry_and_required_mask() -> None:

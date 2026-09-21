@@ -616,7 +616,7 @@ def purge_persisted_indexes() -> int:
 
     Code indexes have always used a flat directory. Unexpected nested or
     special entries therefore fail closed instead of being silently ignored or
-    traversed. The Echo preflight treats this exception as an unavailable
+    traversed. The protected-memory preflight treats this exception as an unavailable
     protected state, so it cannot report a successful purge while plaintext
     remains below the declared root.
     """

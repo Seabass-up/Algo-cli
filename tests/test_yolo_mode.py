@@ -79,7 +79,7 @@ def test_yolo_posture_and_exit(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("automation", [False, True])
 def test_actual_system_prompt_uses_live_activation(monkeypatch, tmp_path, automation):
-    cfg = Config(cwd=str(tmp_path), echo_veil_enabled=True)
+    cfg = Config(cwd=str(tmp_path), continuum_enabled=True)
     monkeypatch.setattr(context_budget, "_memory_prompt_section", lambda *args, **kwargs: "")
     monkeypatch.setattr(context_budget, "json_sink", lambda: object() if automation else None)
     activate(cfg, monkeypatch)
@@ -432,11 +432,11 @@ def test_yolo_external_symlink_to_sensitive_path_stays_denied(monkeypatch, tmp_p
 
 
 def test_yolo_keeps_echo_shell_and_credential_denials(monkeypatch, tmp_path):
-    cfg = Config(cwd=str(tmp_path), echo_veil_enabled=True)
+    cfg = Config(cwd=str(tmp_path), continuum_enabled=True)
     activate(cfg, monkeypatch)
     shell = preflight_runtime_tool("run_shell", {"command": "pytest -q"}, cfg)
     assert not shell.allowed
-    assert "Echo Veil" in shell.blocked_result
+    assert "Continuum Memory" in shell.blocked_result
     for name in ("credential_helpers_get", "credential_helpers_store", "send_email"):
         assert not preflight_runtime_tool(name, {}, cfg).allowed
     assert not preflight_runtime_tool("read_file", {"path": str(config.CONFIG_DIR / "memory.json")}, cfg).allowed

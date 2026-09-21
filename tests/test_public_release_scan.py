@@ -231,3 +231,29 @@ def test_history_scan_allows_external_contributor_identity_in_ci_mode(tmp_path):
 
     assert any("non-public email" in finding for finding in strict_findings)
     assert check_public_history.scan_history(tmp_path, allow_contributor_identities=True) == []
+
+
+def test_personal_catalog_is_rejected_but_template_passes():
+    catalog = "# ALGO.md\n\n## Track A\n\n### A1. Real Pattern\n\n**Status:** implemented\n"
+    assert any("personal pattern catalog" in f for f in check_public_release._scan_item("docs/ALGO.md", catalog.encode()))
+    wheel_name = "algo.whl!algo_cli/resources/docs/ALGO.md"
+    assert any("personal pattern catalog" in f for f in check_public_release._scan_item(wheel_name, catalog.encode()))
+    template = (ROOT / "docs" / "ALGO.md").read_bytes()
+    assert check_public_release._scan_item("docs/ALGO.md", template) == []
+
+
+def test_personal_kernel_library_paths_are_rejected():
+    for name in (
+        "algo_cli/intelligence/finance/tax.py",
+        "algo.whl!algo_cli/intelligence/acrobat_pipeline.py",
+        "sdist.tar.gz!pkg/algo_private/__init__.py",
+        "home/.algo_cli/kernels/kernels.json",
+    ):
+        assert "personal kernel library path" in check_public_release._scan_name(name)
+
+
+def test_personal_library_rules_exempt_only_already_published_history():
+    catalog = b"### A1. Real Pattern\n\n**Status:** implemented\n"
+    assert check_public_release._scan_item("docs/ALGO.md", catalog, personal_library=False) == []
+    assert check_public_release._scan_name("algo_cli/intelligence/finance/tax.py", personal_library=False) == []
+    assert check_public_release._scan_item("docs/ALGO.md", catalog)

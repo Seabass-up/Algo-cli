@@ -18,7 +18,7 @@ from typing import Any
 from .. import harness
 from .. import pattern_catalog
 
-SCHEMA = "algo-grounded-retrieval-v2"
+SCHEMA = "algo-grounded-retrieval-v3"
 TOP_K = 5
 READ_CHARS = 20_000
 
@@ -51,7 +51,7 @@ EFFECTIVENESS = _doc("algo-cli-algorithm-evidence-contract", "not a duplicate te
 CAPABILITY = _doc("runtime-capability-catalog", "discovery evidence, not authority")
 EXTERNAL = _doc("external-agent-store-operations", "Conflicting records from different harnesses")
 ARCHITECTURE = _doc("main-split-map", "context_budget.py")
-ECHO = _doc("echo-veil-security-status", "production")
+CONTINUUM = _doc("continuum-memory", "Encryption at rest is not isolation")
 
 # Freeze labels before observing rankings. Multiple evidence entries are all
 # required; unrelated hits are unjudged, not automatically irrelevant.
@@ -150,12 +150,12 @@ CASES = (
         "Where did the code that builds and prunes the system prompt move out of the large command line entrypoint?",
         (ARCHITECTURE,),
     ),
-    Case("echo_limitations", "exact", "Echo Veil security status production blockers entry-point matrix", (ECHO,)),
+    Case("continuum_limitations", "exact", "Continuum Memory protected root shell browser isolation limitations", (CONTINUUM,)),
     Case(
-        "echo_isolation",
+        "continuum_isolation",
         "paraphrase",
         "Does encrypted local memory mean a compromised host cannot read it during execution?",
-        (ECHO,),
+        (CONTINUUM,),
     ),
     Case("provider_privacy_es", "multilingual", "Se envian mis archivos locales al proveedor en la nube?", (PRIVACY,)),
     Case(

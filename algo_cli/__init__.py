@@ -11,7 +11,6 @@ _RENAMED_INTERNAL_MODULES = {
     "elsie_memory_path_policy": "irene_memory_path_policy",
     "elsie_memory_receipts": "grace_memory_receipts",
     "memory_candidates": "julia_memory_candidates",
-    "memory_echo_veil": "ada_memory_echo_veil",
     "oneshot": "oliver_oneshot",
     "program_runtime": "nathan_program_runtime",
     "tool_policy": "samuel_policy",

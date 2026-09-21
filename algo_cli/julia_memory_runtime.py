@@ -1611,141 +1611,6 @@ def _parse_add(parts: list[str]) -> tuple[str, str, str, str]:
     return tier, scope, slot, " ".join(content_parts)
 
 
-def _protected_memory_command_text(
-    subcommand: str,
-    remainder: list[str],
-    cfg: Any,
-) -> str:
-    """Execute /memory without constructing the legacy plaintext catalog."""
-
-    from .ada_memory_echo_veil import (
-        context_with_echo_veil,
-        doctor_with_echo_veil,
-        format_protected_prompt_context,
-        get_echo_veil_readiness,
-        list_echo_veil_memories,
-        promote_with_echo_veil,
-        recall_response_with_echo_veil,
-        reindex_with_echo_veil,
-        refresh_live_with_echo_veil,
-    )
-
-    if subcommand in {"home", "status", "show-home"}:
-        records = list_echo_veil_memories(cfg)
-        active = [record for record in records if record.get("superseded_by") is None]
-        counts: dict[str, int] = {}
-        for memory_record in active:
-            layer_name = str(memory_record.get("memory_layer") or "unknown")
-            counts[layer_name] = counts.get(layer_name, 0) + 1
-        status = doctor_with_echo_veil(cfg)
-        return (
-            "Echo Veil protected memory\n"
-            f"Mode: {status.get('mode', 'unknown')} · "
-            f"degraded {bool(status.get('degraded', False))}\n"
-            f"Active: {len(active)} · total {len(records)} · "
-            f"layers {json.dumps(counts, sort_keys=True)}\n"
-            "Use /memory search QUERY, /memory show ID, /memory context QUERY, "
-            "/memory refresh ID PAYLOAD, /memory promote ID --to LAYER "
-            "--reason REASON, or /memory doctor."
-        )
-    if subcommand in {"help", "?"}:
-        return (
-            "/memory home | search QUERY | show ID | context QUERY | doctor\n"
-            "/memory refresh ID PAYLOAD\n"
-            "/memory promote ID --to short_term|long_term --reason REASON\n"
-            "Use /remember FACT for a protected Short-Term write and /forget N "
-            "for protected erasure. Legacy memory commands remain blocked."
-        )
-    if subcommand == "doctor":
-        return json.dumps(
-            get_echo_veil_readiness(
-                cfg if isinstance(cfg, dict) else cfg.__dict__,
-                live_probe=True,
-            ),
-            indent=2,
-            sort_keys=True,
-        )
-    if subcommand == "search":
-        query = " ".join(remainder)
-        if not query:
-            raise MemorySystemError("Usage: /memory search QUERY")
-        response = recall_response_with_echo_veil(cfg, query, top_k=8)
-        rendered = format_protected_prompt_context(response)
-        return rendered or "No answerable protected memory found."
-    if subcommand == "show":
-        if len(remainder) != 1:
-            raise MemorySystemError("Usage: /memory show ID")
-        selected_record = next(
-            (item for item in list_echo_veil_memories(cfg) if str(item.get("vine_id") or "") == remainder[0]),
-            None,
-        )
-        if selected_record is None:
-            raise MemorySystemError("Protected memory was not found.")
-        return json.dumps(
-            selected_record,
-            indent=2,
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-    if subcommand == "context":
-        query = " ".join(remainder)
-        if not query:
-            raise MemorySystemError("Usage: /memory context QUERY")
-        return json.dumps(
-            context_with_echo_veil(cfg, query),
-            indent=2,
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-    if subcommand == "refresh":
-        if len(remainder) < 2:
-            raise MemorySystemError("Usage: /memory refresh ID PAYLOAD")
-        result = refresh_live_with_echo_veil(
-            cfg,
-            remainder[0],
-            " ".join(remainder[1:]),
-            source="user_explicit",
-        )
-        return json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True)
-    if subcommand == "promote":
-        if len(remainder) < 5 or remainder[1] != "--to":
-            raise MemorySystemError("Usage: /memory promote ID --to short_term|long_term --reason REASON")
-        try:
-            reason_index = remainder.index("--reason", 3)
-        except ValueError as exc:
-            raise MemorySystemError("Protected promotion requires --reason REASON.") from exc
-        target_layer = remainder[2]
-        reason = " ".join(remainder[reason_index + 1 :]).strip()
-        if reason_index != 3 or not reason:
-            raise MemorySystemError("Usage: /memory promote ID --to short_term|long_term --reason REASON")
-        result = promote_with_echo_veil(
-            cfg,
-            remainder[0],
-            target_layer,
-            reason=reason,
-            source="user_explicit",
-        )
-        return json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True)
-    if subcommand == "reindex":
-        return json.dumps(
-            reindex_with_echo_veil(cfg),
-            indent=2,
-            sort_keys=True,
-        )
-    if subcommand == "benchmark":
-        raise MemorySystemError(
-            "The legacy plaintext benchmark is disabled while Echo Veil "
-            "is authoritative; run Echo Veil's protected quality gate."
-        )
-    if subcommand in {"add", "supersede", "demote", "archive"}:
-        raise MemorySystemError(
-            "This legacy /memory mutation is prohibited while Echo Veil "
-            "is authoritative. Use /remember, /forget, protected refresh, "
-            "or protected promotion."
-        )
-    raise MemorySystemError("Unknown /memory command. Use /memory help.")
-
-
 def command_text(
     arg: str,
     cfg: Any,
@@ -1761,22 +1626,23 @@ def command_text(
         raise MemorySystemError(f"Unable to parse /memory arguments: {exc}") from exc
     subcommand = parts[0].lower() if parts else "home"
     remainder = parts[1:]
-    from . import ada_memory_d057
+    from . import continuum_memory
 
-    if ada_memory_d057.selected(cfg):
+    if continuum_memory.selected(cfg):
         try:
             if subcommand == "doctor":
-                return json.dumps(ada_memory_d057.doctor(cfg), indent=2, sort_keys=True)
+                return json.dumps(continuum_memory.doctor(cfg), indent=2, sort_keys=True)
             if subcommand in {"home", "status", "show-home", "help", "?"}:
-                facts = ada_memory_d057.recall_facts(cfg)
-                return f"D-57 memory authority: {len(facts)} facts. Use /remember, /memories, /memory doctor."
-            raise MemorySystemError("This catalog operation is unavailable with D-57; no plaintext fallback was used.")
-        except ada_memory_d057.D057MemoryError as exc:
+                facts = continuum_memory.recall_facts(cfg)
+                return (
+                    "Continuum memory authority: "
+                    f"{len(facts)} private Algo facts. "
+                    "Backend continuum-memory; harness algo; default scope private. "
+                    "Use native memory tools, /remember, /memories, or /memory doctor."
+                )
+            raise MemorySystemError("This legacy catalog operation is unavailable with Continuum Memory; no plaintext fallback was used.")
+        except continuum_memory.ContinuumMemoryError as exc:
             raise MemorySystemError(str(exc)) from exc
-    from .ada_memory_echo_veil import echo_veil_authority_selected
-
-    if echo_veil_authority_selected(cfg):
-        return _protected_memory_command_text(subcommand, remainder, cfg)
     catalog = MemoryCatalog()
     catalog.sync_legacy_facts(getattr(cfg, "memories", ()), authoritative=False)
     if subcommand in {"home", "status", "show-home"}:
@@ -1875,25 +1741,13 @@ def remember_fact(
     """Persist one fact through the configured authoritative memory store."""
 
     clean_fact = _validate_content(fact)
-    from . import ada_memory_d057
+    from . import continuum_memory
 
-    if ada_memory_d057.selected(cfg):
+    if continuum_memory.selected(cfg):
         try:
-            return ada_memory_d057.remember_fact(cfg, clean_fact)
-        except ada_memory_d057.D057MemoryError as exc:
+            return continuum_memory.remember_fact(cfg, clean_fact)
+        except continuum_memory.ContinuumMemoryError as exc:
             raise MemorySystemError(str(exc)) from exc
-    from .ada_memory_echo_veil import (
-        echo_veil_authority_selected,
-        protection_required,
-        remember_with_echo_veil,
-    )
-
-    if echo_veil_authority_selected(cfg):
-        try:
-            return remember_with_echo_veil(cfg, clean_fact, source=source)
-        except RuntimeError as exc:
-            policy = "Required" if protection_required(cfg) else "Enabled"
-            raise MemorySystemError(f"{policy} Echo Veil is unavailable; memory write refused.") from exc
     catalog = MemoryCatalog()
     current = _latest_legacy_facts(cfg)
     catalog.sync_legacy_facts(current, authoritative=False)
@@ -1944,26 +1798,10 @@ def _remove_legacy_fact(cfg: Config, fact: str) -> bool:
 def forget_memory_index(cfg: Config, index: int) -> str:
     """Apply fail-recoverable hard-delete semantics to both memory stores."""
 
-    from .ada_memory_d057 import selected
+    from .continuum_memory import selected
 
     if selected(cfg):
-        raise MemorySystemError("D-57 is append-only; deletion is unavailable. No plaintext memory was changed.")
-    from .ada_memory_echo_veil import (
-        echo_veil_authority_selected,
-        forget_with_echo_veil,
-        list_echo_veil_memories,
-    )
-
-    if echo_veil_authority_selected(cfg):
-        records = [record for record in list_echo_veil_memories(cfg) if record.get("superseded_by") is None]
-        record = records[index]
-        vine_id = str(record.get("vine_id") or "")
-        payload = str(record.get("payload") or "")
-        result = forget_with_echo_veil(cfg, vine_id)
-        if not result.get("forgotten"):
-            raise MemorySystemError("Echo Veil memory was not found.")
-        return payload
-
+        raise MemorySystemError("Use memory_revoke with an exact revision; no plaintext memory was changed.")
     removed = _latest_legacy_facts(cfg)[index]
     # Delete governed/catalog state first. If the process stops before the
     # compatibility list is updated, its surviving fact safely recreates the
@@ -2043,11 +1881,9 @@ def capture_completed_user_turn(
         return result
 
     try:
-        from .ada_memory_echo_veil import echo_veil_authority_selected
+        from .continuum_memory import selected
 
-        from .ada_memory_d057 import selected
-
-        protected = selected(cfg) or echo_veil_authority_selected(cfg)
+        protected = selected(cfg)
         existing_memory = () if protected else tuple(str(item) for item in cfg.memories)
         return memory_candidates.process_memory_candidates(
             original_user_text,

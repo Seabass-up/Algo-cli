@@ -38,8 +38,8 @@ Use when the user asks about `/mode yolo` or an action denied in that mode.
 Source anchors: `session_mode.select_mode`, `session_mode.active_mode`,
 `nathan_runtime._prepared_grant`, `nathan_runtime.ask_approval`, and ALGO B51.
 Boundary tests establish behavior, not a measured improvement in model quality.
-When D-57 is selected, keep Echo disabled. Use /memory doctor to verify the
-bridge and /remember or /memories for native write/recall routing; harness
+When Continuum is selected, use /memory doctor to verify the native service
+and /remember or /memories for write/recall routing; harness
 refresh indexes skills but does not install code or select a memory backend.
 
 For `action_program`, pass one `plan` JSON object:

@@ -465,24 +465,23 @@ def test_superseded_records_are_excluded_from_automatic_retrieval():
     assert harness.is_excluded_from_retrieval({"status": "superseded"}) is True
 
 
-def test_harness_stats_reports_truthful_echo_veil_readiness(monkeypatch):
-    from algo_cli import memory_echo_veil
+def test_harness_stats_only_reports_native_memory_after_a_probe(monkeypatch):
+    from algo_cli import continuum_memory
     from algo_cli import tools
+    from algo_cli.config import Config
 
-    monkeypatch.setattr(memory_echo_veil, "ECHO_VEIL_AVAILABLE", False)
-    monkeypatch.setattr(memory_echo_veil, "ECHO_VEIL_IMPORT_ERROR", "ModuleNotFoundError")
     stats = harness.stats()
-
-    assert stats["echo_veil"]["installed"] is False
-    assert stats["echo_veil"]["enabled"] is False
-    assert stats["echo_veil"]["write_wired"] is False
-    assert stats["echo_veil"]["retrieval_wired"] is False
-    assert stats["echo_veil"]["persistence_wired"] is False
-    assert stats["echo_veil"]["live_probe_performed"] is False
-    assert stats["echo_veil"]["import_error"] == "ModuleNotFoundError"
-    assert "module_origin" not in stats["echo_veil"]
+    assert "echo_veil" not in stats and "continuum_memory" not in stats
     assert tools.harness is harness
-    assert json.loads(tools.harness_stats())["echo_veil"] == stats["echo_veil"]
+    assert "continuum_memory" not in json.loads(tools.harness_stats())
+
+    def unavailable(_cfg):
+        raise continuum_memory.ContinuumMemoryError("PRIVATE-CANARY")
+
+    monkeypatch.setattr(continuum_memory, "doctor", unavailable)
+    result = tools.harness_stats(cfg=Config(continuum_enabled=True))
+    assert json.loads(result)["continuum_memory"] == {"enabled": True, "ok": False, "verify": False}
+    assert "PRIVATE-CANARY" not in result
 
 
 def test_embed_index_records_emits_perf_events():

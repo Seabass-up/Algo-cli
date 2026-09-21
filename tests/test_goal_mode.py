@@ -139,9 +139,9 @@ def test_protected_goal_commands_refuse_untrusted_store_without_crashing(
     method,
     message,
 ):
-    from algo_cli import elsie_echo_preflight
+    from algo_cli import protected_memory_preflight
 
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     errors: list[str] = []
     canary = f"RAW_{command.upper()}_LEDGER_CANARY"
     monkeypatch.setattr(
@@ -150,8 +150,8 @@ def test_protected_goal_commands_refuse_untrusted_store_without_crashing(
         lambda **_kwargs: (_ for _ in ()).throw(ElsieReceiptError(canary)),
     )
     monkeypatch.setattr(
-        elsie_echo_preflight,
-        "prepare_echo_auxiliary_state",
+        protected_memory_preflight,
+        "prepare_protected_auxiliary_state",
         lambda *_args, **_kwargs: {"protected": True},
     )
     monkeypatch.setattr(main, "show_error", errors.append)
@@ -167,15 +167,15 @@ def test_direct_goal_boundaries_fail_before_ledger_access_when_preflight_refuses
     monkeypatch,
     direct_status: bool,
 ) -> None:
-    from algo_cli import elsie_echo_preflight
+    from algo_cli import protected_memory_preflight
 
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     errors: list[str] = []
     monkeypatch.setattr(
-        elsie_echo_preflight,
-        "prepare_echo_auxiliary_state",
+        protected_memory_preflight,
+        "prepare_protected_auxiliary_state",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            elsie_echo_preflight.EchoAuxiliaryPreflightError("PRIVATE_GOAL_PREFLIGHT_CANARY")
+            protected_memory_preflight.ProtectedMemoryPreflightError("PRIVATE_GOAL_PREFLIGHT_CANARY")
         ),
     )
     monkeypatch.setattr(
@@ -190,5 +190,5 @@ def test_direct_goal_boundaries_fail_before_ledger_access_when_preflight_refuses
     else:
         main.run_goal_loop(client=None, cfg=cfg, arg="status")
 
-    assert errors == ["Echo-protected auxiliary state is unavailable; goal command was refused."]
+    assert errors == ["Continuum-protected auxiliary state is unavailable; goal command was refused."]
     assert "PRIVATE_GOAL_PREFLIGHT_CANARY" not in errors[0]

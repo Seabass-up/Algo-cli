@@ -11,8 +11,14 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 - Add explicit, session-only `/mode yolo` activation with an owner, process,
   and workspace binding. YOLO is never saved, inherited by child agents, or
   enabled by a prompt, copied configuration, or harness refresh.
-- Add fail-closed D-57 memory routing when D-57 is explicitly selected, with
-  verified native writes, recall, restart persistence, and corrupt-tip refusal.
+- Route memory through native Continuum when it is explicitly selected, with
+  fail-closed scoped context, revision-bound writes, and no fallback backend.
+  `algo-cli config memory repair` removes retired memory selectors from an
+  existing configuration while preserving every other setting.
+- Add the optional Jev kernel: `jev_question_contract` sends bounded,
+  advisory question contracts to the separately installed `jev-workflows`
+  companion. Lint runs locally; inference requires `algo-cli config jev enable`
+  and session approval, and validated answers never authorize actions.
 - Keep the normal model, context, tool, reflection, and safety status visible
   during generation and tool execution on supported interactive terminals.
 
@@ -30,9 +36,27 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
   is active; saved `/toolmax` behavior is unchanged after leaving YOLO.
 - Preserve live YOLO activation through `/reload` without persisting it, and use
   native cloud-model context limits instead of stale catalog stamps.
+- Show a short `/` menu of common commands, group `/help` by category, and
+  reveal subcommands after their parent command. Existing command names and
+  aliases still work.
+- Render the in-progress footer with the same content, colors, and spacing as
+  the prompt footer, so submitting a question no longer restyles it.
+
+### Removed
+
+- Ship `docs/ALGO.md` as an empty template instead of a populated pattern
+  catalog. Each user keeps their own catalog at `~/.algo_cli/ALGO.md`, which
+  Algo indexes in place of the template; `/intelligence init` creates it.
+- Remove the Acrobat, finance, and construction kernels and their modules from
+  the package. Personal kernels are declared in
+  `~/.algo_cli/kernels/kernels.json` and load on that machine only; `/kernel`
+  lists them separately from built-in kernels.
 
 ### Fixed
 
+- Stop a startup crash when Continuum's required shared context exceeds the
+  default packet size: Algo retries once with the backend-reported size, up to
+  a hard cap, without dropping required records.
 - Distinguish compiler-format failures from missing runtime authority so valid
   YOLO programs are not reported as approval failures.
 - Classify slash-command inspection by each handler's real argument contract.
@@ -53,9 +77,8 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ### Release Limits
 
-- The legacy optional Echo qualification group remains test-only; Echo is not
-  the active memory authority and no Echo memory call or write is part of this
-  release qualification.
+- Retired memory backends (Echo Veil and D-57) are removed, not supported as
+  options or fallbacks. Their historical records are left unchanged.
 - M8 retains five blocked external-browser metrics and M9 retains thirteen
   blocked requirements. This release does not claim external-browser or model-
   quality qualification from local deterministic evidence.

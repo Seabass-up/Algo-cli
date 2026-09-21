@@ -109,12 +109,11 @@ def test_repeated_premature_answers_use_bounded_verification_recovery(monkeypatc
         assert any("verification recovery" in str(event).lower() for event in events if event["type"] == "error")
 
 
-@pytest.mark.parametrize("enabled,protection", [(True, "required"), (True, "optional"), (False, "required")])
-def test_protected_completion_prompt_does_not_request_shell_approval(enabled, protection):
+def test_protected_completion_prompt_does_not_request_shell_approval():
     prompt = nathan_runtime.completion_recovery_prompt(
-        Config(echo_veil_enabled=enabled, echo_veil_protection=protection)
+        Config(continuum_enabled=True)
     )
-    assert "Echo Veil" in prompt and "run_shell is unavailable" in prompt
+    assert "Continuum" in prompt and "run_shell is unavailable" in prompt
     assert "Do not seek shell approval" in prompt
     assert "git_diff" in prompt and "tracked" in prompt
     assert "read_file" in prompt and "not" in prompt

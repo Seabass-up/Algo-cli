@@ -42,7 +42,7 @@ def test_discovery_offers_only_program_composable_actions(monkeypatch):
 
 
 def test_discovery_respects_runtime_program_ceiling_and_echo_policy(monkeypatch, tmp_path):
-    cfg = Config(cwd=str(tmp_path), echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(cwd=str(tmp_path), continuum_enabled=True)
     cfg._algo_program_authorization = authorization_for_actions(("run_shell", "read_file", "update_user_profile"))
     monkeypatch.setattr("algo_cli.tool_context.rank_tools_for_prompt", lambda _query, candidates: candidates)
     result = json.loads(nathan_runtime.run_tool("action_search", {"query": "verification"}, cfg))
@@ -56,12 +56,11 @@ def test_empty_discovery_does_not_advise_an_unavailable_program(tmp_path):
     assert "unavailable" in result["next"]
 
 
-@pytest.mark.parametrize("enabled,protection", [(True, "required"), (True, "optional"), (False, "required")])
 @pytest.mark.parametrize(
     "name,args", [("run_shell", {"command": "python -c 'assert True'"}), ("update_user_profile", {"content": "canary"})]
 )
-def test_protected_globally_disabled_actions_are_denied_before_approval(tmp_path, enabled, protection, name, args):
-    cfg = Config(cwd=str(tmp_path), echo_veil_enabled=enabled, echo_veil_protection=protection)
+def test_protected_globally_disabled_actions_are_denied_before_approval(tmp_path, name, args):
+    cfg = Config(cwd=str(tmp_path), continuum_enabled=True)
     approvals, invocations = [], []
     deps = _dependencies(tmp_path, lambda *_args: invocations.append(True) or "must not execute")
     deps.approve = lambda *_args, **_kwargs: approvals.append(True) or False
@@ -70,14 +69,14 @@ def test_protected_globally_disabled_actions_are_denied_before_approval(tmp_path
     assert result.outcome.status is OutcomeStatus.DENIED
     assert not result.outcome.invoked and not result.outcome.retry_allowed
     assert "Unknown outcome" not in result.result
-    assert "Echo Veil" in result.result
+    assert "Continuum Memory" in result.result
 
 
 def test_protected_path_refusal_precedes_approval_and_mutation_evidence(tmp_path, monkeypatch):
     protected = tmp_path / ".algo_cli"
     protected.mkdir()
     monkeypatch.setattr(config, "CONFIG_DIR", protected)
-    cfg = Config(cwd=str(tmp_path), echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(cwd=str(tmp_path), continuum_enabled=True)
     approvals = []
     deps = _dependencies(tmp_path, lambda *_args: pytest.fail("protected path invoked"))
     deps.approve = lambda *_args, **_kwargs: approvals.append(True) or False
@@ -123,7 +122,7 @@ def test_program_validation_is_a_known_pre_dispatch_denial(tmp_path, plan):
 
 
 def test_program_with_prohibited_echo_shell_is_denied_before_outer_dispatch(tmp_path):
-    cfg = Config(cwd=str(tmp_path), echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(cwd=str(tmp_path), continuum_enabled=True)
     cfg._algo_program_authorization = authorization_for_actions(("run_shell",))
     plan = {
         "version": 1,
@@ -137,7 +136,7 @@ def test_program_with_prohibited_echo_shell_is_denied_before_outer_dispatch(tmp_
     result = dispatch_action("action_program", {"plan": plan}, cfg, dependencies=deps, render=False)
     assert approvals == []
     assert result.outcome.status is OutcomeStatus.DENIED and not result.outcome.invoked
-    assert "Echo Veil" in result.result
+    assert "Continuum Memory" in result.result
 
 
 def test_unavailable_browser_does_not_report_success(monkeypatch):
@@ -278,11 +277,11 @@ def test_browser_mutations_are_not_read_only_or_retryable(name):
 )
 def test_unqualified_browser_cannot_cross_echo_memory_boundary(monkeypatch, tmp_path, name):
     monkeypatch.setattr(cobalt_browser_service, "is_available", lambda: pytest.fail("must refuse before browser probe"))
-    cfg = Config(cwd=str(tmp_path), echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(cwd=str(tmp_path), continuum_enabled=True)
     args = {"url": "file:///unread/private/memory.txt"} if name == "cobalt_open" else {"tab_id": "untrusted-tab"}
     decision = nathan_runtime.preflight_runtime_tool(name, args, cfg)
     assert not decision.allowed
-    assert "Echo Veil" in decision.blocked_result and "unqualified" in decision.blocked_result
+    assert "Continuum Memory" in decision.blocked_result and "unqualified" in decision.blocked_result
 
 
 def test_policy_ceiling_does_not_probe_browser_readiness(monkeypatch, tmp_path):

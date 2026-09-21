@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -98,10 +99,91 @@ _ATTEMPT_SUMMARY_RE = re.compile(
     r"chars=([0-9]{1,10}); bytes=([0-9]{1,10}); "
     r"digest=(hmac-sha256:[0-9a-f]{64})\Z"
 )
-_ECHO_TOOL_RE = re.compile(r"echo_veil_[a-z0-9_]{1,64}\Z")
+_RETIRED_MEMORY_TOOL_RE = re.compile(r"echo_veil_[a-z0-9_]{1,64}\Z")
+_CONTINUUM_TOOL_RE = re.compile(r"memory_[a-z0-9_]{1,64}\Z")
 _PROTECTED_SESSION_COMMANDS = frozenset({"/memory", "/memories", "/remember", "/forget"})
-_ECHO_SUMMARY_MARKER_RE = re.compile(r"\becho[ _-]+veil(?:[ _-]|\b)", re.IGNORECASE)
-_PROTECTED_ECHO_SUMMARY = "[Protected Echo Veil material omitted from persisted summary.]"
+_LEGACY_PROTECTED_SUMMARY_MARKER_RE = re.compile(r"\becho[ _-]+veil(?:[ _-]|\b)", re.IGNORECASE)
+_PROTECTED_MEMORY_SUMMARY = "[Protected memory material omitted from persisted summary.]"
+_RETIRED_ECHO_CONFIG_KEYS = frozenset(
+    {
+        "echo_veil_enabled",
+        "echo_veil_capacity",
+        "echo_veil_protection",
+        "echo_veil_profile",
+        "echo_veil_scope",
+        "echo_veil_state_dir",
+        "echo_veil_embedding_dimension",
+        "echo_veil_embedding_keep_alive_seconds",
+        "echo_veil_embedding_context_length",
+        "echo_veil_embedding_gpu_layers",
+        "echo_veil_production",
+        "echo_veil_crypto_key_path",
+    }
+)
+_RETIRED_MEMORY_CONFIG_KEYS = _RETIRED_ECHO_CONFIG_KEYS | {
+    "d057_enabled", "d057_adapter", "d057_package_root", "d057_cli",
+}
+
+
+def repair_memory_configuration() -> dict[str, object]:
+    """Explicitly select Continuum while preserving unrelated configuration.
+
+    Retired releases can rewrite their former selectors after a newer process
+    has already cut over. Startup must not interpret those names as Continuum,
+    but an explicit repair command can remove only the retired selectors and
+    retain an exact backup for audit/recovery.
+    """
+
+    def closed_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("configuration contains duplicate keys")
+            result[key] = value
+        return result
+
+    with _exclusive_state_lock(CONFIG_FILE):
+        try:
+            raw = _state_descriptor_payload(CONFIG_FILE, max_bytes=MAX_JSON_STATE_BYTES)
+        except FileNotFoundError:
+            raw = b"{}"
+        try:
+            text = raw.decode("utf-8", errors="strict")
+            document = json.loads(text, object_pairs_hook=closed_object)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise RuntimeError("Memory configuration repair requires a valid JSON object.") from exc
+        if not isinstance(document, dict):
+            raise RuntimeError("Memory configuration repair requires a valid JSON object.")
+
+        digest = hashlib.sha256(raw).hexdigest()
+        backup_path = CONFIG_FILE.with_name(f"{CONFIG_FILE.name}.before-continuum-{digest[:16]}.bak")
+        try:
+            existing_backup = _state_descriptor_payload(
+                backup_path,
+                max_bytes=MAX_JSON_STATE_BYTES,
+            )
+        except FileNotFoundError:
+            _atomic_write_text(backup_path, text)
+        else:
+            if existing_backup != raw:
+                raise RuntimeError("Memory configuration backup identity is inconsistent.")
+
+        repaired = dict(document)
+        removed = sorted(key for key in _RETIRED_MEMORY_CONFIG_KEYS if key in repaired)
+        for key in removed:
+            repaired.pop(key, None)
+        marker_removed = repaired.pop("memory_config_requires_repair", None) is not None
+        changed = bool(removed or marker_removed or repaired.get("continuum_enabled") is not True)
+        repaired["continuum_enabled"] = True
+        if changed:
+            _atomic_write_text(CONFIG_FILE, json.dumps(repaired, indent=2))
+
+        return {
+            "changed": changed,
+            "removed_retired_keys": len(removed),
+            "backup_path": backup_path,
+            "source_sha256": digest,
+        }
 
 
 def sanitize_attempt_ledger(value: Any) -> list[dict[str, Any]]:
@@ -221,39 +303,56 @@ def sanitize_attempt_ledger(value: Any) -> list[dict[str, Any]]:
     return sanitized
 
 
-def _echo_tool_name(value: object) -> str:
+def _retired_protected_tool_name(value: object) -> str:
     name = str(value or "").strip().casefold()
-    return name if _ECHO_TOOL_RE.fullmatch(name) is not None else ""
+    return name if _RETIRED_MEMORY_TOOL_RE.fullmatch(name) is not None else ""
+
+
+def _protected_memory_tool_name(value: object) -> str:
+    name = str(value or "").strip().casefold()
+    if _CONTINUUM_TOOL_RE.fullmatch(name) is not None:
+        return name
+    return _retired_protected_tool_name(name)
 
 
 def sanitize_persisted_summary(value: object) -> str:
-    """Remove legacy Echo result material before summary persistence/use."""
+    """Remove retired protected-memory material before persistence/use."""
 
     text = str(value or "")
-    if _ECHO_SUMMARY_MARKER_RE.search(text):
-        return _PROTECTED_ECHO_SUMMARY
+    if _LEGACY_PROTECTED_SUMMARY_MARKER_RE.search(text):
+        return _PROTECTED_MEMORY_SUMMARY
     return text
 
 
-def _config_selects_echo_authority(config: object) -> bool:
+def _legacy_config_requires_protected_memory(config: object) -> bool:
+    """Recognize retired selections without activating or reading their stores."""
+
     if isinstance(config, dict):
         enabled = config.get("echo_veil_enabled", False)
         protection = config.get("echo_veil_protection", "optional")
+        retired_enabled = config.get("d057_enabled", False)
     else:
-        enabled = getattr(config, "echo_veil_enabled", False)
-        protection = getattr(config, "echo_veil_protection", "optional")
-    return bool(enabled) or str(protection or "optional").strip().casefold() == "required"
+        return False
+    return (
+        type(enabled) is not bool or type(retired_enabled) is not bool or type(protection) is not str
+        or protection.strip().casefold() not in {"optional", "required"}
+        or enabled or retired_enabled or protection.strip().casefold() == "required"
+    )
 
 
-def echo_authority_selected_for_persistence(config: object) -> bool:
-    """Compatibility name for the external-memory persistence boundary."""
+def protected_memory_selected_for_persistence(config: object) -> bool:
+    """Return whether persisted conversation state needs protected projection."""
 
     return _config_selects_memory_authority(config)
 
 
 def _config_selects_memory_authority(config: object) -> bool:
-    d057 = config.get("d057_enabled", False) if isinstance(config, dict) else getattr(config, "d057_enabled", False)
-    return bool(d057) or _config_selects_echo_authority(config)
+    get = config.get if isinstance(config, dict) else lambda key, default: getattr(config, key, default)
+    enabled = get("continuum_enabled", False)
+    return (
+        type(enabled) is not bool or enabled or bool(get("memory_config_error", ""))
+        or bool(get("memory_config_requires_repair", False)) or _legacy_config_requires_protected_memory(config)
+    )
 
 
 def persisted_session_summary(config: object) -> str:
@@ -268,11 +367,11 @@ def persisted_session_summary(config: object) -> str:
     return sanitize_persisted_summary(value)
 
 
-def _echo_result_receipt(content: object) -> str:
+def _protected_result_receipt(content: object) -> str:
     text = str(content or "")
     encoded = text.encode("utf-8", errors="replace")
     return (
-        "[Protected Echo Veil tool result omitted from persisted history; "
+        "[Protected memory tool result omitted from persisted history; "
         f"chars={min(len(text), ATTEMPT_LEDGER_MAX_RESULT_COUNT)}; "
         f"bytes={min(len(encoded), ATTEMPT_LEDGER_MAX_RESULT_COUNT)}.]"
     )
@@ -282,27 +381,27 @@ def _protected_persisted_tool_call(
     name: str,
     arguments: object,
     *,
-    echo_authority: bool,
+    protected_memory: bool,
 ) -> bool:
-    if _echo_tool_name(name):
+    if _protected_memory_tool_name(name):
         return True
-    if echo_authority and str(name or "").strip().casefold() in {"remember", "append_lesson"}:
+    if protected_memory and str(name or "").strip().casefold() in {"remember", "append_lesson"}:
         return True
     if str(name or "").strip().casefold() != "session_command":
         return False
     parsed = arguments
     if isinstance(parsed, str):
         if len(parsed.encode("utf-8", errors="replace")) > 4_096:
-            return echo_authority
+            return protected_memory
         try:
             parsed = json.loads(parsed)
         except (json.JSONDecodeError, UnicodeError):
-            return echo_authority
+            return protected_memory
     if not isinstance(parsed, dict) or set(parsed) - {"command"}:
-        return echo_authority
+        return protected_memory
     command = parsed.get("command")
     if not isinstance(command, str) or len(command.encode("utf-8", errors="replace")) > 4_096:
-        return echo_authority
+        return protected_memory
     root = command.strip().split(maxsplit=1)[0].casefold() if command.strip() else ""
     return root in _PROTECTED_SESSION_COMMANDS
 
@@ -310,9 +409,9 @@ def _protected_persisted_tool_call(
 def project_messages_for_persistence(
     messages: object,
     *,
-    echo_authority: bool = False,
+    protected_memory: bool = False,
 ) -> list[dict[str, Any]]:
-    """Project Echo calls/results while leaving current-turn RAM messages intact."""
+    """Project protected calls/results while leaving current-turn RAM messages intact."""
 
     if not isinstance(messages, list):
         return []
@@ -328,13 +427,13 @@ def project_messages_for_persistence(
             calls: list[Any] = []
             for raw_call in message["tool_calls"]:
                 if not isinstance(raw_call, dict):
-                    if not echo_authority:
+                    if not protected_memory:
                         calls.append(raw_call)
                     continue
                 call = dict(raw_call)
                 function = call.get("function")
                 if not isinstance(function, dict):
-                    if not echo_authority:
+                    if not protected_memory:
                         calls.append(call)
                     continue
                 function_copy = dict(function)
@@ -342,7 +441,7 @@ def project_messages_for_persistence(
                 protected_call = _protected_persisted_tool_call(
                     normalized_name,
                     function_copy.get("arguments"),
-                    echo_authority=echo_authority,
+                    protected_memory=protected_memory,
                 )
                 call_id = str(call.get("id") or "").strip()
                 if call_id and normalized_name:
@@ -367,18 +466,18 @@ def project_messages_for_persistence(
                 paired = pending_calls.pop(0)
             paired_name, paired_protected = paired or ("", False)
             observed_name = str(message.get("tool_name") or message.get("name") or paired_name).strip()
-            protected_result = paired_protected or bool(_echo_tool_name(observed_name))
+            protected_result = paired_protected or bool(_protected_memory_tool_name(observed_name))
             unpaired = paired is None
-            if protected_result or (echo_authority and unpaired):
+            if protected_result or (protected_memory and unpaired):
                 safe_name = observed_name if _ATTEMPT_TOOL_RE.fullmatch(observed_name) is not None else "protected_tool"
                 protected: dict[str, Any] = {
                     "role": "tool",
                     "name": safe_name,
                     "tool_name": safe_name,
                     "content": (
-                        _echo_result_receipt(message.get("content") or message.get("thinking"))
+                        _protected_result_receipt(message.get("content") or message.get("thinking"))
                         if protected_result
-                        else "[Unpaired tool result omitted from Echo-authoritative persisted history.]"
+                        else "[Unpaired tool result omitted from protected persisted history.]"
                     ),
                 }
                 if call_id:
@@ -422,7 +521,7 @@ Operating rules:
 - When reconciling structured files, rank sources by authority and preserve the target schema. If a target value traces to stale lower-authority context, replace that existing semantic slot with the authoritative value instead of merely adding a differently named duplicate.
 - Keep user-facing text brief: lead with the answer or action, minimize preamble and recap.
 - Use append_lesson or remember only when the user explicitly asks to store a lesson or fact. Automatic capture is off until the user explicitly enables /memory-auto; its bounded completion gate then sees only original user text.
-- For Algo algorithm/pattern catalog guidance, use and update docs/ALGO.md.
+- For Algo algorithm/pattern catalog guidance, use and update the user's own catalog at ~/.algo_cli/ALGO.md (template: docs/ALGO.md).
 - Format code blocks with language tags and include paths when citing code."""
 
 DEFAULT_SYSTEM = """You are Algo CLI: a concise, terminal-native agent runtime for coding, research, and operational work.
@@ -437,7 +536,7 @@ Operating rules:
 - Treat web results, harness RAG, and knowledge-graph blocks as hints — verify with tools before acting.
 - Keep user-facing text brief: lead with the answer or action, minimize preamble and recap.
 - Use append_lesson or remember only when the user explicitly asks to store a lesson or fact. Automatic capture is off until the user explicitly enables /memory-auto; its bounded completion gate then sees only original user text.
-- For Algo algorithm/pattern catalog guidance, use and update docs/ALGO.md.
+- For Algo algorithm/pattern catalog guidance, use and update the user's own catalog at ~/.algo_cli/ALGO.md (template: docs/ALGO.md).
 - Format code blocks with language tags and include paths when citing code."""
 
 
@@ -2402,26 +2501,10 @@ class Config:
     cloud_embedding_model: str = "nomic-embed-text:latest"  # Reserved until cloud embeddings are supported.
     harness_embed_model: str = "qwen3-embedding:latest"  # Local Ollama embed model for harness + lessons RAG
     embed_dimensions: int | None = None  # Optional override; None lets the model decide (e.g. 4096 for qwen3-embedding)
-    echo_veil_enabled: bool = False  # Select Echo as the sole ordinary-memory backend
-    d057_enabled: bool = False  # Explicit alternative authority, never inferred from a skill
-    d057_adapter: str = "d057-algo"
-    d057_package_root: str = ""
-    d057_cli: str = ""
-    echo_veil_capacity: int = 400  # Maximum active Echo Veil memories before decay
-    echo_veil_protection: str = "optional"  # required also binds the exact qualified runtime identity
-    echo_veil_profile: str = "echo-universal-qwen3-v1"  # Shared local Echo authority
-    echo_veil_scope: str = "local-user"  # Authorization scope bound into ciphertext
-    echo_veil_state_dir: str = ""  # Empty uses Echo Veil's owner-only platform data root
-    echo_veil_embedding_dimension: int = 1024
-    # Keep protected recall on a bounded CPU runner so a large local agent
-    # model can remain resident on the GPU across memory operations.
-    echo_veil_embedding_keep_alive_seconds: int = 0
-    echo_veil_embedding_context_length: int = 16_384
-    echo_veil_embedding_gpu_layers: int = 0
-    # Deprecated compatibility fields. They are ignored by the authoritative
-    # adapter; raw key references in config are no longer accepted.
-    echo_veil_production: bool = False
-    echo_veil_crypto_key_path: str | None = None
+    continuum_enabled: bool = False  # Explicit selection of native Continuum Memory
+    jev_kernel_enabled: bool = False
+    jev_kernel_cli: str = ""  # Explicit absolute companion path; credentials stay in the companion.
+    memory_config_error: str = field(default="", init=False, repr=False)
     memory_auto_capture_enabled: bool = False  # Explicit opt-in only; see consent version below
     memory_auto_capture_consent_version: int = 0
     memory_auto_daily_limit: int = 5  # User may lower; admission hard-maxes at 5/day
@@ -2478,6 +2561,8 @@ class Config:
         return self.auto_mode or self.session_auto_approve or MODE_POLICIES[active_mode(self)].session_preapproval
 
     def save(self) -> None:
+        if self.memory_config_error:
+            raise RuntimeError("Memory configuration requires repair; the original configuration was preserved.")
         _ensure_private_config_parent(CONFIG_FILE)
         _ensure_private_config_parent(HISTORY_DIR / ".directory-authority")
         self.session_summary = persisted_session_summary(self)
@@ -2489,15 +2574,14 @@ class Config:
         data.pop("messages", None)
         data.pop("memories", None)
         data.pop("session_auto_approve", None)
+        data.pop("memory_config_error", None)
         _atomic_write_text(CONFIG_FILE, json.dumps(data, indent=2))
 
     def save_memories(self) -> None:
-        from .ada_memory_d057 import selected
+        from .continuum_memory import selected
 
         if selected(self):
-            raise RuntimeError("plaintext memory persistence is disabled while D-57 is authoritative")
-        if self.echo_veil_enabled or self.echo_veil_protection.strip().casefold() == "required":
-            raise RuntimeError("plaintext memory persistence is disabled while Echo Veil is authoritative")
+            raise RuntimeError("plaintext memory persistence is disabled while Continuum Memory is authoritative")
         with _exclusive_state_lock(MEMORY_FILE):
             _atomic_write_text(MEMORY_FILE, json.dumps([str(item) for item in self.memories], indent=2))
 
@@ -2506,21 +2590,10 @@ class Config:
         fact = str(fact).strip()
         if not fact:
             return False
-        from . import ada_memory_d057
+        from . import continuum_memory
 
-        if ada_memory_d057.selected(self):
-            return ada_memory_d057.remember_fact(self, fact)
-        from .ada_memory_echo_veil import (
-            echo_veil_authority_selected,
-            remember_with_echo_veil,
-        )
-
-        if echo_veil_authority_selected(self):
-            return remember_with_echo_veil(
-                self,
-                fact,
-                source="user_explicit",
-            )
+        if continuum_memory.selected(self):
+            return continuum_memory.remember_fact(self, fact)
         with _exclusive_state_lock(MEMORY_FILE):
             loaded = _load_json_file(MEMORY_FILE, [])
             current = [str(item) for item in loaded] if isinstance(loaded, list) else []
@@ -2545,12 +2618,10 @@ class Config:
         Fact bodies are deliberately absent from the returned telemetry.
         """
 
-        from .ada_memory_d057 import selected
+        from .continuum_memory import selected
 
         if selected(self):
-            raise RuntimeError("legacy plaintext reconciliation is prohibited while D-57 is authoritative")
-        if self.echo_veil_enabled or self.echo_veil_protection.strip().casefold() == "required":
-            raise RuntimeError("legacy plaintext reconciliation is prohibited while Echo Veil is authoritative")
+            raise RuntimeError("legacy plaintext reconciliation is prohibited while Continuum Memory is authoritative")
 
         def normalized_key(value: str) -> str:
             return " ".join(value.split()).casefold()
@@ -2586,12 +2657,10 @@ class Config:
 
     def forget_memory_index(self, index: int) -> str:
         """Remove a memory by zero-based index against the latest persisted list."""
-        from .ada_memory_d057 import selected
+        from .continuum_memory import selected
 
         if selected(self):
-            raise RuntimeError("D-57 is append-only; no plaintext memory was changed")
-        if self.echo_veil_enabled or self.echo_veil_protection.strip().casefold() == "required":
-            raise RuntimeError("legacy plaintext deletion is prohibited while Echo Veil is authoritative")
+            raise RuntimeError("use Continuum memory_revoke; no plaintext memory was changed")
         with _exclusive_state_lock(MEMORY_FILE):
             loaded = _load_json_file(MEMORY_FILE, [])
             current = [str(item) for item in loaded] if isinstance(loaded, list) else []
@@ -2605,7 +2674,7 @@ class Config:
         path = HISTORY_DIR / f"{safe_name}.json"
         persisted_messages = project_messages_for_persistence(
             self.messages,
-            echo_authority=_config_selects_memory_authority(self),
+            protected_memory=_config_selects_memory_authority(self),
         )
         persisted_summary = persisted_session_summary(self)
         _atomic_write_text(
@@ -2636,7 +2705,7 @@ class Config:
         if isinstance(loaded, list):
             projected_messages = project_messages_for_persistence(
                 loaded,
-                echo_authority=_config_selects_memory_authority(self),
+                protected_memory=_config_selects_memory_authority(self),
             )
             self.messages = projected_messages
             self.session_summary = ""
@@ -2647,7 +2716,7 @@ class Config:
             messages = loaded.get("messages", [])
             projected_messages = project_messages_for_persistence(
                 messages,
-                echo_authority=_config_selects_memory_authority(self),
+                protected_memory=_config_selects_memory_authority(self),
             )
             self.messages = projected_messages
             summary = loaded.get("session_summary", "")
@@ -2679,6 +2748,7 @@ class Config:
         except OSError:
             config_present = True
         config_invalid = False
+        retired_authority_selected = False
         if config_present:
             invalid = object()
             data = _load_json_file(
@@ -2689,28 +2759,40 @@ class Config:
             if not isinstance(data, dict):
                 config_invalid = True
                 data = {}
-            echo_enabled = data.get("echo_veil_enabled", False)
-            if type(data.get("d057_enabled", False)) is not bool:
-                raise RuntimeError("Invalid D-57 authority selection; startup refused.")
-            echo_protection = data.get("echo_veil_protection", "optional")
-            if type(echo_enabled) is not bool or not isinstance(echo_protection, str):
+            continuum_enabled = data.get("continuum_enabled", False)
+            retired_d057_enabled = data.get("d057_enabled", False)
+            retired_echo_enabled = data.get("echo_veil_enabled", False)
+            retired_echo_protection = data.get("echo_veil_protection", "optional")
+            if (
+                type(continuum_enabled) is not bool
+                or type(retired_d057_enabled) is not bool
+                or type(retired_echo_enabled) is not bool
+                or not isinstance(retired_echo_protection, str)
+                or retired_echo_protection.strip().casefold() not in {"optional", "required"}
+            ):
                 config_invalid = True
+            retired_authority_selected = bool(retired_d057_enabled or retired_echo_enabled) or (
+                isinstance(retired_echo_protection, str)
+                and retired_echo_protection.strip().casefold() == "required"
+            )
             if not config_invalid:
                 for key, value in data.items():
+                    if key in _RETIRED_MEMORY_CONFIG_KEYS:
+                        continue
                     if hasattr(cfg, key) and key not in {
                         "messages",
                         "memories",
                         "session_auto_approve",
+                        "memory_config_error",
                     }:
                         coerced = _coerce_config_value(getattr(cfg, key), value)
                         if coerced is not _INVALID_CONFIG_VALUE:
                             setattr(cfg, key, coerced)
-        if config_invalid:
-            # An unreadable authority selection must never silently reactivate
-            # legacy plaintext memory. Required mode will surface a fixed
-            # unavailable-state error until the config is repaired explicitly.
-            cfg.echo_veil_enabled = True
-            cfg.echo_veil_protection = "required"
+            if data.get("memory_config_requires_repair") is not None:
+                config_invalid = True
+        if config_invalid or (retired_authority_selected and not cfg.continuum_enabled):
+            # Refuse unknown or retired authority instead of selecting a backend.
+            cfg.memory_config_error = "invalid_config" if config_invalid else "retired_memory_selection"
             cfg.skill_crystallize_enabled = False
         # A file cannot grant the user-only, process-local YOLO activation.
         if str(cfg.session_mode).strip().lower() == "yolo":
@@ -2738,14 +2820,8 @@ class Config:
         # system prompts are preserved verbatim.
         if cfg.system == LEGACY_DEFAULT_SYSTEM:
             cfg.system = DEFAULT_SYSTEM
-        from .ada_memory_d057 import selected
-
-        d057_authority = selected(cfg)
         if (
-            not d057_authority
-            and not cfg.echo_veil_enabled
-            and cfg.echo_veil_protection.strip().casefold() != "required"
-            and MEMORY_FILE.exists()
+            not _config_selects_memory_authority(cfg) and MEMORY_FILE.exists()
         ):
             loaded = _load_json_file(MEMORY_FILE, [])
             if isinstance(loaded, list):
@@ -2903,9 +2979,9 @@ def _write_private_migration_file(
 
 
 def perform_legacy_migration() -> bool:
-    """Migrate legacy state without shadow-copying Echo-protected material.
+    """Migrate legacy state without shadow-copying Continuum-protected material.
 
-    Never deletes the original. Echo-selected installations receive only a
+    Never deletes the original. Retired protected-memory installations receive only a
     strict settings projection; memory, history, derived artifacts, and auth
     bytes are not copied or backed up automatically.
     """
@@ -2984,7 +3060,7 @@ def perform_legacy_migration() -> bool:
         # migration) is authoritative and must never be clobbered.
         return False
 
-    echo_selected = True
+    protected_memory_selected = True
     final_directory_created = False
     try:
         import shutil
@@ -2992,15 +3068,18 @@ def perform_legacy_migration() -> bool:
 
         from .grace_memory_receipts import (
             inventory_legacy_tree,
-            legacy_config_selects_echo,
+            legacy_config_requires_protected_memory,
             read_pinned_legacy_artifact,
             sanitized_legacy_config,
         )
 
         # Unsafe or malformed legacy configuration is conservatively treated
         # as protection-selected until a pinned parse proves otherwise.
-        echo_selected = legacy_config_selects_echo(old)
-        inventory = inventory_legacy_tree(old, echo_selected=echo_selected)
+        protected_memory_selected = legacy_config_requires_protected_memory(old)
+        inventory = inventory_legacy_tree(
+            old,
+            protected_memory_selected=protected_memory_selected,
+        )
         if inventory.truncated:
             raise LegacyMigrationError("legacy migration inventory is incomplete")
 
@@ -3009,7 +3088,7 @@ def perform_legacy_migration() -> bool:
             _ensure_windows_private_directory(tmp_new, require_new=True)
         else:
             tmp_new.mkdir(mode=0o700)
-        if echo_selected:
+        if protected_memory_selected:
             projected = sanitized_legacy_config(old)
             _write_private_migration_file(
                 tmp_new,
@@ -3067,11 +3146,11 @@ def perform_legacy_migration() -> bool:
             if not artifact.automatic_copy_allowed:
                 blocked_counts[label] = blocked_counts.get(label, 0) + 1
         migration_receipt = {
-            "schema_version": 1,
-            "echo_authority_selected": echo_selected,
+            "schema_version": 2,
+            "protected_memory_selected": protected_memory_selected,
             "inventory_truncated": False,
             "original_retained": True,
-            "backup_created": bool(not echo_selected and backup.exists()),
+            "backup_created": bool(not protected_memory_selected and backup.exists()),
             "explicit_review_required": bool(blocked_counts),
             "artifact_counts": dict(sorted(artifact_counts.items())),
             "blocked_artifact_counts": dict(sorted(blocked_counts.items())),
@@ -3195,10 +3274,10 @@ def perform_legacy_migration() -> bool:
                 shutil.rmtree(tmp_new, ignore_errors=True)
         except Exception:
             pass
-        if final_directory_created or echo_selected:
+        if final_directory_created or protected_memory_selected:
             raise LegacyMigrationError("legacy migration could not be completed safely") from exc
         # Optional legacy migration may remain best effort only when no final
-        # namespace was reserved and pinned configuration proved Echo disabled.
+        # namespace was reserved and pinned configuration proved protected memory disabled.
         return False
 
 
@@ -3212,9 +3291,9 @@ def load_legacy_migration_receipt() -> dict[str, Any]:
         preserve_corrupt=False,
         max_bytes=64 * 1024,
     )
-    expected = {
+    expected_v2 = {
         "schema_version",
-        "echo_authority_selected",
+        "protected_memory_selected",
         "inventory_truncated",
         "original_retained",
         "backup_created",
@@ -3222,12 +3301,24 @@ def load_legacy_migration_receipt() -> dict[str, Any]:
         "artifact_counts",
         "blocked_artifact_counts",
     }
-    if not isinstance(loaded, dict) or set(loaded) != expected:
+    expected_v1 = (expected_v2 - {"protected_memory_selected"}) | {"echo_authority_selected"}
+    if not isinstance(loaded, dict):
         return {}
-    if loaded.get("schema_version") != 1 or any(
+    loaded_keys = frozenset(loaded)
+    if loaded_keys not in (frozenset(expected_v1), frozenset(expected_v2)):
+        return {}
+    schema_version = loaded.get("schema_version")
+    if schema_version not in {1, 2}:
+        return {}
+    selection_field = "protected_memory_selected" if schema_version == 2 else "echo_authority_selected"
+    if (schema_version == 2 and loaded_keys != frozenset(expected_v2)) or (
+        schema_version == 1 and loaded_keys != frozenset(expected_v1)
+    ):
+        return {}
+    if any(
         type(loaded.get(key)) is not bool
         for key in (
-            "echo_authority_selected",
+            selection_field,
             "inventory_truncated",
             "original_retained",
             "backup_created",
@@ -3248,7 +3339,9 @@ def load_legacy_migration_receipt() -> dict[str, Any]:
             for key, value in values.items()
         ):
             return {}
-    return loaded
+    normalized = dict(loaded)
+    normalized["protected_memory_selected"] = bool(normalized.pop(selection_field))
+    return normalized
 
 
 def migrate_legacy_sidecar_files() -> list[str]:
@@ -3261,16 +3354,16 @@ def migrate_legacy_sidecar_files() -> list[str]:
     from .grace_memory_receipts import (
         ElsieReceiptError,
         inventory_legacy_tree,
-        legacy_config_selects_echo,
+        legacy_config_requires_protected_memory,
         read_pinned_legacy_artifact,
     )
 
-    if LEGACY_CONFIG_DIR.exists() and legacy_config_selects_echo(LEGACY_CONFIG_DIR):
+    if LEGACY_CONFIG_DIR.exists() and legacy_config_requires_protected_memory(LEGACY_CONFIG_DIR):
         return []
 
     moved: list[str] = []
     try:
-        inventory = inventory_legacy_tree(LEGACY_CONFIG_DIR, echo_selected=False)
+        inventory = inventory_legacy_tree(LEGACY_CONFIG_DIR, protected_memory_selected=False)
     except ElsieReceiptError:
         return []
     if inventory.truncated:
