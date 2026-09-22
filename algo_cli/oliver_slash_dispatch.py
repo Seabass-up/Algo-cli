@@ -1235,6 +1235,7 @@ def handle_command(
                 if not 256 <= requested_context <= 2_000_000:
                     raise ValueError
                 cfg.num_ctx = requested_context
+                cfg.num_ctx_explicit = True
                 cfg.save()
             except ValueError:
                 m.show_error("Usage: /ctx <number from 256 to 2000000>")

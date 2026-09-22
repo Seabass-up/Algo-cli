@@ -245,6 +245,7 @@ def require_disjoint_git_worktree(cwd: object) -> Path:
     rc, metadata = _run_git(
         ["rev-parse", "--path-format=absolute", "--show-toplevel", "--absolute-git-dir", "--git-common-dir"],
         str(candidate),
+        errors="surrogateescape",
     )
     if rc != 0:
         # Let the ordinary handler report a non-repository, but never accept
@@ -264,7 +265,9 @@ def require_disjoint_git_worktree(cwd: object) -> Path:
         raise ProtectedMemoryPathError("repository worktree is redirected")
     for location in locations[1:]:
         require_allowed_path(location, cwd=root, rules=rules)
-    rc, inventory = _run_git(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], str(root))
+    rc, inventory = _run_git(
+        ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], str(root), errors="surrogateescape"
+    )
     paths = inventory.split("\0")
     if rc != 0 or len(paths) > 20_001 or len(inventory) > 4 * 1024 * 1024:
         raise ProtectedMemoryPathError("repository file inventory is unavailable or oversized")

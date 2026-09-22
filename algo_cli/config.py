@@ -2491,6 +2491,7 @@ class Config:
     # (medium); keeping a map lets Sol, Terra, and Luna have independent knobs.
     chatgpt_reasoning_efforts: dict[str, str] = field(default_factory=dict)
     num_ctx: int = 8192
+    num_ctx_explicit: bool = False  # set by /ctx; an explicit window is never treated as a stale stamp
     temperature: float = 0.4
     chat_stream_timeout_seconds: float = DEFAULT_CHAT_STREAM_TIMEOUT_SECONDS
     max_tool_iterations: int = 24

@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import threading
 from typing import Any
 
 
@@ -61,20 +62,82 @@ def storage_root() -> Path:
     return Path.home() / "Library" / "Application Support" / "ContinuumMemory"
 
 
+def _workspace_root(cwd: Path) -> Path | None:
+    """The tree a repository could control: the enclosing checkout, else the working directory.
+
+    A home directory (or one of its ancestors) is not a workspace; user-level
+    installs such as ``~/.local/bin`` stay usable when Algo starts from ``~``.
+    """
+    root = next((parent for parent in (cwd, *cwd.parents) if (parent / ".git").exists()), cwd)
+    home = Path.home().resolve()
+    return None if root == home or root in home.parents else root
+
+
+def _inside(path: Path, root: Path | None) -> bool:
+    return root is not None and (path == root or root in path.parents)
+
+
 def _native_cli() -> Path:
-    # Never resolve a program from a relative PATH entry or the working tree.
-    cwd = Path.cwd().resolve()
+    # Never resolve a program from a relative PATH entry or anywhere in the workspace,
+    # such as an activated repository .venv/bin: it would receive protected memory.
+    workspace = _workspace_root(Path.cwd().resolve())
     entries = [
         entry for entry in os.get_exec_path()
-        if entry and Path(entry).is_absolute() and Path(entry).resolve() != cwd
+        if entry and Path(entry).is_absolute() and not _inside(Path(entry).resolve(), workspace)
     ]
     executable = shutil.which("continuum-memory", path=os.pathsep.join(entries))
     if executable is None:
         raise ContinuumMemoryError("Install the native continuum-memory command before selecting Continuum.")
     cli = Path(executable).resolve(strict=True)
-    if not cli.is_file():
+    if not cli.is_file() or _inside(cli, workspace):
         raise ContinuumMemoryError("The native Continuum command is unavailable.")
     return cli
+
+
+MAX_REPLY_BYTES = 1_048_576
+NATIVE_TIMEOUT_SECONDS = 120
+
+
+def _run_native(argv: list[str], body: str, *, env: dict[str, str], cwd: Path) -> tuple[int, str]:
+    """Stream the reply under a fixed limit; a noisy or hung command is killed, never buffered."""
+    with subprocess.Popen(
+        argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, cwd=cwd,
+    ) as process:
+        assert process.stdin is not None and process.stdout is not None
+        stdin = process.stdin
+
+        def send() -> None:
+            try:
+                stdin.write(body.encode("utf-8"))
+                stdin.close()
+            except OSError:
+                pass  # The command exited early; its reply and status decide the outcome.
+
+        timed_out = threading.Event()
+
+        def expire() -> None:
+            timed_out.set()
+            process.kill()
+
+        sender = threading.Thread(target=send, daemon=True)
+        timer = threading.Timer(NATIVE_TIMEOUT_SECONDS, expire)
+        sender.start()
+        timer.start()
+        reply = bytearray()
+        try:
+            while chunk := process.stdout.read(65_536):
+                reply.extend(chunk)
+                if len(reply) > MAX_REPLY_BYTES:
+                    process.kill()
+                    raise ValueError("oversized reply")
+            returncode = process.wait()
+        finally:
+            timer.cancel()
+            process.kill()
+            sender.join(timeout=1)
+        if timed_out.is_set():
+            raise subprocess.TimeoutExpired(argv, NATIVE_TIMEOUT_SECONDS)
+        return returncode, reply.decode("utf-8")
 
 
 def invoke_continuum(
@@ -122,7 +185,7 @@ def invoke_continuum(
         )
         if len(body.encode("utf-8")) > 8 * 1024 * 1024:
             raise ValueError("oversized request")
-        result = subprocess.run(
+        returncode, reply = _run_native(
             [
                 str(cli),
                 "--root",
@@ -135,21 +198,14 @@ def invoke_continuum(
                 scope,
                 operation,
             ],
-            input=body,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=120,
-            check=False,
+            body,
             env=env,
             cwd=cli.parent,
         )
-        if len(result.stdout.encode("utf-8")) > 1_048_576:
-            raise ValueError("oversized reply")
-        value = json.loads(result.stdout)
-        if result.returncode not in {0, 2} or type(value) is not dict or type(value.get("ok")) is not bool:
+        value = json.loads(reply)
+        if returncode not in {0, 2} or type(value) is not dict or type(value.get("ok")) is not bool:
             raise ValueError("unexpected reply")
-        if (result.returncode == 0) != value["ok"]:
+        if (returncode == 0) != value["ok"]:
             raise ValueError("inconsistent reply")
         return value
     except (OSError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError) as exc:

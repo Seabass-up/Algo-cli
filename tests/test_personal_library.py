@@ -126,3 +126,25 @@ def test_kernel_list_separates_user_section(config_dir: Path, monkeypatch) -> No
     listed = _render(monkeypatch, main.handle_kernel_command, "list")
     assert "Your kernels:\n  mine (preview/medium) - fixture kernel" in listed
     assert "kernels.json" in _render(monkeypatch, main.handle_kernel_command, "help")
+
+
+def test_user_kernel_file_is_bounded_before_and_after_parsing(config_dir: Path) -> None:
+    path = _write_kernels(config_dir, [{"name": f"k{index}"} for index in range(manifest.MAX_USER_KERNELS + 1)])
+    catalog = manifest.load_user_kernels()
+    assert catalog.kernels == () and "more than" in catalog.issues[0]
+
+    path.write_bytes(b" " * (manifest.MAX_USER_KERNELS_BYTES + 1))
+    catalog = manifest.load_user_kernels()
+    assert catalog.kernels == () and "larger than" in catalog.issues[0]
+
+    _write_kernels(
+        config_dir,
+        [
+            {"name": "n" * 65},
+            {"name": "longtext", "description": "d" * (manifest.MAX_USER_KERNEL_TEXT + 1)},
+            {"name": "manymods", "modules": ["m"] * 65},
+            {"name": "fine"},
+        ],
+    )
+    catalog = manifest.load_user_kernels()
+    assert [spec.name for spec in catalog.kernels] == ["fine"] and len(catalog.issues) == 3

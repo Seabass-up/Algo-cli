@@ -669,6 +669,9 @@ def _copy_spec(spec: KernelSpec) -> KernelSpec:
 
 
 USER_KERNELS_FILENAME = "kernels.json"
+MAX_USER_KERNELS_BYTES = 256 * 1024
+MAX_USER_KERNELS = 200
+MAX_USER_KERNEL_TEXT = 1024
 _USER_SPEC_FIELDS = ("name", "description", "modules", "actions", "slash_commands", "safety_level", "status")
 
 
@@ -679,7 +682,11 @@ def user_kernels_dir() -> Path:
 
 
 def _string_list(value: Any) -> list[str] | None:
-    if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+    if (
+        not isinstance(value, list)
+        or len(value) > 64
+        or not all(isinstance(item, str) and item.strip() and len(item) <= MAX_USER_KERNEL_TEXT for item in value)
+    ):
         return None
     return [item.strip() for item in value]
 
@@ -692,13 +699,20 @@ def load_user_kernels() -> UserKernelCatalog:
     if not path.is_file():
         return UserKernelCatalog(path, (), ())
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        # Read one byte past the limit so an oversized file is refused before parsing.
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_USER_KERNELS_BYTES + 1)
+        if len(raw) > MAX_USER_KERNELS_BYTES:
+            return UserKernelCatalog(path, (), (f"{path.name}: larger than {MAX_USER_KERNELS_BYTES} bytes",))
+        payload = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
         return UserKernelCatalog(path, (), (f"{path.name}: unreadable: {type(exc).__name__}",))
     rows = payload.get("kernels") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         return UserKernelCatalog(path, (), (f'{path.name}: expected {{"kernels": [...]}}',))
-    built_in = {spec.name for spec in _KERNELS}
+    if len(rows) > MAX_USER_KERNELS:
+        return UserKernelCatalog(path, (), (f"{path.name}: more than {MAX_USER_KERNELS} kernels",))
+    taken = {spec.name for spec in _KERNELS}
     specs: list[KernelSpec] = []
     issues: list[str] = []
     for index, row in enumerate(rows):
@@ -710,15 +724,20 @@ def load_user_kernels() -> UserKernelCatalog:
         if not name:
             issues.append(f"{label}: missing name")
             continue
-        if name in built_in or any(spec.name == name for spec in specs):
+        if len(name) > 64:
+            issues.append(f"{label}: name is longer than 64 characters")
+            continue
+        if name in taken:
             issues.append(f"{name}: name is already registered")
             continue
-        unknown = sorted(set(row) - set(_USER_SPEC_FIELDS))
+        unknown = sorted(str(key)[:64] for key in set(row) - set(_USER_SPEC_FIELDS))
         lists = {key: _string_list(row.get(key, [])) for key in ("modules", "actions", "slash_commands")}
         bad = [key for key, value in lists.items() if value is None]
-        if unknown or bad or not isinstance(row.get("description", ""), str):
+        description = row.get("description", "")
+        if unknown or bad or not isinstance(description, str) or len(description) > MAX_USER_KERNEL_TEXT:
             issues.append(f"{name}: invalid fields: {', '.join(unknown + bad) or 'description'}")
             continue
+        taken.add(name)
         specs.append(
             KernelSpec(
                 name=name,

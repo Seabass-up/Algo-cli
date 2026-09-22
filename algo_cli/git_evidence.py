@@ -77,7 +77,10 @@ def _untracked_state_digest(cwd: str | None, paths: tuple[str, ...], *, protecte
     return digest.hexdigest()
 
 
-def _run_git(args: list[str], cwd: str | None = None, timeout: int = 20) -> tuple[int, str]:
+def _run_git(
+    args: list[str], cwd: str | None = None, timeout: int = 20, *, errors: str = "replace"
+) -> tuple[int, str]:
+    # Path checks pass errors="surrogateescape" so a non-UTF-8 name keeps its exact bytes.
     workdir = Path(cwd or ".").expanduser().resolve()
     try:
         proc = subprocess.run(
@@ -86,7 +89,7 @@ def _run_git(args: list[str], cwd: str | None = None, timeout: int = 20) -> tupl
             capture_output=True,
             text=True,
             encoding="utf-8",
-            errors="replace",
+            errors=errors,
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:

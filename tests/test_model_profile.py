@@ -109,6 +109,21 @@ def test_explicit_custom_ctx_below_native_is_kept():
     assert cfg.num_ctx == 12_000
 
 
+
+def test_explicit_ctx_matching_an_old_stamp_is_kept_across_reload():
+    from algo_cli import main
+
+    cfg = Config(model="deepseek-v4.1-flash", cloud=True)
+    main.handle_command("/ctx 32768", cfg, None, user_initiated=True)
+    assert cfg.num_ctx == 32_768 and cfg.num_ctx_explicit is True
+
+    reloaded = Config.load()
+    reloaded.model, reloaded.cloud = "deepseek-v4.1-flash", True
+    info = {"context_length": 1_048_576}
+    assert reloaded.num_ctx_explicit is True
+    assert mp.promote_stale_remote_context(reloaded, info) is False
+    assert mp.effective_params(reloaded, info).num_ctx == 32_768
+
 def test_local_saved_stamp_is_not_promoted():
     cfg = Config(num_ctx=131072)
     info = {"parameter_size": "671B", "context_length": 131072}

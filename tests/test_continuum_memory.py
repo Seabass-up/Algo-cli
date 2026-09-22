@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import json
 import subprocess
+import sys
 
 import pytest
 
@@ -211,7 +212,7 @@ def test_continuum_memory_arguments_and_results_are_not_persisted_as_history(bac
 @pytest.mark.parametrize("output,code", [('{"ok":true}', 1), ('{"ok":true}', 2), ("not-json secret", 0)])
 def test_invalid_transport_replies_are_sanitized(tmp_path, monkeypatch, output, code):
     monkeypatch.setattr(memory, "_native_cli", lambda: tmp_path / "continuum-memory")
-    monkeypatch.setattr(memory.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, code, output, "secret"))
+    monkeypatch.setattr(memory, "_run_native", lambda *a, **k: (code, output))
     with pytest.raises(memory.ContinuumMemoryError) as caught:
         memory.doctor(Config(continuum_enabled=True))
     assert "secret" not in str(caught.value)
@@ -222,11 +223,11 @@ def test_native_transport_binds_scope_and_keeps_payload_out_of_argv(tmp_path, mo
     monkeypatch.setattr(memory, "_native_cli", lambda: cli)
     calls = []
 
-    def run(argv, **kwargs):
-        calls.append((argv, kwargs))
-        return subprocess.CompletedProcess(argv, 0, '{"ok":true}', "")
+    def run(argv, body, **kwargs):
+        calls.append((argv, {"input": body, **kwargs}))
+        return 0, '{"ok":true}'
 
-    monkeypatch.setattr(memory.subprocess, "run", run)
+    monkeypatch.setattr(memory, "_run_native", run)
     memory.invoke_continuum(Config(continuum_enabled=True), "capture", {"text": "PRIVATE_CANARY"}, scope="private")
     argv, kwargs = calls[0]
     assert argv == [str(cli), "--root", str(memory.storage_root()), "--project", "legacy-memory",
@@ -311,3 +312,79 @@ def test_malformed_projection_is_not_injected(backend):
     backend["facts"] = [123]
     with pytest.raises(memory.ContinuumMemoryError, match="invalid memory projection"):
         context_budget._memory_prompt_section(Config(continuum_enabled=True))
+
+
+def _fake_cli(directory):
+    directory.mkdir(parents=True, exist_ok=True)
+    cli = directory / "continuum-memory"
+    cli.write_text("#!/bin/sh\n", encoding="utf-8")
+    cli.chmod(0o755)
+    return cli
+
+
+@pytest.mark.skipif(not hasattr(__import__("os"), "symlink"), reason="needs symlinks")
+def test_native_cli_is_never_resolved_from_the_workspace(tmp_path, monkeypatch):
+    monkeypatch.undo()  # exercise the real resolver, not the conftest guard
+    home, repo, outside = tmp_path / "home", tmp_path / "home" / "repo", tmp_path / "opt" / "bin"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "pkg").mkdir()
+    monkeypatch.setattr(memory.Path, "home", lambda: home)
+    monkeypatch.chdir(repo / "pkg")
+
+    planted = _fake_cli(repo / ".venv" / "bin")
+    monkeypatch.setenv("PATH", str(planted.parent))
+    with pytest.raises(memory.ContinuumMemoryError):
+        memory._native_cli()
+
+    # A trusted PATH entry that is only a link into the workspace is rejected too.
+    outside.mkdir(parents=True)
+    (outside / "continuum-memory").symlink_to(planted)
+    monkeypatch.setenv("PATH", str(outside))
+    with pytest.raises(memory.ContinuumMemoryError):
+        memory._native_cli()
+
+    (outside / "continuum-memory").unlink()
+    trusted = _fake_cli(outside)
+    monkeypatch.setenv("PATH", f"{planted.parent}{memory.os.pathsep}{outside}")
+    assert memory._native_cli() == trusted.resolve()
+
+
+def test_native_cli_under_home_still_resolves_when_started_from_home(tmp_path, monkeypatch):
+    monkeypatch.undo()
+    home = tmp_path / "home"
+    trusted = _fake_cli(home / ".local" / "bin")
+    monkeypatch.setattr(memory.Path, "home", lambda: home)
+    monkeypatch.chdir(home)
+    monkeypatch.setenv("PATH", str(trusted.parent))
+    assert memory._native_cli() == trusted.resolve()
+
+
+@pytest.mark.parametrize("arg", ["help", "?"])
+def test_memory_help_does_not_need_a_working_backend(monkeypatch, arg):
+    monkeypatch.setattr(memory, "recall_facts", lambda cfg: pytest.fail("help contacted the backend"))
+    text = julia_memory_runtime.command_text(arg, Config(continuum_enabled=True))
+    assert "/memory doctor" in text and "config memory status" in text
+
+
+def _python_cli(tmp_path, source):
+    script = tmp_path / "native.py"
+    script.write_text(source, encoding="utf-8")
+    return [sys.executable, "-I", str(script)]
+
+
+def test_native_reply_round_trips_unicode_request_and_status(tmp_path):
+    argv = _python_cli(tmp_path, "import sys; data = sys.stdin.buffer.read(); sys.stdout.buffer.write(data); sys.exit(2)")
+    assert memory._run_native(argv, '{"text":"\u2603"}', env=dict(memory.os.environ), cwd=tmp_path) == (2, '{"text":"\u2603"}')
+
+
+def test_native_reply_is_bounded_while_streaming(tmp_path):
+    argv = _python_cli(tmp_path, "import sys\nwhile True: sys.stdout.write('x' * 65536)")
+    with pytest.raises(ValueError, match="oversized reply"):
+        memory._run_native(argv, "{}", env=dict(memory.os.environ), cwd=tmp_path)
+
+
+def test_native_hang_is_killed_at_the_timeout(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory, "NATIVE_TIMEOUT_SECONDS", 0.2)
+    argv = _python_cli(tmp_path, "import time; time.sleep(30)")
+    with pytest.raises(subprocess.TimeoutExpired):
+        memory._run_native(argv, "{}", env=dict(memory.os.environ), cwd=tmp_path)

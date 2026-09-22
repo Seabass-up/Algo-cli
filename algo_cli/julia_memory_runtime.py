@@ -1629,10 +1629,18 @@ def command_text(
     from . import continuum_memory
 
     if continuum_memory.selected(cfg):
+        if subcommand in {"help", "?"}:
+            # Static: recovery guidance must not depend on a working backend.
+            return (
+                "Continuum memory authority. /memory status counts stored facts; "
+                "/memory doctor verifies the backend. Use native memory tools, /remember, or /memories. "
+                "If Continuum is unavailable, install the continuum-memory command or run "
+                "`algo-cli config memory status`."
+            )
         try:
             if subcommand == "doctor":
                 return json.dumps(continuum_memory.doctor(cfg), indent=2, sort_keys=True)
-            if subcommand in {"home", "status", "show-home", "help", "?"}:
+            if subcommand in {"home", "status", "show-home"}:
                 facts = continuum_memory.recall_facts(cfg)
                 return (
                     "Continuum memory authority: "

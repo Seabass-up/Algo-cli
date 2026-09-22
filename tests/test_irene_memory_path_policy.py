@@ -130,6 +130,28 @@ def test_real_git_refuses_hardlink_aliases(tmp_path, monkeypatch, tracked, filen
     assert not snapshot.available and not snapshot.tracked_diff
 
 
+
+def test_real_git_refuses_hardlink_alias_with_non_utf8_name(tmp_path, monkeypatch):
+    from algo_cli import git_evidence
+
+    root = tmp_path.resolve()
+    workspace, protected = root / "workspace", root / "memory"
+    workspace.mkdir()
+    protected.mkdir()
+    monkeypatch.setattr(irene_memory_path_policy, "_known_protected_roots", lambda: (protected,))
+    subprocess.run(["git", "init", "-q", str(workspace)], check=True, capture_output=True)
+    secret = protected / "private.txt"
+    secret.write_text("PRIVATE_CANARY")
+    try:
+        # A name Git records byte-for-byte; lossy decoding would check a different spelling.
+        os.link(secret, os.path.join(os.fsencode(workspace), b"alias\xff.txt"))
+    except OSError:
+        pytest.skip("filesystem rejects non-UTF-8 names")
+    cfg = _protected_config(workspace)
+    result = nathan_runtime.run_tool("git_diff", {}, cfg)
+    assert "PRIVATE_CANARY" not in result and "protected memory paths" in result
+    assert not git_evidence.capture_git_snapshot(str(workspace), protected_memory=True).available
+
 def test_git_rejects_configured_worktree_redirection(tmp_path, monkeypatch):
     root = tmp_path.resolve()
     workspace, protected = root / "workspace", root / "memory"

@@ -57,6 +57,13 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 - Stop a startup crash when Continuum's required shared context exceeds the
   default packet size: Algo retries once with the backend-reported size, up to
   a hard cap, without dropping required records.
+- Check protected-memory Git paths with their exact bytes, so a hard link with a
+  non-UTF-8 name cannot bypass the link check, and never launch a
+  `continuum-memory` command found inside the current repository.
+- Stream Continuum replies under a fixed size limit, keep `/memory help`
+  available when the backend is down, and bound the personal kernel file.
+- Keep a context window set with `/ctx` even when it equals a common model
+  default; only unrecorded automatic values are promoted to the native window.
 - Distinguish compiler-format failures from missing runtime authority so valid
   YOLO programs are not reported as approval failures.
 - Classify slash-command inspection by each handler's real argument contract.

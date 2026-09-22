@@ -67,11 +67,13 @@ def _provider(cfg: Any) -> str:
 def is_stale_remote_context_stamp(cfg: Any, current_ctx: int, native_ctx: int | None) -> bool:
     """True when a leftover remote native stamp is smaller than the live native window.
 
-    ``/ctx 12000`` and other non-catalog values are kept. Local GGUF allocations
+    Any window the user set with ``/ctx`` is kept, as are non-catalog values such
+    as 12000 saved before that choice was recorded. Local GGUF allocations
     are also kept: only cloud/xAI/ChatGPT stamps are eligible for promotion.
     """
     return (
-        _provider(cfg) in {"cloud", "xai", "chatgpt"}
+        getattr(cfg, "num_ctx_explicit", False) is not True
+        and _provider(cfg) in {"cloud", "xai", "chatgpt"}
         and isinstance(native_ctx, int)
         and native_ctx > current_ctx > 0
         and current_ctx in REMOTE_CONTEXT_STAMPS
