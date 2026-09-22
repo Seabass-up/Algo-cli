@@ -64,6 +64,10 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
   available when the backend is down, and bound the personal kernel file.
 - Keep a context window set with `/ctx` even when it equals a common model
   default; only unrecorded automatic values are promoted to the native window.
+- Refresh the Boron managed-browser pin to Chrome `153.0.8010.52` with its
+  Debian package checksum, release timestamp, regenerated dpkg lock, and
+  coupled fixtures, so hosted browser qualification is within the 72-hour
+  security-update limit.
 - Distinguish compiler-format failures from missing runtime authority so valid
   YOLO programs are not reported as approval failures.
 - Classify slash-command inspection by each handler's real argument contract.

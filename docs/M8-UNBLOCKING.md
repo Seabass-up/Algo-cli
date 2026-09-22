@@ -40,8 +40,8 @@ The native-hardening and PyPI policies were not changed.
 ## Remaining engineering and qualification
 
 1. Rebuild and qualify the managed-browser images on the hosted Linux/amd64
-   path. The source pins Chrome `153.0.8010.36`, with Google VersionHistory
-   serving startTime `2026-09-08T21:20:43.154434Z` and the verified Debian
+   path. The source pins Chrome `153.0.8010.52`, with Google VersionHistory
+   serving startTime `2026-09-18T00:49:42.244859Z` and the verified Debian
    package checksum. Obtain fresh image materials, digests, and a release
    observation during each run. Enforce the existing 72-hour lag limit.
 2. Implement the selected-Chrome native authority bridge and supported actions.
