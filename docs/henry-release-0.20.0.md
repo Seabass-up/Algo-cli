@@ -1,6 +1,6 @@
 # 0.20.0 Release Scope
 
-State: local repair candidate, not yet qualified. Publication requires exact-source local and
+State: published and verified on 2026-09-22. Publication requires exact-source local and
 hosted qualification, an immutable `v0.20.0` tag, protected release-authority
 approval, exact artifact verification, public registry verification, and clean
 install and predecessor-upgrade checks.
@@ -64,7 +64,29 @@ install and predecessor-upgrade checks.
 
 ## Publication Receipt
 
-Not yet published. Record the exact source and publisher revisions, CI and
-release workflow runs, artifact sizes and SHA-256 digests, GitHub immutable
-release state, PyPI index state, and public install/upgrade results here only
-after each result is observed.
+Observed on 2026-09-22 after the protected publish workflow completed.
+
+- Source revision and publisher revision: `55a7ec5328892a07129c48e370d175eff8e0eff6`
+  (`main`, merge of PR #66 after PR #65). Tag `v0.20.0` → `55a7ec5`.
+- Qualifying CI on `main`: run 35718750599 (all jobs, including Boron
+  public-browser boundary and attestation on Chrome `153.0.8010.52`).
+- Publish workflow: run 35756316039, conclusion success; `release-authority`
+  approvals given by the owner at policy capture, pre-PyPI, and pre-publish.
+- GitHub release: https://github.com/Seabass-up/Algo-cli/releases/tag/v0.20.0,
+  non-draft, non-prerelease, immutable, 17 assets.
+- Artifacts (identical on GitHub and PyPI, not yanked):
+  - `algo_cli_runtime-0.20.0-py3-none-any.whl` 1304126 bytes
+    sha256 `dfd8f45d944bc0ea0e0645121f24be34d3ace54ff7c13497ee304815cc6fb3f1`
+  - `algo_cli_runtime-0.20.0.tar.gz` 1173353 bytes
+    sha256 `4bad73b8afb0692011237fc08c4af073f27e5cae632dde267afc5f96f2e06a57`
+- PyPI: https://pypi.org/project/algo-cli-runtime/0.20.0/ ; project latest
+  reported `0.20.0` after a brief post-upload lag during which the project
+  endpoint still returned `0.19.2` while the version endpoint was already exact.
+- Clean public install (isolated home, uv venv, Python 3.11): `0.20.0`;
+  packaged `ALGO.md` is the empty template; `algo-cli config status` runs.
+- Real upgrade: public `0.19.2` → `algo-cli update` → `0.20.0`. Seeded
+  config, env, identity, private file, and SQLite state were byte-identical
+  with unchanged modes afterwards; SQLite integrity ok; a second update
+  reported no newer version and changed nothing.
+- Not claimed: external-browser completion, native signing, live model
+  quality, or M8/M9 lift; those remain blocked as recorded in the ledger.
