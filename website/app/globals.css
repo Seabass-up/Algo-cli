@@ -147,9 +147,10 @@ button, textarea { font: inherit; }
 .content-wrap { padding: 70px 50px 90px; border-bottom: 1px solid var(--rule); }
 .notice { display: flex; align-items: center; gap: 18px; margin-bottom: 28px; padding: 17px 19px; border: 1px solid rgba(183,247,106,.25); background: rgba(183,247,106,.035); }
 .notice p { margin: 0; color: #9daabe; font-size: 13px; }
-.install-grid { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--rule); }
+.install-grid { display: grid; grid-template-columns: repeat(2, 1fr); border: 1px solid var(--rule); }
 .install-card { padding: 30px; border-right: 1px solid var(--rule); background: var(--panel); }
-.install-card:last-child { border-right: 0; }.install-card.featured { background: linear-gradient(155deg, rgba(87,215,255,.075), transparent 45%), var(--panel); }
+.install-card:nth-child(2n) { border-right: 0; }
+.install-card:nth-child(n+3) { border-top: 1px solid var(--rule); }.install-card.featured { background: linear-gradient(155deg, rgba(87,215,255,.075), transparent 45%), var(--panel); }
 .install-card > span, .provider-grid article > span, .method-grid article > span { color: var(--cyan); font: 650 9px/1 var(--font-geist-mono), monospace; letter-spacing: .09em; }
 .install-card h2 { margin: 25px 0 12px; font-size: 24px; letter-spacing: -.035em; }
 .install-card > p { min-height: 62px; color: #8491a7; font-size: 13px; line-height: 1.6; }
@@ -238,7 +239,7 @@ button, textarea { font: inherit; }
   .hero-copy, .split-section > div { border-right: 0; border-bottom: 1px solid var(--rule); }
   .terminal-zone { min-height: 530px; }
   .pillar-grid { grid-template-columns: repeat(2, 1fr); }.pillar-card:nth-child(2) { border-right: 0; }.pillar-card:nth-child(-n+2) { border-bottom: 1px solid var(--rule); }
-  .install-grid, .provider-grid, .method-grid, .command-groups { grid-template-columns: 1fr; }.install-card { border-right: 0; border-bottom: 1px solid var(--rule); }.install-card:last-child { border-bottom: 0; }
+  .install-grid, .provider-grid, .method-grid, .command-groups { grid-template-columns: 1fr; }.install-card { border-right: 0; border-top: 0; border-bottom: 1px solid var(--rule); }.install-card:last-child { border-bottom: 0; }
   .docs-layout { grid-template-columns: 1fr; }.docs-index { position: static; flex-direction: row; flex-wrap: wrap; }
   .benchmark-hero-card { grid-template-columns: 1fr; }.benchmark-hero-card > div:first-child { grid-row: auto; border-right: 0; border-bottom: 1px solid var(--rule); }.unscored-grid { grid-template-columns: repeat(2, 1fr); }
 }

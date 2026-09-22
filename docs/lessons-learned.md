@@ -1320,6 +1320,29 @@ only the version pin; the hosted job still has to observe the live feed and
 build the image. Because releases arrive roughly weekly, tag, dispatch, and
 publication should follow a pin refresh within about three days.
 
+## 2026-09-22: Public Website Described A Three-Release-Old Version
+
+**Symptom and cause:** After v0.20.0 was published and verified, algo-cli.com
+still advertised v0.17.0 on the install page, home badge, footer, docs index,
+and the machine-readable release manifest. The site is deployed manually from
+`website/` and had not been part of the last three release checklists.
+
+**Repair:** Pointed every version surface at v0.20.0 with the immutable tag,
+source revision `55a7ec5`, and the public wheel/sdist digests; added install
+cards for in-place upgrade, personal catalog/kernel setup, Continuum
+selection and `/memory doctor`, and optional Jev setup. Review corrected two
+overclaims before merge: `config memory status` reports keyring anchors, not
+Continuum selection, and a 0.19.1 install in a pip-free `uv pip` environment
+cannot self-update. Benchmark data stays labeled with the v0.17.0 revision it
+was measured on.
+
+**Verification and limits:** `npm test` passed 8/8 after a fresh build and the
+rendered `/install` contains no 0.17.0 reference. That is local build state
+only; the public site changes when `npm run deploy:cloudflare` is run and its
+result is observed. Prevention: the release checklist should include the
+website manifest and a rendered-page check before publication is called
+complete.
+
 ## Repair Log Checklist
 
 - Date and component.
