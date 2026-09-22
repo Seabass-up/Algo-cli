@@ -1297,6 +1297,29 @@ wheel and sdist contain only the 1.7 KB template. Earlier tags, public Git
 history, and the published 0.19.2 files still contain the old catalog and
 modules; this repair does not retract them.
 
+## 2026-09-22: Chrome Pin Went Stale Between Local Qualification And Merge
+
+**Symptom and cause:** The `main` CI run for the v0.20.0 merge failed the
+Boron public-browser job with `hosted_browser_security_update_stale`. The pin
+was `153.0.8010.36` (served 2026-09-08); Chrome had shipped `.47` and `.52`
+since, and the 72-hour lag gate is measured against the newest stable release.
+Nothing in the candidate touched the browser.
+
+**Repair:** Pinned `153.0.8010.52` (VersionHistory serving start
+`2026-09-18T00:49:42.244859Z`, release-at-ms `1789692582244`, deb sha256
+`29e0e4b5af01213915ffdb7f4e49a11956dc5fc591165c85af8688dcdff907ac`).
+Regenerated the dpkg lock by building the pinned stage through the
+`dpkg-query` step on linux/amd64: 228 entries, sha256
+`8b33f574a394cc249f5546a8f3c089aea2ab0d1c372d190acc74c7443381f52d`.
+Substituting the old Chrome version into the new lock reproduces the old
+digest exactly, so Chrome is the only changed package. The newer-but-stale
+fixture moved to `.53` and the hosted observed-at fixture past the new release.
+
+**Verification and limits:** 551 Boron tests passed locally. This refreshes
+only the version pin; the hosted job still has to observe the live feed and
+build the image. Because releases arrive roughly weekly, tag, dispatch, and
+publication should follow a pin refresh within about three days.
+
 ## Repair Log Checklist
 
 - Date and component.

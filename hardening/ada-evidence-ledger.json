@@ -4259,6 +4259,15 @@
           "timestamp": "2026-09-22T00:22:42Z",
           "scope": "source digest sha256:c1f51caefbbf763fffc8789888cb83b8c4d9f0ca794fdbfb2439f254b34db342 binds the v0.20.0 candidate after hosted Windows CI on 12e34df showed three new POSIX-only tests needed platform skips and an .exe fixture name; runtime code is unchanged; frozen installed-source parity passed before execution",
           "limitations": "This is current local evidence, not an exact release commit, hosted platform qualification, external-browser completion, signed native lifecycle, live model qualification or public delivery; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "uv run --frozen --no-editable --extra dev --extra supply-chain python -B scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:2dc1c04a20dac7844aaddb42a82c9343d17a5f7085cd2facc999099253ea7c77",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-22T10:40:28Z",
+          "scope": "source digest sha256:f6ca044ba0e466b37cb6d613fcb6ab061946c0d6324515e2d8af8062c62f6ad1 binds the v0.20.0 candidate after refreshing the Boron Chrome pin to 153.0.8010.52 (release-at-ms 1789692582244, deb sha256 29e0e4b5af01213915ffdb7f4e49a11956dc5fc591165c85af8688dcdff907ac, dpkg lock sha256:8b33f574a394cc249f5546a8f3c089aea2ab0d1c372d190acc74c7443381f52d with 228 entries) because main CI on e8aa9db reported hosted_browser_security_update_stale; the 72h lag gate is unchanged; frozen installed-source parity passed before execution",
+          "limitations": "This is current local evidence, not an exact release commit, hosted platform qualification, external-browser completion, signed native lifecycle, live model qualification or public delivery; HARD-080 remains in progress"
         }
       ]
     },
@@ -6714,6 +6723,24 @@
           "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics; public_claim_eligible is false",
           "timestamp": "2026-09-22T00:22:42Z",
           "scope": "source digest sha256:c1f51caefbbf763fffc8789888cb83b8c4d9f0ca794fdbfb2439f254b34db342 binds five local efficiency repetitions and the installed current-source focused suite",
+          "limitations": "Local synthetic efficiency does not qualify live model quality, cross-harness superiority, external browsers, hosted platforms, release publication or YOLO effectiveness; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "uv run --frozen --no-editable --extra dev --extra supply-chain python -B scripts/nathan_agent_runtime_qualification.py --refresh --quiet; hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:ab329c0d98960db59eb7d1c68e38a9c808617f2e2351cbcb67d8957f6287c2a2",
+          "result": "status pass: 17 correctness probes and 31 deterministic workloads pass with zero policy escapes, duplicate mutations or unverified completions; public_claim_eligible is false",
+          "timestamp": "2026-09-22T10:39:07Z",
+          "scope": "source digest sha256:a57252005b2010cad8f72886107c98635bec3289015405d5b9884355e2a9e187 and report digest sha256:1b3161b2140d49a9684ab34d4d22400c2ffbaef474c38ad5aa42acf75b066f1e bind the local v0.20.0 candidate above e8aa9db after refreshing the Boron Chrome pin to 153.0.8010.52 (release-at-ms 1789692582244, deb sha256 29e0e4b5af01213915ffdb7f4e49a11956dc5fc591165c85af8688dcdff907ac, dpkg lock sha256:8b33f574a394cc249f5546a8f3c089aea2ab0d1c372d190acc74c7443381f52d with 228 entries) because main CI on e8aa9db reported hosted_browser_security_update_stale; the 72h lag gate is unchanged",
+          "limitations": "Model-free local fixtures do not establish live model or provider behavior, comparative performance, hosted platform qualification, production service isolation or public delivery; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json efficiency and focused matrix executed by scripts/henry_m8_qualification.py",
+          "digest": "sha256:2dc1c04a20dac7844aaddb42a82c9343d17a5f7085cd2facc999099253ea7c77",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-22T10:40:28Z",
+          "scope": "source digest sha256:f6ca044ba0e466b37cb6d613fcb6ab061946c0d6324515e2d8af8062c62f6ad1 binds five local efficiency repetitions and the installed current-source focused suite",
           "limitations": "Local synthetic efficiency does not qualify live model quality, cross-harness superiority, external browsers, hosted platforms, release publication or YOLO effectiveness; HARD-081 remains in progress"
         }
       ]
