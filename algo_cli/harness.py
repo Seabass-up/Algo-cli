@@ -15,7 +15,6 @@ import os
 import re
 import stat
 import subprocess
-import sys
 import time
 from collections import OrderedDict
 from contextlib import contextmanager, nullcontext
@@ -70,7 +69,7 @@ REVIEWED_ALGO_TITLE = "ALGO reviewed algorithm pattern catalog"
 REVIEWED_ALGO_DESCRIPTION = (
     "Canonical reviewed Algo algorithm and pattern catalog. Use for Algo CLI harness self-evaluation, "
     "capability audits, action registry/selfcheck guidance, memory/wiki quality, and runtime context review. "
-    "Read and update docs/ALGO.md."
+    "Read and update the user's own catalog at ~/.algo_cli/ALGO.md; docs/ALGO.md is the public template."
 )
 REVIEWED_ALGO_TAGS = (
     "algorithm",
@@ -96,7 +95,7 @@ CURATED_PROJECT_WIKI_DOCS = (
     "privacy-and-context.md",
     "runtime-capability-catalog.md",
     "supervised-action-review.md",
-    "echo-veil-security-status.md",
+    "continuum-memory.md",
 )
 CURATED_PROJECT_MEMORY_DOCS = (
     "ada-algo-cli-memory-lifecycle-contract.md",
@@ -533,6 +532,11 @@ def _algo_cli_docs_dir() -> Path:
     return source_docs if source_docs.is_dir() else PACKAGE_RESOURCE_DIR / "docs"
 
 
+def _algo_catalog_dir() -> Path:
+    """Each user's own catalog (``<config>/ALGO.md``) wins; releases ship only the template."""
+    return CONFIG_DIR if (CONFIG_DIR / REVIEWED_ALGO_REL).is_file() else _algo_cli_docs_dir()
+
+
 def _algo_cli_package_dir() -> Path:
     source_package = ALGO_CLI_REPO_DIR / "algo_cli"
     return source_package if source_package.is_dir() else Path(__file__).resolve().parent
@@ -557,7 +561,7 @@ def built_in_source_roots(*, include_external: bool = False) -> tuple[SourceRoot
         SourceRoot("algo-cli", "skill", _algo_cli_repo_skills_dir(), ("*.md",), 200),
         SourceRoot("algo-cli", "model", CONFIG_DIR / "models", ("*.md",), 200),
         SourceRoot("algo-cli", "x_search", CONFIG_DIR / "x_search_cache", ("*.md",), 150),
-        SourceRoot("algo-cli", "algorithm", docs_dir, (REVIEWED_ALGO_REL,), 1),
+        SourceRoot("algo-cli", "algorithm", _algo_catalog_dir(), (REVIEWED_ALGO_REL,), 1),
         # Local operator wiki (~/.algo_cli/wiki) is first-class harness RAG, separate from
         # curated project docs under the repo docs/ tree.
         SourceRoot("algo-cli", "wiki", CONFIG_DIR / "wiki", ("*.md",), 100),
@@ -678,7 +682,7 @@ def configure_context_sources(*, external: bool, index_compute_lab: bool) -> Non
 
 
 def _protected_memory_source_allowed(root: SourceRoot) -> bool:
-    """Allow only repo-shipped, closed-pattern sources under Echo authority."""
+    """Allow only repo-shipped, closed-pattern sources under protected authority."""
 
     if root.harness != "algo-cli":
         return False
@@ -1889,7 +1893,7 @@ def _load_protected_index_state() -> dict[str, Any] | None:
 def invalidate_user_skill_records() -> int:
     """Remove cached records sourced from mutable user-crystallized skills.
 
-    Echo-protected startup quarantines those files before calling this helper.
+    Protected startup quarantines those files before calling this helper.
     Repo-shipped and plugin skills use different absolute roots and remain.
     """
 
@@ -2043,7 +2047,7 @@ def checked_product_contract(record: dict[str, Any]) -> tuple[dict[str, Any], st
 
 
 def retrieval_index(*, protected_memory: bool = False) -> dict[str, Any]:
-    """One query snapshot with source-verified public contracts under Echo."""
+    """One query snapshot with source-verified public contracts."""
     global _PUBLIC_RETRIEVAL_RECORDS
     if protected_memory and not _PROTECTED_MEMORY_AUTHORITY:
         raise ValueError("protected harness source policy is not prepared")
@@ -2078,7 +2082,7 @@ def retrieval_index(*, protected_memory: bool = False) -> dict[str, Any]:
 
 
 def configure_protected_memory_authority(enabled: bool) -> int:
-    """Exclude and purge mutable memory roots while Echo owns memory.
+    """Exclude and purge mutable roots while Continuum Memory is authoritative.
 
     Repo-shipped lifecycle/evidence contracts remain readable as immutable
     product documentation. User and external harness memory bodies do not
@@ -2518,16 +2522,16 @@ def get_record(record_id: str) -> dict[str, Any] | None:
 
 def read_record(record_id: str, max_chars: int = MAX_READ_TEXT, *, protected_memory: bool = False) -> str:
     if protected_memory and not _PROTECTED_MEMORY_AUTHORITY:
-        return "Error: protected harness source policy is unavailable; memory is available only through Echo Veil."
+        return "Error: protected harness source policy is unavailable while Continuum Memory is authoritative."
     record = get_record(record_id)
     if not record:
         return f"Error: no harness record found for id: {record_id}"
     if protected_memory and not _protected_memory_record_allowed(record):
-        return "Error: record is not a shipped public source; protected memory is available only through Echo Veil."
+        return "Error: record is not a shipped public source while Continuum Memory is authoritative."
     if protected_memory and record.get("kind") == "memory":
         contract = checked_product_contract(record)
         if contract is None:
-            return "Error: contract source could not be verified; protected memory is available only through Echo Veil."
+            return "Error: contract source could not be verified while Continuum Memory is authoritative."
         current, text = contract
         return (f"# {current['title']}\n\nSource: algo-cli:{current['relative_path']}\n"
                 f"Shipped documentation; not agent memory | SHA256: {current['source_sha256']}\n\n"
@@ -2716,28 +2720,6 @@ def stats(
     except Exception:
         record_distribution = {}
     try:
-        from .ada_memory_echo_veil import get_echo_veil_readiness
-
-        echo_veil = get_echo_veil_readiness()
-    except Exception as exc:
-        echo_veil = {
-            "installed": False,
-            "version_supported": False,
-            "enabled": False,
-            "crypto_initialized": False,
-            "write_wired": False,
-            "index_wired": False,
-            "retrieval_wired": False,
-            "persistence_wired": False,
-            "restart_restored": False,
-            "rotation_ready": False,
-            "healthy": False,
-            "readiness_source": "algo_cli.harness.stats.fallback",
-            "runtime": f"{sys.implementation.name}-{sys.version_info.major}.{sys.version_info.minor}",
-            "installation_identity": "unsupported",
-            "import_error": type(exc).__name__,
-        }
-    try:
         from .dorothy_perf_telemetry import private_perf_store_readiness
 
         runtime_event_store = private_perf_store_readiness()
@@ -2758,7 +2740,6 @@ def stats(
         "embeddings": embeddings,
         "quality": _index_quality_summary(records, embeddings),
         "record_distribution": record_distribution,
-        "echo_veil": echo_veil,
         "runtime_event_store": runtime_event_store,
         "context_sources": {
             "external_agent_stores": _EXTERNAL_SOURCES_ENABLED,
@@ -3351,9 +3332,9 @@ def retrieve_for_query(
     """Cosine-rank harness records against the query. Returns up to k records as dicts
     with id/harness/kind/title/path/snippet. Empty list if no embeddings ready.
 
-    Echo Veil memory retrieval is deliberately separate from harness-record
-    ranking. The authoritative adapter is consumed by context assembly, not by
-    mutating a duplicate Oracle from query vectors here.
+    Continuum Memory retrieval is separate from harness-record ranking. The
+    authoritative adapter is consumed by context assembly, not by mutating a
+    duplicate memory store from query vectors here.
     """
     _validate_embedding_dimensions(dimensions)
     query = (query or "").strip()

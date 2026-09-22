@@ -47,7 +47,7 @@ def test_runtime_report_runs_local_probes_but_does_not_mislabel_them_cross_harne
     monkeypatch.setattr(
         git_evidence,
         "capture_git_snapshot",
-        lambda: git_evidence.GitSnapshot(
+        lambda *_args, **_kwargs: git_evidence.GitSnapshot(
             True,
             None,
             "abcdef123456",

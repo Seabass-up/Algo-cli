@@ -39,6 +39,17 @@ PRIVATE_FILENAME_PARTS = (
     "charlie",
     "lodge",
 )
+# Each user's catalog and kernels live in their config directory, never in a release.
+PERSONAL_LIBRARY_PATH_PARTS = (
+    "intelligence/finance/",
+    "intelligence/construction/",
+    "intelligence/acrobat_",
+    "algo_private/",
+    "kernels/kernels.json",
+)
+CATALOG_BASENAME = "ALGO.md"
+CATALOG_ENTRY_RE = re.compile(r"^###\s+[A-Z][A-Za-z]*\d+[a-z]?\.\s")
+CATALOG_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 DISALLOWED_SUFFIXES = (".bak", ".pyc", ".p12", ".pfx", ".pem", ".key")
 GENERATED_PATH_PARTS = ("/node_modules/",)
 ARTIFACT_FORBIDDEN_PATH_PARTS = ("/website/", "/node_modules/", "/.venv/", "/.git/")
@@ -120,7 +131,7 @@ def _decode(data: bytes) -> str | None:
     return data.decode("utf-8", errors="replace")
 
 
-def _scan_name(name: str) -> list[str]:
+def _scan_name(name: str, *, personal_library: bool = True) -> list[str]:
     normalized = name.replace("\\", "/").lower()
     findings = []
     if any(part in normalized for part in PRIVATE_FILENAME_PARTS):
@@ -129,7 +140,27 @@ def _scan_name(name: str) -> list[str]:
         findings.append("generated or credential-like filename")
     if any(part in f"/{normalized}" for part in GENERATED_PATH_PARTS):
         findings.append("generated dependency path")
+    if personal_library and any(part in normalized for part in PERSONAL_LIBRARY_PATH_PARTS):
+        findings.append("personal kernel library path")
     return findings
+
+
+def _catalog_entry_lines(text: str) -> list[int]:
+    """Line numbers of pattern entries outside code fences; the public template has none."""
+    entries: list[int] = []
+    fence = ""
+    for number, line in enumerate(text.splitlines(), 1):
+        match = CATALOG_FENCE_RE.match(line)
+        if match:
+            marker = match.group(1)
+            if not fence:
+                fence = marker
+            elif marker[0] == fence[0] and len(marker) >= len(fence):
+                fence = ""
+            continue
+        if not fence and CATALOG_ENTRY_RE.match(line):
+            entries.append(number)
+    return entries
 
 
 def _scan_artifact_name(name: str) -> list[str]:
@@ -263,12 +294,17 @@ def _scan_text(
     return sorted(set(findings))
 
 
-def _scan_item(name: str, data: bytes, *, scan_content: bool = True) -> list[str]:
-    findings = [f"{name}: {reason}" for reason in _scan_name(name)]
+def _scan_item(name: str, data: bytes, *, scan_content: bool = True, personal_library: bool = True) -> list[str]:
+    """``personal_library=False`` exempts already-published history; the tree and artifacts always apply it."""
+    findings = [f"{name}: {reason}" for reason in _scan_name(name, personal_library=personal_library)]
     if scan_content and len(data) > TEXT_LIMIT:
         findings.append(f"{name}: content exceeds {TEXT_LIMIT}-byte scan limit")
         return findings
     text = _decode(data) if scan_content else None
+    if personal_library and text is not None and Path(name.replace("!", "/").replace("\\", "/")).name == CATALOG_BASENAME:
+        entries = _catalog_entry_lines(text)
+        if entries:
+            findings.append(f"{name}:{entries[0]}: personal pattern catalog ({len(entries)} entries); ship the template")
     if text is not None:
         binary = b"\0" in data[:4096]
         findings.extend(

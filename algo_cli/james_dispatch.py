@@ -38,11 +38,12 @@ _EXPLICIT_MEMORY_WRITE_ACTIONS = frozenset(
         "remember",
         "append_lesson",
         "write_knowledge_graph_note",
-        "echo_veil_remember",
-        "echo_veil_refresh_live",
-        "echo_veil_promote",
-        "echo_veil_forget",
-        "echo_veil_reindex",
+        "memory_init",
+        "memory_capture",
+        "memory_remember",
+        "memory_revoke",
+        "memory_resolve",
+        "memory_handoff",
     }
 )
 _MEMORY_MUTATION_SLASHES = frozenset({"/remember", "/forget"})
@@ -963,7 +964,8 @@ def dispatch_action(
     if previous:
         prior_status = str(previous.get("status") or "failed")
         result = (
-            "Skipped repeated action with an unresolved outcome. Reconcile it before retrying."
+            "Skipped repeated action with an unresolved outcome. Reconcile it before retrying: "
+            "observe the affected state with a fresh read or listing, then retry."
             if prior_status == "unknown_outcome"
             else "Skipped repeated failed attempt. "
             f"Prior outcome: {previous.get('summary', 'same tool path already failed or was denied')}."

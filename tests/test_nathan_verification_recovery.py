@@ -86,12 +86,34 @@ def test_recovery_does_not_enlarge_the_configured_work_budget(monkeypatch, tmp_p
     assert captures[-1]["completed"] is False
 
 
-@pytest.mark.parametrize("enabled,protection", [(True, "required"), (True, "optional"), (False, "required")])
-def test_protected_completion_prompt_does_not_request_shell_approval(enabled, protection):
-    prompt = nathan_runtime.completion_recovery_prompt(
-        Config(echo_veil_enabled=enabled, echo_veil_protection=protection)
+@pytest.mark.parametrize("verifier_turn", [None, 5])
+def test_repeated_premature_answers_use_bounded_verification_recovery(monkeypatch, tmp_path, verifier_turn):
+    def responses(turn):
+        if turn == 1:
+            return call("write_file", {"path": "made.py", "content": "x = 1\n"}, turn)
+        if turn == verifier_turn:
+            return call("run_shell", {"command": "pytest -q"}, turn)
+        return {"content": "Premature completion claim."}
+
+    code, events, client, invoked, captures = run_script(
+        monkeypatch, tmp_path, responses, invoke=_invoke, approve=lambda *_args, **_kwargs: True
     )
-    assert "Echo Veil" in prompt and "run_shell is unavailable" in prompt
+    assert len(client.calls) == 6
+    assert (tmp_path / "made.py").exists()
+    assert code == (0 if verifier_turn else 2)
+    assert captures[-1]["completed"] is bool(verifier_turn)
+    if verifier_turn:
+        assert invoked[-1] == "run_shell"
+    else:
+        assert invoked == ["write_file"]
+        assert any("verification recovery" in str(event).lower() for event in events if event["type"] == "error")
+
+
+def test_protected_completion_prompt_does_not_request_shell_approval():
+    prompt = nathan_runtime.completion_recovery_prompt(
+        Config(continuum_enabled=True)
+    )
+    assert "Continuum" in prompt and "run_shell is unavailable" in prompt
     assert "Do not seek shell approval" in prompt
     assert "git_diff" in prompt and "tracked" in prompt
     assert "read_file" in prompt and "not" in prompt

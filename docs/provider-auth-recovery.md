@@ -20,7 +20,7 @@ For model-not-found errors, distinguish authentication from model routing: resol
 OAuth error. A provider can finish with only a reasoning summary, or the
 connection can end before a usable answer. The adapter also reconciles final
 text/refusal and function-call snapshots, which may contain output not present
-in the deltas. Do not clear credentials or disable Echo Veil for these failures.
+in the deltas. Do not clear credentials or disable memory protection for these failures.
 Responses Lite can also send `response.completed.output: []` after complete
 function-call item events. Reconcile those snapshots without discarding the
 already streamed calls; an empty terminal list alone does not mean empty output.
@@ -64,14 +64,11 @@ disabled. A version/help check alone does not qualify stream recovery.
 ## Native SQLite Failures Are Separate
 
 A native `SIGBUS` in SQLite's WAL reader is not an empty provider response.
-The prior pinned Echo dependency reproduced loss of SQLite writer locks when
-permission or profile-health checks opened and closed database/sidecar files.
-The replacement exact pin uses metadata inspection through pinned directories
-and preserves existing-file locks. This does not prove that every native crash
-has that cause or that an operator database is corrupt.
+Retain the crash receipt and reproduce database failures in disposable
+cross-process fixtures. Opening and closing a database or sidecar through an
+unrelated file descriptor can affect process-level locks; a version check alone
+does not verify the affected write path. Do not infer corruption from a crash.
 
-Do not add a provider retry, remove WAL/SHM files, reset keys, or disable Echo to
-hide this failure. Verify the installed dependency with
-`scripts/henry_echo_veil_dependency_audit.py`, retain the crash receipt, and use
-disposable cross-process fixtures before a bounded required-protection model
-smoke. Other Echo consumers need their own qualified dependency rollout.
+Do not add a provider retry, remove WAL/SHM files, reset keys, or disable memory
+protection to hide this failure. Verify the selected native Continuum service
+and qualify its actual read/write path before a bounded model smoke.

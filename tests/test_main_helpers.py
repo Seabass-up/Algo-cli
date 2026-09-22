@@ -184,7 +184,8 @@ def test_echo_authority_excludes_legacy_lessons_from_system_prompt(
     lessons.write_text(canary, encoding="utf-8")
     monkeypatch.setattr(identity, "LESSONS_PATH", lessons)
     identity._CACHE.clear()
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    monkeypatch.setattr("algo_cli.continuum_memory.prompt_context", lambda _cfg, _query: "{}")
+    cfg = Config(continuum_enabled=True)
 
     prompt = context_budget.build_system_prompt(cfg, retrieved_lessons=None)
 
@@ -206,7 +207,8 @@ def test_echo_authority_excludes_local_identity_from_prompt_and_cache_key(
         "identity_mtime_key",
         lambda: (_ for _ in ()).throw(AssertionError("protected cache key statted local identity")),
     )
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    monkeypatch.setattr("algo_cli.continuum_memory.prompt_context", lambda _cfg, _query: "{}")
+    cfg = Config(continuum_enabled=True)
 
     prompt = context_budget.build_system_prompt(cfg)
     context_budget._context_usage_cache_key(cfg)
@@ -217,7 +219,7 @@ def test_echo_authority_excludes_local_identity_from_prompt_and_cache_key(
 
 
 def test_echo_startup_identity_scaffold_is_a_zero_access_noop(monkeypatch):
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     monkeypatch.setattr(
         main.identity,
         "scaffold_if_needed",
@@ -230,7 +232,7 @@ def test_echo_startup_identity_scaffold_is_a_zero_access_noop(monkeypatch):
 def test_echo_authority_disables_automatic_lesson_index_build(monkeypatch):
     from algo_cli import identity
 
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     monkeypatch.setattr(
         identity,
         "lessons_index_stale",
@@ -493,14 +495,14 @@ def test_reload_mutates_active_config_in_place(monkeypatch):
 
 
 def test_reload_preflights_before_and_after_harness_reload(monkeypatch):
-    from algo_cli import elsie_echo_preflight
+    from algo_cli import protected_memory_preflight
 
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     events: list[str] = []
     monkeypatch.setattr(main.Config, "load", classmethod(lambda cls: cfg))
     monkeypatch.setattr(
-        elsie_echo_preflight,
-        "prepare_echo_auxiliary_state",
+        protected_memory_preflight,
+        "prepare_protected_auxiliary_state",
         lambda _cfg: events.append("preflight"),
     )
 
@@ -819,8 +821,7 @@ def test_protected_crystallizer_failure_does_not_abort_completed_chat(monkeypatc
     from algo_cli.grace_memory_receipts import ElsieReceiptError
 
     cfg = Config(
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
         skill_crystallize_enabled=True,
         runs_since_crystallize=3,
         skill_crystallize_every=3,
@@ -934,7 +935,10 @@ def test_safe_file_history_compaction_normalizes_windows_newlines(monkeypatch, t
 def _patch_agent_loop_for_tool_policy_test(monkeypatch):
     """Keep agent-loop policy tests local, deterministic, and network-free."""
 
-    from algo_cli import elsie_echo_preflight, tool_runtime
+    from algo_cli import continuum_memory, protected_memory_preflight, tool_runtime
+
+    monkeypatch.setattr(continuum_memory, "doctor", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(continuum_memory, "prompt_context", lambda *_args, **_kwargs: "")
 
     def fake_make_embed_fn(*_args, **_kwargs):
         return (lambda texts: [[0.0] for _ in texts]), "test", "test-embed"
@@ -959,26 +963,26 @@ def _patch_agent_loop_for_tool_policy_test(monkeypatch):
     monkeypatch.setattr(main.skills, "record_run", lambda **_kwargs: None)
     monkeypatch.setattr(main, "_intuition_engine", None)
     monkeypatch.setattr(
-        elsie_echo_preflight,
-        "prepare_echo_auxiliary_state",
+        protected_memory_preflight,
+        "prepare_protected_auxiliary_state",
         lambda *_args, **_kwargs: {"protected": False},
     )
 
 
 def test_agent_loop_direct_boundary_refuses_failed_echo_preflight(monkeypatch):
-    from algo_cli import elsie_echo_preflight
+    from algo_cli import protected_memory_preflight
 
     class ForbiddenClient:
         def chat(self, **_kwargs):
             raise AssertionError("model must not run before protected preflight")
 
     def refuse(*_args, **_kwargs):
-        raise elsie_echo_preflight.EchoAuxiliaryPreflightError("private detail")
+        raise protected_memory_preflight.ProtectedMemoryPreflightError("private detail")
 
     errors: list[str] = []
     monkeypatch.setattr(
-        elsie_echo_preflight,
-        "prepare_echo_auxiliary_state",
+        protected_memory_preflight,
+        "prepare_protected_auxiliary_state",
         refuse,
     )
     monkeypatch.setattr(main, "show_error", errors.append)
@@ -987,11 +991,11 @@ def test_agent_loop_direct_boundary_refuses_failed_echo_preflight(monkeypatch):
         "detect_changes",
         lambda: (_ for _ in ()).throw(AssertionError("identity must not run before protected preflight")),
     )
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
 
     main.agent_loop(ForbiddenClient(), cfg, "protected request")  # type: ignore[arg-type]
 
-    assert errors == ["This turn stopped before model execution because Echo-protected auxiliary state is unavailable."]
+    assert errors == ["This turn stopped before model execution because Continuum-protected auxiliary state is unavailable."]
     assert "private detail" not in errors[0]
 
 
@@ -1052,8 +1056,7 @@ def test_required_echo_prompt_failure_stops_before_model_execution(monkeypatch):
     )
     cfg = Config(
         model="test-model",
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
         skill_crystallize_enabled=False,
     )
     client = ForbiddenClient()
@@ -1072,7 +1075,7 @@ def test_agent_loop_counts_rendered_protected_memory_without_another_read(monkey
     from algo_cli.tool_schema import estimate_tool_schema_tokens
 
     _patch_agent_loop_for_tool_policy_test(monkeypatch)
-    memory = "## Protected Echo Veil Memory\nPRIVATE_MEMORY_ACCOUNTING_CANARY " * 11
+    memory = "## Continuum Memory\nPRIVATE_MEMORY_ACCOUNTING_CANARY " * 11
     lookups = []
     identity_reads = []
     rounds = []
@@ -1104,8 +1107,7 @@ def test_agent_loop_counts_rendered_protected_memory_without_another_read(monkey
     monkeypatch.setattr(main, "record_perf_event", lambda *_args, **_kwargs: None)
     cfg = Config(
         model="test-model",
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
         skill_crystallize_enabled=False,
         memory_auto_capture_enabled=False,
     )
@@ -1163,8 +1165,7 @@ def test_agent_loop_optional_sources_partition_only_actual_admitted_text(monkeyp
     monkeypatch.setattr(main, "record_perf_event", lambda *_args, **_kwargs: None)
     cfg = Config(
         model="test-model",
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
         skill_crystallize_enabled=False,
         memory_auto_capture_enabled=False,
     )
@@ -1211,8 +1212,7 @@ def test_echo_authority_skips_persisted_intuition_for_ordinary_chat(monkeypatch)
     )
     cfg = Config(
         model="test-model",
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
         intuition_recall_enabled=True,
         skill_crystallize_enabled=False,
     )
@@ -1237,8 +1237,7 @@ def test_echo_authority_blocks_forced_intuition_add_without_engine_access(
     monkeypatch.setattr(main, "_intuition_engine", ForbiddenIntuition())
     monkeypatch.setattr(main, "show_error", errors.append)
     cfg = Config(
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
         intuition_capture_enabled=True,
     )
 
@@ -1255,7 +1254,7 @@ def test_echo_authority_blocks_forced_intuition_add_without_engine_access(
     main.handle_intuition_command(f"add memory {canary}", cfg)
 
     assert errors == [
-        "Intuition is disabled while Echo Veil is the exclusive memory authority; "
+        "Intuition is disabled while Continuum Memory is authoritative; "
         "plaintext Intuition data was not accessed or changed."
     ]
 
@@ -1267,8 +1266,7 @@ def test_echo_transition_drops_preloaded_intuition_without_access(monkeypatch) -
 
     monkeypatch.setattr(main, "_intuition_engine", ForbiddenIntuition())
     cfg = Config(
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
     )
 
     main._drop_plaintext_intuition_if_protected(cfg)
@@ -1291,8 +1289,7 @@ def test_echo_transition_clears_preloaded_intuition_mutable_state(monkeypatch) -
     engine = PreloadedIntuition()
     monkeypatch.setattr(main, "_intuition_engine", engine)
     cfg = Config(
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
     )
 
     main._drop_plaintext_intuition_if_protected(cfg)
@@ -1357,8 +1354,7 @@ def test_echo_agent_loop_never_auto_injects_index_compute_lab(
     )
     cfg = Config(
         model="test-model",
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
         index_compute_lab_auto_inject=True,
         skill_crystallize_enabled=False,
     )
@@ -1396,8 +1392,7 @@ def test_echo_agent_loop_never_rebuilds_plaintext_code_rag(
     )
     cfg = Config(
         model="test-model",
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
         code_rag_enabled=True,
         code_rag_consent_version=CODE_RAG_CONSENT_VERSION,
         skill_crystallize_enabled=False,
@@ -1423,8 +1418,7 @@ def test_echo_tool_payload_is_projected_before_summary_and_offline_fallback() ->
 
     client = FailingSummaryClient()
     cfg = Config(
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
         session_summary=result_canary,
     )
     batch = [
@@ -1472,8 +1466,7 @@ def test_echo_prompt_history_omits_protected_commands_and_purges_legacy_entries(
     assert canary in path.read_text(encoding="utf-8")
 
     cfg = Config(
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
     )
     protected = main.SafeFileHistory(str(path), cfg=cfg)
     protected.store_string(f"/memory search {canary}")
@@ -2423,7 +2416,9 @@ def test_models_command_force_refreshes_runtime_after_switch(monkeypatch, tmp_pa
     monkeypatch.setattr(main, "refresh_runtime_status", fake_refresh)
     monkeypatch.setattr(main, "invalidate_prompt_toolbar", lambda _session: None)
 
-    handled, returned_client = main.handle_command("/models", cfg, old_client)  # type: ignore[arg-type]
+    handled, returned_client = main.handle_command(
+        "/models", cfg, old_client, user_initiated=True
+    )  # type: ignore[arg-type]
 
     assert handled is True
     assert returned_client is new_client

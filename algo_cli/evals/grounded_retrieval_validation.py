@@ -4,7 +4,7 @@ This extends topic and multi-result coverage, not an independent held-out test.
 It deliberately includes distinct tools and patterns from the same source file.
 """
 
-from .grounded_retrieval import AUTH, ECHO, EXTERNAL, PRIVACY, REVIEW, Case, Evidence, _doc
+from .grounded_retrieval import AUTH, CONTINUUM, EXTERNAL, PRIVACY, REVIEW, Case, Evidence, _doc
 
 
 def _capability(name: str) -> Evidence:
@@ -79,10 +79,10 @@ CASES = (
     ),
     Case("cloud_privacy_de", "multilingual", "Werden lokale Dateien an den Cloud-Anbieter geschickt?", (PRIVACY,)),
     Case(
-        "echo_hardware",
+        "continuum_hardware",
         "paraphrase",
         "Is hardware isolation or remote attestation active for this encrypted memory store?",
-        (ECHO,),
+        (CONTINUUM,),
     ),
     Case(
         "store_opt_in",

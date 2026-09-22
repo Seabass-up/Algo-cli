@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+from contextlib import ExitStack
 from dataclasses import dataclass
 import hashlib
 import hmac
@@ -21,6 +22,8 @@ import threading
 import time
 from pathlib import Path
 import inspect
+import io
+from itertools import islice
 from typing import Any
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
@@ -41,7 +44,25 @@ from .config import (
     load_runtime_env,
     _atomic_write_text,
 )
+from .continuum_tools import (
+    memory_capture,
+    memory_context,
+    memory_explain,
+    memory_get,
+    memory_handoff,
+    memory_history,
+    memory_init,
+    memory_read,
+    memory_remember,
+    memory_resolve,
+    memory_revoke,
+    memory_search,
+    memory_status,
+    memory_validate_context,
+    memory_verify,
+)
 from .marcus_authority import CuratedToolRegistry
+from .jev_kernel import jev_kernel_status, jev_question_contract
 from ollama import Client
 
 from .chat_protocol import get_attr
@@ -50,6 +71,7 @@ logger = logging.getLogger(__name__)
 
 
 MAX_READ_CHARS = 50_000
+READ_FILE_CHUNK_CHARS = 64 * 1024
 MAX_PDF_PAGES = 24
 MAX_RENDER_PDF_PAGES = 6
 MAX_RENDER_PDF_SCALE = 4.0
@@ -578,6 +600,7 @@ def read_file(
     max_chars: int = MAX_READ_CHARS,
     start_line: int = 1,
     offset: int | None = None,
+    cfg: Any = None,
 ) -> str:
     """Read a text file.
 
@@ -588,9 +611,17 @@ def read_file(
         start_line: One-based line number to begin reading from.
         offset: Compatibility alias for start_line.
     """
-    p = _resolve(path, cwd)
+    from .continuum_memory import selected
+    from .irene_memory_path_policy import ProtectedMemoryPathError, require_allowed_path
+
+    protected = cfg is not None and selected(cfg)
+    try:
+        p = require_allowed_path(path, cwd=cwd or cfg.cwd) if protected else _resolve(path, cwd)
+    except ProtectedMemoryPathError:
+        return "Error: protected memory paths are unavailable."
     if not p.exists():
-        matches = _missing_file_matches(p, cwd)
+        # Recovery suggestions recursively expand the workspace; do not inspect memory descendants.
+        matches = [] if protected else _missing_file_matches(p, cwd)
         if not matches:
             return f"Error: file not found: {p}"
         suggestions = "\n".join(f"- {candidate}" for candidate in matches)
@@ -599,16 +630,47 @@ def read_file(
             f"Same-name file(s) found inside the working directory:\n{suggestions}\n"
             "Retry read_file with the intended exact path."
         )
-    if p.is_dir():
-        return f"Error: {p} is a directory. Use list_directory."
     try:
+        information = p.stat()
+        if not stat.S_ISREG(information.st_mode):
+            if stat.S_ISDIR(information.st_mode):
+                return f"Error: {p} is a directory. Use list_directory."
+            return f"Error: {p} is not a regular file."
         max_chars = _bounded_int(max_chars, MAX_READ_CHARS, 1, MAX_READ_CHARS)
-        text = p.read_text(encoding="utf-8", errors="replace")
         requested_line = offset if offset is not None else start_line
         line_number = max(1, int(requested_line))
-        if line_number > 1:
-            text = "".join(text.splitlines(keepends=True)[line_number - 1 :])
-        return text[:max_chars]
+        remaining_newlines = line_number - 1
+        chunks: list[str] = []
+        remaining_chars = max_chars
+        with ExitStack() as stack:
+            if protected:
+                from .irene_memory_path_policy import protected_path_rules
+                from .irene_search import open_protected_file
+
+                binary = stack.enter_context(open_protected_file(p, protected_path_rules()))
+                handle = stack.enter_context(io.TextIOWrapper(binary, encoding="utf-8", errors="replace", newline=None))
+            else:
+                handle = stack.enter_context(p.open("r", encoding="utf-8", errors="replace", newline=None))
+            while remaining_chars > 0:
+                chunk = handle.read(min(READ_FILE_CHUNK_CHARS, max(remaining_chars, 1)))
+                if not chunk:
+                    break
+                if remaining_newlines:
+                    cursor = 0
+                    while remaining_newlines:
+                        newline = chunk.find("\n", cursor)
+                        if newline < 0:
+                            break
+                        remaining_newlines -= 1
+                        cursor = newline + 1
+                    if remaining_newlines:
+                        continue
+                    chunk = chunk[cursor:]
+                if chunk:
+                    fragment = chunk[:remaining_chars]
+                    chunks.append(fragment)
+                    remaining_chars -= len(fragment)
+        return "".join(chunks)
     except Exception as exc:
         return f"Error reading {p}: {exc}"
 
@@ -1345,7 +1407,7 @@ def batch_edit(
     return f"Batch-edited {p}: applied {len(edits)} edits ({'; '.join(applied)}). File grew by {delta:+d} chars."
 
 
-def list_directory(path: str = ".", cwd: str | None = None, limit: int = 200) -> str:
+def list_directory(path: str = ".", cwd: str | None = None, limit: int = 200, cfg: Any = None) -> str:
     """List files and directories.
 
     Args:
@@ -1353,14 +1415,32 @@ def list_directory(path: str = ".", cwd: str | None = None, limit: int = 200) ->
         cwd: Optional working directory for relative paths.
         limit: Maximum entries to return.
     """
-    p = _resolve(path, cwd)
+    from .continuum_memory import selected
+    from .irene_memory_path_policy import ProtectedMemoryPathError, protected_path_rules, require_allowed_path
+
+    try:
+        rules = protected_path_rules() if cfg is not None and selected(cfg) else None
+        p = require_allowed_path(path, cwd=cwd or cfg.cwd, rules=rules) if rules else _resolve(path, cwd)
+    except ProtectedMemoryPathError:
+        return "Error: protected memory paths are unavailable."
     if not p.exists():
         return f"Error: directory not found: {p}"
     if not p.is_dir():
         return f"Error: {p} is not a directory."
-    entries = []
+    entries: list[str] = []
     try:
-        for entry in sorted(p.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))[:limit]:
+        limit = _bounded_int(limit, 200, 1, 1_000)
+        sampled = list(islice(p.iterdir(), limit + 1))
+        allowed = []
+        for entry in sampled[:limit]:
+            if rules:
+                try:
+                    require_allowed_path(entry, cwd=p, rules=rules)
+                except ProtectedMemoryPathError:
+                    continue
+            allowed.append(entry)
+        visible = sorted(allowed, key=lambda item: (not item.is_dir(), item.name.lower()))
+        for entry in visible:
             suffix = "/" if entry.is_dir() else ""
             size = ""
             if entry.is_file():
@@ -1371,8 +1451,11 @@ def list_directory(path: str = ".", cwd: str | None = None, limit: int = 200) ->
             entries.append(f"{entry.name}{suffix}{size}")
     except Exception as exc:
         return f"Error listing {p}: {exc}"
-    more = "" if len(entries) < limit else f"\n...[limited to {limit} entries]"
-    return "\n".join(entries) + more if entries else "(empty directory)"
+    more = f"\n...[limited to {limit} entries]" if len(sampled) > limit else ""
+    if rules and rules != protected_path_rules():
+        return "Error: protected directory policy changed; no results were released."
+    empty = "(no visible entries)" if sampled else "(empty directory)"
+    return ("\n".join(entries) if entries else empty) + more
 
 
 def search_files(
@@ -1381,7 +1464,7 @@ def search_files(
 ) -> str:
     """Search files with ripgrep when available, returning bounded partial results.
 
-    With Echo selected, search authorized regular text snapshots only. Protected
+    With Continuum selected, search authorized regular text snapshots only. Protected
     roots and aliases are excluded, and scan-budget limits are reported.
 
     Args:
@@ -1403,9 +1486,9 @@ def search_files(
             return f"Error: search {name} must contain valid UTF-8 text."
     if type(limit) is not int or not 1 <= limit <= 1000:
         return "Error: search limit must be an integer from 1 through 1000."
-    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .continuum_memory import selected
 
-    if cfg is not None and echo_veil_authority_selected(cfg):
+    if cfg is not None and selected(cfg):
         from .irene_search import protected_search
 
         return protected_search(pattern, path, cwd or cfg.cwd, glob, limit)
@@ -1581,10 +1664,12 @@ def git_status(cwd: str | None = None) -> str:
     Args:
         cwd: Optional project directory. Relative paths are not accepted by Git itself.
     """
+    from .git_evidence import readonly_git_command
+
     workdir = _resolve(cwd or ".", None)
     try:
         proc = subprocess.run(
-            ["git", "status", "--short", "--branch"],
+            readonly_git_command(["status", "--short", "--branch", "--ignore-submodules=all"]),
             cwd=workdir,
             capture_output=True,
             text=True,
@@ -1610,8 +1695,32 @@ def git_diff(path: str | None = None, cwd: str | None = None, names_only: bool =
         cwd: Optional project directory.
         names_only: Return only changed tracked file names when true.
     """
+    from .git_evidence import readonly_git_command
+
     workdir = _resolve(cwd or ".", None)
-    command = ["git", "diff", "--no-ext-diff"]
+    try:
+        head = subprocess.run(
+            readonly_git_command(["rev-parse", "--verify", "HEAD"]),
+            cwd=workdir,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+        )
+    except subprocess.TimeoutExpired:
+        return "Error: git diff timed out after 20 seconds."
+    except Exception as exc:
+        return f"Error running git diff: {exc}"
+    if head.returncode != 0:
+        detail = (head.stderr or head.stdout or "").strip().lower()
+        if "not a git repository" in detail:
+            return "Error: not a git repository."
+        return (
+            "Error: git repository has no commits yet, so git_diff cannot compare against HEAD. "
+            "Verify untracked files with read_file or a Python assertion."
+        )
+    command = readonly_git_command(["diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all"])
     if names_only:
         command.append("--name-only")
     command.append("HEAD")
@@ -1721,7 +1830,7 @@ def x_search(
     """Search X.com (Twitter) in real time via Grok's native Live Search.
 
     Requires a configured xAI API key (run ``algo-cli config setup xai``).
-    Results are summarized by Grok and include citation URLs. When Echo Veil
+    Results are summarized by Grok and include citation URLs. When Continuum Memory
     owns memory, query/results are current-turn only and are never cached into
     the plaintext harness index. xAI requests may consume paid API usage.
 
@@ -1754,9 +1863,9 @@ def x_search(
         else []
     )
 
-    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .continuum_memory import selected
 
-    protected_memory = bool(cfg is not None and echo_veil_authority_selected(cfg))
+    protected_memory = bool(cfg is not None and selected(cfg))
     cache_dir = _resolve_config_dir() / "x_search_cache"
     # Use hash of full query to avoid collisions from truncation
     clean_query = " ".join(query.strip().split())[:500]
@@ -2448,16 +2557,16 @@ def remember(fact: str, cfg: Config | None = None) -> str:
     """
     if cfg is not None:
         from . import julia_memory_runtime as memory_runtime
-        from .ada_memory_echo_veil import echo_veil_authority_selected
+        from .continuum_memory import selected
 
-        echo_authority = echo_veil_authority_selected(cfg)
+        protected = selected(cfg)
 
         try:
             added = memory_runtime.remember_fact(cfg, fact)
         except memory_runtime.MemorySystemError as exc:
             return f"Error: {exc}"
         if added:
-            if not echo_authority:
+            if not protected:
                 from .main import capture_intuition_block
 
                 capture_intuition_block(
@@ -2466,351 +2575,17 @@ def remember(fact: str, cfg: Config | None = None) -> str:
                     fact,
                     source="tool:remember",
                 )
-            return "Protected memory saved." if echo_authority else f"Remembered: {fact}"
-        return "Protected memory already stored." if echo_authority else f"Fact already in memory: {fact}"
+            return "Continuum memory saved." if protected else f"Remembered: {fact}"
+        return "Continuum memory already stored." if protected else f"Fact already in memory: {fact}"
     return f"Remembered: {fact} (no config provided - not persisted)"
-
-
-_ECHO_MEMORY_LAYERS = frozenset({"live", "short_term", "long_term", "contextual_logic"})
-_ECHO_CREATION_LAYERS = frozenset({"live", "short_term", "contextual_logic"})
-
-
-def _require_protected_echo(cfg: Config | None) -> Config:
-    if cfg is None:
-        raise RuntimeError("Echo Veil tools require the live Algo runtime configuration")
-    from .ada_memory_echo_veil import protection_required
-
-    if not protection_required(cfg):
-        raise RuntimeError("Echo Veil tools require echo_veil_protection=required; no legacy memory fallback was used")
-    return cfg
-
-
-def _echo_layers(value: str) -> list[str] | None:
-    requested = [item.strip().casefold() for item in str(value or "").split(",") if item.strip()]
-    if not requested:
-        return None
-    if len(requested) > 4 or any(item not in _ECHO_MEMORY_LAYERS for item in requested):
-        raise ValueError("layers must be a comma-separated subset of live, short_term, long_term, contextual_logic")
-    return list(dict.fromkeys(requested))
-
-
-def _echo_tool_payload(
-    operation: str,
-    result: dict[str, Any],
-    *,
-    lifecycle_mutated: bool,
-) -> str:
-    return json.dumps(
-        {
-            "memory_authority": "echo_veil",
-            "operation": operation,
-            "plaintext_fallback": False,
-            "lifecycle_mutated": lifecycle_mutated,
-            **result,
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-
-
-def echo_veil_remember(
-    payload: str,
-    topic: str,
-    layer: str = "short_term",
-    expires_in_seconds: int = 3600,
-    promotion_reason: str = "",
-    logic_kind: str = "",
-    related_ids: str = "",
-    cfg: Config | None = None,
-) -> str:
-    """Store one compact, user-authorized seed crystal through Echo Veil.
-
-    This is the same governed operation exposed by Echo's MCP adapters. New
-    Long-Term records are intentionally prohibited: create Live or Short-Term
-    memory, then use echo_veil_promote with an explicit reason. Contextual Logic
-    requires a reason, one of causal_chain|contradiction_resolution|decision|
-    principle, and comma-separated related record IDs.
-
-    Args:
-        payload: Compact fact, intent, outcome, or logic statement to protect.
-        topic: Stable, non-secret classification for the memory.
-        layer: live, short_term, or contextual_logic.
-        expires_in_seconds: Live expiry from now, between 60 and 86400 seconds.
-        promotion_reason: Required rationale for Contextual Logic.
-        logic_kind: Contextual Logic kind.
-        related_ids: Comma-separated evidence record IDs for Contextual Logic.
-        cfg: Runtime-injected Algo configuration.
-    """
-
-    runtime_cfg = _require_protected_echo(cfg)
-    clean_layer = str(layer or "").strip().casefold()
-    if clean_layer not in _ECHO_CREATION_LAYERS:
-        raise ValueError("layer must be live, short_term, or contextual_logic; Long-Term requires echo_veil_promote")
-    expires_at: float | None = None
-    if clean_layer == "live":
-        if (
-            isinstance(expires_in_seconds, bool)
-            or not isinstance(expires_in_seconds, int)
-            or not 60 <= expires_in_seconds <= 86_400
-        ):
-            raise ValueError("expires_in_seconds must be an integer from 60 through 86400")
-        expires_at = time.time() + expires_in_seconds
-    relation_ids = [item.strip() for item in str(related_ids or "").split(",") if item.strip()]
-    if len(relation_ids) > 16:
-        raise ValueError("related_ids supports at most 16 record IDs")
-    from .ada_memory_echo_veil import remember_record_with_echo_veil
-
-    result = remember_record_with_echo_veil(
-        runtime_cfg,
-        payload,
-        topic=topic,
-        layer=clean_layer,
-        provenance=["algo-cli:model_tool"],
-        promotion_reason=promotion_reason or None,
-        expires_at=expires_at,
-        logic_kind=logic_kind or None,
-        related_ids=relation_ids or None,
-    )
-    return _echo_tool_payload("remember", result, lifecycle_mutated=True)
-
-
-def echo_veil_refresh_live(
-    vine_id: str,
-    payload: str,
-    expires_in_seconds: int = 3600,
-    cfg: Config | None = None,
-) -> str:
-    """Refresh protected Live memory, superseding changed content explicitly.
-
-    Args:
-        vine_id: Existing Live record ID.
-        payload: Current compact Live state.
-        expires_in_seconds: New expiry from now, between 60 and 86400 seconds.
-        cfg: Runtime-injected Algo configuration.
-    """
-
-    runtime_cfg = _require_protected_echo(cfg)
-    if (
-        isinstance(expires_in_seconds, bool)
-        or not isinstance(expires_in_seconds, int)
-        or not 60 <= expires_in_seconds <= 86_400
-    ):
-        raise ValueError("expires_in_seconds must be an integer from 60 through 86400")
-    from .ada_memory_echo_veil import refresh_live_with_echo_veil
-
-    result = refresh_live_with_echo_veil(
-        runtime_cfg,
-        vine_id,
-        payload,
-        source="model_tool",
-        expires_at=time.time() + expires_in_seconds,
-    )
-    return _echo_tool_payload("refresh_live", result, lifecycle_mutated=True)
-
-
-def echo_veil_promote(
-    vine_id: str,
-    target_layer: str,
-    reason: str,
-    cfg: Config | None = None,
-) -> str:
-    """Promote Live to Short-Term or Short-Term to Long-Term with evidence.
-
-    Args:
-        vine_id: Existing record ID.
-        target_layer: short_term or long_term.
-        reason: Explicit bounded reason for the promotion.
-        cfg: Runtime-injected Algo configuration.
-    """
-
-    runtime_cfg = _require_protected_echo(cfg)
-    clean_target = str(target_layer or "").strip().casefold()
-    if clean_target not in {"short_term", "long_term"}:
-        raise ValueError("target_layer must be short_term or long_term")
-    from .ada_memory_echo_veil import promote_with_echo_veil
-
-    result = promote_with_echo_veil(
-        runtime_cfg,
-        vine_id,
-        clean_target,
-        reason=reason,
-        source="model_tool",
-    )
-    return _echo_tool_payload("promote", result, lifecycle_mutated=True)
-
-
-def echo_veil_recall(
-    query: str,
-    top_k: int = 5,
-    layers: str = "",
-    cfg: Config | None = None,
-) -> str:
-    """Return minimal answerable protected memory with confidence and provenance.
-
-    Degraded results remain explicitly non-semantic and must never be portrayed
-    as authoritative semantic recall.
-
-    Args:
-        query: Natural-language retrieval question.
-        top_k: Maximum candidate count, from 1 through 8.
-        layers: Optional comma-separated memory-layer filter.
-        cfg: Runtime-injected Algo configuration.
-    """
-
-    runtime_cfg = _require_protected_echo(cfg)
-    if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 8:
-        raise ValueError("top_k must be an integer from 1 through 8")
-    from .ada_memory_echo_veil import recall_response_with_echo_veil
-
-    result = recall_response_with_echo_veil(
-        runtime_cfg,
-        query,
-        top_k=top_k,
-        layers=_echo_layers(layers),
-    )
-    return _echo_tool_payload(
-        "recall",
-        result,
-        lifecycle_mutated=bool(result.get("lifecycle_mutated", False)),
-    )
-
-
-def echo_veil_context(
-    query: str,
-    max_depth: int = 1,
-    max_records: int = 8,
-    cfg: Config | None = None,
-) -> str:
-    """Trace protected Contextual Logic roots to authenticated evidence.
-
-    The response performs no synthesis and does not assign query scores to
-    linked evidence.
-
-    Args:
-        query: Decision, principle, contradiction, or causal question.
-        max_depth: Maximum outgoing relationship depth, from 0 through 3.
-        max_records: Maximum returned roots and evidence, from 1 through 32.
-        cfg: Runtime-injected Algo configuration.
-    """
-
-    runtime_cfg = _require_protected_echo(cfg)
-    if isinstance(max_depth, bool) or not isinstance(max_depth, int) or not 0 <= max_depth <= 3:
-        raise ValueError("max_depth must be an integer from 0 through 3")
-    if isinstance(max_records, bool) or not isinstance(max_records, int) or not 1 <= max_records <= 32:
-        raise ValueError("max_records must be an integer from 1 through 32")
-    from .ada_memory_echo_veil import context_with_echo_veil
-
-    result = context_with_echo_veil(
-        runtime_cfg,
-        query,
-        max_depth=max_depth,
-        max_records=max_records,
-    )
-    return _echo_tool_payload(
-        "context",
-        result,
-        lifecycle_mutated=bool(result.get("lifecycle_mutated", False)),
-    )
-
-
-def echo_veil_list(
-    limit: int = 20,
-    layers: str = "",
-    topic_prefix: str = "",
-    active_only: bool = True,
-    cfg: Config | None = None,
-) -> str:
-    """List a bounded inventory; Echo may recover, migrate, or prune on open.
-
-    Args:
-        limit: Maximum records, from 1 through 100.
-        layers: Optional comma-separated memory-layer filter.
-        topic_prefix: Optional exact topic prefix filter.
-        active_only: Exclude explicitly superseded records when true.
-        cfg: Runtime-injected Algo configuration.
-    """
-
-    runtime_cfg = _require_protected_echo(cfg)
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
-        raise ValueError("limit must be an integer from 1 through 100")
-    if not isinstance(active_only, bool):
-        raise TypeError("active_only must be a boolean")
-    from .ada_memory_echo_veil import list_echo_veil_memories
-
-    records = list_echo_veil_memories(
-        runtime_cfg,
-        limit=limit,
-        layers=_echo_layers(layers),
-        topic_prefix=topic_prefix or None,
-        newest_first=True,
-    )
-    if active_only:
-        records = [record for record in records if record.get("superseded_by") is None]
-    return _echo_tool_payload(
-        "list",
-        {
-            "inventory_only": True,
-            "semantic_retrieval_performed": False,
-            "count": len(records),
-            "records": records,
-        },
-        lifecycle_mutated=True,
-    )
-
-
-def echo_veil_forget(
-    vine_id: str,
-    cfg: Config | None = None,
-) -> str:
-    """Irreversibly forget one protected record and dependent logic.
-
-    Args:
-        vine_id: Exact Echo Veil record ID to erase.
-        cfg: Runtime-injected Algo configuration.
-    """
-
-    runtime_cfg = _require_protected_echo(cfg)
-    from .ada_memory_echo_veil import forget_with_echo_veil
-
-    result = forget_with_echo_veil(runtime_cfg, vine_id)
-    return _echo_tool_payload("forget", result, lifecycle_mutated=True)
-
-
-def echo_veil_doctor(cfg: Config | None = None) -> str:
-    """Probe readiness; Echo may recover, migrate, or prune on open.
-
-    Args:
-        cfg: Runtime-injected Algo configuration.
-    """
-
-    runtime_cfg = _require_protected_echo(cfg)
-    from .ada_memory_echo_veil import get_echo_veil_readiness
-
-    result = get_echo_veil_readiness(runtime_cfg.__dict__, live_probe=True)
-    return _echo_tool_payload("doctor", result, lifecycle_mutated=True)
-
-
-def echo_veil_reindex(cfg: Config | None = None) -> str:
-    """Rebuild protected Echo retrieval indexes after explicit approval.
-
-    Args:
-        cfg: Runtime-injected Algo configuration.
-    """
-
-    runtime_cfg = _require_protected_echo(cfg)
-    from .ada_memory_echo_veil import reindex_with_echo_veil
-
-    result = reindex_with_echo_veil(runtime_cfg)
-    return _echo_tool_payload("reindex", result, lifecycle_mutated=True)
 
 
 def append_lesson(text: str, cfg: Config | None = None) -> str:
     """Store an explicit lesson in the active governed memory authority.
 
     Call only when the user explicitly asks to retain a preference, correction,
-    or pattern as a lesson. With Echo Veil selected, the lesson is written to
-    protected Short-Term memory and never shadowed into plaintext lesson files.
+    or pattern as a lesson. With Continuum selected, the lesson is written to
+    protected memory and never shadowed into plaintext lesson files.
     Do NOT use this for session notes, speculative capture, or to paraphrase the
     last message.
 
@@ -2822,21 +2597,10 @@ def append_lesson(text: str, cfg: Config | None = None) -> str:
     if not text or not text.strip():
         return "Error: lesson text was empty."
     if cfg is not None:
-        from .ada_memory_echo_veil import (
-            echo_veil_authority_selected,
-            remember_with_echo_veil,
-        )
+        from . import continuum_memory
 
-        if echo_veil_authority_selected(cfg):
-            try:
-                created = remember_with_echo_veil(
-                    cfg,
-                    text.strip(),
-                    source="explicit_lesson_tool",
-                )
-            except Exception:
-                return "Error: protected lesson storage is unavailable; no plaintext lesson was written."
-            return "Protected lesson saved." if created else "Protected lesson already stored."
+        if continuum_memory.selected(cfg):
+            return remember(text, cfg=cfg)
     path = identity.append_lesson(text)
     if cfg is not None:
         from .main import capture_intuition_block
@@ -2864,14 +2628,10 @@ def update_user_profile(content: str, cfg: Config | None = None) -> str:
     if not content or not content.strip():
         return "Error: refusing to overwrite USER.md with empty content."
     if cfg is not None:
-        from .ada_memory_echo_veil import echo_veil_authority_selected
+        from .continuum_memory import selected
 
-        if echo_veil_authority_selected(cfg):
-            return (
-                "Error: update_user_profile is unavailable while Echo Veil is "
-                "the exclusive memory authority; use an explicit reviewed "
-                "Echo memory action instead."
-            )
+        if selected(cfg):
+            return "Error: profile continuity writes are unavailable with Continuum Memory; use memory_remember explicitly."
     path = identity.write_user_profile(content)
     return f"Wrote {len(content)} chars to {path}"
 
@@ -3136,6 +2896,54 @@ def vision_describe(
     return content or "(empty response)"
 
 
+_INTELLIGENCE_CAPABILITY_NAMES = (
+    "build_project_graph",
+    "query_project_graph",
+    "GraphRAGIndex",
+    "DeepResearchEngine",
+    "LSPManager",
+    "TaskClassifier",
+    "MemoryEngine",
+)
+
+
+def intelligence_runtime_snapshot() -> dict[str, Any]:
+    """Return whether the intelligence package is importable in this runtime."""
+
+    try:
+        from . import intelligence
+    except Exception as exc:
+        return {
+            "wired": False,
+            "module": "",
+            "exports": 0,
+            "capabilities": [],
+            "error": type(exc).__name__,
+            "commands": [
+                "/intel status",
+                "/intel query TERM",
+                "/intel reindex",
+            ],
+        }
+    exports = list(getattr(intelligence, "__all__", ()) or [])
+    capabilities = [
+        name
+        for name in _INTELLIGENCE_CAPABILITY_NAMES
+        if name in set(exports) or hasattr(intelligence, name)
+    ]
+    return {
+        "wired": True,
+        "module": intelligence.__name__,
+        "exports": len(exports),
+        "capabilities": capabilities,
+        "commands": [
+            "/intel status",
+            "/intel query TERM",
+            "/intel reindex",
+        ],
+    }
+
+
 def available_actions(topic: str | None = None, cfg: Config | None = None) -> str:
     """Show the CLI's available commands, model-callable tools, and internal harness stats.
 
@@ -3164,7 +2972,7 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
             "/save NAME",
             "/load NAME",
             "/theme NAME",
-            "/mode [execute|explore|publish|status]",
+            "/mode [execute|explore|publish|yolo|status] (yolo is user-only)",
             "/exit",
         ],
         "tools": [
@@ -3264,7 +3072,7 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
             "/intel query TERM",
             "/intel reindex",
             "/intel status|query TERM|reindex",
-            "/intelligence status|query TERM|reindex",
+            "/intelligence status|query TERM|reindex|init",
             "/intelagence status|query TERM|reindex",
         ],
         "kernel": [
@@ -3329,15 +3137,21 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
         ],
         "memory": [
             "remember",
-            "echo_veil_remember",
-            "echo_veil_refresh_live",
-            "echo_veil_promote",
-            "echo_veil_recall",
-            "echo_veil_context",
-            "echo_veil_list",
-            "echo_veil_forget",
-            "echo_veil_doctor",
-            "echo_veil_reindex",
+            "memory_init",
+            "memory_verify",
+            "memory_status",
+            "memory_capture",
+            "memory_remember",
+            "memory_get",
+            "memory_read",
+            "memory_search",
+            "memory_context",
+            "memory_validate_context",
+            "memory_revoke",
+            "memory_resolve",
+            "memory_explain",
+            "memory_history",
+            "memory_handoff",
         ],
         "multimodal": ["embed_text", "vision_describe"],
         "harness": [
@@ -3357,7 +3171,7 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
     slash_guidance = [
         "Slash commands are session controls. Writing '/command' in a final answer does not execute it.",
         "Use session_slash for /read, /ls, /cd, and /cwd when you need deterministic cwd-relative file navigation.",
-        "Use session_command for non-file slash commands only when the user asks for that action or session state must change/check before continuing; read-only/status commands such as /kernel list, /code-rag status, /harness status, or /agent threads run without approval. /harness score may live-probe Echo Veil and therefore requires approval, as do state-changing commands such as /code-rag on, /code-rag off, /harness refresh, /harness embed, and agent execution.",
+        "Use session_command for non-file slash commands only when the user asks for that action or session state must change/check before continuing; read-only/status commands such as /kernel list, /code-rag status, /harness status, or /agent threads run without approval. State-changing commands such as /code-rag on, /code-rag off, /harness refresh, /harness embed, and agent execution require approval.",
         "Prefer direct tools for actual work: write_file for edits, run_shell for tests/builds, read_pdf/render_pdf_pages for PDFs, cleanup_pdf_render_artifact after vision inspection, and web_search/web_fetch for web.",
         "Prefer explicit on/off/status forms for toggles (/auto on, /safe off, /memory-auto status, /code-rag status, /thinking status, /verify on, /cloud off) so you do not accidentally flip state.",
         "For /reason, check /reason status or /reason guide first; only change reasoning mode for genuinely complex, failed, ambiguous, or verification-heavy work.",
@@ -3391,14 +3205,20 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
         "When the same file needs 2+ independent edits, call batch_edit with all of them at once instead of looping edit_file. One atomic write, faster, and you can see the whole change set in the result.",
         "Use run_shell for build/test/typecheck/lint/git verification after code changes.",
         "In requires_change Agent Blocks, use write_file or edit_file for file edits; mutating shell or Git commands require explicit approval.",
-        "For Algo algorithm/pattern catalog guidance, read and update docs/ALGO.md.",
+        "For Algo algorithm/pattern catalog guidance, read and update the user's own catalog at ~/.algo_cli/ALGO.md (template: docs/ALGO.md).",
         "For harness maintenance, use harness_stats or /harness status to inspect quality, harness_scorecard or /harness score to grade readiness, harness_refresh or /harness refresh after source edits, and /harness embed to fill pending embeddings.",
         "Use web_search/web_fetch only when OLLAMA_API_KEY enables Ollama Cloud web access.",
         "Use x_search for real-time X.com content only after the user configured XAI_API_KEY with `algo-cli config setup xai`; xAI API calls may consume paid usage.",
         "Use x_account_* for X account actions through xurl; writes require explicit confirmation and separate X API OAuth.",
         "Treat memory/wiki as navigation; verify consequential facts against live files or endpoints.",
     ]
+    from .oliver_slash_dispatch import SLASH_COMMAND_ALIASES, SLASH_COMMANDS
+    from .kernels.manifest import kernel_runtime_snapshot
+
     stats = _harness_stats_for_config(cfg)
+
+    intelligence_runtime = intelligence_runtime_snapshot()
+    kernel_runtime = kernel_runtime_snapshot()
     payload: dict[str, Any] = {
         "topic": focus or "all",
         "commands": commands,
@@ -3406,6 +3226,10 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
         "slash_command_guidance": slash_guidance,
         "reasoning_mode_guidance": reasoning_guidance,
         "verification_layer": verification_layer,
+        "intelligence_runtime": intelligence_runtime,
+        "kernels": kernel_runtime,
+        "slash_registry": [{"command": command, "description": description} for command, description in SLASH_COMMANDS],
+        "slash_aliases": dict(SLASH_COMMAND_ALIASES),
         "harness_index": {
             "record_count": stats.get("record_count"),
             "generated": stats.get("generated"),
@@ -3433,6 +3257,13 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
             matching["when_to_use"] = slash_guidance
         if reason_focus:
             matching["reasoning_mode_guidance"] = reasoning_guidance
+        if focus in {"intel", "intelligence", "intelagence"}:
+            matching["intelligence_runtime"] = intelligence_runtime
+        if focus in {"kernel", "kernels"}:
+            matching["kernels"] = kernel_runtime
+        if slash_focus:
+            matching["slash_registry"] = payload["slash_registry"]
+            matching["slash_aliases"] = payload["slash_aliases"]
         payload["focused"] = matching
     return json.dumps(payload, indent=2)
 
@@ -3466,6 +3297,7 @@ _SESSION_OUTPUT_COMMANDS = frozenset(
         "/info",
         "/memories",
         "/model-check",
+        "/models",
         "/perf",
         "/route",
         "/selfcheck",
@@ -3562,6 +3394,9 @@ def _session_command_captures_output(command_line: str) -> bool:
         return False
     parts = stripped.split(maxsplit=1)
     root = parts[0].lower()
+    from .oliver_slash_dispatch import SLASH_COMMAND_ALIASES
+
+    root = SLASH_COMMAND_ALIASES.get(root, root)
     arg = parts[1].strip() if len(parts) > 1 else ""
     normalized_arg = arg.lower()
 
@@ -3581,6 +3416,10 @@ def _session_command_captures_output(command_line: str) -> bool:
     if root == "/google":
         subcommand = normalized_arg.split(maxsplit=1)[0] if normalized_arg else "help"
         return subcommand in _READ_ONLY_GOOGLE_SUBCOMMANDS
+    if root in {"/host", "/keepalive", "/model", "/system", "/theme"}:
+        return not normalized_arg
+    if root == "/goal":
+        return normalized_arg in {"", "status"}
     if root == "/kernel":
         subcommand = normalized_arg.split(maxsplit=1)[0] if normalized_arg else "list"
         return subcommand in {"?", "check", "help", "list", "show"}
@@ -3654,7 +3493,9 @@ def _direct_read_only_session_result(
     parts = (command_line or "").strip().split(maxsplit=1)
     if not parts:
         return None
-    root = parts[0].lower()
+    from .oliver_slash_dispatch import SLASH_COMMAND_ALIASES
+
+    root = SLASH_COMMAND_ALIASES.get(parts[0].lower(), parts[0].lower())
     arg = parts[1].strip() if len(parts) > 1 else ""
     if root == "/actions":
         return available_actions(arg or None, cfg=cfg)
@@ -3687,7 +3528,7 @@ def session_command(command: str, cfg: Any = None) -> str:
     - /status, /info — inspect model, cwd, context, and active toggles
     - /cloud on|off|status, /auto on|off|status, /safe on|off|status
     - /thinking on|off|status|efforts|effort [MODEL] LEVEL, /verify on|off|status, /policy on|off|status
-    - /mode execute|explore|publish|status — switch/check session mode
+    - /mode execute|explore|publish|status — switch/check session mode; only the user can enter yolo
     - /reason status|guide — inspect reasoning posture and mode-selection guidance
     - /reason react|reflexion|tot|got|mcts|qcr|neuro_symbolic|hybrid — set reasoning posture only for complex/failed/ambiguous/verification-heavy work
     - /reason depth N, /reason branches N — reasoning search-cost parameters
@@ -3718,6 +3559,13 @@ def session_command(command: str, cfg: Any = None) -> str:
     if cfg is None:
         return "Error: session_command must be invoked by the algo CLI runtime (not called directly)."
     normalized = command.strip()
+    from .samuel_policy_engine import normalize_session_command
+
+    command, argument = normalize_session_command(normalized)
+    if (command, argument) == ("/mode", "yolo"):
+        return "Error: only the user may enter YOLO with /mode yolo in the interactive CLI."
+    if command in {"/exit", "/quit"}:
+        return "Error: only the user may exit the interactive CLI."
     from .oliver_slash_dispatch import handle_command, unknown_command_message
     from .theodore_runtime_services import create_client
 
@@ -3754,7 +3602,7 @@ def session_command(command: str, cfg: Any = None) -> str:
             return unknown_command_message(normalized)
         return f"Executed: {normalized}"
     except EOFError:
-        return "Executed: exit command (session ended)."
+        return "Error: only the user may exit the interactive CLI."
     except Exception as exc:
         return f"Error executing {normalized}: {exc}"
 
@@ -3803,10 +3651,18 @@ def harness_refresh(cfg: Config | None = None) -> str:
 def _harness_stats_for_config(cfg: Config | None) -> dict[str, Any]:
     if cfg is None:
         return harness.stats()
-    return harness.stats(
+    result = harness.stats(
         model=harness.resolve_embed_model(cfg), dimensions=harness.resolve_embed_dimensions(cfg),
         embedding_identity=harness.resolve_embed_identity(cfg),
     )
+    from . import continuum_memory
+
+    if continuum_memory.selected(cfg):
+        try:
+            result["continuum_memory"] = {"enabled": True, **continuum_memory.doctor(cfg)}
+        except continuum_memory.ContinuumMemoryError:
+            result["continuum_memory"] = {"enabled": True, "ok": False, "verify": False}
+    return result
 
 
 def harness_stats(cfg: Config | None = None) -> str:
@@ -3929,10 +3785,8 @@ def harness_scorecard(cfg: Config | None = None) -> str:
     Optional cloud/Web and Google availability remain visible but unscored so a
     healthy local-first runtime is not penalized for intentionally absent creds.
 
-    When Echo Veil is enabled, this diagnostic performs its lifecycle-aware
-    doctor probe. Echo construction may recover, migrate, or prune state, so the
-    runtime authority registry classifies this scorecard as an approved local
-    memory operation. ``harness.stats()`` remains lifecycle-neutral.
+    When Continuum Memory is selected, this diagnostic includes its verified
+    bridge status. ``harness.stats()`` remains lifecycle-neutral.
     """
     from . import action_registry
     from .evals.algorithm_effectiveness import (
@@ -3986,18 +3840,14 @@ def harness_scorecard(cfg: Config | None = None) -> str:
     embeddings = embeddings_value if isinstance(embeddings_value, dict) else {}
     runtime_store = runtime_store_value if isinstance(runtime_store_value, dict) else {}
 
-    echo_probe_error = ""
-    try:
-        from .ada_memory_echo_veil import get_echo_veil_readiness
+    continuum_value = stats.get("continuum_memory")
+    continuum_readiness = continuum_value if isinstance(continuum_value, dict) else {}
+    from .continuum_memory import selected
 
-        echo_config = cfg.__dict__ if cfg is not None else None
-        probed_echo = get_echo_veil_readiness(echo_config, live_probe=True)
-        if not isinstance(probed_echo, dict):
-            raise TypeError("Echo Veil readiness payload must be a mapping")
-        echo_readiness = probed_echo
-    except Exception as exc:
-        echo_readiness = {}
-        echo_probe_error = type(exc).__name__
+    continuum_selected = bool(cfg is not None and selected(cfg))
+    continuum_safe = not continuum_selected or (
+        continuum_readiness.get("ok") is True and continuum_readiness.get("verify") is True
+    )
 
     embedding_fields = (
         stats.get("record_count"),
@@ -4053,30 +3903,6 @@ def harness_scorecard(cfg: Config | None = None) -> str:
     required_value = quality.get("required_product_memory_categories")
     covered_value = quality.get("covered_product_memory_categories")
     missing_value = quality.get("missing_product_memory_categories")
-    echo_fields_ready = all(
-        key in echo_readiness
-        for key in (
-            "installed",
-            "enabled",
-            "write_wired",
-            "retrieval_wired",
-            "persistence_wired",
-            "readiness_source",
-            "runtime",
-        )
-    )
-    echo_enabled = bool(echo_readiness.get("enabled"))
-    echo_stages = {
-        "write": bool(echo_readiness.get("write_wired")),
-        "retrieval": bool(echo_readiness.get("retrieval_wired")),
-        "persistence": bool(echo_readiness.get("persistence_wired")),
-    }
-    echo_initialization_error = str(echo_readiness.get("import_error") or "")
-    echo_safe = not echo_enabled or (
-        bool(echo_readiness.get("installed"))
-        and echo_readiness.get("live_probe_performed") is True
-        and all(echo_stages.values())
-    )
     runtime_store_fields_ready = all(
         key in runtime_store
         for key in (
@@ -4103,7 +3929,6 @@ def harness_scorecard(cfg: Config | None = None) -> str:
         or not isinstance(required_value, list)
         or not isinstance(covered_value, list)
         or not isinstance(missing_value, list)
-        or not echo_fields_ready
         or not runtime_store_fields_ready
     ):
         status = "unavailable"
@@ -4120,7 +3945,7 @@ def harness_scorecard(cfg: Config | None = None) -> str:
         required_set = set(required_categories)
         covered_set = set(covered_categories)
         category_coverage = len(required_set & covered_set)
-        if not echo_safe or not runtime_store_safe:
+        if not continuum_safe or not runtime_store_safe:
             status = "fail"
         elif (
             required_set
@@ -4142,16 +3967,14 @@ def harness_scorecard(cfg: Config | None = None) -> str:
                 f"product_memory={memory_records} curated={curated_memory_records} "
                 f"categories={len(covered_categories)}/{len(required_categories)} "
                 f"missing={missing_categories} wiki={wiki_records} "
-                f"echo_enabled={echo_enabled} echo_stages={echo_stages} "
-                f"echo_live_probe={echo_readiness.get('live_probe_performed') is True} "
-                f"echo_error={echo_initialization_error or '-'} "
+                f"continuum_selected={continuum_selected} "
+                f"continuum_verified={continuum_readiness.get('verify') is True} "
                 f"private_store={runtime_store.get('status') or 'unknown'}"
             ),
             (
                 "Cover every required product-memory category with a curated contract, "
-                "retain at least five curated wiki records, and reconcile the qualified Echo Veil "
-                "dependency with its live profile before requiring write/retrieval/persistence. "
-                "Do not downgrade or rewrite a newer protected profile. Keep the runtime "
+                "retain at least five curated wiki records, and verify the selected Continuum "
+                "bridge before requiring write/retrieval/persistence. Keep the runtime "
                 "event store private, bounded, and compact; then refresh."
                 if status != "pass"
                 else ""
@@ -4164,14 +3987,8 @@ def harness_scorecard(cfg: Config | None = None) -> str:
                 "covered_categories": covered_categories,
                 "missing_categories": missing_categories,
                 "wiki_records": wiki_records,
-                "echo_installed": bool(echo_readiness.get("installed")),
-                "echo_enabled": echo_enabled,
-                "echo_stages": echo_stages,
-                "echo_readiness_source": echo_readiness.get("readiness_source"),
-                "echo_runtime": echo_readiness.get("runtime"),
-                "echo_live_probe_performed": echo_readiness.get("live_probe_performed") is True,
-                "echo_probe_error": echo_probe_error,
-                "echo_initialization_error": echo_initialization_error,
+                "continuum_selected": continuum_selected,
+                "continuum_readiness": continuum_readiness,
                 "runtime_event_store": runtime_store,
             },
         )
@@ -4222,13 +4039,13 @@ def harness_scorecard(cfg: Config | None = None) -> str:
         )
     )
 
-    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .continuum_memory import selected
 
-    if cfg is not None and echo_veil_authority_selected(cfg):
-        kg_text = "Legacy knowledge graph disabled under Echo Veil authority."
+    if cfg is not None and selected(cfg):
+        kg_text = "Legacy knowledge graph disabled under Continuum Memory authority."
         status = "unavailable"
         kg_recommendation = (
-            "Qualify graph retrieval through Echo Veil Contextual Logic; keep the legacy graph disabled."
+            "Use scoped Continuum search/context; keep the legacy graph disabled."
         )
     else:
         kg_recommendation = "Reindex the graph and verify the exact project:algo-cli canonical."
@@ -4510,7 +4327,11 @@ def harness_competitive_rating(cfg: Config | None = None) -> str:
     if not isinstance(summary, dict):
         summary = {}
 
-    snapshot = git_evidence.capture_git_snapshot()
+    from .continuum_memory import selected
+
+    snapshot = git_evidence.capture_git_snapshot(
+        cfg.cwd if cfg is not None else None, protected_memory=cfg is not None and selected(cfg),
+    )
     clean = git_evidence.snapshot_is_clean(snapshot) if snapshot.available else None
     local_verification_digest = (
         "sha256:" + hashlib.sha256(f"{benchmark_json}\n{algorithm_json}".encode("utf-8")).hexdigest()
@@ -4573,11 +4394,11 @@ def harness_search(
         kind: Optional kind filter. Leave unset to search all kinds. memory includes shipped policy contracts (not agent memory); wiki contains runbooks; runtime_capability contains tool metadata. Other kinds include skill, tool, prompt, workflow, extension, algorithm.
         limit: Maximum records.
     """
-    echo_memory_authority = False
+    protected_memory = False
     if cfg is not None:
-        from .ada_memory_echo_veil import echo_veil_authority_selected
+        from .continuum_memory import selected
 
-        echo_memory_authority = echo_veil_authority_selected(cfg)
+        protected_memory = selected(cfg)
     limit = _bounded_int(limit, 10, 0, 50)
     if limit == 0 or not query.strip():
         return "No harness matches."
@@ -4589,9 +4410,9 @@ def harness_search(
     filters = [f"{name}={value!r}" for name, value in (("harness", harness_name), ("kind", kind)) if value]
     filter_line = "Active filters: " + (", ".join(filters) or "none")
     try:
-        index = harness.retrieval_index(protected_memory=echo_memory_authority)
+        index = harness.retrieval_index(protected_memory=protected_memory)
     except (OSError, ValueError):
-        return "Error: harness source policy is unavailable; protected memory is available only through Echo Veil."
+        return "Error: harness source policy is unavailable while Continuum Memory is authoritative."
     records = index.get("records", [])
     by_id = {
         record["id"]: record
@@ -4620,8 +4441,8 @@ def harness_search(
     results = [record for record in results if record.get("id") in by_id]
     if not results:
         message = (
-            "No shipped product-contract matches. Agent memory is available only through Echo Veil."
-            if echo_memory_authority and kind == "memory"
+            "No shipped product-contract matches. Agent memory is available through Continuum Memory tools."
+            if protected_memory and kind == "memory"
             else "No harness matches."
         )
         if not filters:
@@ -4666,15 +4487,15 @@ def harness_read(
     """
     protected = False
     if cfg is not None:
-        from .ada_memory_echo_veil import echo_veil_authority_selected
+        from .continuum_memory import selected
 
-        protected = echo_veil_authority_selected(cfg)
+        protected = selected(cfg)
         if protected and not harness._PROTECTED_MEMORY_AUTHORITY:
-            return "Error: harness source policy is unavailable; protected memory is available only through Echo Veil."
+            return "Error: harness source policy is unavailable while Continuum Memory is authoritative."
         record = harness.get_record(record_id)
         if protected and isinstance(record, dict) and not harness._protected_memory_record_allowed(record):
             return (
-                "Protected memory records are available only through Echo Veil; the legacy harness record was not read."
+                "Protected memory records are available only through Continuum Memory; the legacy harness record was not read."
             )
     return harness.read_record(
         record_id,
@@ -4721,10 +4542,10 @@ def query_knowledge_graph(
         limit: Maximum ranked neighbors or results to return, between 1 and 20.
     """
     if cfg is not None:
-        from .ada_memory_echo_veil import echo_veil_authority_selected
+        from .continuum_memory import selected
 
-        if echo_veil_authority_selected(cfg):
-            return "Error: legacy knowledge-graph access is disabled while Echo Veil is the exclusive memory authority."
+        if selected(cfg):
+            return "Error: legacy knowledge-graph access is disabled while Continuum Memory is authoritative."
     text = (question or "").strip()
     if not text:
         return "Error: knowledge graph question was empty."
@@ -4755,12 +4576,11 @@ def reindex_knowledge_graph(
         removable_scope: Optional single --scope path for removable_drive_atoms.py.
     """
     if cfg is not None:
-        from .ada_memory_echo_veil import echo_veil_authority_selected
+        from .continuum_memory import selected
 
-        if echo_veil_authority_selected(cfg):
+        if selected(cfg):
             return (
-                "Error: legacy knowledge-graph reindexing is disabled while Echo Veil "
-                "is the exclusive memory authority."
+                "Error: legacy knowledge-graph reindexing is disabled while Continuum Memory is authoritative."
             )
     scopes = [removable_scope.strip()] if removable_scope and removable_scope.strip() else None
     output = _index_compute_lab.run_pipeline(
@@ -4777,9 +4597,8 @@ def write_knowledge_graph_note(
 ) -> str:
     """Persist an explicit retrievable note in the active memory authority.
 
-    When Echo Veil owns memory, this routes to protected Short-Term memory and
-    never creates an index-compute-lab Markdown atom or plaintext index shadow.
-    Without Echo authority, the legacy graph-note behavior remains available.
+    Under Continuum Memory this operation is refused in favor of an explicit,
+    scoped memory_remember call. Otherwise the legacy graph-note behavior remains.
 
     Args:
         title: Short note title (used as filename slug).
@@ -4787,24 +4606,10 @@ def write_knowledge_graph_note(
         cfg: Runtime configuration injected by Algo CLI.
     """
     if cfg is not None:
-        from .ada_memory_echo_veil import (
-            echo_veil_authority_selected,
-            remember_with_echo_veil,
-        )
+        from .continuum_memory import selected
 
-        if echo_veil_authority_selected(cfg):
-            note = f"{str(title or '').strip()}\n\n{str(body or '').strip()}".strip()
-            if not note:
-                return "Error: protected knowledge note was empty."
-            try:
-                created = remember_with_echo_veil(
-                    cfg,
-                    note,
-                    source="explicit_knowledge_graph_note",
-                )
-            except Exception:
-                return "Error: protected knowledge-note storage is unavailable; no plaintext graph note was written."
-            return "Protected knowledge note saved." if created else "Protected knowledge note already stored."
+        if selected(cfg):
+            return "Error: graph-note persistence is unavailable with Continuum Memory; use memory_remember explicitly."
     return _index_compute_lab.write_graph_note(title, body)
 
 
@@ -5255,6 +5060,9 @@ def action_program(plan: dict, cfg: Any = None) -> str:
     ``kind: action``, ``action``, and ``args``. A transform step has ``id``,
     ``kind: transform``, ``op``, ``input``, and optional ``args``. References
     use ``{"$ref": "earlier_step", "path": ["optional", "keys"]}``.
+    Omitted, null, or empty ``outputs`` returns the final step automatically.
+    Omit ``cwd`` in action arguments; a redundant active-workspace value is
+    normalized away, but it cannot redirect execution to another workspace.
     Action arguments are static in version 1: observations may feed deterministic
     transforms and outputs, but may not become arguments to another action. All
     action schemas, exact effects, targets, and transform contracts are frozen
@@ -5266,12 +5074,23 @@ def action_program(plan: dict, cfg: Any = None) -> str:
     local hash-linked, tamper-evident records; they are not immutable or signed.
 
     Args:
-        plan: Typed version-1 plan object with bounded ordered steps and outputs.
+        plan: Typed version-1 JSON object ``{"version": 1, "steps": [...]}``.
+            Outputs default to the final step. Do not pass ``version`` or
+            ``steps`` as sibling tool arguments.
     """
 
     if cfg is None:
         return json.dumps({"status": "error", "error": "runtime config was not injected"})
-    from .nathan_program_runtime import ProgramAuthorization, execute_program
+    from .nathan_program_runtime import ProgramAuthorization, coerce_program_plan, execute_program
+
+    try:
+        plan = coerce_program_plan(plan)
+    except Exception as exc:
+        return json.dumps(
+            {"status": "error", "error": f"{type(exc).__name__}: {exc}"},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
     authorization = getattr(cfg, "_algo_program_authorization", None)
     if not isinstance(authorization, ProgramAuthorization):
@@ -5292,13 +5111,13 @@ def action_program(plan: dict, cfg: Any = None) -> str:
 
 
 ALL_TOOLS = [
-    read_file,
+    _hide_cfg_param(read_file),
     edit_file,
     read_pdf,
     render_pdf_pages,
     cleanup_pdf_render_artifact,
     write_file,
-    list_directory,
+    _hide_cfg_param(list_directory),
     _hide_cfg_param(search_files),
     find_unique_anchor,
     batch_edit,
@@ -5323,15 +5142,21 @@ ALL_TOOLS = [
     x_account_reply,
     x_account_post_action,
     _hide_cfg_param(remember),
-    _hide_cfg_param(echo_veil_remember),
-    _hide_cfg_param(echo_veil_refresh_live),
-    _hide_cfg_param(echo_veil_promote),
-    _hide_cfg_param(echo_veil_recall),
-    _hide_cfg_param(echo_veil_context),
-    _hide_cfg_param(echo_veil_list),
-    _hide_cfg_param(echo_veil_forget),
-    _hide_cfg_param(echo_veil_doctor),
-    _hide_cfg_param(echo_veil_reindex),
+    _hide_cfg_param(memory_init),
+    _hide_cfg_param(memory_verify),
+    _hide_cfg_param(memory_status),
+    _hide_cfg_param(memory_capture),
+    _hide_cfg_param(memory_remember),
+    _hide_cfg_param(memory_get),
+    _hide_cfg_param(memory_read),
+    _hide_cfg_param(memory_search),
+    _hide_cfg_param(memory_context),
+    _hide_cfg_param(memory_validate_context),
+    _hide_cfg_param(memory_revoke),
+    _hide_cfg_param(memory_resolve),
+    _hide_cfg_param(memory_explain),
+    _hide_cfg_param(memory_history),
+    _hide_cfg_param(memory_handoff),
     _hide_cfg_param(append_lesson),
     _hide_cfg_param(update_user_profile),
     embed_text,
@@ -5359,6 +5184,8 @@ ALL_TOOLS = [
     plugins_load,
     version_manifest_build,
     extensions_manifest_build,
+    _hide_cfg_param(jev_kernel_status),
+    _hide_cfg_param(jev_question_contract),
     runtime_qos_hint,
     screenshot_description_verify,
     capability_mask_describe,

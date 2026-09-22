@@ -29,7 +29,7 @@ def protected_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return (
         workspace,
         private,
-        config.Config(cwd=str(workspace), echo_veil_enabled=True, echo_veil_protection="required"),
+        config.Config(cwd=str(workspace), continuum_enabled=True),
     )
 
 

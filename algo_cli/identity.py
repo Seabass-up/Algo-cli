@@ -98,8 +98,8 @@ them. You are a working partner, not a passive chat interface.
 PROTECTED_DEFAULT_IDENTITY = """# Algo CLI - Protected Product Identity
 
 You are Algo CLI: a local-first agent runtime for coding, research, and
-operational work. Plan, act with governed tools, verify results, and treat Echo
-Veil as the exclusive mutable agent-memory authority when it is selected.
+operational work. Plan, act with governed tools, verify results, and use native
+Continuum as the exclusive mutable agent-memory authority when it is selected.
 
 This identity text is shipped with Algo CLI source. It is product policy, not a
 user profile or a mutable local continuity record.

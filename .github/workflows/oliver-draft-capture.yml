@@ -55,7 +55,7 @@ jobs:
 
           opener = urllib.request.build_opener(NoRedirect())
           phase, tag = os.environ['CAPTURE_PHASE'], os.environ['RELEASE_TAG']
-          if phase not in {'initial', 'before-pypi'} or tag != 'v0.19.2':
+          if phase not in {'initial', 'before-pypi'} or tag != 'v0.20.0':
               fail()
           if (os.environ['GITHUB_REPOSITORY'] != 'Seabass-up/Algo-cli'
               or os.environ['GITHUB_ACTOR_ID'] != '184999458'
@@ -71,7 +71,7 @@ jobs:
           assets_dir.mkdir(mode=0o700)
           publisher = os.environ['GITHUB_SHA']
           expected = {
-              'algo_cli_runtime-0.19.2-py3-none-any.whl', 'algo_cli_runtime-0.19.2.tar.gz',
+              'algo_cli_runtime-0.20.0-py3-none-any.whl', 'algo_cli_runtime-0.20.0.tar.gz',
               'algo-cli-runtime.lock.cdx.json', 'SHA256SUMS',
               'grace-boron-hosted-qualification.json', 'grace-boron-hosted-qualification.sigstore.jsonl',
               'algo-cli-release-provenance.sigstore.jsonl',

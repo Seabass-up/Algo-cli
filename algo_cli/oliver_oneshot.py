@@ -345,9 +345,10 @@ def run_oneshot(
     # interactive path when --oneshot is not used.
     from . import deliberation, display, harness, main, skills
     from .config import Config
-    from .elsie_echo_preflight import (
-        EchoAuxiliaryPreflightError,
-        prepare_echo_auxiliary_state,
+    from . import continuum_memory
+    from .protected_memory_preflight import (
+        ProtectedMemoryPreflightError,
+        prepare_protected_auxiliary_state,
     )
     from .model_routing import effective_runtime_host
     from .nathan_approval_channel import ApprovalChannel
@@ -400,7 +401,9 @@ def run_oneshot(
         if approval_fd is not None:
             approval_channel = ApprovalChannel.from_fd(approval_fd)
             setattr(cfg, "_nathan_approval_channel", approval_channel)
-        prepare_echo_auxiliary_state(cfg)
+        prepare_protected_auxiliary_state(cfg)
+        if continuum_memory.selected(cfg):
+            continuum_memory.doctor(cfg)
         preflight_succeeded = True
         harness.configure_context_sources(
             external=cfg.external_harness_sources_enabled,
@@ -408,12 +411,12 @@ def run_oneshot(
         )
         client = main.create_client(cfg)
         main.agent_loop(client, cfg, prompt)
-    except EchoAuxiliaryPreflightError:
+    except (ProtectedMemoryPreflightError, continuum_memory.ContinuumMemoryError):
         status = "failed"
-        status_reason = "echo_auxiliary_preflight_refused"
+        status_reason = "protected_memory_preflight_refused"
         sink.error(
             error_class="policy",
-            message="Echo-protected auxiliary state could not be prepared safely.",
+            message="Continuum-protected auxiliary state could not be prepared safely.",
         )
     except KeyboardInterrupt:
         status = "failed"

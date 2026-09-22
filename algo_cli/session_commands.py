@@ -30,6 +30,7 @@ def catalog_for_prompt() -> str:
         "When to use common slash commands:",
         "  - /status or /info: check active model, cwd, context, and toggles before giving configuration advice.",
         "  - /mode execute|explore|publish: switch operating posture only when the user's task clearly needs it or they ask.",
+        "  - /mode yolo: only the user may enter it in the interactive CLI. Registered actions, including shell and file edits, are preapproved within scope; forced reviews and handoffs remain. Do not invoke it through a tool.",
         "  - /context status|rebuild|clear: inspect or repair compressed context when context quality/length is the issue.",
         "  - /reason status|guide: inspect the active reasoning posture or show mode guidance before changing it.",
         "  - /reason react|reflexion|tot|got|mcts|qcr|neuro_symbolic: change reasoning posture for complex work only; do not switch modes for routine reads/edits.",
@@ -43,7 +44,8 @@ def catalog_for_prompt() -> str:
         "  - /agent team [--roles ROLE,ROLE[,ROLE,ROLE]] TASK: delegate independent analysis to 2-4 read-only child threads, then integrate once with normal write and verification gates.",
         "  - /agent threads or /agent show THREAD: inspect run history; /agent resume THREAD [TASK] continues it and /agent fork THREAD [--same-worktree] TASK creates an isolated child by default.",
         "    Delegate only when work has genuinely independent angles. Keep mutations in the integration pipeline; never ask child threads to edit the same workspace.",
-        "  - /kernel check [NAME]: verify kernel imports, slash routes, and active action contracts without executing workloads.",
+        "  - /kernel list: list promoted kernels available in this runtime.",
+        "  - /kernel show NAME and /kernel check [NAME]: inspect a kernel contract or validate imports/slash/action wiring without executing workloads.",
         "Do not use slash commands for file edits; use write_file. Do not use slash commands for build/test; use run_shell.",
         "For the full command/tool catalog and focused examples, call available_actions(topic='slash').",
     ]
@@ -93,13 +95,13 @@ def execute(command_line: str, cfg: Any, *, max_read_chars: int | None = None) -
 
     if command == "/ls":
         rel = parse_path_arg(remainder) or "."
-        return tools_module.list_directory(rel, cwd=getattr(cfg, "cwd", None), limit=40)
+        return tools_module.list_directory(rel, cwd=getattr(cfg, "cwd", None), limit=40, cfg=cfg)
 
     if command == "/read":
         rel = parse_path_arg(remainder)
         if not rel:
             return "Error: usage: /read PATH"
         limit = max_read_chars if max_read_chars is not None else tools_module.MAX_READ_CHARS
-        return tools_module.read_file(rel, cwd=getattr(cfg, "cwd", None), max_chars=limit)
+        return tools_module.read_file(rel, cwd=getattr(cfg, "cwd", None), max_chars=limit, cfg=cfg)
 
     return f"Error: unhandled command {command}"

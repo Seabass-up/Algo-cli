@@ -158,6 +158,52 @@ def test_config_auth_xai_remove_deletes_saved_value(tmp_path, monkeypatch) -> No
     assert "XAI_API_KEY" not in env_path.read_text(encoding="utf-8")
 
 
+def test_config_memory_repair_reports_retained_backup(monkeypatch, tmp_path) -> None:
+    backup = tmp_path / "config.before-continuum.bak"
+    monkeypatch.setattr(
+        config,
+        "repair_memory_configuration",
+        lambda: {
+            "changed": True,
+            "removed_retired_keys": 4,
+            "backup_path": backup,
+            "source_sha256": "a" * 64,
+        },
+    )
+
+    with _capture() as captured:
+        result = cli_config.run(["memory", "repair"], interactive=False)
+
+    assert result == 0
+    output = captured.get()
+    assert "Native Continuum memory is repaired" in output
+    # Rich wraps long paths at the console width.
+    assert backup.name in output.replace("\n", "")
+
+
+def test_config_memory_goal_repair_reports_blocked_successor(monkeypatch, tmp_path) -> None:
+    from algo_cli import ada_task_ledger
+
+    backup = tmp_path / "task_ledger.json"
+    monkeypatch.setattr(
+        ada_task_ledger,
+        "repair_protected_goal_store_conflict",
+        lambda: {
+            "changed": True,
+            "backup_path": backup,
+            "source_sha256": "b" * 64,
+        },
+    )
+
+    with _capture() as captured:
+        result = cli_config.run(["memory", "repair-goal"], interactive=False)
+
+    assert result == 0
+    output = captured.get()
+    assert "blocked, non-resumable state" in output
+    assert backup.name in output
+
+
 def test_main_routes_top_level_config_before_runtime_initialization(monkeypatch) -> None:
     calls: list[list[str]] = []
     lifecycle: list[str] = []

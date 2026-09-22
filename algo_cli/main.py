@@ -13,7 +13,7 @@ import shlex
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, Iterator
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -42,7 +42,7 @@ from .config import (
     OLD_ENV_PREFIX,
     _atomic_write_text,
     code_rag_consent_granted,
-    echo_authority_selected_for_persistence,
+    protected_memory_selected_for_persistence,
 )
 from . import agent_blocks  # noqa: F401 — tests patch main.agent_blocks
 from . import agent_context
@@ -271,15 +271,13 @@ def _discard_plaintext_intuition_engine() -> None:
 
 
 def _intuition_engine_for(cfg: Config) -> Any:
-    """Lazily load plaintext Intuition only after Echo policy is known."""
+    """Lazily load plaintext Intuition only when Continuum is not selected."""
 
     global _intuition_engine
-    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .continuum_memory import selected
 
-    if echo_veil_authority_selected(cfg):
-        # Drop any prior in-memory plaintext authority when a reload selects
-        # Echo.  A later explicit transition away from Echo may construct a
-        # fresh engine, but protected runs never retain or inspect it.
+    if selected(cfg):
+        # Protected runs never retain or inspect the plaintext engine.
         _discard_plaintext_intuition_engine()
         return None
     if _intuition_engine is _INTUITION_UNINITIALIZED:
@@ -288,21 +286,21 @@ def _intuition_engine_for(cfg: Config) -> Any:
 
 
 def _drop_plaintext_intuition_if_protected(cfg: Config) -> None:
-    """Discard a previously loaded Intuition engine on an Echo transition."""
+    """Discard a previously loaded Intuition engine under Continuum."""
 
     global _intuition_engine
-    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .continuum_memory import selected
 
-    if echo_veil_authority_selected(cfg):
+    if selected(cfg):
         _discard_plaintext_intuition_engine()
 
 
 def _scaffold_plaintext_identity_if_allowed(cfg: Config) -> list[Path]:
-    """Create legacy identity files only when Echo does not own continuity."""
+    """Create legacy identity files only without protected continuity."""
 
-    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .continuum_memory import selected
 
-    if echo_veil_authority_selected(cfg):
+    if selected(cfg):
         return []
     return identity.scaffold_if_needed()
 
@@ -315,12 +313,18 @@ def _changed_plaintext_identity_files(*, protected: bool) -> list[Path]:
 
 CLOUD_MODEL_CHOICES = [
     "glm-4.6:cloud",
+    "glm-5.1:cloud",
+    "glm-5.2:cloud",
     "gpt-oss:20b-cloud",
     "gpt-oss:120b-cloud",
     "qwen3-coder:480b-cloud",
     "qwen3:235b-cloud",
     "qwen3-vl:235b-cloud",
+    "minimax-m3:cloud",
     "deepseek-v3.1:671b-cloud",
+    "deepseek-v4-flash:cloud",
+    "deepseek-v4-pro:cloud",
+    "deepseek-v4.1-flash:cloud",
 ]
 # xAI Grok models route through xAI's documented API-key authentication.  These
 # are fallback names when an explicitly requested model-list check is unavailable.
@@ -378,10 +382,10 @@ class SafeFileHistory(FileHistory):
             os.chmod(history_path.parent, 0o700)
             if history_path.exists():
                 os.chmod(history_path, 0o600)
-        self._echo_authority = bool(cfg is not None and echo_authority_selected_for_persistence(cfg))
+        self._protected_memory = bool(cfg is not None and protected_memory_selected_for_persistence(cfg))
         self._stores_since_compaction = 0
         super().__init__(path)
-        if self._echo_authority and history_path.exists():
+        if self._protected_memory and history_path.exists():
             self._purge_protected_history()
 
     @staticmethod
@@ -410,7 +414,7 @@ class SafeFileHistory(FileHistory):
 
     def _project_history_entry(self, value: str) -> str | None:
         safe = sanitize_prompt_text(value)[:PROMPT_HISTORY_MAX_ENTRY_CHARS]
-        if self._echo_authority and self._protected_history_command(safe):
+        if self._protected_memory and self._protected_history_command(safe):
             return None
         return safe
 
@@ -502,7 +506,17 @@ def refresh_runtime_status(cfg: Config, client: Any | None = None, *, force: boo
         return
     _LAST_REFRESH_TIME = now
     model_info = _model_info_module.resolve_model_info(cfg, client)
-    used, total, remaining, runtime_cap, native_ctx = context_status(cfg, client=client, model_info=model_info)
+    from .continuum_memory import ContinuumMemoryError
+
+    context_error = ""
+    try:
+        used, total, remaining, runtime_cap, native_ctx = context_status(cfg, client=client, model_info=model_info)
+    except ContinuumMemoryError as exc:
+        # A display estimate cannot terminate the REPL. Model prompt assembly
+        # still requires independently retrieved and verified memory context.
+        used, total, remaining = 0, 0, 0
+        runtime_cap, native_ctx = _model_info_module.effective_context_limits(cfg, model_info)
+        context_error = exc.reason_code
     if total > 0:
         pct_left = int((remaining / total) * 100)
         context = f"{used}/{total} ({pct_left}% left)"
@@ -524,9 +538,12 @@ def refresh_runtime_status(cfg: Config, client: Any | None = None, *, force: boo
         mode = "cloud"
     else:
         mode = "local"
+    from . import session_mode
+
     RUNTIME_STATUS.update(
         {
             "context": context,
+            "context_error": context_error,
             "context_used": used,
             "context_total": total,
             "context_native": native_ctx,
@@ -541,7 +558,7 @@ def refresh_runtime_status(cfg: Config, client: Any | None = None, *, force: boo
             "auto_mode": cfg.auto_approve_active,
             "safe_mode": cfg.safe_mode,
             "tool_think_every": max(1, int(cfg.tool_think_every)),
-            "max_tool_iterations": max(1, int(cfg.max_tool_iterations)),
+            "max_tool_iterations": session_mode.work_iteration_label(cfg),
             "memory_count": len(cfg.memories),
         }
     )
@@ -593,6 +610,8 @@ def _connectivity_dot(cfg: Config, palette: dict[str, str]) -> str:
 
 
 def _context_chip(palette: dict[str, str]) -> str:
+    if RUNTIME_STATUS.get("context_error"):
+        return _ftr_chip("ctx unavailable", palette["error"])
     used = RUNTIME_STATUS.get("context_used")
     total = RUNTIME_STATUS.get("context_total")
     native = RUNTIME_STATUS.get("context_native")
@@ -656,7 +675,9 @@ def build_status_toolbar(cfg: Config):
     parts.append(sep)
     parts.append(_context_chip(palette))
 
-    tool_max = RUNTIME_STATUS.get("max_tool_iterations", max(1, int(cfg.max_tool_iterations)))
+    from . import session_mode as _session_mode
+
+    tool_max = RUNTIME_STATUS.get("max_tool_iterations", _session_mode.work_iteration_label(cfg))
     reflect = RUNTIME_STATUS.get("tool_think_every", max(1, int(cfg.tool_think_every)))
     parts.append(sep)
     parts.append(_ftr_chip(f"tools {tool_max}", palette["muted"]))
@@ -781,7 +802,7 @@ def build_status_rprompt(cfg: Config):
     memory_count = RUNTIME_STATUS.get("memory_count", len(cfg.memories))
     from . import session_mode
 
-    mode_label = session_mode.normalize_mode(cfg.session_mode)
+    mode_label = session_mode.active_mode(cfg)
     parts = [
         _ftr_chip(cwd, palette["muted"]),
         sep,
@@ -1862,6 +1883,33 @@ def choose_from_menu(title: str, choices: list[tuple[str, str]], default: int = 
         console.print("[red]Choice out of range.[/]")
 
 
+def show_model_inventory(cfg: Config) -> None:
+    """Print the current model and selectable catalogs without opening a picker."""
+
+    show_info(f"Current model: {cfg.model}")
+    local_names = local_model_names(cfg)
+    if local_names:
+        console.print("[muted]Local/Ollama:[/] " + ", ".join(local_names))
+    cloud_names = [name for name in cloud_model_names() if name not in local_names]
+    if cloud_names:
+        console.print("[muted]Ollama Cloud:[/] " + ", ".join(cloud_names))
+    chatgpt_names, chatgpt_authed = chatgpt_model_names()
+    if chatgpt_authed and chatgpt_names:
+        console.print("[muted]ChatGPT/Codex:[/] " + ", ".join(chatgpt_names))
+    elif not chatgpt_authed:
+        console.print("[muted]ChatGPT/Codex:[/] not authenticated")
+    xai_names, xai_authed = xai_model_names()
+    if xai_authed and xai_names:
+        console.print("[muted]xAI Grok:[/] " + ", ".join(xai_names))
+    elif not xai_authed:
+        console.print("[muted]xAI Grok:[/] not configured")
+    if not local_names and not cloud_names and not chatgpt_names and not xai_names:
+        show_error(
+            "No models are selectable yet. Pull a local model with `ollama pull qwen3`, "
+            "or run /login and pull/select a :cloud model through local Ollama."
+        )
+
+
 def model_picker(cfg: Config, *, first_run: bool = False) -> bool:
     local_names = local_model_names(cfg)
     choices: list[tuple[str, str]] = []
@@ -1928,13 +1976,13 @@ def reload_runtime() -> Config:
     global tools_module, ALL_TOOLS, TOOL_MAP
 
     cfg = Config.load()
-    from .elsie_echo_preflight import prepare_echo_auxiliary_state
+    from .protected_memory_preflight import prepare_protected_auxiliary_state
 
     # The pre-reload pass prevents stale plaintext-derived records from being
     # consumed by any module teardown/reload hook.  Reloading harness replaces
     # its in-memory index authority, so repeat the same fail-closed preparation
     # against the newly loaded module before configuring context roots.
-    prepare_echo_auxiliary_state(cfg)
+    prepare_protected_auxiliary_state(cfg)
     _drop_plaintext_intuition_if_protected(cfg)
     for module_name in (
         "algo_cli.tools",
@@ -1952,7 +2000,7 @@ def reload_runtime() -> Config:
     tools_module = sys.modules["algo_cli.tools"]
     ALL_TOOLS = tools_module.ALL_TOOLS
     TOOL_MAP = tools_module.TOOL_MAP
-    prepare_echo_auxiliary_state(cfg)
+    prepare_protected_auxiliary_state(cfg)
     _drop_plaintext_intuition_if_protected(cfg)
     harness.configure_context_sources(
         external=cfg.external_harness_sources_enabled,
@@ -1966,7 +2014,15 @@ def reload_runtime() -> Config:
 
 
 def handle_status_command(cfg: Config, client: Any | None = None) -> None:
-    used, total, remaining, runtime_cap, native_ctx = context_status(cfg, client=client)
+    from .continuum_memory import ContinuumMemoryError
+
+    try:
+        used, total, remaining, runtime_cap, native_ctx = context_status(cfg, client=client)
+        ctx_line = f"{used}/{total} tokens ({remaining} remaining)"
+        if native_ctx and runtime_cap and native_ctx > runtime_cap:
+            ctx_line += f" · runtime cap {runtime_cap:,}"
+    except ContinuumMemoryError as exc:
+        ctx_line = f"unavailable ({exc.reason_code}); model calls require verified Continuum context"
     features: list[str] = []
     for enabled, label in (
         (cfg.cloud, "cloud"),
@@ -1984,11 +2040,28 @@ def handle_status_command(cfg: Config, client: Any | None = None) -> None:
         if enabled:
             features.append(label)
     console.print(f"[bold primary]Model:[/] {cfg.model}")
-    ctx_line = f"{used}/{total} tokens ({remaining} remaining)"
-    if native_ctx and runtime_cap and native_ctx > runtime_cap:
-        ctx_line += f" · runtime cap {runtime_cap:,}"
     console.print(f"[bold primary]Context:[/] {ctx_line}")
     console.print(f"[bold primary]Features:[/] {', '.join(features) if features else 'none'}")
+    from .tools import intelligence_runtime_snapshot
+    from .kernels.manifest import kernel_runtime_snapshot
+
+    intelligence = intelligence_runtime_snapshot()
+    if intelligence.get("wired"):
+        caps = ", ".join(intelligence.get("capabilities") or []) or "none"
+        console.print(
+            f"[bold primary]Intelligence:[/] wired · {intelligence.get('exports', 0)} exports · {caps}"
+        )
+    else:
+        console.print(f"[bold primary]Intelligence:[/] unavailable ({intelligence.get('error', 'import failed')})")
+    kernels = kernel_runtime_snapshot()
+    counts = kernels.get("counts") or {}
+    console.print(
+        "[bold primary]Kernels:[/] "
+        f"{int(counts.get('active', 0))} active · "
+        f"{int(counts.get('preview', 0))} preview · "
+        f"{int(counts.get('planned', 0))} planned "
+        f"({int(kernels.get('total', 0))} total)"
+    )
 
 
 def small_maintenance_client(cfg: Config, fallback_client: Client | None = None) -> tuple[Client, str]:
@@ -2136,8 +2209,11 @@ READ_ONLY_TOOLS = frozenset(
         "harness_stats",
         "available_actions",
         "action_search",
-        "echo_veil_list",
-        "echo_veil_doctor",
+        "memory_get",
+        "memory_read",
+        "memory_search",
+        "memory_status",
+        "memory_verify",
         "model_show",
     }
 )
@@ -2363,9 +2439,9 @@ def capture_intuition_block(
     source: str,
     force: bool = False,
 ) -> str | None:
-    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .continuum_memory import selected
 
-    if echo_veil_authority_selected(cfg):
+    if selected(cfg):
         return None
     intuition_engine = _intuition_engine_for(cfg)
     if intuition_engine is None:
@@ -2389,11 +2465,11 @@ def handle_icl_command(arg: str, cfg: Config) -> None:
     """index-compute-lab auto-inject and status (/icl)."""
     parts = (arg or "status").strip().split(maxsplit=1)
     sub = (parts[0].lower() if parts else "status") or "status"
-    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .continuum_memory import selected
 
-    if echo_veil_authority_selected(cfg):
+    if selected(cfg):
         if sub == "status":
-            show_info("index-compute-lab is inactive while Echo Veil is the exclusive memory authority.")
+            show_info("index-compute-lab is inactive while Continuum Memory is authoritative.")
         elif sub == "off":
             cfg.index_compute_lab_auto_inject = False
             cfg.save()
@@ -2403,7 +2479,7 @@ def handle_icl_command(arg: str, cfg: Config) -> None:
             )
             show_info("index-compute-lab auto-inject: OFF")
         else:
-            show_error("index-compute-lab access is disabled while Echo Veil is the exclusive memory authority.")
+            show_error("index-compute-lab access is disabled while Continuum Memory is authoritative.")
         return
 
     from . import index_compute_lab
@@ -2437,14 +2513,14 @@ def handle_icl_command(arg: str, cfg: Config) -> None:
 def handle_intuition_command(arg: str, cfg: Config) -> None:
     sub, _, rest = (arg or "status").strip().partition(" ")
     sub = sub.lower() or "status"
-    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .continuum_memory import selected
 
-    if echo_veil_authority_selected(cfg):
+    if selected(cfg):
         if sub == "status":
-            show_info("Intuition is inactive while Echo Veil is the exclusive memory authority.")
+            show_info("Intuition is inactive while Continuum Memory is authoritative.")
         else:
             show_error(
-                "Intuition is disabled while Echo Veil is the exclusive memory authority; "
+                "Intuition is disabled while Continuum Memory is authoritative; "
                 "plaintext Intuition data was not accessed or changed."
             )
         return
@@ -2553,7 +2629,10 @@ def handle_intelligence_command(arg: str = "", cfg: Config | None = None) -> Non
     sub, _, rest = raw.partition(" ")
     sub = (sub or "status").lower()
     if sub in {"help", "?"}:
-        show_info("Usage: /intelligence [status|query <term>|reindex] (alias: /intel)")
+        show_info("Usage: /intelligence [status|query <term>|reindex|init] (alias: /intel)")
+        return
+    if sub == "init":
+        _init_personal_library()
         return
     try:
         from . import intelligence
@@ -2592,7 +2671,7 @@ def handle_intelligence_command(arg: str = "", cfg: Config | None = None) -> Non
         return
 
     if sub != "status":
-        show_error("Usage: /intelligence [status|query <term>|reindex] (alias: /intel)")
+        show_error("Usage: /intelligence [status|query <term>|reindex|init] (alias: /intel)")
         return
 
     exports = set(getattr(intelligence, "__all__", ()))
@@ -2607,11 +2686,84 @@ def handle_intelligence_command(arg: str = "", cfg: Config | None = None) -> Non
     ]
     available = [name for name in capability_names if name in exports or hasattr(intelligence, name)]
     console.print("[muted]Intelligence layer:[/] wired")
-    console.print("  commands    : [text]status, query <term>, reindex[/]")
+    console.print("  commands    : [text]status, query <term>, reindex, init[/]")
     console.print(f"  root        : [text]{root}[/]")
     console.print(f"  module      : [text]{intelligence.__name__}[/]")
     console.print(f"  exports     : [text]{len(exports)}[/]")
     console.print(f"  capabilities: [text]{', '.join(available) if available else 'none'}[/]")
+    _print_personal_library()
+
+
+def _print_personal_library() -> None:
+    """Show this user's own catalog and kernels, or how to start them when empty."""
+    from .config import CONFIG_DIR
+    from .kernels.manifest import load_user_kernels
+    from .pattern_catalog import parse_patterns
+
+    catalog = CONFIG_DIR / "ALGO.md"
+    user_kernels = load_user_kernels()
+    patterns: int | None = None
+    if catalog.is_file():
+        try:
+            patterns = len(parse_patterns(catalog.read_text(encoding="utf-8")))
+        except (OSError, UnicodeDecodeError, ValueError):
+            patterns = None
+    console.print("[muted]Your library:[/]")
+    if not catalog.is_file():
+        console.print("  catalog     : [text]empty[/]")
+    elif patterns is None:
+        console.print(f"  catalog     : [text]{catalog} (could not be parsed)[/]")
+    else:
+        console.print(f"  catalog     : [text]{patterns} patterns in {catalog}[/]")
+    console.print(f"  kernels     : [text]{len(user_kernels.kernels) or 'none'}[/]")
+    for issue in user_kernels.issues:
+        console.print(f"  issue       : [text]{issue}[/]")
+    if not catalog.is_file() or not user_kernels.kernels:
+        console.print("[muted]Build your own:[/]")
+        if not catalog.is_file() or not user_kernels.path.is_file():
+            console.print("  - run /intelligence init to create a starter catalog and kernel file")
+        console.print(f"  - add patterns to {catalog}, then /harness refresh")
+        console.print(f"  - declare kernels in {user_kernels.path} (see /kernel help)")
+
+
+def _init_personal_library() -> None:
+    """Create this user's empty catalog and kernel file; never overwrite existing ones."""
+    from .config import CONFIG_DIR
+    from .harness import _algo_cli_docs_dir
+    from .kernels.manifest import USER_KERNELS_FILENAME, user_kernels_dir
+
+    catalog = CONFIG_DIR / "ALGO.md"
+    kernels_file = user_kernels_dir() / USER_KERNELS_FILENAME
+    template = _algo_cli_docs_dir() / "ALGO.md"
+    if catalog.exists():
+        show_info(f"Catalog already exists: {catalog}")
+    elif not template.is_file():
+        show_error(f"Catalog template is missing from this install: {template}")
+    else:
+        catalog.parent.mkdir(parents=True, exist_ok=True)
+        catalog.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+        show_info(f"Created catalog: {catalog}")
+    if kernels_file.exists():
+        show_info(f"Kernel file already exists: {kernels_file}")
+    else:
+        kernels_file.parent.mkdir(parents=True, exist_ok=True)
+        kernels_file.write_text('{\n  "kernels": []\n}\n', encoding="utf-8")
+        show_info(f"Created kernel file: {kernels_file}")
+
+
+USER_KERNEL_EXAMPLE = """{
+  "kernels": [
+    {
+      "name": "my-summarizer",
+      "description": "What this kernel does.",
+      "modules": ["my_kernels.summarize"],
+      "actions": [],
+      "slash_commands": ["/kernel show my-summarizer"],
+      "safety_level": "low",
+      "status": "preview"
+    }
+  ]
+}"""
 
 
 def handle_kernel_command(arg: str = "") -> None:
@@ -2622,13 +2774,30 @@ def handle_kernel_command(arg: str = "") -> None:
     sub = (sub or "list").lower()
 
     if sub in {"help", "?"}:
+        from .kernels.manifest import user_kernels_dir
+
         show_info("Usage: /kernel list | /kernel show NAME | /kernel check [NAME]")
+        console.print(f"Add your own kernels in {user_kernels_dir() / 'kernels.json'}:")
+        console.print(USER_KERNEL_EXAMPLE, markup=False, highlight=False)
+        console.print("Modules are imported from that folder, e.g. my_kernels/summarize.py.")
         return
 
     if sub == "list":
-        console.print("Kernels:")
-        for spec in list_kernels():
+        from .kernels.manifest import load_user_kernels
+
+        specs = list_kernels()
+        console.print("Built-in kernels:")
+        for spec in specs:
+            if spec.source == "built-in":
+                console.print(f"  {spec.name} ({spec.status}/{spec.safety_level}) - {spec.description}")
+        user_catalog = load_user_kernels()
+        console.print("Your kernels:")
+        if not user_catalog.kernels:
+            console.print(f"  none yet - declare them in {user_catalog.path} (/kernel help shows the format)")
+        for spec in user_catalog.kernels:
             console.print(f"  {spec.name} ({spec.status}/{spec.safety_level}) - {spec.description}")
+        for issue in user_catalog.issues:
+            console.print(f"  issue: {issue}")
         return
 
     if sub == "show":
@@ -2680,10 +2849,10 @@ def maybe_crystallize_skills(
         return
     if cfg.runs_since_crystallize < max(1, int(cfg.skill_crystallize_every)):
         return
-    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .continuum_memory import selected
     from .grace_memory_receipts import ElsieReceiptError
 
-    protected = echo_veil_authority_selected(cfg)
+    protected = selected(cfg)
     llm_fn = make_local_maintenance_llm_fn(cfg) if not protected else (lambda _system, _user: "[]")
     if llm_fn is None:
         return
@@ -2897,9 +3066,9 @@ def run_harness_benchmark_embed(cfg: Config, arg: str) -> None:
 
 def ensure_lessons_index(cfg: Config) -> bool:
     """Rebuild the lessons embedding index if stale. Returns True if index is ready."""
-    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .continuum_memory import selected
 
-    if echo_veil_authority_selected(cfg):
+    if selected(cfg):
         return False
     if not identity.LESSONS_PATH.exists():
         return False
@@ -2925,6 +3094,18 @@ def ensure_lessons_index(cfg: Config) -> bool:
     return False
 
 
+def _model_round_indices(max_iterations: int | None) -> Iterator[int]:
+    """Yield work-round indices; a bounded budget adds one extra finalization round."""
+
+    if max_iterations is None:
+        index = 0
+        while True:
+            yield index
+            index += 1
+    else:
+        yield from range(max_iterations + 1)
+
+
 def agent_loop(
     client: Client,
     cfg: Config,
@@ -2938,7 +3119,9 @@ def agent_loop(
 
     show_sticky_status = json_sink() is None
     if show_sticky_status:
-        sticky_status.start(lambda: format_status_toolbar_plain(cfg))
+        sticky_status.start(lambda: sticky_status.FooterLine(
+            build_status_toolbar(cfg), build_prompt_style(theme_colors(cfg.theme)),
+        ))
     try:
         _agent_loop_body(
             client,
@@ -2961,27 +3144,31 @@ def _agent_loop_body(
     _receipt_anchor_store: Any | None = None,
 ) -> None:
     agent_loop_started = time.perf_counter()
-    from .elsie_echo_preflight import (
-        EchoAuxiliaryPreflightError,
-        prepare_echo_auxiliary_state,
+    from .protected_memory_preflight import (
+        ProtectedMemoryPreflightError,
+        prepare_protected_auxiliary_state,
     )
 
     try:
-        prepare_echo_auxiliary_state(
+        prepare_protected_auxiliary_state(
             cfg,
             receipt_key_store=_receipt_key_store,
             receipt_anchor_store=_receipt_anchor_store,
         )
-    except EchoAuxiliaryPreflightError:
-        show_error("This turn stopped before model execution because Echo-protected auxiliary state is unavailable.")
+    except ProtectedMemoryPreflightError:
+        show_error("This turn stopped before model execution because Continuum-protected auxiliary state is unavailable.")
         return
-    from .ada_memory_echo_veil import (
-        echo_veil_authority_selected,
-        protection_required,
-    )
+    from . import continuum_memory
 
-    echo_memory_authority = echo_veil_authority_selected(cfg)
-    required_memory_protection = protection_required(cfg)
+    try:
+        continuum_memory_authority = continuum_memory.selected(cfg)
+        if continuum_memory_authority:
+            continuum_memory.doctor(cfg)
+    except continuum_memory.ContinuumMemoryError:
+        show_error("Continuum Memory preflight failed; this turn stopped before model execution. No fallback was used.")
+        return
+    external_memory_authority = continuum_memory_authority
+    required_memory_protection = continuum_memory_authority
     if json_sink() is None:
         console.rule(style="border")
     persisted_user_message = user_message
@@ -3018,7 +3205,7 @@ def _agent_loop_body(
         reduction_pct=schema_reduction_pct,
     )
     for changed_path in _changed_plaintext_identity_files(
-        protected=echo_memory_authority,
+        protected=external_memory_authority,
     ):
         show_info(f"↻ identity updated · {changed_path.name}")
     # Single memoized embed function shared by both retrieval calls (same model).
@@ -3051,15 +3238,15 @@ def _agent_loop_body(
     if not cfg.cloud and not routes_to_xai(cfg) and not routes_to_chatgpt(cfg):
         _turn_local_models = local_model_names(cfg)
 
-    retrieved_lessons: list[str] | None = [] if echo_memory_authority else None
-    if not echo_memory_authority and ensure_lessons_index(cfg):
+    retrieved_lessons: list[str] | None = [] if external_memory_authority else None
+    if not external_memory_authority and ensure_lessons_index(cfg):
         retrieved_lessons = identity.retrieve_lessons(
             context_query_message, _shared_embed, _embed_model, k=LESSONS_TOP_K
         )
     # Governed memory recall is independent from the optional Intuition layer.
     # Pinned facts are already injected by context_budget; only curated/history
     # records are retrieved here so the prompt does not contain duplicates.
-    if not echo_memory_authority:
+    if not external_memory_authority:
         try:
             memory_catalog = memory_runtime.MemoryCatalog()
             memory_catalog.sync_legacy_facts(cfg.memories, authoritative=False)
@@ -3083,9 +3270,9 @@ def _agent_loop_body(
         except memory_runtime.MemorySystemError as exc:
             logger.debug("Governed memory recall failed: %s", exc)
     retrieved_context: list[dict[str, Any]] | None = None
-    from .session_mode import normalize_mode
+    from .session_mode import active_mode, completion_recovery_limit, work_iteration_limit
 
-    _session_mode = normalize_mode(cfg.session_mode)
+    _session_mode = active_mode(cfg)
     harness_tools_available = any(getattr(tool, "__name__", "").startswith("harness_") for tool in active_tools)
     if (
         _session_mode != "execute"
@@ -3099,13 +3286,13 @@ def _agent_loop_body(
             dimensions=configured_embed_dimensions(cfg),
             k=HARNESS_TOP_K,
             pattern_context=harness.runtime_pattern_context(active_tools=active_tools),
-            index=harness.retrieval_index(protected_memory=echo_memory_authority),
+            index=harness.retrieval_index(protected_memory=external_memory_authority),
         )
         context_block = harness.format_retrieved_context(retrieved_context or [])
         if context_block:
             optional_context_blocks.append(OptionalContextBlock("harness", "Relevant Context", context_block))
     intuition_engine = _intuition_engine_for(cfg)
-    if intuition_engine is not None and not echo_memory_authority:
+    if intuition_engine is not None and not external_memory_authority:
         try:
             recalled_blocks = intuition_engine.recall(
                 context_query_message,
@@ -3120,7 +3307,7 @@ def _agent_loop_body(
                     context_query_message = f"{context_query_message}\n\n{injection}"
         except Exception as exc:
             logger.debug("Intuition run failed: %s", exc)
-    if cfg.index_compute_lab_auto_inject and not echo_memory_authority:
+    if cfg.index_compute_lab_auto_inject and not external_memory_authority:
         from . import index_compute_lab
 
         lab_block = index_compute_lab.context_for_query(context_query_message)
@@ -3129,7 +3316,7 @@ def _agent_loop_body(
                 OptionalContextBlock("index-compute-lab", "Knowledge Graph (index-compute-lab)", lab_block)
             )
     if (
-        not echo_memory_authority
+        not external_memory_authority
         and getattr(cfg, "code_rag_enabled", False)
         and getattr(cfg, "code_rag_consent_version", 0) == CODE_RAG_CONSENT_VERSION
         and code_rag_consent_granted(cfg)
@@ -3278,11 +3465,19 @@ def _agent_loop_body(
         }
     active_user_message = {"role": "user", "content": persisted_user_message}
     cfg.messages.append(active_user_message)
-    max_iterations = max(1, min(128, int(cfg.max_tool_iterations)))
+    max_iterations = work_iteration_limit(cfg)
+    recovery_limit = completion_recovery_limit(cfg, bounded_default=MAX_COMPLETION_RECOVERY_ROUNDS)
     # Model-aware params: adapt num_ctx/temperature/reflection cadence to the
     # active model's size + provider, honoring any explicit user overrides.
     if getattr(cfg, "model_adaptive", True):
         _profile_params = model_profile.effective_params(cfg, _active_model_info)
+        if model_profile.promote_stale_remote_context(cfg, _active_model_info):
+            _profile_params = model_profile.EffectiveParams(
+                num_ctx=int(cfg.num_ctx),
+                temperature=_profile_params.temperature,
+                tool_think_every=_profile_params.tool_think_every,
+                adapted_fields=_profile_params.adapted_fields,
+            )
         if _profile_params.adapted_fields and json_sink() is None:
             show_info(
                 f"↳ model-adaptive ({', '.join(_profile_params.adapted_fields)}): "
@@ -3395,7 +3590,7 @@ def _agent_loop_body(
                         optional_blocks=optional_context_blocks,
                         session_summary=cfg.session_summary,
                         messages=cfg.messages,
-                        echo_authority=echo_memory_authority,
+                        protected_memory=external_memory_authority,
                     )
                 except OSError as exc:
                     logger.debug("Small-context ledger write failed: %s", exc)
@@ -3449,10 +3644,16 @@ def _agent_loop_body(
         # one tool-free response turn when the final capped iteration leaves a
         # verified state. This prevents a correct run from being reported as
         # partial solely because its verifier consumed the last work turn.
-        for _ in range(max_iterations + 1):
+        # YOLO leaves the work and verification-recovery ceilings unset so the
+        # model can keep calling tools until it finishes or the user interrupts.
+        for _ in _model_round_indices(max_iterations):
             context_build_started = agent_loop_started if iterations_used == 0 else time.perf_counter()
-            recovery_finalization = completion_nudged and completion_recovery_rounds >= MAX_COMPLETION_RECOVERY_ROUNDS
-            if recovery_finalization and _ < max_iterations:
+            recovery_finalization = (
+                completion_nudged
+                and recovery_limit is not None
+                and completion_recovery_rounds >= recovery_limit
+            )
+            if recovery_finalization and (max_iterations is None or _ < max_iterations):
                 completion = execution_guardrails.completion_decision()
                 if not completion.allowed:
                     completion = execution_guardrails.auto_verify_working_tree(cfg.cwd)
@@ -3462,24 +3663,30 @@ def _agent_loop_body(
                     final_content = ""
                     show_error(
                         "Completion blocked: verification recovery exhausted after "
-                        f"{MAX_COMPLETION_RECOVERY_ROUNDS} model rounds. Workspace changes are retained; "
+                        f"{recovery_limit} model rounds. Workspace changes are retained; "
                         "no successful task completion is claimed."
                     )
                     break
-            finalization_turn = _ == max_iterations or recovery_finalization
+            finalization_turn = recovery_finalization or (
+                max_iterations is not None and _ == max_iterations
+            )
             if finalization_turn:
                 if no_progress_tool_rounds:
                     show_error(
-                        f"Max tool iterations reached ({max_iterations}) with actions still blocked "
-                        "before execution. No successful task completion is claimed."
+                        "Max tool iterations reached "
+                        f"({max_iterations if max_iterations is not None else 'unlimited'}) "
+                        "with actions still blocked before execution. No successful task completion is claimed."
                     )
                     break
                 completion = execution_guardrails.completion_decision()
                 if not completion.allowed:
-                    show_error(
-                        f"Max tool iterations reached ({max_iterations}) before successful "
+                    limit_hint = (
+                        "Verification recovery is exhausted before a passing workspace verifier."
+                        if recovery_limit is not None and max_iterations is None
+                        else f"Max tool iterations reached ({max_iterations}) before successful "
                         "post-mutation verification. Use /toolmax to raise or lower the limit."
                     )
+                    show_error(limit_hint)
                     break
                 optional_context_blocks.clear()
                 cfg.messages.append(
@@ -3514,7 +3721,7 @@ def _agent_loop_body(
                 if not required_memory_protection:
                     raise
                 logger.debug(
-                    "Required Echo Veil system context failed: %s",
+                    "Required Continuum Memory system context failed: %s",
                     type(exc).__name__,
                 )
                 show_error("This turn stopped before model execution because required protected memory is unavailable.")
@@ -3541,7 +3748,7 @@ def _agent_loop_body(
                     if not required_memory_protection:
                         raise
                     logger.debug(
-                        "Required Echo Veil compacted context failed: %s",
+                        "Required Continuum Memory compacted context failed: %s",
                         type(exc).__name__,
                     )
                     show_error(
@@ -3798,7 +4005,7 @@ def _agent_loop_body(
                     turn_completed_normally = True
                     break
                 if not completion_nudged:
-                    if _ + 1 >= max_iterations:
+                    if max_iterations is not None and _ + 1 >= max_iterations:
                         final_content = ""
                         show_error(
                             "Completion blocked: the tool-iteration budget ended before successful "
@@ -3831,9 +4038,27 @@ def _agent_loop_body(
                     turn_completed_normally = True
                     break
                 final_content = ""
+                if (max_iterations is None or _ + 1 < max_iterations) and (
+                    recovery_limit is None or completion_recovery_rounds < recovery_limit
+                ):
+                    next_round_trigger = "program_completed"
+                    optional_context_blocks.clear()
+                    show_info(
+                        "Verification is still missing; continuing bounded recovery. "
+                        f"Automatic structural verification was unavailable: {auto_decision.reason}."
+                    )
+                    cfg.messages.append(
+                        {
+                            "role": "user",
+                            "content": completion_recovery_prompt(cfg)
+                            + f" Automatic structural verification did not qualify: {auto_decision.reason}.",
+                        }
+                    )
+                    continue
                 show_error(
-                    "Completion blocked: the model stopped twice without successful verification "
-                    "after its last workspace mutation."
+                    "Completion blocked: the available verification recovery budget ended "
+                    "without successful verification after the last workspace mutation. "
+                    f"Workspace changes are retained. {auto_decision.reason}."
                 )
                 break
 
@@ -4065,7 +4290,7 @@ def _agent_loop_body(
 
         receipt_authority = None
         try:
-            if echo_memory_authority and _receipt_key_store is not None:
+            if external_memory_authority and _receipt_key_store is not None:
                 receipt_authority = ElsieReceiptAuthority.from_key_store(store=_receipt_key_store)
             skills.record_run(
                 goal=user_message,
@@ -4073,12 +4298,12 @@ def _agent_loop_body(
                 outcome=final_content,
                 iterations=iterations_used,
                 duration_ms=run_duration_ms,
-                protected=echo_memory_authority,
+                protected=external_memory_authority,
                 receipt_authority=receipt_authority,
                 anchor_store=_receipt_anchor_store,
             )
         except (ElsieReceiptError, OSError, ValueError):
-            if not echo_memory_authority:
+            if not external_memory_authority:
                 raise
             show_error("Protected skill history could not be authenticated; run history was not saved.")
             return
@@ -4138,10 +4363,10 @@ def parse_goal_args(arg: str) -> tuple[str, int]:
 
 def _drive_goal(client: Client, cfg: Config, record: task_ledger.GoalRecord, *, first_prompt: str) -> None:
     """Run rounds for an (already-persisted) goal record until done/blocked/cap."""
-    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .continuum_memory import selected
     from .grace_memory_receipts import ElsieReceiptError
 
-    protected = echo_veil_authority_selected(cfg)
+    protected = selected(cfg)
 
     def persist_goal() -> bool:
         try:
@@ -4205,28 +4430,28 @@ def _drive_goal(client: Client, cfg: Config, record: task_ledger.GoalRecord, *, 
 
 
 def _prepare_goal_command_state(cfg: Config) -> bool:
-    """Run the Echo auxiliary gate before any direct goal-store operation."""
+    """Run the protected auxiliary gate before a goal-store operation."""
 
-    from .elsie_echo_preflight import (
-        EchoAuxiliaryPreflightError,
-        prepare_echo_auxiliary_state,
+    from .protected_memory_preflight import (
+        ProtectedMemoryPreflightError,
+        prepare_protected_auxiliary_state,
     )
 
     try:
-        prepare_echo_auxiliary_state(cfg)
-    except EchoAuxiliaryPreflightError:
-        show_error("Echo-protected auxiliary state is unavailable; goal command was refused.")
+        prepare_protected_auxiliary_state(cfg)
+    except ProtectedMemoryPreflightError:
+        show_error("Continuum-protected auxiliary state is unavailable; goal command was refused.")
         return False
     return True
 
 
 def show_goal_status(cfg: Config, *, _preflighted: bool = False) -> None:
-    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .continuum_memory import selected
 
     if not _preflighted and not _prepare_goal_command_state(cfg):
         return
 
-    protected = echo_veil_authority_selected(cfg)
+    protected = selected(cfg)
     from .grace_memory_receipts import ElsieReceiptError
 
     try:
@@ -4268,10 +4493,10 @@ def run_goal_loop(client: Client, cfg: Config, arg: str) -> None:
         return
     stripped = (arg or "").strip()
     sub = stripped.split(maxsplit=1)[0].lower() if stripped else ""
-    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .continuum_memory import selected
     from .grace_memory_receipts import ElsieReceiptError
 
-    protected = echo_veil_authority_selected(cfg)
+    protected = selected(cfg)
 
     if sub == "status":
         show_goal_status(cfg, _preflighted=True)
@@ -4353,9 +4578,9 @@ def print_harness_results(
         active_model = harness.DEFAULT_EMBED_MODEL
         matching, _total = harness.embedded_count(active_model)
     if cfg is not None and embed_fn is not None and matching > 0:
-        from .ada_memory_echo_veil import echo_veil_authority_selected
+        from .continuum_memory import selected
 
-        echo_memory_authority = echo_veil_authority_selected(cfg)
+        protected_memory = selected(cfg)
         results = harness.hybrid_search(
             query,
             embed_fn,
@@ -4364,7 +4589,7 @@ def print_harness_results(
             k=12,
             harness=harness_name,
             kind=kind,
-            index=harness.retrieval_index(protected_memory=echo_memory_authority),
+            index=harness.retrieval_index(protected_memory=protected_memory),
         )
         if results:
             lines = [f"[dim]hybrid (RRF) results for:[/] {query}", ""]
@@ -4754,17 +4979,21 @@ def main() -> None:
             raise SystemExit(daemon_exit)
         return
     cfg = Config.load()
-    from .elsie_echo_preflight import (
-        EchoAuxiliaryPreflightError,
-        prepare_echo_auxiliary_state,
+    from .protected_memory_preflight import (
+        ProtectedMemoryPreflightError,
+        prepare_protected_auxiliary_state,
     )
 
     try:
-        prepare_echo_auxiliary_state(cfg)
-    except EchoAuxiliaryPreflightError as exc:
-        message = "Echo-protected auxiliary state could not be prepared safely; startup stopped."
-        if exc.reason_code != "echo_auxiliary_unavailable":
+        prepare_protected_auxiliary_state(cfg)
+    except ProtectedMemoryPreflightError as exc:
+        message = "Continuum-protected auxiliary state could not be prepared safely; startup stopped."
+        if exc.reason_code != "protected_auxiliary_unavailable":
             message += f" Repair code: {exc.reason_code}."
+        if exc.reason_code == "memory_config_requires_repair":
+            message += " Run `algo-cli config memory repair`, then retry."
+        if exc.reason_code == "goal_store_conflict_requires_repair":
+            message += " Run `algo-cli config memory repair-goal`, then retry."
         if exc.reason_code == "memory_anchor_provisioning_required":
             message += " Run `algo-cli config memory provision`, then retry."
         show_error(message)
@@ -4801,9 +5030,9 @@ def main() -> None:
             f"Scaffolded identity in {identity.IDENTITY_DIR} ({len(created)} files). Edit USER.md to teach the CLI about yourself."
         )
     skills.ensure_dirs()
-    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .continuum_memory import selected
 
-    if not echo_veil_authority_selected(cfg):
+    if not selected(cfg):
         from . import index_compute_lab
 
         if index_compute_lab.ensure_harness_roots_file():
@@ -4927,7 +5156,7 @@ def main() -> None:
     if migrated:
         migration_receipt = load_legacy_migration_receipt()
         show_info("Legacy configuration was migrated to the new Algo CLI config directory.")
-        if migration_receipt.get("echo_authority_selected") is True:
+        if migration_receipt.get("protected_memory_selected") is True:
             blocked = sum(
                 int(value)
                 for value in migration_receipt.get(
@@ -4936,7 +5165,7 @@ def main() -> None:
                 ).values()
             )
             show_info(
-                "Echo authority was selected, so only safe settings were projected. "
+                "Protected memory was selected, so only safe settings were projected. "
                 f"{blocked} legacy artifact(s) remain in the original directory for "
                 "explicit review; no plaintext backup shadow was created."
             )
@@ -4997,7 +5226,7 @@ def main() -> None:
         user_input = sanitize_prompt_text(user_input)
         if user_input.startswith("/"):
             try:
-                handled, client = handle_command(user_input, cfg, client, session)
+                handled, client = handle_command(user_input, cfg, client, session, user_initiated=True)
             except EOFError:
                 console.print("\n[dim]Bye.[/]")
                 break

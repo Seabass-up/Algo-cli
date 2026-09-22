@@ -51,19 +51,19 @@ SPAWN_MATRIX: dict[PermissionLevel, set[PermissionLevel]] = {
 @dataclass
 class PermissionMode:
     level: PermissionLevel
-    allowed_tools: set[str] = field(default_factory=set)
+    allowed_tools: set[str] | None = None
     allowed_paths: list[str] = field(default_factory=list)  # glob patterns
     denied_paths: list[str] = field(default_factory=list)
-    spawnable_modes: set[PermissionLevel] = field(default_factory=set)
+    spawnable_modes: set[PermissionLevel] | None = None
 
     def __post_init__(self) -> None:
-        if not self.allowed_tools:
+        if self.allowed_tools is None:
             self.allowed_tools = DEFAULT_TOOL_SETS.get(self.level, set()).copy()
-        if not self.spawnable_modes:
+        if self.spawnable_modes is None:
             self.spawnable_modes = SPAWN_MATRIX.get(self.level, set()).copy()
 
     def can_use_tool(self, tool_name: str) -> bool:
-        return "*" in self.allowed_tools or tool_name in self.allowed_tools
+        return self.allowed_tools is not None and ("*" in self.allowed_tools or tool_name in self.allowed_tools)
 
     def can_access_path(self, path: str) -> bool:
         import fnmatch
@@ -75,7 +75,7 @@ class PermissionMode:
         return any(fnmatch.fnmatch(path, p) for p in self.allowed_paths)
 
     def can_spawn(self, target_level: PermissionLevel) -> bool:
-        return target_level in self.spawnable_modes
+        return self.spawnable_modes is not None and target_level in self.spawnable_modes
 
 
 class PermissionManager:

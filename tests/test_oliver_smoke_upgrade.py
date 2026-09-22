@@ -25,7 +25,7 @@ def _wheel(path: Path, *, version: str = "0.19.0", extra: str = "") -> Path:
 def test_candidate_version_and_experimental_scope_are_checked(tmp_path):
     path = _wheel(tmp_path / "candidate.whl")
     smoke.validate_candidate(path, "0.19.0")
-    for version in ("0.18.0", "0.20.0"):
+    for version in (smoke.BASELINE_VERSION, "0.20.0"):
         with pytest.raises(ValueError, match="source version"):
             smoke.validate_candidate(path, version)
     for module in smoke.EXCLUDED_MODULES:
@@ -129,8 +129,8 @@ def test_installed_identity_verifies_actual_wheel_and_reports_version_mismatch(t
     monkeypatch.setattr(smoke, "run", lambda *args, **kwargs: json.dumps(identity))
     assert smoke.installed_identity(Path("python"), env_dir, "0.19.0", {}, tmp_path, wheel=wheel) == 4
     identity["metadata"] = identity["runtime"] = "0.19.1.post1"
-    with pytest.raises(ValueError, match="expected 0.18.0.*0.19.1.post1"):
-        smoke.installed_identity(Path("python"), env_dir, "0.18.0", {}, tmp_path, wheel=wheel)
+    with pytest.raises(ValueError, match=r"expected 0\.19\.2.*0\.19\.1\.post1"):
+        smoke.installed_identity(Path("python"), env_dir, smoke.BASELINE_VERSION, {}, tmp_path, wheel=wheel)
 
 
 @pytest.mark.parametrize("surface", ["site", "file"])
@@ -173,6 +173,45 @@ def test_failure_receipt_only_claims_a_completed_updater_call(tmp_path, monkeypa
     assert receipt["status"] == "failed"
     assert any(command[-1] == "update" for command in commands) == (failure == "candidate")
     assert receipt["published_updater_exercised"] == (failure == "candidate")
+
+
+def test_uv_pip_exercises_published_updater_without_bootstrap(tmp_path, monkeypatch):
+    wheel = _wheel(tmp_path / "candidate.whl", version="0.20.0")
+    report = tmp_path / "uv-pip.json"
+    commands = []
+    managers = []
+    monkeypatch.setattr(smoke.sys, "platform", "linux")
+    monkeypatch.setattr(smoke, "_wheel_from", lambda _: wheel)
+    monkeypatch.setattr(smoke, "_source_version", lambda: "0.20.0")
+    monkeypatch.setattr(smoke, "download_baseline", lambda _: None)
+    monkeypatch.setattr(smoke, "_create_isolated_environment", lambda env_dir: (
+        env_dir / "bin/python", ["python", "-m", "pip", "install"],
+    ))
+    monkeypatch.setattr(smoke, "run", lambda command, **kwargs: commands.append(command) or "")
+    monkeypatch.setattr(
+        smoke.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 1, stdout="", stderr="No module named pip"),
+    )
+
+    def identity(python, env_dir, expected, env, work, manager, *, wheel):
+        managers.append(manager)
+        return 251
+
+    monkeypatch.setattr(smoke, "installed_identity", identity)
+    assert smoke.main([str(wheel), "--manager", "uv-pip", "--report", str(report)]) == 0
+
+    receipt = json.loads(report.read_text())
+    cli_updates = [command for command in commands if command[-1:] == ["update"]]
+    assert len(cli_updates) == 2
+    assert not any("--upgrade" in command for command in commands)
+    assert managers == ["uv-pip", "uv-pip", "uv-pip"]
+    assert receipt["status"] == "passed"
+    assert receipt["update_entrypoint"] == "published-cli"
+    assert receipt["published_updater_exercised"] is True
+    assert receipt["candidate_updater_exercised"] is True
+    assert receipt["legacy_missing_pip_verified"] is True
+    assert receipt["one_time_bootstrap_required"] is False
 
 
 @pytest.mark.parametrize("surface", ["config.json", "chatgpt_auth.json", "memory.json", "private/opaque-state.bin"])

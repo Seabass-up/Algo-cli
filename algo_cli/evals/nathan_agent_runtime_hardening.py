@@ -33,10 +33,10 @@ from .. import agent_context
 from .. import agent_pipeline
 from .. import agent_run_journal
 from .. import agent_threads
-from .. import elsie_echo_preflight
 from .. import git_evidence
 from .. import grace_key_store
 from .. import nathan_provider_protocol
+from .. import protected_memory_preflight
 from .. import run_contract
 from .. import task_router
 from ..config import Config
@@ -61,7 +61,7 @@ SOURCE_PATHS = (
     "pyproject.toml",
     "uv.lock",
     "algo_cli/action_registry.py",
-    "algo_cli/ada_memory_echo_veil.py",
+    "algo_cli/continuum_memory.py",
     "algo_cli/agent_blocks.py",
     "algo_cli/agent_context.py",
     "algo_cli/agent_pipeline.py",
@@ -72,9 +72,10 @@ SOURCE_PATHS = (
     "algo_cli/config.py",
     "algo_cli/context_budget.py",
     "algo_cli/evals/nathan_agent_runtime_hardening.py",
-    "algo_cli/elsie_echo_preflight.py",
+    "algo_cli/continuum_tools.py",
     "algo_cli/execution_guardrails.py",
     "algo_cli/git_evidence.py",
+    "algo_cli/worktree_runtime.py",
     "algo_cli/grace_key_store.py",
     "algo_cli/grace_memory_receipts.py",
     "algo_cli/harness.py",
@@ -107,6 +108,10 @@ SOURCE_PATHS = (
     "algo_cli/run_contract.py",
     "algo_cli/samuel_policy.py",
     "algo_cli/samuel_policy_engine.py",
+    "algo_cli/session_mode.py",
+    "algo_cli/protected_memory_preflight.py",
+    "algo_cli/intelligence/permission_modes.py",
+    "algo_cli/resources/prompts/yolo_mode.md",
     "algo_cli/spawn_budget.py",
     "algo_cli/task_router.py",
     "algo_cli/tool_context.py",
@@ -118,9 +123,13 @@ SOURCE_PATHS = (
     "tests/conftest.py",
     "tests/test_agent_context.py",
     "tests/test_agent_pipeline.py",
+    "tests/test_yolo_mode.py",
+    "tests/test_continuum_memory.py",
+    "tests/test_session_mode.py",
     "tests/test_agent_run_journal.py",
     "tests/test_agent_threads.py",
-    "tests/test_ada_memory_echo_veil.py",
+    "tests/test_continuum_tools.py",
+    "tests/test_worktree_runtime.py",
     "tests/test_chatgpt_client.py",
     "tests/test_chatgpt_stream_recovery.py",
     "tests/test_harness_query_recovery.py",
@@ -136,7 +145,7 @@ SOURCE_PATHS = (
     "tests/test_tools.py",
     "tests/test_search_execution.py",
     "tests/test_irene_search.py",
-    "tests/test_elsie_echo_preflight.py",
+    "tests/test_protected_memory_preflight.py",
     "tests/test_grace_key_store.py",
     "tests/test_grace_memory_receipts.py",
     "tests/test_main_helpers.py",
@@ -505,8 +514,7 @@ def _compile(
     receipt_key_store: Any | None = None,
 ) -> run_contract.RunContract:
     cfg = _config(root)
-    cfg.echo_veil_enabled = protected
-    cfg.echo_veil_protection = "required" if protected else "optional"
+    cfg.continuum_enabled = protected
     return run_contract.compile_agent_run_contract(
         task=task,
         route=task_router.route_task(task),
@@ -1447,7 +1455,7 @@ def _walk_values(value: Any) -> list[Any]:
     return [value]
 
 
-def _probe_echo_agent_preflight_refusal(root: Path) -> None:
+def _probe_protected_agent_preflight_refusal(root: Path) -> None:
     del root
 
     class NoWorkClient:
@@ -1455,15 +1463,15 @@ def _probe_echo_agent_preflight_refusal(root: Path) -> None:
 
         def chat(self, **_kwargs: Any) -> Any:
             self.calls += 1
-            raise AssertionError("model work started before Echo preflight")
+            raise AssertionError("model work started before protected-memory preflight")
 
     store = grace_key_store.StaticKeyStore({PRIVACY_KEY_LABEL: b"p" * 32})
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     canary = "NATHAN_PREFLIGHT_PRIVATE_CANARY"
     client = NoWorkClient()
     errors: list[str] = []
     work_events: list[str] = []
-    original_preflight = elsie_echo_preflight.prepare_echo_auxiliary_state
+    original_preflight = protected_memory_preflight.prepare_protected_auxiliary_state
     original_begin = agent_pipeline.reflex.begin_agent_pipeline
     original_create_thread = agent_threads.create_thread
     original_show_error = agent_pipeline.show_error
@@ -1476,10 +1484,10 @@ def _probe_echo_agent_preflight_refusal(root: Path) -> None:
     ) -> dict[str, Any]:
         if receipt_key_store is not store or receipt_anchor_store is not store:
             raise AssertionError("static preflight stores were not injected")
-        raise elsie_echo_preflight.EchoAuxiliaryPreflightError(canary)
+        raise protected_memory_preflight.ProtectedMemoryPreflightError(canary)
 
     try:
-        setattr(elsie_echo_preflight, "prepare_echo_auxiliary_state", refuse)
+        setattr(protected_memory_preflight, "prepare_protected_auxiliary_state", refuse)
         setattr(agent_pipeline.reflex, "begin_agent_pipeline", lambda *_args, **_kwargs: work_events.append("pipeline"))
         setattr(agent_threads, "create_thread", lambda *_args, **_kwargs: work_events.append("thread"))
         setattr(agent_pipeline, "show_error", errors.append)
@@ -1500,7 +1508,7 @@ def _probe_echo_agent_preflight_refusal(root: Path) -> None:
             _receipt_anchor_store=store,
         )
     finally:
-        setattr(elsie_echo_preflight, "prepare_echo_auxiliary_state", original_preflight)
+        setattr(protected_memory_preflight, "prepare_protected_auxiliary_state", original_preflight)
         setattr(agent_pipeline.reflex, "begin_agent_pipeline", original_begin)
         setattr(agent_threads, "create_thread", original_create_thread)
         setattr(agent_pipeline, "show_error", original_show_error)
@@ -1513,7 +1521,7 @@ def _probe_echo_agent_preflight_refusal(root: Path) -> None:
         or work_events
         or errors != [pipeline.error, team.error]
     ):
-        raise AgentRuntimeBenchmarkError("Echo Agent boundary did not refuse before work")
+        raise AgentRuntimeBenchmarkError("protected-memory Agent boundary did not refuse before work")
 
 
 def _probe_provider_tool_protocol(root: Path) -> None:
@@ -1692,7 +1700,7 @@ PROBES: tuple[
         "protected_thread_projection_recovery",
         _probe_protected_thread_projection_and_recovery,
     ),
-    ("echo_agent_preflight_refusal", _probe_echo_agent_preflight_refusal),
+    ("protected_agent_preflight_refusal", _probe_protected_agent_preflight_refusal),
     ("balanced_provider_tool_protocol", _probe_provider_tool_protocol),
     ("structured_output_verifier", _probe_output_verifier),
     (

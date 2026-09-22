@@ -164,10 +164,10 @@ def write_ledger(
     session_summary: str = "",
     messages: Iterable[dict[str, Any]] = (),
     root: Path | None = None,
-    echo_authority: bool = False,
+    protected_memory: bool = False,
 ) -> SmallContextLedger | None:
     """Write a temp ledger file when the runtime cap is below 75k tokens."""
-    if not is_small_context(runtime_cap) or echo_authority:
+    if not is_small_context(runtime_cap) or protected_memory:
         return None
     text, block_names = build_ledger_text(
         model=model,

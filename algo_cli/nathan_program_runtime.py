@@ -50,6 +50,7 @@ from .alice_artifact_store import (
     EncryptedArtifactStore,
     RunCapability,
 )
+from .arthur_outcomes import OutcomeStatus
 from .config import CONFIG_DIR, Config
 from .irene_privacy_views import keyed_action_fingerprint
 from .marcus_authority import (
@@ -68,7 +69,7 @@ if TYPE_CHECKING:
 
 
 PROGRAM_SCHEMA_VERSION = 1
-RECEIPT_SCHEMA_VERSION = 2
+RECEIPT_SCHEMA_VERSION = 3
 ZERO_RECEIPT_HASH = "0" * 64
 _STEP_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -363,6 +364,8 @@ class ProgramReceipt:
     mutates_state: bool
     verification_kind: str
     status: str
+    requires_reconciliation: bool
+    effect_identity: str
     input_hash: str
     result_hash: str
     result_bytes: int
@@ -383,6 +386,8 @@ class ProgramReceipt:
             "mutates_state": self.mutates_state,
             "verification_kind": self.verification_kind,
             "status": self.status,
+            "requires_reconciliation": self.requires_reconciliation,
+            "effect_identity": self.effect_identity,
             "input_hash": self.input_hash,
             "result_hash": self.result_hash,
             "result_bytes": self.result_bytes,
@@ -454,6 +459,8 @@ class ProgramResult:
                     "step_id": receipt.step_id,
                     "operation": receipt.operation,
                     "status": receipt.status,
+                    "requires_reconciliation": receipt.requires_reconciliation,
+                    "effect_identity": receipt.effect_identity,
                     "receipt_hash": receipt.receipt_hash,
                     "artifact_uri": receipt.artifact_uri,
                 }
@@ -555,6 +562,40 @@ def _check_object_fields(value: Mapping[str, Any], allowed: frozenset[str], *, l
     unknown = set(value) - allowed
     if unknown:
         raise ProgramValidationError(f"{location} has unsupported fields: {', '.join(sorted(unknown))}")
+
+
+_PROGRAM_OBJECT_FIELDS = frozenset({"version", "steps", "outputs"})
+_PROGRAM_SHAPE_HINT = (
+    'Pass plan as a JSON object: {"version": 1, "steps": [{"id": "s1", "kind": "action", '
+    '"action": "run_shell", "args": {"command": "python -c \\"assert True\\""}}], '
+    '"outputs": ["s1"]}. Do not pass version or steps as sibling tool arguments.'
+)
+
+
+def coerce_program_plan(raw: Any, *, sibling_fields: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Normalize common model-authored shapes into the version-1 program object.
+
+    Accepted: the documented object; a JSON string of that object; a bare step list;
+    sibling ``version``/``steps``/``outputs`` tool arguments when ``plan`` is omitted;
+    and ``plan`` used as the step-list field name when ``steps`` is absent.
+    """
+    if raw is None and sibling_fields is not None:
+        extracted = {key: sibling_fields[key] for key in _PROGRAM_OBJECT_FIELDS if key in sibling_fields}
+        if extracted:
+            raw = extracted
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ProgramValidationError(f"program must be a JSON object. {_PROGRAM_SHAPE_HINT}") from exc
+    if isinstance(raw, list):
+        raw = {"version": PROGRAM_SCHEMA_VERSION, "steps": raw}
+    if not isinstance(raw, Mapping):
+        raise ProgramValidationError(f"program must be a JSON object. {_PROGRAM_SHAPE_HINT}")
+    plan = dict(raw)
+    if "steps" not in plan and isinstance(plan.get("plan"), list):
+        plan["steps"] = plan.pop("plan")
+    return plan
 
 
 def _normalized_compiled_plan(
@@ -686,6 +727,31 @@ def _validate_annotation(value: Any, annotation: Any, *, location: str) -> None:
                 _validate_annotation(item, args[0], location=f"{location}[{index}]")
         return
     raise ProgramValidationError(f"{location} uses an unsupported runtime annotation")
+
+
+def _normalize_action_args(action: str, args: dict[str, Any], *, cwd: str, location: str) -> dict[str, Any]:
+    normalized = dict(args)
+    if "cwd" not in normalized:
+        return normalized
+    if tool_runtime_args(action, {}, Config(cwd=cwd)).get("cwd") != cwd:
+        raise ProgramValidationError(f"{location} attempts to set runtime-owned fields: cwd")
+    supplied = normalized.pop("cwd")
+    if supplied is None:
+        return normalized
+    if not isinstance(supplied, str) or not supplied.strip():
+        raise ProgramValidationError(f"{location}.cwd must name the runtime-owned workspace or be omitted")
+    try:
+        path = Path(supplied).expanduser()
+        if not path.is_absolute():
+            path = Path(cwd) / path
+        matches = str(path.resolve()) == cwd
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ProgramValidationError(f"{location}.cwd cannot resolve the runtime-owned workspace") from exc
+    if not matches:
+        raise ProgramValidationError(
+            f"{location}.cwd conflicts with the runtime-owned workspace; omit cwd and use an authorized path"
+        )
+    return normalized
 
 
 def _validate_action_args(action: str, args: Mapping[str, Any], *, location: str) -> None:
@@ -860,9 +926,7 @@ def compile_program(
     if not isinstance(safe_mode, bool):
         raise ProgramValidationError("program safe_mode must be a runtime-owned boolean")
     canonical_cwd = _canonical_program_cwd(cwd)
-    if not isinstance(plan, Mapping):
-        raise ProgramValidationError("program must be a JSON object")
-    plan_dict = dict(plan)
+    plan_dict = coerce_program_plan(plan)
     plan_bytes = len(_canonical_json(plan_dict).encode("utf-8"))
     if plan_bytes > limits.max_plan_bytes:
         raise ProgramValidationError(f"program is {plan_bytes} bytes; maximum is {limits.max_plan_bytes}")
@@ -907,6 +971,7 @@ def compile_program(
             if not isinstance(args, dict):
                 raise ProgramValidationError(f"{location}.args must be an object")
             _validate_json_and_refs(args, available=earlier, location=f"{location}.args")
+            args = _normalize_action_args(action, args, cwd=canonical_cwd, location=f"{location}.args")
             preflight = _build_action_preflight(
                 step_id,
                 action,
@@ -969,10 +1034,10 @@ def compile_program(
         available.add(step_id)
 
     raw_outputs = plan_dict.get("outputs")
-    if raw_outputs is None:
+    if raw_outputs is None or (isinstance(raw_outputs, list) and not raw_outputs):
         raw_outputs = [compiled_steps[-1].step_id]
-    if not isinstance(raw_outputs, list) or not raw_outputs:
-        raise ProgramValidationError("program outputs must be a non-empty list")
+    if not isinstance(raw_outputs, list):
+        raise ProgramValidationError("program outputs must be a list of step references; omit it to return the final step")
     if len(raw_outputs) > limits.max_outputs:
         raise ProgramValidationError(f"program has {len(raw_outputs)} outputs; maximum is {limits.max_outputs}")
     all_steps = frozenset(available)
@@ -1413,9 +1478,17 @@ def _action_result_status(result: str) -> str:
         return "cancelled"
     if lowered.startswith(("blocked by runtime authority", "blocked by runtime policy chain", "user denied")):
         return "denied"
-    if lowered.startswith("skipped repeated failed attempt"):
+    if lowered.startswith("skipped repeated"):
         return "skipped"
     return classify_tool_status(result)
+
+
+def _structured_requires_reconciliation(result: Any) -> bool:
+    try:
+        value = json.loads(str(result))
+    except (TypeError, ValueError):
+        return False
+    return type(value) is dict and value.get("requires_reconciliation") is True
 
 
 def _action_mutates_state(action: str) -> bool:
@@ -1493,6 +1566,8 @@ def _make_receipt(
     mutates_state: bool,
     verification_kind: str,
     status: str,
+    requires_reconciliation: bool,
+    effect_identity: str,
     input_hash: str,
     result_hash: str,
     result_bytes: int,
@@ -1513,6 +1588,8 @@ def _make_receipt(
         "mutates_state": mutates_state,
         "verification_kind": verification_kind,
         "status": status,
+        "requires_reconciliation": bool(requires_reconciliation),
+        "effect_identity": effect_identity,
         "input_hash": input_hash,
         "result_hash": result_hash,
         "result_bytes": result_bytes,
@@ -1531,6 +1608,8 @@ def _make_receipt(
         mutates_state=mutates_state,
         verification_kind=verification_kind,
         status=status,
+        requires_reconciliation=bool(requires_reconciliation),
+        effect_identity=effect_identity,
         input_hash=input_hash,
         result_hash=result_hash,
         result_bytes=result_bytes,
@@ -1715,6 +1794,8 @@ def execute_program(
                     mutates_state=_action_mutates_state(step.action) if isinstance(step, ActionProgramStep) else False,
                     verification_kind="",
                     status=status,
+                    requires_reconciliation=False,
+                    effect_identity="",
                     input_hash=_sha256_json(None),
                     result_hash=_sha256_bytes(encoded),
                     result_bytes=len(encoded),
@@ -1732,6 +1813,7 @@ def execute_program(
             resolved_input: Any = None
             value: Any
             step_status = "worked"
+            step_requires_reconciliation = False
             verification_kind = ""
             evidence_before = len(execution_guardrails.evidence_snapshot())
             try:
@@ -1762,6 +1844,16 @@ def execute_program(
                         step_status = "worked"
                     else:
                         step_status = typed_outcome.status.value
+                    step_requires_reconciliation = (
+                        typed_outcome is not None
+                        and (
+                            typed_outcome.status is OutcomeStatus.UNKNOWN_OUTCOME
+                            or (
+                                typed_outcome.status is OutcomeStatus.SKIPPED
+                                and typed_outcome.error_code == "unknown_outcome"
+                            )
+                        )
+                    ) or _structured_requires_reconciliation(action_result)
                 else:
                     resolved_input = {
                         "input": _resolve_refs(step.input_value(), values),
@@ -1785,6 +1877,13 @@ def execute_program(
                 interruption = exc
                 value = exc.result.result
                 step_status = exc.result.outcome.status.value
+                step_requires_reconciliation = (
+                    exc.result.outcome.status is OutcomeStatus.UNKNOWN_OUTCOME
+                    or (
+                        exc.result.outcome.status is OutcomeStatus.SKIPPED
+                        and exc.result.outcome.error_code == "unknown_outcome"
+                    )
+                ) or _structured_requires_reconciliation(value)
             except Exception as exc:
                 value = f"Program step error: {type(exc).__name__}"
                 step_status = "failed"
@@ -1856,6 +1955,11 @@ def execute_program(
                 label=f"{step.step_id}:input",
             )
             result_identity = artifact.content_id if step_taint.protected and artifact is not None else digest
+            effect_identity = (
+                keyed_action_fingerprint(f"{operation}:args", resolved_input)
+                if isinstance(step, ActionProgramStep)
+                else ""
+            )
             receipt = _make_receipt(
                 run_id=run_id,
                 plan_hash=compiled.plan_hash,
@@ -1866,6 +1970,8 @@ def execute_program(
                 mutates_state=mutates_state,
                 verification_kind=verification_kind,
                 status=receipt_status,
+                requires_reconciliation=step_requires_reconciliation,
+                effect_identity=effect_identity,
                 input_hash=input_identity,
                 result_hash=result_identity,
                 result_bytes=len(encoded),
@@ -1906,7 +2012,7 @@ def execute_program(
         if interruption is not None:
             raise interruption
         chain_hash = receipts[-1].receipt_hash if receipts else ZERO_RECEIPT_HASH
-        requires_reconciliation = any(receipt.status == "unknown_outcome" for receipt in receipts)
+        requires_reconciliation = any(receipt.requires_reconciliation for receipt in receipts)
         return ProgramResult(
             status=status,
             run_id=run_id,

@@ -51,7 +51,7 @@ inside the running launcher does not release that Windows file lock.
 To install a reviewed source checkout instead, clone the repository and run
 `pipx install .` from its root.
 
-Optional extras are available for PDF rendering (`algo-cli-runtime[pdf]`) and experimental vector quantization (`algo-cli-runtime[quantization]`). Echo Veil is not a public package extra because its qualified 0.8 revision is not published on PyPI. Source development uses the exact commit-pinned `echo-veil` dependency group; operators who require Echo must install that same reviewed source revision into Algo's Python environment. The distribution installs the `algo-cli` command. Run `algo-cli doctor` for a side-effect-free readiness report.
+Optional extras are available for PDF rendering (`algo-cli-runtime[pdf]`) and experimental vector quantization (`algo-cli-runtime[quantization]`). Governed memory uses the separately installed native Continuum service; see [Continuum Memory](docs/continuum-memory.md) for configuration and recovery. The distribution installs the `algo-cli` command. Run `algo-cli doctor` for a side-effect-free readiness report.
 
 ## Quick Start
 
@@ -242,6 +242,8 @@ The model can call these tools during a conversation:
 **Multimodal:** `embed_text`, `vision_describe`
 
 **Programmatic actions:** `action_search` retrieves a small set of exact deferred action schemas; discovery does not bypass the active capability ceiling, runtime policy, or approval. `action_program` compiles a bounded typed dataflow plan—never arbitrary Python or JavaScript—and routes every nested action through its existing ActionSpec policy, guardrails, approval, attempt ledger, and telemetry. Its wall-clock budget is cooperative: the remaining budget is propagated into timeout-aware actions and checked around every step, while actions without a timeout contract can only be marked over-budget after they return. Large intermediate values are content-addressed in the private runtime store; compact results retain hash-chained mutation and verification receipts. Successful program verifiers reconcile into the outer completion ledger, so the latest passing post-mutation check supersedes earlier failures without relying on model phrasing.
+
+**Jev (optional):** `jev_question_contract` asks Jev, a small TypeSafe decision model, bounded advisory questions (classification, review, routing, claim checks) and `jev_kernel_status` checks readiness. It needs the separately installed `jev-workflows` companion: run `algo-cli config jev enable --cli /absolute/path/to/jev-workflows`. The companion holds its own credentials. `lint` mode is local; `review`, `run`, and `followup` send only the supplied question packet to TypeSafe and require session approval. Answers are advisory and never authorize or execute actions. `algo-cli config jev disable` turns inference off again.
 
 **Models:** `model_show`, `model_pull`, `model_copy`, `model_create`, `model_delete`
 

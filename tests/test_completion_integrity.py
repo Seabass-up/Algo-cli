@@ -218,7 +218,7 @@ def test_failed_shell_write_finishes_oneshot_partial(monkeypatch, tmp_path):
     assert (tmp_path / "module.py").exists(), (code, events, invoked)
     assert (tmp_path / "module.py").read_text() == "changed\n"
     assert code == 2 and events[-1]["status"] == "partial"
-    assert len(client.calls) == 3 and invoked == ["run_shell"]
+    assert len(client.calls) == 4 and invoked == ["run_shell"]
     assert captures[-1]["completed"] is False
 
 

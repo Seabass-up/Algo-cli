@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import json
 from typing import Any
 
 from .marcus_authority import (
@@ -94,6 +95,33 @@ class ActionOutcome:
         }
 
 
+_LOCAL_FILE_MUTATIONS = frozenset({"write_file", "edit_file", "batch_edit"})
+
+
+def _known_no_effect_failure(action: ResolvedAction, result: str) -> bool:
+    """True when the tool reported a controlled failure without an uncertain effect.
+
+    Local file tools use ``Error:`` only when the destination was not replaced.
+    Structured ``failed``/``error`` program results are the orchestrator
+    equivalent: nested unknown steps already surface as ``unknown_outcome``.
+    Adapter losses such as ``Error: response lost after click`` remain unknown.
+    """
+
+    text = str(result).lstrip()
+    if action.name in _LOCAL_FILE_MUTATIONS and text[:6].casefold() == "error:":
+        return True
+    if action.name != "action_program" or not text.startswith("{"):
+        return False
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(value, dict):
+        return False
+    status = str(value.get("status") or "").strip().casefold()
+    return status in {"failed", "error", "failure"}
+
+
 def normalize_action_outcome(
     action: ResolvedAction,
     result: str,
@@ -119,10 +147,13 @@ def normalize_action_outcome(
         status = OutcomeStatus.CANCELLED
     elif normalized in {"worked", "succeeded", "success"}:
         status = OutcomeStatus.SUCCEEDED
+    elif normalized == "unknown_outcome":
+        status = OutcomeStatus.UNKNOWN_OUTCOME
     elif (
         invoked
         and action.effect_class is not EffectClass.OBSERVE
         and action.outcome_model is OutcomeModel.UNKNOWN_POSSIBLE
+        and not _known_no_effect_failure(action, result)
     ):
         status = OutcomeStatus.UNKNOWN_OUTCOME
     else:

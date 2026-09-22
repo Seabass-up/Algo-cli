@@ -56,9 +56,8 @@ def test_project_requirements_match_build_backend_canonical_spelling() -> None:
             str(Requirement(requirement))
         )
     assert "echo-veil" not in metadata["optional-dependencies"]
-    assert project["dependency-groups"]["echo-veil"] == [
-        "echo-veil @ git+https://github.com/Seabass-up/echo-veil.git@cbee525687ac03c830d4b6632ff1d044b4b838fc"
-    ]
+    assert "echo-veil" not in project.get("dependency-groups", {})
+    assert all(Requirement(item).name != "echo-veil" for item in requirements)
     assert "allow-direct-references" not in project["tool"]["hatch"].get("metadata", {})
     assert "/.gitignore" in project["tool"]["hatch"]["build"]["targets"]["sdist"]["include"]
 

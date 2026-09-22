@@ -13,7 +13,7 @@ try:
     import tomllib  # type: ignore[import-not-found]
 except ImportError:  # Python 3.10: fall back to the tomli backport.
     try:
-        import tomli as tomllib  # type: ignore[no-redef]
+        import tomli as tomllib
     except ImportError:  # pragma: no cover - tomli is a declared 3.10 dependency.
         tomllib = None  # type: ignore[assignment]
 

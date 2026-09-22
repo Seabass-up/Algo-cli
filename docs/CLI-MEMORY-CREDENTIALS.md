@@ -1,11 +1,12 @@
 # CLI Memory Credentials
 
-Echo-protected CLI auxiliary state does not require installation of the signed
+Continuum-protected CLI auxiliary state does not require installation of the signed
 native browser-control app. Before its first protected write, explicitly run:
 
 ```sh
 algo-cli config memory status
 algo-cli config memory provision
+
 ```
 
 These commands are available before the normal startup preflight. Provisioning
@@ -16,14 +17,10 @@ control-signing key, Ada credential registry, pairing secret, native census,
 TCC permission, or browser authority. Local macOS Keychain is the qualified
 operator recovery path; an unsupported backend or failed write blocks safely.
 
-The optional `echo-veil` dependency must also be installed in the exact Python
-environment used by the `algo-cli` launcher. Source development uses the
-project's commit-pinned `echo-veil` dependency group. Because that qualified
-Echo revision is not published on PyPI, the public Algo package does not expose
-an `echo-veil` extra; install the documented exact source revision separately,
-not an arbitrary Echo checkout or replacement profile. Credential readiness
-alone does not prove adapter or model readiness;
-finish recovery with the authenticated Echo doctor and one bounded model turn.
+The native `continuum-memory` service must be installed separately and selected
+explicitly. Credential readiness alone does not prove service or model readiness;
+finish recovery with `/memory doctor` and one bounded model turn. See
+[Continuum Memory](continuum-memory.md) for the active configuration and boundaries.
 
 Only the four Elsie auxiliary-store namespaces are accepted. The whole map is
 authenticated with a domain-separated HMAC, limited to 64 heads and 60 KiB,
@@ -47,6 +44,9 @@ No external-browser qualification or production attestation is implied by this
 CLI-only provisioning command.
 
 ## Local Verification - 2026-09-04
+
+Historical evidence for the retired integration follows. It does not qualify the
+current Continuum transport.
 
 The installed Python 3.14 launcher was provisioned using the command above.
 Existing credential fingerprints were unchanged; no native signing key or Ada

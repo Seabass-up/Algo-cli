@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
@@ -59,10 +60,10 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/status", "Show current model, context usage, and active features"),
     ("/identity", "Show identity file status"),
     ("/lesson", "Store an explicit lesson in the active memory authority"),
-    ("/lessons", "Show legacy lesson status or 'reindex' when Echo is off"),
+    ("/lessons", "Show legacy lesson status or 'reindex' when Continuum is off"),
     ("/skills", "Review quarantined skills; 'crystallize' / 'approve' / 'reject'"),
     ("/intuition", "Manage embedded memory recall"),
-    ("/intelligence", "Inspect repository intelligence: status, query, reindex"),
+    ("/intelligence", "Inspect repository intelligence and your library: status, query, reindex, init"),
     ("/intel", "Alias for /intelligence"),
     ("/intelagence", "Alias for /intelligence"),
     ("/kernel", "Kernel registry: /kernel list | show NAME | check [NAME]"),
@@ -136,7 +137,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/plugins", "Inspect plugin manifests without executing plugin code"),
     ("/credentials", "List helpers or check a named helper key (value redacted)"),
     ("/url-scheme", "Parse an algo-cli:// deep link: /url-scheme <url> | help"),
-    ("/mode", "Session mode: execute | explore | publish"),
+    ("/mode", "Session mode: execute | explore | publish | yolo (user-only, scoped)"),
     ("/exit", "Exit"),
     ("/quit", "Exit"),
 ]
@@ -145,6 +146,55 @@ SLASH_COMMAND_ALIASES: dict[str, str] = {
     "/hs": "/hsearch",
     "/hr": "/hread",
 }
+
+# Discovery is deliberately smaller than dispatch: saved commands and aliases
+# remain valid without crowding the first menu.
+COMMON_SLASH_COMMANDS = (
+    "/help", "/models", "/mode", "/status", "/agent", "/cd",
+    "/memory", "/context", "/clear", "/config", "/theme", "/quit",
+)
+COMMAND_GROUPS: dict[str, tuple[str, ...]] = {
+    "session": (
+        "/help", "/status", "/dashboard", "/mode", "/theme", "/clear", "/save", "/load",
+        "/info", "/reload", "/doctor", "/selfcheck", "/perf", "/metrics", "/exit", "/quit",
+    ),
+    "models": (
+        "/model", "/models", "/host", "/cloud", "/cloudauto", "/model-check", "/system",
+        "/thinking", "/keepalive", "/ctx", "/temp", "/embed",
+    ),
+    "workspace": ("/cd", "/ls", "/read", "/worktree", "/ship", "/diff", "/changes"),
+    "agent": (
+        "/agent", "/goal", "/route", "/context", "/auto", "/safe", "/policy", "/reflex",
+        "/reason", "/verify", "/toolmax", "/thinkevery",
+    ),
+    "knowledge": (
+        "/memory", "/memory-auto", "/remember", "/memories", "/forget", "/identity",
+        "/lesson", "/lessons", "/skills", "/intuition", "/intelligence", "/intel",
+        "/intelagence", "/kernel", "/icl", "/code-rag",
+    ),
+    "harness": ("/harness", "/hsearch", "/hread", "/hs", "/hr", "/actions"),
+    "integrations": ("/config", "/google", "/x-account", "/plugins", "/credentials", "/url-scheme"),
+    "media": ("/vision", "/pdf"),
+}
+COMMAND_GROUP_DESCRIPTIONS = {
+    "session": "Status, appearance, conversations, diagnostics",
+    "models": "Model selection, reasoning effort, provider settings",
+    "workspace": "Files, worktrees, diffs, publishing",
+    "agent": "Tasks, goals, execution policy, verification",
+    "knowledge": "Memory, skills, intelligence, kernels",
+    "harness": "Indexing, search, retrieval, capability checks",
+    "integrations": "Provider setup, accounts, plugins, credentials",
+    "media": "Images and PDFs",
+}
+
+
+def command_group(command: str) -> str:
+    root = command.split()[0]
+    return next((group for group, roots in COMMAND_GROUPS.items() if root in roots), "other")
+
+
+def is_command_alias(command: str, description: str) -> bool:
+    return command == "/exit" or command == "/harness rust" or description.startswith("Alias for ")
 
 
 class SlashCommandCompleter(Completer):
@@ -156,7 +206,19 @@ class SlashCommandCompleter(Completer):
         if not text.startswith("/"):
             return
         normalized = text.lower()
-        for command, description in self.commands:
+        if normalized.startswith("/help "):
+            candidates = [(f"/help {group}", description) for group, description in COMMAND_GROUP_DESCRIPTIONS.items()]
+            candidates.append(("/help all", "Full command reference, including compatibility aliases"))
+        elif normalized == "/":
+            descriptions = dict(self.commands)
+            candidates = [(command, descriptions[command]) for command in COMMON_SLASH_COMMANDS if command in descriptions]
+        else:
+            candidates = [
+                (command, description) for command, description in self.commands
+                if not is_command_alias(command, description)
+                and (" " in normalized or " " not in command)
+            ]
+        for command, description in candidates:
             if command.lower().startswith(normalized):
                 yield Completion(
                     command,
@@ -268,7 +330,9 @@ def _parse_toggle_arg(arg: str, current: bool) -> tuple[bool, bool] | None:
     return None
 
 
-def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -> tuple[bool, Client]:
+def handle_command(
+    raw: str, cfg: Config, client: Client, session: Any = None, *, user_initiated: bool = False,
+) -> tuple[bool, Client]:
     from . import main as m
 
     def refresh_after_model_change(updated_client: Client) -> None:
@@ -288,7 +352,10 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
     if command in {"/exit", "/quit"}:
         raise EOFError
     if command == "/help":
-        display.show_help()
+        if arg:
+            display.show_help(arg)
+        else:
+            display.show_help()
     elif command == "/model":
         if arg:
             if m.chatgpt_client.is_codex_subscription_model(arg):
@@ -337,13 +404,19 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             client = m.create_client(cfg)
             refresh_after_model_change(client)
         else:
+            if user_initiated:
+                if m.model_picker(cfg):
+                    client = m.create_client(cfg)
+                    refresh_after_model_change(client)
+            else:
+                m.show_model_inventory(cfg)
+    elif command == "/models":
+        if user_initiated:
             if m.model_picker(cfg):
                 client = m.create_client(cfg)
                 refresh_after_model_change(client)
-    elif command == "/models":
-        if m.model_picker(cfg):
-            client = m.create_client(cfg)
-            refresh_after_model_change(client)
+        else:
+            m.show_model_inventory(cfg)
     elif command == "/host":
         if arg:
             cfg.host = arg
@@ -570,6 +643,8 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 m.show_info("Performance metrics reset.")
     elif command == "/dashboard":
         installed_models, running_models, event_lines = m.collect_dashboard_state(client, cfg)
+        from . import session_mode
+
         used, total, _remaining, _runtime_cap, _native = m.context_status(cfg, client=client)
         m.show_session_overview(
             model=cfg.model,
@@ -585,7 +660,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             total_tokens=total,
             summary_active=bool(cfg.session_summary.strip()),
             tool_think_every=max(1, int(cfg.tool_think_every)),
-            max_tool_iterations=max(1, int(cfg.max_tool_iterations)),
+            max_tool_iterations=session_mode.work_iteration_label(cfg),
             memory_count=len(cfg.memories),
             system_prompt=cfg.system,
             messages=cfg.messages,
@@ -606,38 +681,27 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             else:
                 m.console.print(f"  [muted]{row['name']:<20}  missing[/]")
     elif command == "/lesson":
+        from . import continuum_memory
+        from . import tools as tools_module
+
+        if continuum_memory.selected(cfg):
+            m.show_info(tools_module.append_lesson(arg, cfg=cfg))
+            return True, client
         if not arg:
             m.show_error("Usage: /lesson <text>")
         else:
-            from .ada_memory_echo_veil import (
-                echo_veil_authority_selected,
-                remember_with_echo_veil,
-            )
-
-            if echo_veil_authority_selected(cfg):
-                try:
-                    created = remember_with_echo_veil(
-                        cfg,
-                        arg,
-                        source="explicit_lesson_slash",
-                    )
-                except Exception:
-                    m.show_error("Protected lesson storage is unavailable; no plaintext lesson was written.")
-                else:
-                    m.show_info("Protected lesson saved." if created else "Protected lesson already stored.")
-            else:
-                path = identity.append_lesson(arg)
-                m.capture_intuition_block(cfg, "lesson", arg, source="/lesson")
-                m.show_info(f"Lesson saved to {path}")
+            path = identity.append_lesson(arg)
+            m.capture_intuition_block(cfg, "lesson", arg, source="/lesson")
+            m.show_info(f"Lesson saved to {path}")
     elif command == "/lessons":
-        from .ada_memory_echo_veil import echo_veil_authority_selected
+        from .continuum_memory import selected
 
         lessons_sub = arg.strip().lower()
-        if echo_veil_authority_selected(cfg):
+        if selected(cfg):
             if lessons_sub in {"", "status", "show", "?"}:
-                m.show_info("Legacy plaintext lesson retrieval is inactive while Echo Veil owns memory.")
+                m.show_info("Legacy plaintext lesson retrieval is inactive while Continuum Memory is authoritative.")
             elif lessons_sub == "reindex":
-                m.show_error("Legacy lesson reindexing is disabled while Echo Veil owns memory.")
+                m.show_error("Legacy lesson reindexing is disabled while Continuum Memory is authoritative.")
             else:
                 m.show_error("Usage: /lessons [status|reindex]")
         elif lessons_sub == "reindex":
@@ -668,9 +732,9 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         else:
             m.show_error("Usage: /lessons [status|reindex]")
     elif command == "/skills":
-        from .ada_memory_echo_veil import echo_veil_authority_selected
+        from .continuum_memory import selected
 
-        protected = echo_veil_authority_selected(cfg)
+        protected = selected(cfg)
         skill_parts = arg.strip().split(maxsplit=1)
         sub = skill_parts[0].lower() if skill_parts else ""
         skill_name = skill_parts[1].strip() if len(skill_parts) > 1 else ""
@@ -715,7 +779,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             if sub == "on" and protected:
                 cfg.skill_crystallize_enabled = False
                 cfg.save()
-                m.show_error("Skill crystallization cannot consume Echo-protected content-free history.")
+                m.show_error("Skill crystallization cannot consume Continuum-protected content-free history.")
                 return True, client
             cfg.skill_crystallize_enabled = sub == "on"
             cfg.save()
@@ -878,9 +942,9 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 m.show_error(str(exc))
             else:
                 if added:
-                    from .ada_memory_echo_veil import echo_veil_authority_selected
+                    from .continuum_memory import selected
 
-                    if not echo_veil_authority_selected(cfg):
+                    if not selected(cfg):
                         m.capture_intuition_block(
                             cfg,
                             "memory",
@@ -891,22 +955,17 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 else:
                     m.show_info("Memory already stored.")
     elif command == "/memories":
-        from .ada_memory_echo_veil import (
-            echo_veil_authority_selected,
-            list_echo_veil_memories,
-        )
+        from . import continuum_memory
 
-        if echo_veil_authority_selected(cfg):
+        if continuum_memory.selected(cfg):
             try:
-                records = list_echo_veil_memories(cfg)
-            except RuntimeError as exc:
-                m.show_error(f"Echo Veil memory is unavailable ({type(exc).__name__}).")
-            else:
-                display.show_memory(
-                    [str(record.get("payload") or "") for record in records if record.get("superseded_by") is None]
-                )
-        else:
-            display.show_memory(cfg.memories)
+                report = continuum_memory.memory_status_report(cfg)
+                m.console.print(json.dumps(report, indent=2, sort_keys=True), markup=False)
+                display.show_memory(list(cfg.memories))
+            except continuum_memory.ContinuumMemoryError as exc:
+                m.show_error(str(exc))
+            return True, client
+        display.show_memory(cfg.memories)
     elif command == "/forget":
         try:
             display_index = int(arg)
@@ -915,9 +974,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             from . import julia_memory_runtime as memory_runtime
 
             forgotten = memory_runtime.forget_memory_index(cfg, display_index - 1)
-            from .ada_memory_echo_veil import echo_veil_authority_selected
-
-            m.show_info("Protected memory forgotten." if echo_veil_authority_selected(cfg) else f"Forgot: {forgotten}")
+            m.show_info(f"Forgot: {forgotten}")
         except (ValueError, IndexError):
             m.show_error("Usage: /forget <number>")
         except Exception as exc:
@@ -935,16 +992,19 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
 
         sub = arg.strip().lower() or "status"
         if sub in session_mode.VALID_MODES:
-            previous = cfg.session_mode
-            cfg.session_mode = sub
-            for note in session_mode.apply_mode_side_effects(cfg, sub, previous=previous):
+            try:
+                notes = session_mode.select_mode(cfg, sub, user_initiated=user_initiated)
+            except ValueError as exc:
+                m.show_error(str(exc))
+                return True, client
+            for note in notes:
                 m.show_info(note)
             cfg.save()
             m.show_info(session_mode.status_line(cfg))
         elif sub == "status":
             m.console.print(session_mode.describe(cfg))
         else:
-            m.show_error("Usage: /mode [execute|explore|publish|status]")
+            m.show_error("Usage: /mode [execute|explore|publish|yolo|status]")
     elif command == "/plugins":
         from .william_plugins import discover_plugins, plugin_status
 
@@ -1175,6 +1235,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 if not 256 <= requested_context <= 2_000_000:
                     raise ValueError
                 cfg.num_ctx = requested_context
+                cfg.num_ctx_explicit = True
                 cfg.save()
             except ValueError:
                 m.show_error("Usage: /ctx <number from 256 to 2000000>")
@@ -1193,6 +1254,8 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 m.show_error("Usage: /temp <number from 0.0 to 2.0>")
         m.show_info(f"Temperature: {cfg.temperature}")
     elif command == "/toolmax":
+        from .session_mode import unlimited_work, work_iteration_label
+
         if arg:
             try:
                 requested_tool_limit = int(arg)
@@ -1202,7 +1265,14 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 cfg.save()
             except ValueError:
                 m.show_error("Usage: /toolmax <1-128>")
-        m.show_info(f"Max tool iterations: {cfg.max_tool_iterations}")
+        live = work_iteration_label(cfg)
+        if unlimited_work(cfg):
+            m.show_info(
+                f"Max tool iterations: {live} while YOLO is active "
+                f"(saved /toolmax {cfg.max_tool_iterations} applies after exit)."
+            )
+        else:
+            m.show_info(f"Max tool iterations: {live}")
     elif command == "/thinkevery":
         if arg:
             try:
@@ -1328,6 +1398,8 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 )
             )
         else:
+            from . import session_mode
+
             info_used, info_total, *_rest = m.context_status(cfg, client=client)
             m.show_session_overview(
                 model=cfg.model,
@@ -1343,7 +1415,7 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
                 total_tokens=info_total,
                 summary_active=bool(cfg.session_summary.strip()),
                 tool_think_every=max(1, int(cfg.tool_think_every)),
-                max_tool_iterations=max(1, int(cfg.max_tool_iterations)),
+                max_tool_iterations=session_mode.work_iteration_label(cfg),
                 memory_count=len(cfg.memories),
                 system_prompt=cfg.system,
                 messages=cfg.messages,
@@ -1477,6 +1549,10 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
         m.console.print()
         m.console.print(render_runtime_quality_snapshot(cfg))
         m.console.print()
+        m.console.print(available_actions("intel", cfg=cfg))
+        m.console.print()
+        m.console.print(available_actions("kernel", cfg=cfg))
+        m.console.print()
         m.console.print(available_actions("harness", cfg=cfg))
         m.console.print()
         for query in (
@@ -1490,17 +1566,36 @@ def handle_command(raw: str, cfg: Config, client: Client, session: Any = None) -
             m.console.print(harness_search(query=query, limit=5, cfg=cfg))
             m.console.print()
     elif command == "/reload":
-        from .elsie_echo_preflight import EchoAuxiliaryPreflightError
+        from .protected_memory_preflight import ProtectedMemoryPreflightError
+        from . import session_mode
 
+        yolo_live = session_mode.unlimited_work(cfg)
+        yolo_workspace = None
+        yolo_previous = None
+        if yolo_live:
+            activation = getattr(cfg, "_yolo_activation", None)
+            yolo_workspace = getattr(activation, "workspace", None)
+            yolo_previous = getattr(activation, "previous", None)
         try:
             reloaded_cfg = m.reload_runtime()
-        except EchoAuxiliaryPreflightError:
-            m.show_error("Echo-protected auxiliary state could not be prepared safely; reload was refused.")
+        except ProtectedMemoryPreflightError:
+            m.show_error("Continuum-protected auxiliary state could not be prepared safely; reload was refused.")
             return True, client
+        skip = {"messages", "session_summary", "context_state", "attempt_ledger"}
+        if yolo_live:
+            skip.add("session_mode")
         for field in fields(Config):
-            if field.name in {"messages", "session_summary", "context_state", "attempt_ledger"}:
+            if field.name in skip:
                 continue
             setattr(cfg, field.name, getattr(reloaded_cfg, field.name))
+        if yolo_live:
+            # ``reload_runtime`` reloads session_mode; re-bind using the new class.
+            live_session_mode = sys.modules.get("algo_cli.session_mode") or session_mode
+            live_session_mode.restore_yolo_activation(
+                cfg,
+                workspace=yolo_workspace,
+                previous=yolo_previous,
+            )
         client = m.create_client(cfg)
         m.show_info("Reloaded config, tools, and harness index.")
         m.show_info(

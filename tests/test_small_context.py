@@ -102,7 +102,7 @@ def test_echo_authority_disables_small_context_file_creation(tmp_path: Path) -> 
         session_summary=canary,
         messages=[{"role": "tool", "content": canary}],
         root=root,
-        echo_authority=True,
+        protected_memory=True,
     )
 
     assert ledger is None

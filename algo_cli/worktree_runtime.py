@@ -137,18 +137,22 @@ def repository_context(cwd: str | Path) -> dict[str, Any]:
     }
 
 
-def capture_workspace(cwd: str | Path) -> dict[str, Any]:
+def capture_workspace(cwd: str | Path, *, protected_memory: bool = False) -> dict[str, Any]:
     """Capture bounded workspace identity plus full-state Git digests."""
 
+    from .irene_memory_path_policy import ProtectedMemoryPathError, require_disjoint_git_worktree
+
     try:
+        if protected_memory:
+            require_disjoint_git_worktree(cwd)
         context = repository_context(cwd)
-    except WorktreeError as exc:
+    except (WorktreeError, ProtectedMemoryPathError) as exc:
         return {
             "available": False,
             "cwd": str(Path(cwd).expanduser().resolve()),
             "error": str(exc)[:1_000],
         }
-    snapshot = git_evidence.capture_git_snapshot(context["workspace_root"])
+    snapshot = git_evidence.capture_git_snapshot(context["workspace_root"], protected_memory=protected_memory)
     return {
         "available": snapshot.available,
         **context,
@@ -508,7 +512,9 @@ def activate_thread_workspace(record: dict[str, Any], cfg: Any) -> bool:
     target = Path(target_text).expanduser().resolve()
     if not target.is_dir():
         raise WorktreeError(f"Thread workspace is missing: {target}")
-    current = capture_workspace(target)
+    from .continuum_memory import selected
+
+    current = capture_workspace(target, protected_memory=selected(cfg))
     if not current.get("available"):
         raise WorktreeError(
             f"Could not capture fresh thread workspace evidence: {current.get('error') or 'Git failed.'}"

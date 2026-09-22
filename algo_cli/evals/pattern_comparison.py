@@ -154,7 +154,8 @@ def run_comparison(root: Path, directory: Path, *, repetitions: int = 5) -> dict
     with tempfile.TemporaryDirectory(prefix="algo-pattern-comparison-") as temporary:
         fixture = Path(temporary) / "ALGO.md"
         fixture.write_text(APPLICABILITY_FIXTURE, encoding="utf-8")
-        indexes = {"catalog": _indexes(root / "docs/ALGO.md"), "applicability": _indexes(fixture)}
+        catalog = harness._algo_catalog_dir() / harness.REVIEWED_ALGO_REL
+        indexes = {"catalog": _indexes(catalog), "applicability": _indexes(fixture)}
         _run_cells(indexes, 1)
         samples = _run_cells(indexes, repetitions)
     try:

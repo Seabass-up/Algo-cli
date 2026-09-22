@@ -35,6 +35,7 @@ _CLASS_TO_TOOLS: dict[str, frozenset[str]] = {
         }
     ),
     "shell": frozenset({"run_shell"}),
+    "jev": frozenset({"jev_kernel_status", "jev_question_contract"}),
     "web": frozenset({"web_search", "web_fetch"}),
     "network": frozenset({"web_search", "web_fetch", "x_search"}),
     "memory": frozenset(
@@ -43,6 +44,21 @@ _CLASS_TO_TOOLS: dict[str, frozenset[str]] = {
             "append_lesson",
             "write_knowledge_graph_note",
             "update_user_profile",
+            "memory_init",
+            "memory_verify",
+            "memory_status",
+            "memory_capture",
+            "memory_remember",
+            "memory_get",
+            "memory_read",
+            "memory_search",
+            "memory_context",
+            "memory_validate_context",
+            "memory_revoke",
+            "memory_resolve",
+            "memory_explain",
+            "memory_history",
+            "memory_handoff",
         }
     ),
     "model": frozenset(
@@ -96,6 +112,32 @@ MAX_QUERY_TERMS = 64
 # into the prompt.  These gates apply before BM25 ranking and still allow
 # action_search to discover a deferred capability later.
 _SPECIALIZED_INTENT_GATES: tuple[tuple[str, frozenset[str], frozenset[str]], ...] = (
+    ("jev_", frozenset(), frozenset({"jev", "classify", "classification", "triage", "rank", "review"})),
+    (
+        "memory_",
+        frozenset({"memory"}),
+        frozenset(
+            {
+                "build",
+                "capture",
+                "context",
+                "continuum",
+                "exact",
+                "handoff",
+                "history",
+                "integrity",
+                "private",
+                "read",
+                "remember",
+                "revoke",
+                "search",
+                "shared",
+                "status",
+                "validate",
+                "verify",
+            }
+        ),
+    ),
     (
         "harness_",
         frozenset({"harness"}),
@@ -129,25 +171,6 @@ _SPECIALIZED_INTENT_GATES: tuple[tuple[str, frozenset[str], frozenset[str]], ...
     ("extensions_manifest_", frozenset(), frozenset({"extension", "manifest"})),
     ("credential_", frozenset(), frozenset({"credential", "keychain", "secret"})),
     ("google_", frozenset(), frozenset({"calendar", "docs", "drive", "gmail", "google", "sheets"})),
-    (
-        "echo_veil_",
-        frozenset({"echo"}),
-        frozenset(
-            {
-                "context",
-                "doctor",
-                "forget",
-                "inventory",
-                "list",
-                "memory",
-                "promote",
-                "recall",
-                "reindex",
-                "remember",
-                "refresh",
-            }
-        ),
-    ),
 )
 
 _QUERY_STOPWORDS = frozenset(
@@ -210,9 +233,14 @@ _QUERY_EXPANSIONS: dict[str, tuple[str, ...]] = {
     "internet": ("web", "search", "fetch"),
     "latest": ("web", "search", "fetch"),
     "remember": ("memory", "profile", "lesson"),
+    "continuum": ("memory", "context", "integrity", "history"),
+    "handoff": ("memory", "context", "resume"),
+    "history": ("memory", "exact", "revision"),
+    "revoke": ("memory", "destructive", "withdraw"),
     "research": ("web", "search", "fetch"),
     "test": ("run", "shell", "verification"),
     "update": ("write", "edit", "diff"),
+    "validate": ("memory", "context", "verify"),
     "verify": ("run", "shell", "diff", "status"),
 }
 _CODE_UPDATE_ANCHORS = frozenset(

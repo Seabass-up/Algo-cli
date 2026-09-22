@@ -1,4 +1,4 @@
-"""Fail-closed Irene path authority while Echo owns mutable memory."""
+"""Fail-closed Irene path authority for protected mutable memory."""
 
 from __future__ import annotations
 
@@ -29,6 +29,11 @@ _PATH_FIELDS: dict[str, tuple[str, ...]] = {
 _GIT_PATH_ACTIONS = frozenset({"git_status", "git_diff"})
 _SESSION_PATH_COMMANDS = frozenset({"/cd", "/ls", "/read"})
 _SESSION_DENIED_PATH_COMMANDS = frozenset({"/embed", "/identity", "/pdf", "/vision"})
+_PROTECTED_MODEL_SESSION_COMMANDS = frozenset({
+    "/cwd", "/pwd", "/cd", "/ls", "/read", "/status", "/info", "/help",
+    "/mode", "/memory", "/memories", "/remember", "/lesson", "/lessons",
+    "/harness", "/hsearch", "/hread",
+})
 _MAX_PATH_BYTES = 16_384
 UNQUALIFIED_BROWSER_ACTIONS = frozenset({
     "cobalt_open", "cobalt_snapshot", "cobalt_screenshot", "cobalt_navigate",
@@ -44,8 +49,10 @@ def _known_protected_roots() -> tuple[Path, ...]:
     from . import config
     from .config import CONFIG_DIR, LEGACY_CONFIG_DIR
     from .index_compute_lab import resolve_lab_root
+    from .continuum_memory import storage_root
 
     roots = {
+        storage_root(),
         Path(CONFIG_DIR).expanduser(),
         Path(LEGACY_CONFIG_DIR).expanduser(),
         config.get_legacy_backup_dir().expanduser(),
@@ -101,7 +108,8 @@ def _absolute_nofollow_path(raw: object, *, cwd: object) -> Path:
     candidate = Path(value).expanduser()
     if not candidate.is_absolute():
         candidate = Path(base_value).expanduser() / candidate
-    candidate = Path(os.path.abspath(os.fspath(candidate)))
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
 
     # Do not resolve aliases. Reject every symlink in the existing prefix so
     # neither a final link nor an ancestor can redirect a tool into memory.
@@ -122,7 +130,9 @@ def _absolute_nofollow_path(raw: object, *, cwd: object) -> Path:
                 raise ProtectedMemoryPathError("protected path authority rejects aliased or special files")
         if index < len(parts) - 1 and not stat.S_ISDIR(info.st_mode):
             raise ProtectedMemoryPathError("protected path authority rejects invalid path ancestry")
-    return candidate
+    # Collapse parent traversal only after inspecting the components it would
+    # erase. `link/../file` must not validate a different path from the reader.
+    return Path(os.path.abspath(os.fspath(candidate)))
 
 
 def _path_within(candidate: Path, root: Path) -> bool:
@@ -180,13 +190,96 @@ def protected_path_rules() -> ProtectedPathRules:
     )
 
 
-def require_allowed_path(raw: object, *, cwd: object) -> Path:
+def require_allowed_path(raw: object, *, cwd: object, rules: ProtectedPathRules | None = None) -> Path:
     """Validate one model-controlled path without following aliases."""
 
     candidate = _absolute_nofollow_path(raw, cwd=cwd)
-    if protected_path_rules().denies(candidate):
+    rules = rules or protected_path_rules()
+    if rules.denies(candidate):
         raise ProtectedMemoryPathError("protected memory paths are unavailable to model-callable filesystem tools")
+    # Firmlinks and mount aliases may share identity without being symlinks.
+    for current in (candidate, *candidate.parents):
+        try:
+            if rules.denies_identity(current.lstat()):
+                raise ProtectedMemoryPathError("protected path authority rejects aliased root ancestry")
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ProtectedMemoryPathError("protected path identity is unavailable") from exc
     return candidate
+
+
+def require_disjoint_git_worktree(cwd: object) -> Path:
+    """Refuse aggregate Git reads when the repository overlaps protected state."""
+    rules = protected_path_rules()
+    candidate = require_allowed_path(".", cwd=cwd, rules=rules)
+    root = candidate
+    for ancestor in (candidate, *candidate.parents):
+        marker = ancestor / ".git"
+        try:
+            marker.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ProtectedMemoryPathError("repository boundary is unavailable") from exc
+        require_allowed_path(marker, cwd=ancestor, rules=rules)
+        root = require_allowed_path(ancestor, cwd=ancestor, rules=rules)
+        break
+    try:
+        root_info = root.lstat()
+        root_identity = (root_info.st_dev, root_info.st_ino, stat.S_IFMT(root_info.st_mode))
+        for protected in rules.roots:
+            if _path_within(Path(protected), root):
+                raise ProtectedMemoryPathError("repository encloses protected memory")
+            for parent in (Path(protected), *Path(protected).parents):
+                try:
+                    info = parent.lstat()
+                except FileNotFoundError:
+                    continue
+                if (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)) == root_identity:
+                    raise ProtectedMemoryPathError("repository aliases an ancestor of protected memory")
+    except OSError as exc:
+        raise ProtectedMemoryPathError("repository boundary is unavailable") from exc
+    from .git_evidence import _run_git
+
+    rc, metadata = _run_git(
+        ["rev-parse", "--path-format=absolute", "--show-toplevel", "--absolute-git-dir", "--git-common-dir"],
+        str(candidate),
+        errors="surrogateescape",
+    )
+    if rc != 0:
+        # Let the ordinary handler report a non-repository, but never accept
+        # unreadable metadata from a repository marker found above.
+        if (root / ".git").exists():
+            raise ProtectedMemoryPathError("repository metadata is unavailable")
+        return root
+    locations = metadata.splitlines()
+    if len(locations) != 3:
+        raise ProtectedMemoryPathError("repository metadata is invalid")
+    actual_root = require_allowed_path(locations[0], cwd=root, rules=rules)
+    try:
+        same_root = actual_root.samefile(root)
+    except OSError as exc:
+        raise ProtectedMemoryPathError("repository identity changed") from exc
+    if not same_root:
+        raise ProtectedMemoryPathError("repository worktree is redirected")
+    for location in locations[1:]:
+        require_allowed_path(location, cwd=root, rules=rules)
+    rc, inventory = _run_git(
+        ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], str(root), errors="surrogateescape"
+    )
+    paths = inventory.split("\0")
+    if rc != 0 or len(paths) > 20_001 or len(inventory) > 4 * 1024 * 1024:
+        raise ProtectedMemoryPathError("repository file inventory is unavailable or oversized")
+    for relative in paths:
+        if not relative:
+            continue
+        path = require_allowed_path(relative, cwd=root, rules=rules)
+        if not _path_within(path, root):
+            raise ProtectedMemoryPathError("repository file inventory escaped its worktree")
+    if rules != protected_path_rules():
+        raise ProtectedMemoryPathError("protected repository policy changed")
+    return root
 
 
 def _session_path(command_line: object) -> str | None:
@@ -212,31 +305,34 @@ def protected_tool_policy_error(
 ) -> str | None:
     """Return a fixed refusal for one protected model-callable action."""
 
-    from .ada_memory_echo_veil import echo_veil_authority_selected
+    from .continuum_memory import ContinuumMemoryError, selected
 
-    if not echo_veil_authority_selected(cfg):
+    try:
+        protected = selected(cfg)
+    except ContinuumMemoryError:
+        return "Error: memory configuration requires repair before tool execution."
+    if not protected:
         return None
     if name in UNQUALIFIED_BROWSER_ACTIONS:
         return (
-            "Error: the unqualified browser service is disabled while Echo Veil "
-            "is the exclusive memory authority; browser access requires a "
+            "Error: the unqualified browser service is disabled while Continuum "
+            "Memory is authoritative; browser access requires a "
             "qualified containment boundary."
         )
     if name == "update_user_profile":
         return (
-            "Error: update_user_profile is unavailable while Echo Veil is the "
-            "exclusive memory authority; use an explicit reviewed Echo memory "
-            "action instead."
+            "Error: update_user_profile is unavailable while Continuum Memory is "
+            "authoritative; use an explicit scoped memory_remember action instead."
         )
     if name == "run_shell":
         return (
-            "Error: run_shell is disabled while Echo Veil is the exclusive memory "
+            "Error: run_shell is disabled while Continuum Memory is the protected "
             "authority; use typed filesystem tools on non-memory paths."
         )
     cwd = args.get("cwd") or getattr(cfg, "cwd", None) or os.getcwd()
     try:
         if name in _GIT_PATH_ACTIONS:
-            require_allowed_path(".", cwd=cwd)
+            require_disjoint_git_worktree(cwd)
             if name == "git_diff" and args.get("path") is not None:
                 require_allowed_path(args.get("path"), cwd=cwd)
         for field in _PATH_FIELDS.get(name, ()):
@@ -256,12 +352,17 @@ def protected_tool_policy_error(
             raw = args.get(field, "." if field == "path" else None)
             require_allowed_path(raw, cwd=cwd)
         if name in {"session_slash", "session_command"}:
+            parts = str(args.get("command") or "").strip().split(maxsplit=1)
+            command_name = parts[0].casefold() if parts else ""
+            if command_name and not command_name.startswith("/"):
+                command_name = "/" + command_name
             if name == "session_command":
+                if command_name not in _PROTECTED_MODEL_SESSION_COMMANDS:
+                    return "Error: protected memory paths are unavailable through this broad session command; it is not qualified. Use an admitted typed tool."
                 # Broad slash dispatch includes implicit-cwd readers such as
                 # repository intelligence and code/diff helpers. Validate its
                 # workspace even when the command has no explicit path token.
                 require_allowed_path(".", cwd=cwd)
-            command_name = str(args.get("command") or "").strip().split(maxsplit=1)[0]
             if command_name.casefold() in _SESSION_DENIED_PATH_COMMANDS:
                 raise ProtectedMemoryPathError("protected path-bearing session command is unavailable")
             session_path = _session_path(args.get("command"))
@@ -270,7 +371,7 @@ def protected_tool_policy_error(
     except ProtectedMemoryPathError:
         return (
             "Error: protected memory paths are unavailable to model-callable "
-            "filesystem tools while Echo Veil is selected."
+            "filesystem tools while Continuum Memory is selected."
         )
     return None
 

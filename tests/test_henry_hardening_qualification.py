@@ -451,14 +451,14 @@ def test_hosted_browser_qualification_is_fully_source_bound() -> None:
     } <= set(SCRIPT.SOURCE_PATHS)
 
 
-def test_echo_alice_pdf_privacy_controls_are_fully_qualified() -> None:
+def test_continuum_and_pdf_privacy_controls_are_fully_source_bound() -> None:
     covered = set(SCRIPT.SOURCE_PATHS) | set(SCRIPT.FOCUSED_TESTS)
     required_sources = {
         "pyproject.toml",
         "uv.lock",
         "algo_cli/action_registry.py",
-        "algo_cli/ada_echo_veil_identity.py",
-        "algo_cli/ada_memory_echo_veil.py",
+        "algo_cli/continuum_tools.py",
+        "algo_cli/continuum_memory.py",
         "algo_cli/ada_task_ledger.py",
         "algo_cli/agent_blocks.py",
         "algo_cli/agent_pipeline.py",
@@ -472,7 +472,7 @@ def test_echo_alice_pdf_privacy_controls_are_fully_qualified() -> None:
         "algo_cli/context_budget.py",
         "algo_cli/deliberation.py",
         "algo_cli/display.py",
-        "algo_cli/elsie_echo_preflight.py",
+        "algo_cli/protected_memory_preflight.py",
         "algo_cli/execution_guardrails.py",
         "algo_cli/google_workspace_auth.py",
         "algo_cli/grace_memory_receipts.py",
@@ -491,16 +491,15 @@ def test_echo_alice_pdf_privacy_controls_are_fully_qualified() -> None:
         "algo_cli/tool_context.py",
         "algo_cli/tools.py",
         "docs/ada-algo-cli-memory-lifecycle-contract.md",
-        "docs/echo-veil-security-status.md",
+        "docs/continuum-memory.md",
         "docs/external-agent-store-operations.md",
         "docs/privacy-and-context.md",
-        "scripts/henry_echo_veil_dependency_audit.py",
         "tests/conftest.py",
     }
     required_tests = {
-        "tests/test_ada_echo_veil_identity.py",
-        "tests/test_ada_memory_echo_veil.py",
-        "tests/test_ada_task_ledger_echo.py",
+        "tests/test_continuum_tools.py",
+        "tests/test_continuum_memory.py",
+        "tests/test_protected_task_ledger.py",
         "tests/test_agent_pipeline.py",
         "tests/test_agent_run_journal.py",
         "tests/test_agent_threads.py",
@@ -510,13 +509,12 @@ def test_echo_alice_pdf_privacy_controls_are_fully_qualified() -> None:
         "tests/test_config.py",
         "tests/test_context_accounting.py",
         "tests/test_display.py",
-        "tests/test_elsie_echo_preflight.py",
+        "tests/test_protected_memory_preflight.py",
         "tests/test_execution_guardrails.py",
         "tests/test_goal_mode.py",
         "tests/test_google_workspace_wiring.py",
         "tests/test_grace_memory_receipts.py",
         "tests/test_harness.py",
-        "tests/test_henry_echo_veil_dependency_audit.py",
         "tests/test_identity.py",
         "tests/test_irene_memory_path_policy.py",
         "tests/test_james_dispatch.py",

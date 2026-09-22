@@ -101,15 +101,15 @@ def test_unknown_harness_subcommand_suggests_fix_instead_of_showing_stats(monkey
 
 
 def test_lesson_slash_routes_to_echo_and_never_writes_plaintext(monkeypatch):
-    from algo_cli import ada_memory_echo_veil, identity
+    from algo_cli import continuum_memory, identity
 
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     captured: dict[str, str] = {}
     messages: list[str] = []
     monkeypatch.setattr(
-        ada_memory_echo_veil,
-        "remember_with_echo_veil",
-        lambda _cfg, fact, *, source: captured.update({"fact": fact, "source": source}) or True,
+        continuum_memory,
+        "remember_fact",
+        lambda _cfg, fact: captured.update({"fact": fact}) or True,
     )
     monkeypatch.setattr(
         identity,
@@ -121,17 +121,14 @@ def test_lesson_slash_routes_to_echo_and_never_writes_plaintext(monkeypatch):
     handled, _ = main_module.handle_command("/lesson protected canary", cfg, None)
 
     assert handled is True
-    assert captured == {
-        "fact": "protected canary",
-        "source": "explicit_lesson_slash",
-    }
-    assert messages == ["Protected lesson saved."]
+    assert captured == {"fact": "protected canary"}
+    assert messages == ["Continuum memory saved."]
 
 
 def test_lessons_status_and_reindex_do_not_touch_plaintext_under_echo(monkeypatch):
     from algo_cli import identity
 
-    cfg = Config(echo_veil_enabled=True, echo_veil_protection="required")
+    cfg = Config(continuum_enabled=True)
     info: list[str] = []
     errors: list[str] = []
     monkeypatch.setattr(
@@ -150,8 +147,8 @@ def test_lessons_status_and_reindex_do_not_touch_plaintext_under_echo(monkeypatc
     main_module.handle_command("/lessons status", cfg, None)
     main_module.handle_command("/lessons reindex", cfg, None)
 
-    assert info == ["Legacy plaintext lesson retrieval is inactive while Echo Veil owns memory."]
-    assert errors == ["Legacy lesson reindexing is disabled while Echo Veil owns memory."]
+    assert info == ["Legacy plaintext lesson retrieval is inactive while Continuum Memory is authoritative."]
+    assert errors == ["Legacy lesson reindexing is disabled while Continuum Memory is authoritative."]
 
 
 def test_harness_subcommand_rejects_unexpected_arguments(monkeypatch):
@@ -243,7 +240,7 @@ def test_selfcheck_surfaces_action_registry_runtime_audit(monkeypatch):
     assert "Runtime quality diagnostics" in joined
     assert "reasoning quality: not_collected" in joined
     assert "READY" in joined
-    assert observed == [cfg, cfg]
+    assert observed == [cfg, cfg, cfg, cfg]
 
 
 def test_harness_status_alias_prints_harness_stats(monkeypatch):

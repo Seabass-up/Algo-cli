@@ -60,23 +60,56 @@ _WORKSPACE_PATH_ARGUMENTS: dict[str, tuple[str, ...]] = {
     "write_file": ("path",),
 }
 
+_SLASH_ALIASES = {
+    "/hs": "/hsearch",
+    "/hr": "/hread",
+}
 _SAFE_SESSION_COMMANDS = frozenset(
     {
         "/actions",
         "/changes",
+        "/chatgpt-status",
+        "/credentials",
         "/dashboard",
         "/diff",
         "/doctor",
+        "/google-status",
         "/help",
         "/hread",
         "/hsearch",
         "/identity",
         "/info",
+        "/model-check",
+        "/models",
         "/perf",
+        "/route",
         "/selfcheck",
         "/status",
+        "/url-scheme",
+        "/xai-status",
     }
 )
+_READ_ONLY_GOOGLE_SUBCOMMANDS = frozenset(
+    {
+        "calendar-list",
+        "docs-get",
+        "drive-get",
+        "drive-list",
+        "drive-search",
+        "gmail-get",
+        "gmail-list",
+        "help",
+        "sheets-values",
+    }
+)
+_READ_ONLY_INSPECTION_ARGS = {
+    "/goal": frozenset({"", "status"}),
+    "/host": frozenset({""}),
+    "/keepalive": frozenset({""}),
+    "/model": frozenset({""}),
+    "/system": frozenset({""}),
+    "/theme": frozenset({""}),
+}
 _SAFE_SESSION_STATUS_COMMANDS = frozenset(
     {
         "/auto",
@@ -123,12 +156,20 @@ def session_command_requires_approval(command_line: str) -> bool:
     """Classify the exact model-invoked slash command, defaulting to protected."""
 
     command, arg = normalize_session_command(command_line)
+    command = _SLASH_ALIASES.get(command, command)
     if not command:
+        return True
+    if command in {"/exit", "/quit"}:
         return True
     if command in _SAFE_SESSION_COMMANDS or command in {"/read", "/ls", "/cwd"}:
         return False
     if command == "/cd":
         return True
+    if command == "/google":
+        subcommand = arg.split(maxsplit=1)[0] if arg else "help"
+        return subcommand not in _READ_ONLY_GOOGLE_SUBCOMMANDS
+    if command in _READ_ONLY_INSPECTION_ARGS:
+        return arg not in _READ_ONLY_INSPECTION_ARGS[command]
     if command in {"/intelligence", "/intel", "/intelagence"}:
         return not (arg in {"", "status", "show", "?", "guide", "help"} or arg.startswith("query "))
     if command == "/kernel":
@@ -136,7 +177,7 @@ def session_command_requires_approval(command_line: str) -> bool:
             arg in {"", "list", "show", "check", "?", "help"} or arg.startswith("show ") or arg.startswith("check ")
         )
     if command == "/memory":
-        # Echo construction, doctor, inventory, recall, and context may run
+        # Continuum construction, doctor, inventory, recall, and context may run
         # recovery, migration, expiry pruning, or usage accounting. Only the
         # static help surface is lifecycle-neutral.
         return arg not in {"help", "?"}
@@ -163,6 +204,10 @@ def session_command_requires_approval(command_line: str) -> bool:
         return False
     if command == "/config" and arg in {"", "status", "show", "?", "help"}:
         return False
+    if command == "/credentials":
+        return False
+    if command == "/plugins":
+        return arg not in {"", "list", "status", "help", "?"}
     return True
 
 
@@ -215,6 +260,11 @@ def resolve_action(
     outcome_model = policy.outcome_model
     verification = policy.verification
     compensation_action = policy.compensation_action
+    if name == "jev_question_contract" and args.get("mode", "lint") == "lint":
+        capabilities = Capability.READ.value
+        confirmation_mode = ConfirmationMode.NONE
+        idempotency = IdempotencyClass.PURE
+        outcome_model = OutcomeModel.DETERMINISTIC
     if name in {"session_command", "session_slash"}:
         raw_command_line = str(args.get("command") or "").strip()
         command, _arg = normalize_session_command(raw_command_line)
@@ -274,6 +324,8 @@ def resolve_action(
 
 
 def _target_for(name: str, args: dict[str, Any], *, cwd: str, target_scope: TargetScope) -> str:
+    if name in {"jev_question_contract", "jev_kernel_status"}:
+        return "provider:typesafe:jev"
     path_keys = _WORKSPACE_PATH_ARGUMENTS.get(name, ())
     for key in path_keys:
         if key in args:
@@ -297,6 +349,11 @@ def _target_for(name: str, args: dict[str, Any], *, cwd: str, target_scope: Targ
     if target_scope is TargetScope.PROVIDER:
         return "provider:configured"
     if target_scope is TargetScope.MEMORY_STORE:
+        if name.startswith("memory_"):
+            scope = str(args.get("scope") or "").strip().casefold()
+            if scope not in {"shared", "private"}:
+                return "memory-store:unresolved"
+            return f"memory-store:continuum:{scope}"
         return "memory-store:default"
     if target_scope is TargetScope.PLUGIN:
         plugin = str(args.get("plugin_name") or args.get("name") or "*").strip()

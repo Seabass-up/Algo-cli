@@ -308,8 +308,7 @@ def test_echo_required_runtime_consumes_typed_protected_artifact_end_to_end(
     monkeypatch.setitem(nathan_runtime.TOOL_MAP, "vision_describe", tools.vision_describe)
     cfg = Config(
         cwd=str(workspace),
-        echo_veil_enabled=True,
-        echo_veil_protection="required",
+        continuum_enabled=True,
     )
 
     result = nathan_runtime.run_tool(

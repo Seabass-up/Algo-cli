@@ -1,4 +1,4 @@
-"""Ada regression gates for Echo-protected goal-ledger persistence."""
+"""Ada regression gates for Continuum-protected goal-ledger persistence."""
 
 from __future__ import annotations
 
@@ -114,6 +114,52 @@ def test_protected_preflight_migrates_legacy_goal_without_resuming_progress() ->
     serialized = task_ledger.LEDGER_PATH.read_text(encoding="utf-8")
     assert "SECRET_PREFLIGHT_REASON_CANARY" not in serialized
     assert "SECRET_PREFLIGHT_SUMMARY_CANARY" not in serialized
+
+
+def test_explicit_goal_conflict_repair_archives_legacy_and_advances_anchor() -> None:
+    authority, store = _shared_authority()
+    task_ledger.save_goal(
+        task_ledger.GoalRecord(goal="previous protected goal"),
+        protected=True,
+        receipt_authority=authority,
+        anchor_store=store,
+    )
+    legacy = task_ledger.GoalRecord(goal="preserved legacy goal", cwd="/tmp/preserved")
+    legacy.reason = "UNTRUSTED_LEGACY_REASON_CANARY"
+    legacy.add_round("UNTRUSTED_LEGACY_HISTORY_CANARY")
+    task_ledger.save_goal(legacy)
+    original = task_ledger.LEDGER_PATH.read_bytes()
+
+    with pytest.raises(ElsieReceiptError, match=task_ledger.GOAL_STORE_CONFLICT_REASON):
+        task_ledger.prepare_protected_goal_store(
+            receipt_authority=authority,
+            anchor_store=store,
+        )
+
+    result = task_ledger.repair_protected_goal_store_conflict(
+        receipt_authority=authority,
+        anchor_store=store,
+    )
+    backup = result["backup_path"]
+    repaired = json.loads(task_ledger.LEDGER_PATH.read_text(encoding="utf-8"))
+    loaded = task_ledger.load_goal(
+        protected=True,
+        receipt_authority=authority,
+        anchor_store=store,
+    )
+
+    assert result["changed"] is True
+    assert backup.read_bytes() == original
+    assert repaired["store_sequence"] == 2
+    assert loaded is not None
+    assert loaded.goal == "preserved legacy goal"
+    assert loaded.cwd == "/tmp/preserved"
+    assert loaded.status == task_ledger.STATUS_BLOCKED
+    assert loaded.history == []
+    assert "UNTRUSTED_LEGACY_REASON_CANARY" not in task_ledger.LEDGER_PATH.read_text(encoding="utf-8")
+    assert "UNTRUSTED_LEGACY_HISTORY_CANARY" not in task_ledger.LEDGER_PATH.read_text(encoding="utf-8")
+    if os.name == "posix":
+        assert stat.S_IMODE(backup.stat().st_mode) == 0o600
 
 
 def test_unanchored_pending_does_not_replace_surviving_legacy_goal(monkeypatch) -> None:

@@ -8,7 +8,6 @@ module-level caches via the autouse `clean_state` fixture.
 
 from __future__ import annotations
 
-import importlib
 import os
 import random
 import shutil
@@ -106,6 +105,19 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 
 @pytest.fixture(autouse=True)
+def no_native_continuum(monkeypatch):
+    """Tests never reach the developer's real Continuum store; CI has no native command either."""
+    from algo_cli import continuum_memory
+
+    def unavailable():
+        raise continuum_memory.ContinuumMemoryError(
+            "Install the native continuum-memory command before selecting Continuum."
+        )
+
+    monkeypatch.setattr(continuum_memory, "_native_cli", unavailable)
+
+
+@pytest.fixture(autouse=True)
 def clean_state():
     """Wipe the test config dir and reset module-level caches around every test."""
     shutil.rmtree(_TEST_CONFIG_DIR, ignore_errors=True)
@@ -143,25 +155,7 @@ def clean_state():
         model_info._CACHE.clear()
     except ImportError:
         pass
-    try:
-        from algo_cli import memory_echo_veil
-
-        if not hasattr(memory_echo_veil, "reset_echo_veil_layer"):
-            memory_echo_veil = importlib.reload(memory_echo_veil)
-        memory_echo_veil.reset_echo_veil_layer()
-    except (ImportError, RuntimeError):
-        pass
-
     yield
-
-    try:
-        from algo_cli import memory_echo_veil
-
-        if not hasattr(memory_echo_veil, "reset_echo_veil_layer"):
-            memory_echo_veil = importlib.reload(memory_echo_veil)
-        memory_echo_veil.reset_echo_veil_layer()
-    except (ImportError, RuntimeError):
-        pass
 
     shutil.rmtree(_TEST_CONFIG_DIR, ignore_errors=True)
 
@@ -169,6 +163,20 @@ def clean_state():
 @pytest.fixture
 def config_dir() -> Path:
     return _TEST_CONFIG_DIR
+
+
+# Resolved from the real home before any test repoints the config directory.
+_PERSONAL_CATALOG = Path(
+    os.environ.get("ALGO_CLI_PERSONAL_CATALOG") or Path.home() / ".algo_cli" / "ALGO.md"
+).expanduser()
+
+
+@pytest.fixture
+def personal_catalog() -> Path:
+    """The developer's own ALGO.md; releases ship only the empty template, so CI skips these checks."""
+    if not _PERSONAL_CATALOG.is_file():
+        pytest.skip("no personal ALGO.md catalog on this machine")
+    return _PERSONAL_CATALOG
 
 
 @pytest.fixture(params=("utf-8", "cp1252"), ids=("utf8-default", "windows-cp1252-default"))

@@ -30,13 +30,13 @@ from scripts.oliver_smoke_wheel_install import (  # noqa: E402
 )
 
 
-BASELINE_VERSION = "0.18.0"
+BASELINE_VERSION = "0.19.2"
 BASELINE_URL = (
-    "https://files.pythonhosted.org/packages/52/f8/8cc7543d1e327921aadeca59567a7a5a519261138e91e20f1f7f6c1b8326/"
-    "algo_cli_runtime-0.18.0-py3-none-any.whl"
+    "https://files.pythonhosted.org/packages/db/a0/be3bb44fc4df5080293e7634374b093ddacd7d866f6bba701479e60c5990/"
+    "algo_cli_runtime-0.19.2-py3-none-any.whl"
 )
-BASELINE_SHA256 = "027903f9e383635fa09dde9e6b4bc991758d798b5375e72d8a35e0c2fc934ac0"
-BASELINE_SIZE = 1_034_630
+BASELINE_SHA256 = "d71adf8f6b7f973210a810bc3291a1b174f3af29c69dfc8f34dc308b3fd03e7f"
+BASELINE_SIZE = 1_621_430
 WHEEL_PACKAGES = frozenset({"algo_cli", "ollama_cli"})
 EXCLUDED_MODULES = frozenset(
     {
@@ -78,7 +78,7 @@ def download_baseline(path: Path) -> None:
     with urlopen(BASELINE_URL, timeout=30) as response:
         payload = response.read(BASELINE_SIZE + 1)
     if len(payload) != BASELINE_SIZE or hashlib.sha256(payload).hexdigest() != BASELINE_SHA256:
-        raise ValueError("published 0.18.0 wheel does not match its pinned PyPI digest")
+        raise ValueError(f"published {BASELINE_VERSION} wheel does not match its pinned PyPI digest")
     path.write_bytes(payload)
 
 
@@ -148,6 +148,7 @@ def seed_state(home: Path, workspace: Path) -> None:
                 "cwd": str(workspace),
                 "model": "release-smoke-local",
                 "theme": "tokyo-night",
+                # Historical published-package input, not a current backend.
                 "echo_veil_enabled": False,
                 "echo_veil_protection": "optional",
                 "memory_auto_capture_enabled": False,
@@ -233,7 +234,7 @@ def installed_identity(
 def upgrade_command(python: Path, cli: Path, env: dict[str, str], work: Path) -> list[str]:
     if sys.platform != "win32":
         return [str(cli), "update"]
-    # Published 0.18.0 cannot uninstall its own active Windows .exe wrapper.
+    # The active Windows .exe wrapper cannot safely replace itself in-process.
     output = run(
         [
             str(python), "-I", "-c",
@@ -289,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
         "published_updater_exercised": False,
         "candidate_updater_exercised": False,
         "legacy_missing_pip_verified": False,
-        "one_time_bootstrap_required": args.manager == "uv-pip",
+        "one_time_bootstrap_required": False,
         "windows_launcher_guard_verified": False,
     }
     try:
@@ -302,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
             controller, install = _create_isolated_environment(controller_dir)
             env_dir = controller_dir
             env = isolated_environment(home, controller.parent)
-            baseline = root / "algo_cli_runtime-0.18.0-py3-none-any.whl"
+            baseline = root / f"algo_cli_runtime-{BASELINE_VERSION}-py3-none-any.whl"
             download_baseline(baseline)
             wheelhouse = root / "wheelhouse"
             wheelhouse.mkdir()
@@ -380,9 +381,8 @@ def main(argv: list[str] | None = None) -> int:
                 if args.manager != "uv-pip":
                     python = env_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
                     cli = app_bin / ("algo-cli.exe" if os.name == "nt" else "algo-cli")
-            baseline_manager = "pip" if args.manager == "uv-pip" else args.manager
             report["baseline_installed_wheel_files"] = installed_identity(
-                python, env_dir, BASELINE_VERSION, update_env, work, baseline_manager, wheel=baseline,
+                python, env_dir, BASELINE_VERSION, update_env, work, args.manager, wheel=baseline,
             )
             if args.manager == "uv-pip":
                 pip_probe = subprocess.run(
@@ -399,13 +399,7 @@ def main(argv: list[str] | None = None) -> int:
                 if pip_probe.returncode == 0:
                     raise ValueError("uv pip baseline unexpectedly contains pip")
                 report["legacy_missing_pip_verified"] = True
-                report["update_entrypoint"] = "owning-manager-bootstrap"
-                command = [
-                    str(binary), "pip", "install", "--python", str(python),
-                    "--upgrade", "--no-sources", "algo-cli-runtime",
-                ]
-            else:
-                command = upgrade_command(python, cli, update_env, work)
+            command = upgrade_command(python, cli, update_env, work)
             if args.manager == "pipx":
                 metadata = json.loads((env_dir / "pipx_metadata.json").read_text(encoding="utf-8"))
                 if metadata["backend"] != args.pipx_backend:
@@ -429,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
             if not (wheelhouse / wheel.name).exists():
                 shutil.copy2(wheel, wheelhouse / wheel.name)
             run(command, env=update_env, cwd=work)
-            report["published_updater_exercised"] = sys.platform != "win32" and args.manager != "uv-pip"
+            report["published_updater_exercised"] = sys.platform != "win32"
             report["candidate_installed_wheel_files"] = installed_identity(
                 python, env_dir, expected, update_env, work, args.manager, wheel=wheel,
             )

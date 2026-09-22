@@ -162,12 +162,22 @@ def test_eligible_source_cannot_be_an_exclusion_label(grounded):
     assert report["label_failures"] == [evaluation.CAPABILITY.record_id]
 
 
-def test_original_inventory_unchanged_and_historical_label_correction_explicit():
+def test_memory_labels_are_an_explicit_successor_to_the_frozen_inventory():
     from dataclasses import asdict
     from algo_cli.evals import grounded_retrieval_validation as validation
 
+    # Reconstruct only the retired labels to prove all other frozen cases remain unchanged.
+    original = list(evaluation.CASES)
+    retired = evaluation.Evidence("algo-cli:wiki:echo-veil-security-status.md", "production")
+    original[20] = evaluation.Case(
+        "echo_limitations", "exact", "Echo Veil security status production blockers entry-point matrix", (retired,)
+    )
+    original[21] = replace(original[21], name="echo_isolation", evidence=(retired,))
+    assert evaluation.SCHEMA == "algo-grounded-retrieval-v3"
+    assert evaluation.CASES[20].name == "continuum_limitations"
+    assert evaluation.CASES[21].evidence == (evaluation.CONTINUUM,)
     assert (
-        evaluation.digest([asdict(case) for case in evaluation.CASES])
+        evaluation.digest([asdict(case) for case in original])
         == "sha256:2330b374808a129b7cb76bffabc97d1b05129b74bb95cb28b1d03b29e0e301a2"
     )
     assert len(validation.CASES) == 19

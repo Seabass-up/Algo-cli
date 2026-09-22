@@ -8,6 +8,7 @@ import plistlib
 import stat
 
 import pytest
+from packaging.version import Version
 
 from algo_cli import __version__, austin_release_packager as release
 from algo_cli.austin_release_packager import (
@@ -27,11 +28,18 @@ ORIGIN = "chrome-extension://" + "a" * 32 + "/"
 APP_SUBMISSION = "00000000-0000-4000-8000-000000000111"
 PKG_SUBMISSION = "00000000-0000-4000-8000-000000000222"
 KEY_DIGEST = "sha256:" + hashlib.sha256(bytes(range(32))).hexdigest()
+NATIVE_RELEASE_VERSION = Version(__version__).base_version
 
 pytestmark = pytest.mark.skipif(
     os.name != "posix",
     reason="Austin release packaging targets the macOS signing toolchain",
 )
+
+
+@pytest.fixture(autouse=True)
+def native_release_fixture_version(monkeypatch):
+    # A local CLI wheel is not a production native-release identity.
+    monkeypatch.setattr(release, "__version__", NATIVE_RELEASE_VERSION)
 
 
 def _config(tmp_path: Path) -> AustinReleaseConfig:
@@ -47,7 +55,7 @@ def _config(tmp_path: Path) -> AustinReleaseConfig:
         disabled_native_authority_public_key=key,
         disabled_native_authority_public_key_digest=KEY_DIGEST,
         output_directory=tmp_path / "release",
-        version=__version__,
+        version=NATIVE_RELEASE_VERSION,
         build_number="1800",
     )
 
@@ -203,12 +211,12 @@ def test_two_round_release_pipeline_is_exact_and_emits_structural_evidence(tmp_p
     assert evidence["package_digest"] == result.package_digest
     assert evidence["native_control_protocol"] == "disabled_foundation"
     assert evidence["native_authority_public_key_digest"] == KEY_DIGEST
-    assert evidence["version"] == __version__
-    assert result.package_path.name == f"Algo-CLI-Control-{__version__}.pkg"
+    assert evidence["version"] == NATIVE_RELEASE_VERSION
+    assert result.package_path.name == f"Algo-CLI-Control-{NATIVE_RELEASE_VERSION}.pkg"
     info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
-    assert info["CFBundleShortVersionString"] == "0.19.2"
+    assert info["CFBundleShortVersionString"] == "0.20.0"
     pkgbuild = next(command for command in runner.commands if command[0] == "/usr/bin/pkgbuild")
-    assert pkgbuild[pkgbuild.index("--version") + 1] == "0.19.2"
+    assert pkgbuild[pkgbuild.index("--version") + 1] == "0.20.0"
     assert str(tmp_path) not in result.evidence_path.read_text(encoding="utf-8")
     assert stat.S_IMODE(result.evidence_path.stat().st_mode) == 0o600
     assert stat.S_IMODE(result.package_path.stat().st_mode) == 0o644
@@ -344,3 +352,8 @@ def test_existing_output_is_never_overwritten(tmp_path: Path, monkeypatch) -> No
         config.validate()
 
     assert marker.read_text(encoding="utf-8") == "preserve"
+
+
+def test_local_cli_build_is_not_a_production_native_release():
+    with pytest.raises(AustinReleaseRejected, match="austin_release_version"):
+        release._native_release_version(NATIVE_RELEASE_VERSION + "+local.yolo")

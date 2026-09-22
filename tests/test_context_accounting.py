@@ -91,6 +91,18 @@ def test_user_ctx_override_wins_over_adaptive():
     assert runtime_cap == 4096
 
 
+def test_footer_uses_promoted_deepseek_flash_window():
+    cfg = Config(model="deepseek-v4.1-flash", cloud=True, num_ctx=131072, model_adaptive=True)
+    _used, total, _remaining, runtime_cap, native = context_budget.context_status(
+        cfg,
+        model_info={"context_length": 1_048_576},
+        runtime_status={},
+    )
+    assert native == 1_048_576
+    assert total == 1_048_576
+    assert runtime_cap == 1_048_576
+
+
 def test_compaction_fires_against_real_window(monkeypatch):
     """History at ~9k tokens with an 8k request window must compact, even
     though the native window is 131k (the old code compared against native)."""
@@ -185,7 +197,7 @@ def test_rendered_system_source_counts_are_content_free_and_do_not_recall_twice(
     monkeypatch, protected, automated, memory
 ):
     cfg = Config(
-        model="test-model", echo_veil_enabled=protected, echo_veil_protection="required" if protected else "optional"
+        model="test-model", continuum_enabled=protected
     )
     identity_calls = []
     memory_calls = []

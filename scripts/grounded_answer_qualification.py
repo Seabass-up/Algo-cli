@@ -50,9 +50,14 @@ def settings(cfg: Config) -> dict[str, Any]:
 
 
 def require_protection(cfg: Config) -> None:
-    # Each model run overrides protection to required, then restores this setting.
-    if not cfg.echo_veil_enabled or cfg.echo_veil_protection not in {"optional", "required"}:
-        raise ValueError("required_echo_unavailable")
+    from algo_cli.continuum_memory import ContinuumMemoryError, selected
+
+    try:
+        enabled = selected(cfg)
+    except ContinuumMemoryError as exc:
+        raise ValueError("required_continuum_unavailable") from exc
+    if not enabled:
+        raise ValueError("required_continuum_unavailable")
     if cfg.memory_auto_capture_enabled or cfg.intuition_capture_enabled:
         raise ValueError("automatic_capture_must_be_off")
 
@@ -179,7 +184,7 @@ def run_case(case: evaluation.AnswerCase, frozen: dict[str, Any], cwd: Path) -> 
         "model": MODEL,
         "model_provider": "chatgpt",
         "cwd": str(cwd),
-        "echo_veil_protection": "required",
+        "continuum_enabled": True,
         "show_thinking": False,
         "memory_auto_capture_enabled": False,
         "intuition_capture_enabled": False,

@@ -4,6 +4,92 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-09-20
+
+### Added
+
+- Add explicit, session-only `/mode yolo` activation with an owner, process,
+  and workspace binding. YOLO is never saved, inherited by child agents, or
+  enabled by a prompt, copied configuration, or harness refresh.
+- Route memory through native Continuum when it is explicitly selected, with
+  fail-closed scoped context, revision-bound writes, and no fallback backend.
+  `algo-cli config memory repair` removes retired memory selectors from an
+  existing configuration while preserving every other setting.
+- Add the optional Jev kernel: `jev_question_contract` sends bounded,
+  advisory question contracts to the separately installed `jev-workflows`
+  companion. Lint runs locally; inference requires `algo-cli config jev enable`
+  and session approval, and validated answers never authorize actions.
+- Keep the normal model, context, tool, reflection, and safety status visible
+  during generation and tool execution on supported interactive terminals.
+
+### Changed
+
+- Let user-activated YOLO preapprove registered in-scope actions while retaining
+  safe-mode denials, credential and direct-send restrictions, protected memory
+  boundaries, target checks, child isolation, and post-mutation verification.
+- Allow curated owner-bound read-only observation outside the active workspace
+  in YOLO without extending cross-workspace mutation authority.
+- Normalize an empty typed-program output list to the final step and ignore only
+  redundant active-workspace `cwd` fields owned by the runtime. Conflicting
+  workspaces and invalid plans remain rejected.
+- Remove the ordinary tool-round and verification-recovery ceilings while YOLO
+  is active; saved `/toolmax` behavior is unchanged after leaving YOLO.
+- Preserve live YOLO activation through `/reload` without persisting it, and use
+  native cloud-model context limits instead of stale catalog stamps.
+- Show a short `/` menu of common commands, group `/help` by category, and
+  reveal subcommands after their parent command. Existing command names and
+  aliases still work.
+- Render the in-progress footer with the same content, colors, and spacing as
+  the prompt footer, so submitting a question no longer restyles it.
+
+### Removed
+
+- Ship `docs/ALGO.md` as an empty template instead of a populated pattern
+  catalog. Each user keeps their own catalog at `~/.algo_cli/ALGO.md`, which
+  Algo indexes in place of the template; `/intelligence init` creates it.
+- Remove the Acrobat, finance, and construction kernels and their modules from
+  the package. Personal kernels are declared in
+  `~/.algo_cli/kernels/kernels.json` and load on that machine only; `/kernel`
+  lists them separately from built-in kernels.
+
+### Fixed
+
+- Stop a startup crash when Continuum's required shared context exceeds the
+  default packet size: Algo retries once with the backend-reported size, up to
+  a hard cap, without dropping required records.
+- Check protected-memory Git paths with their exact bytes, so a hard link with a
+  non-UTF-8 name cannot bypass the link check, and never launch a
+  `continuum-memory` command found inside the current repository.
+- Stream Continuum replies under a fixed size limit, keep `/memory help`
+  available when the backend is down, and bound the personal kernel file.
+- Keep a context window set with `/ctx` even when it equals a common model
+  default; only unrecorded automatic values are promoted to the native window.
+- Distinguish compiler-format failures from missing runtime authority so valid
+  YOLO programs are not reported as approval failures.
+- Classify slash-command inspection by each handler's real argument contract.
+  Mutating `/host`, `/model`, `/system`, `/goal`, `/google`, and related forms
+  no longer inherit read-only output capture or inspection treatment.
+- Preserve `/memories` output capture and keep mutating command output on the
+  normal non-captured policy path.
+- Restore terminal scroll margins on normal completion, resize, suspension,
+  termination, and hangup; suppress terminal controls for JSON output and
+  terminals without VT support.
+- Accept both current owned Swift test-bundle identities without weakening path
+  or process-ancestry checks, and update the dependency lock past known `anyio`
+  advisories.
+- Pin release upgrade qualification to the actual published `0.19.2`
+  predecessor and its exact public wheel bytes instead of the obsolete
+  `0.18.0` baseline, including the real published updater for pipless
+  `uv-pip` installations instead of a manual bootstrap bypass.
+
+### Release Limits
+
+- Retired memory backends (Echo Veil and D-57) are removed, not supported as
+  options or fallbacks. Their historical records are left unchanged.
+- M8 retains five blocked external-browser metrics and M9 retains thirteen
+  blocked requirements. This release does not claim external-browser or model-
+  quality qualification from local deterministic evidence.
+
 ## [0.19.2] - 2026-09-13
 
 ### Fixed

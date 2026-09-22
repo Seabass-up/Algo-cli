@@ -53,9 +53,9 @@ Tail contract
 
 
 def test_real_late_catalog_patterns_rank_and_read_as_individual_contracts(
-    monkeypatch, tmp_path: Path, text_default_encoding
+    monkeypatch, tmp_path: Path, text_default_encoding, personal_catalog: Path
 ) -> None:
-    index, _ = _index(monkeypatch, tmp_path, (ROOT / "docs/ALGO.md").read_text(encoding="utf-8"))
+    index, _ = _index(monkeypatch, tmp_path, personal_catalog.read_text(encoding="utf-8"))
     assert index["pattern_stats"]["records"] >= 531
     cases = [
         ("capability snapshot model routing", "O1"),

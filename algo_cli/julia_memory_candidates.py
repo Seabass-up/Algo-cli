@@ -1098,7 +1098,7 @@ def process_memory_candidates(
                     daily_writes += 1
                     state["accepted"] = accepted
                     # Persist the at-most-once attempt receipt before invoking
-                    # Echo. A crash or unknown outcome then suppresses replay.
+                    # Continuum. A crash or unknown outcome then suppresses replay.
                     _commit_protected_state(
                         path,
                         state,

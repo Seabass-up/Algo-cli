@@ -29,7 +29,7 @@ EXPECTED_WIKI_DOCS = (
     "privacy-and-context.md",
     "runtime-capability-catalog.md",
     "supervised-action-review.md",
-    "echo-veil-security-status.md",
+    "continuum-memory.md",
 )
 EXPECTED_CATEGORIES = (
     "memory-lifecycle",
@@ -111,7 +111,7 @@ def test_curated_memory_contract_frontmatter_and_scope(filename: str, category: 
     ("query", "expected_id"),
     (
         (
-            "memory placement retention Echo Veil readiness",
+            "memory placement retention Continuum readiness",
             "algo-cli:memory:ada-algo-cli-memory-lifecycle-contract.md",
         ),
         (
@@ -187,7 +187,7 @@ def test_reviewed_wiki_docs_expose_runtime_and_evidence_boundaries() -> None:
     external = (DOCS_ROOT / "external-agent-store-operations.md").read_text(encoding="utf-8")
     privacy = (DOCS_ROOT / "privacy-and-context.md").read_text(encoding="utf-8")
     graph = (DOCS_ROOT / "index-compute-lab-integration.md").read_text(encoding="utf-8")
-    echo = (DOCS_ROOT / "echo-veil-security-status.md").read_text(encoding="utf-8")
+    memory = (DOCS_ROOT / "continuum-memory.md").read_text(encoding="utf-8")
 
     assert all(
         label in external
@@ -201,21 +201,20 @@ def test_reviewed_wiki_docs_expose_runtime_and_evidence_boundaries() -> None:
     assert "/harness status" in external
 
     privacy_frontmatter = harness.parse_frontmatter(privacy)
-    assert privacy_frontmatter["updated"] == "2026-08-10"
-    assert privacy_frontmatter["last_reviewed"] == "2026-08-10"
-    assert privacy_frontmatter["runtime_version"] == "Algo CLI v0.18.0"
+    assert privacy_frontmatter["updated"] == "2026-09-21"
+    assert privacy_frontmatter["last_reviewed"] == "2026-09-21"
+    assert privacy_frontmatter["runtime_version"] == "Algo CLI v0.20.0 development"
 
     graph_frontmatter = harness.parse_frontmatter(graph)
     assert graph_frontmatter["concept"] == "concept:algo-cli"
     assert "retrieval evidence, not proof" in graph.lower()
 
-    assert "Reproducible verification stamp" in echo
-    assert "PYTHONPATH=. .venv/bin/pytest" in echo
-    assert "exact count intentionally is not a release invariant" in echo
-    assert "nine `echo_veil_*` tools" in echo
-    assert "all_records_shielded=true" in echo
-    assert "local archive" in echo
-    assert "production_ready=false" in echo
+    assert "Encryption at rest is not isolation" in memory
+    assert "continuum_enabled" in memory and "continuum_memory.py" in memory
+    assert "fifteen `memory_*` tools" in memory
+    assert "explicit" in memory and "shared" in memory and "private" in memory
+    assert "no plaintext" in memory.lower()
+    assert "Unit tests alone do not qualify an installed service" in memory
 
 
 def test_main_split_map_references_existing_modules() -> None:

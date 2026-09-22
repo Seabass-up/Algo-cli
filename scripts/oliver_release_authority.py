@@ -1843,7 +1843,7 @@ def draft_snapshot_api(value: Any, *, environment: Mapping[str, str], api_get: A
     source = value.get("source") if type(value) is dict else None
     listing = value.get("listing") if type(value) is dict else None
     matches = (
-        [row for row in listing if type(row) is dict and row.get("tag_name") == "v0.19.2"]
+        [row for row in listing if type(row) is dict and row.get("tag_name") == "v0.20.0"]
         if type(listing) is list
         else []
     )
@@ -1852,7 +1852,7 @@ def draft_snapshot_api(value: Any, *, environment: Mapping[str, str], api_get: A
         or set(value) != {"schema_version", "phase", "tag", "release_id", "publisher", "source",
                           "run_id", "run_attempt", "captured_at", "listing", "release"}
         or value.get("schema_version") != 1 or value.get("phase") != "initial"
-        or value.get("tag") != "v0.19.2"
+        or value.get("tag") != "v0.20.0"
         or type(release_id) is not int or release_id < 1
         or type(publisher) is not str or _REVISION_RE.fullmatch(publisher) is None
         or type(source) is not str or _REVISION_RE.fullmatch(source) is None
