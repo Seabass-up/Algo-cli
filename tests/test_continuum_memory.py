@@ -316,13 +316,13 @@ def test_malformed_projection_is_not_injected(backend):
 
 def _fake_cli(directory):
     directory.mkdir(parents=True, exist_ok=True)
-    cli = directory / "continuum-memory"
+    cli = directory / ("continuum-memory.exe" if memory.os.name == "nt" else "continuum-memory")
     cli.write_text("#!/bin/sh\n", encoding="utf-8")
     cli.chmod(0o755)
     return cli
 
 
-@pytest.mark.skipif(not hasattr(__import__("os"), "symlink"), reason="needs symlinks")
+@pytest.mark.skipif(memory.os.name == "nt", reason="POSIX PATH and symlink semantics")
 def test_native_cli_is_never_resolved_from_the_workspace(tmp_path, monkeypatch):
     monkeypatch.undo()  # exercise the real resolver, not the conftest guard
     home, repo, outside = tmp_path / "home", tmp_path / "home" / "repo", tmp_path / "opt" / "bin"

@@ -4250,6 +4250,15 @@
           "timestamp": "2026-09-22T00:03:25Z",
           "scope": "source digest sha256:14a863688139bb967a382b8400b6542adb39f010a142c8c6c8cdd3142b3b52f6 binds the identical source as the preceding failed row; frozen installed-source parity passed before execution",
           "limitations": "A pass after an unexplained failure on identical source does not explain that failure. This is current local evidence, not an exact release commit, hosted platform qualification, external-browser completion, signed native lifecycle, live model qualification or public delivery; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "uv run --frozen --no-editable --extra dev --extra supply-chain python -B scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:cbd92f2788c9ac4e35308a35904ecb12f7cab1c08c1bd362b12fb212eaec3454",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-22T00:22:42Z",
+          "scope": "source digest sha256:c1f51caefbbf763fffc8789888cb83b8c4d9f0ca794fdbfb2439f254b34db342 binds the v0.20.0 candidate after hosted Windows CI on 12e34df showed three new POSIX-only tests needed platform skips and an .exe fixture name; runtime code is unchanged; frozen installed-source parity passed before execution",
+          "limitations": "This is current local evidence, not an exact release commit, hosted platform qualification, external-browser completion, signed native lifecycle, live model qualification or public delivery; HARD-080 remains in progress"
         }
       ]
     },
@@ -6687,6 +6696,24 @@
           "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics; public_claim_eligible is false",
           "timestamp": "2026-09-22T00:03:25Z",
           "scope": "source digest sha256:14a863688139bb967a382b8400b6542adb39f010a142c8c6c8cdd3142b3b52f6 binds five local efficiency repetitions and the installed current-source focused suite; an earlier run on the same source failed the focused suite once and is recorded under HARD-080",
+          "limitations": "Local synthetic efficiency does not qualify live model quality, cross-harness superiority, external browsers, hosted platforms, release publication or YOLO effectiveness; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "uv run --frozen --no-editable --extra dev --extra supply-chain python -B scripts/nathan_agent_runtime_qualification.py --refresh --quiet; hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:818fb9a4b39b4a2e0d168b3ff76e9ed405b9714611d10e874278095b66314dfe",
+          "result": "status pass: 17 correctness probes and 31 deterministic workloads pass with zero policy escapes, duplicate mutations or unverified completions; public_claim_eligible is false",
+          "timestamp": "2026-09-22T00:21:16Z",
+          "scope": "source digest sha256:a57252005b2010cad8f72886107c98635bec3289015405d5b9884355e2a9e187 and report digest sha256:b8a6883fcdda25248673795069ff14988121a2cb92d9db25527c05109b4e702a bind the local v0.20.0 candidate above 12e34df after hosted Windows CI on 12e34df showed three new POSIX-only tests needed platform skips and an .exe fixture name; runtime code is unchanged",
+          "limitations": "Model-free local fixtures do not establish live model or provider behavior, comparative performance, hosted platform qualification, production service isolation or public delivery; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json efficiency and focused matrix executed by scripts/henry_m8_qualification.py",
+          "digest": "sha256:cbd92f2788c9ac4e35308a35904ecb12f7cab1c08c1bd362b12fb212eaec3454",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-22T00:22:42Z",
+          "scope": "source digest sha256:c1f51caefbbf763fffc8789888cb83b8c4d9f0ca794fdbfb2439f254b34db342 binds five local efficiency repetitions and the installed current-source focused suite",
           "limitations": "Local synthetic efficiency does not qualify live model quality, cross-harness superiority, external browsers, hosted platforms, release publication or YOLO effectiveness; HARD-081 remains in progress"
         }
       ]

@@ -131,6 +131,7 @@ def test_real_git_refuses_hardlink_aliases(tmp_path, monkeypatch, tracked, filen
 
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows names are UTF-16, never raw bytes")
 def test_real_git_refuses_hardlink_alias_with_non_utf8_name(tmp_path, monkeypatch):
     from algo_cli import git_evidence
 
