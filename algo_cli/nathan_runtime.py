@@ -58,6 +58,14 @@ TOOL_RESULT_CONTENT_LIMIT = 20_000
 MAX_COMPLETION_RECOVERY_ROUNDS = 4
 FAILED_ATTEMPT_SKIP_SECONDS = 120.0
 _SHELL_EXIT_CODE_RE = re.compile(r"\[exit code:\s*(-?\d+)\]", re.IGNORECASE)
+# Built-in tools report failures as "Error <verb>ing <target>: <reason>" as well as "Error: ...".
+# File tools always name the resolved absolute path, which keeps raw read_file content such as
+# "Error reading sensor 3: timeout" from looking like a tool failure.
+_TOOL_ERROR_PREFIX_RE = re.compile(
+    r"error (?:(?:reading|writing|listing) (?:/|[a-z]:[\\/]|\\\\)"
+    r"|(?:searching|running|fetching|extracting|rendering|generating|"
+    r"executing|pulling|deleting|creating|copying|showing)\b)[^\n]{0,400}?: "
+)
 _BASELINE_CAPABILITIES = CapabilityMask(Capability.READ.value | Capability.MODEL.value | Capability.MEMORY.value)
 _BASELINE_ACTIONS = frozenset(
     {
@@ -1194,12 +1202,15 @@ def classify_tool_status(
     lowered = str(result).strip().lower()
     if lowered.startswith(("error:", "tool error", "tool argument error", "unknown tool")):
         return "failed"
+    exit_matches = _SHELL_EXIT_CODE_RE.findall(str(result))
+    # Shell output carries its own exit code; its first line is the command's output, not a tool error.
+    if not exit_matches and _TOOL_ERROR_PREFIX_RE.match(lowered):
+        return "failed"
     preserved_status = _structured_result_status(result, name=name)
     if preserved_status is not None:
         return preserved_status
     if _structured_result_failed(result, name=name):
         return "failed"
-    exit_matches = _SHELL_EXIT_CODE_RE.findall(str(result))
     if exit_matches and int(exit_matches[-1]) != 0:
         return "failed"
     return "worked"

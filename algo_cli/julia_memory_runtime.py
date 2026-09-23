@@ -693,20 +693,29 @@ class MemoryCatalog:
         source_overrides: Mapping[str, str] | None = None,
         authoritative: bool = False,
     ) -> dict[str, int]:
-        """Backfill stable catalog records for the compatibility fact list."""
+        """Backfill stable catalog records for the compatibility fact list.
+
+        Legacy facts that fail content validation are skipped and counted
+        rather than raised, so one bad historical entry cannot block every
+        new write or silently disable recall.
+        """
 
         from . import config as config_module
 
         clean_facts: list[str] = []
+        skipped = 0
         for fact in facts:
             raw = " ".join(str(fact).strip().split())
             if not raw:
                 continue
             privacy_reason = memory_candidates._privacy_reason(raw)
-            if privacy_reason:
-                clean_facts.append(_stored_content(raw, sensitivity="restricted"))
-            else:
-                clean_facts.append(_validate_content(raw))
+            try:
+                if privacy_reason:
+                    clean_facts.append(_stored_content(raw, sensitivity="restricted"))
+                else:
+                    clean_facts.append(_validate_content(raw))
+            except MemorySystemError:
+                skipped += 1
         desired = {_normalized(fact): fact for fact in clean_facts}
         overrides = {_normalized(key): str(value) for key, value in (source_overrides or {}).items()}
         if source not in VALID_SOURCES or any(value not in VALID_SOURCES for value in overrides.values()):
@@ -780,7 +789,7 @@ class MemoryCatalog:
                 if removed:
                     self._drop_index_ids(removed_ids)
                 self._save(records)
-        return {"added": added, "updated": updated, "removed": removed}
+        return {"added": added, "updated": updated, "removed": removed, "skipped": skipped}
 
     def add(
         self,
@@ -1478,7 +1487,9 @@ class MemoryCatalog:
             catalog_ok = False
             catalog_error = str(exc)
         active = [record for record in records if str(record.get("status") or "") == "active"]
-        legacy = {_normalized(fact) for fact in legacy_facts}
+        legacy_list = [str(fact) for fact in legacy_facts]
+        legacy = {_normalized(fact) for fact in legacy_list}
+        invalid_legacy = sum(1 for fact in legacy_list if _invalid_legacy_fact(fact))
         pinned_missing = [
             str(record.get("id") or "")
             for record in active
@@ -1518,9 +1529,24 @@ class MemoryCatalog:
             "contradiction_slots": contradictions,
             "pinned_missing_from_legacy": len(pinned_missing),
             "restricted_records": restricted,
+            "invalid_legacy_facts": invalid_legacy,
             "indexed": indexed,
             "embedding_model": model,
         }
+
+
+def _invalid_legacy_fact(fact: str) -> bool:
+    raw = " ".join(str(fact).strip().split())
+    if not raw:
+        return False
+    try:
+        if memory_candidates._privacy_reason(raw):
+            _stored_content(raw, sensitivity="restricted")
+        else:
+            _validate_content(raw)
+    except MemorySystemError:
+        return True
+    return False
 
 
 def format_prompt_hits(hits: Sequence[Mapping[str, Any]]) -> str:
@@ -1573,13 +1599,19 @@ def format_prompt_hits(hits: Sequence[Mapping[str, Any]]) -> str:
 def home_text(catalog: MemoryCatalog, legacy_facts: Iterable[str]) -> str:
     status = catalog.doctor(legacy_facts)
     readiness = "READY" if status["ready"] else "NEEDS ATTENTION"
-    return (
-        f"Algo Memory Home · {readiness}\n"
-        f"Active: {status['active']} · pinned {status['pinned']} · curated {status['curated']} · history {status['history']}\n"
-        f"Lifecycle: archived {status['archived']} · superseded {status['superseded']} · contradiction slots {status['contradiction_slots']}\n"
-        f"Retrieval: {status['indexed']} embedded ({status['embedding_model'] or 'lexical fallback'}) · restricted {status['restricted_records']}\n"
-        "Use /memory search QUERY, /memory add --tier history TEXT, /memory show ID, or /memory doctor."
-    )
+    lines = [
+        f"Algo Memory Home · {readiness}",
+        f"Active: {status['active']} · pinned {status['pinned']} · curated {status['curated']} · history {status['history']}",
+        f"Lifecycle: archived {status['archived']} · superseded {status['superseded']} · contradiction slots {status['contradiction_slots']}",
+        f"Retrieval: {status['indexed']} embedded ({status['embedding_model'] or 'lexical fallback'}) · restricted {status['restricted_records']}",
+    ]
+    if status["invalid_legacy_facts"]:
+        lines.append(
+            f"Skipped {status['invalid_legacy_facts']} stored fact(s) that are too long or contain control "
+            "characters; use /forget or edit memory.json to clean them up."
+        )
+    lines.append("Use /memory search QUERY, /memory add --tier history TEXT, /memory show ID, or /memory doctor.")
+    return "\n".join(lines)
 
 
 def _parse_add(parts: list[str]) -> tuple[str, str, str, str]:
@@ -1653,8 +1685,12 @@ def command_text(
             raise MemorySystemError(str(exc)) from exc
     catalog = MemoryCatalog()
     catalog.sync_legacy_facts(getattr(cfg, "memories", ()), authoritative=False)
+    load_error = str(getattr(cfg, "memory_load_error", "") or "")
     if subcommand in {"home", "status", "show-home"}:
-        return home_text(catalog, getattr(cfg, "memories", ()))
+        text = home_text(catalog, getattr(cfg, "memories", ()))
+        if load_error:
+            text = f"{_memory_load_warning(load_error)}\n{text}"
+        return text
     if subcommand in {"help", "?"}:
         return (
             "/memory home | search QUERY | show ID | doctor | benchmark | reindex\n"
@@ -1664,6 +1700,9 @@ def command_text(
         )
     if subcommand == "doctor":
         status = catalog.doctor(getattr(cfg, "memories", ()))
+        if load_error:
+            status["ready"] = False
+            status["memory_file_error"] = load_error
         return json.dumps(status, indent=2, sort_keys=True)
     if subcommand == "benchmark":
         return json.dumps(
@@ -1733,11 +1772,20 @@ def command_text(
     raise MemorySystemError("Unknown /memory command. Use /memory help.")
 
 
+def _memory_load_warning(reason: str) -> str:
+    return (
+        f"WARNING: {config_module.MEMORY_FILE} could not be loaded ({reason}); stored facts are hidden and "
+        "memory writes are refused until the file is repaired."
+    )
+
+
 def _latest_legacy_facts(cfg: Config) -> list[str]:
-    loaded = config_module._load_json_file(config_module.MEMORY_FILE, cfg.memories)
-    if not isinstance(loaded, list):
+    if not os.path.lexists(config_module.MEMORY_FILE):
         return [str(item) for item in cfg.memories]
-    return [str(item) for item in loaded]
+    try:
+        return config_module._load_memory_facts_for_update()
+    except config_module.MemoryFileUnreadableError as exc:
+        raise MemorySystemError(str(exc)) from exc
 
 
 def remember_fact(
@@ -1771,11 +1819,13 @@ def remember_fact(
         catalog.set_tier(str(record["id"]), "pinned")
     try:
         added = cfg.remember_fact(clean_fact)
-    except Exception:
+    except Exception as exc:
         if catalog_added:
             catalog.hard_delete_ids({str(record["id"])})
         elif previous_tier != "pinned":
             catalog.set_tier(str(record["id"]), previous_tier)
+        if isinstance(exc, config_module.MemoryFileUnreadableError):
+            raise MemorySystemError(str(exc)) from exc
         raise
     catalog.sync_legacy_facts(
         cfg.memories,
@@ -1790,8 +1840,10 @@ def _remove_legacy_fact(cfg: Config, fact: str) -> bool:
     if not target:
         return False
     with config_module._exclusive_state_lock(config_module.MEMORY_FILE):
-        loaded = config_module._load_json_file(config_module.MEMORY_FILE, [])
-        current = [str(item) for item in loaded] if isinstance(loaded, list) else []
+        try:
+            current = config_module._load_memory_facts_for_update()
+        except config_module.MemoryFileUnreadableError as exc:
+            raise MemorySystemError(str(exc)) from exc
         retained = [item for item in current if " ".join(item.strip().split()).casefold() != target]
         removed = len(retained) != len(current)
         if removed:
@@ -1800,6 +1852,7 @@ def _remove_legacy_fact(cfg: Config, fact: str) -> bool:
                 json.dumps(retained, indent=2),
             )
     cfg.memories = retained
+    cfg.memory_load_error = ""
     return removed
 
 

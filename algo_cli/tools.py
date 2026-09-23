@@ -1528,8 +1528,16 @@ def search_files(
         return _bounded_search_text(
             f"Error: search timed out after {SEARCH_TIMEOUT_SECONDS:g} seconds.{partial}", truncated=truncated,
         )
-    if result.stderr_truncated or result.returncode > 1 or (not result.truncated and result.returncode not in {0, 1}):
-        detail = stderr or stdout or f"search exited with {result.returncode}"
+    if result.returncode > 1 or (not result.truncated and result.returncode not in {0, 1}):
+        if stdout:
+            # rg exits 2 on any partial error (e.g. one unreadable folder) while still printing its matches.
+            errors = [line for line in stderr.splitlines() if line.strip()]
+            first = errors[0][:200] if errors else f"search exited with {result.returncode}"
+            count = f"{len(errors)}{'+' if result.stderr_truncated else ''}"
+            return _bounded_search_text(
+                f"{stdout}\n[partial: search reported {count} error(s); first: {first}]", truncated=truncated,
+            )
+        detail = stderr or f"search exited with {result.returncode}"
         return _bounded_search_text(f"Error searching: {detail}", truncated=result.stderr_truncated)
     return _bounded_search_text(stdout or "No matches.", truncated=truncated)
 
@@ -1647,10 +1655,13 @@ def run_shell(command: str, cwd: str | None = None, timeout: float = 30, safe_mo
     except Exception as exc:
         return f"Error running command: {exc}"
     output = ""
+    # Keep leading spaces: positional output such as `git status --short` (" M" vs "M ") depends on them.
+    stdout = (stdout or "").lstrip("\r\n").rstrip()
+    stderr = (stderr or "").lstrip("\r\n").rstrip()
     if stdout:
-        output += stdout.strip()
+        output += stdout
     if stderr:
-        output += ("\nSTDERR: " if output else "STDERR: ") + stderr.strip()
+        output += ("\nSTDERR: " if output else "STDERR: ") + stderr
     if not output:
         output = "(command produced no output)"
     suffix = f"[exit code: {proc.returncode}]"

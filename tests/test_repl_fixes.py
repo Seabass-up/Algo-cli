@@ -1,0 +1,303 @@
+from __future__ import annotations
+
+from html import escape
+
+import pytest
+
+from algo_cli import main
+from algo_cli import oliver_slash_dispatch as dispatch
+from algo_cli.config import Config
+
+
+def _prime_status(monkeypatch, cfg: Config) -> None:
+    monkeypatch.setattr(main._model_info_module, "resolve_model_info", lambda _cfg, _client: {})
+    monkeypatch.setattr(main, "context_status", lambda *_a, **_k: (100, 1000, 900, 1000, 1000))
+    monkeypatch.setattr(main, "local_model_names", lambda _cfg: [])
+    main.refresh_runtime_status(cfg, None, force=True)
+
+
+def test_footer_shows_safety_toggle_inside_refresh_throttle(monkeypatch):
+    cfg = Config(model="test-model")
+    cfg.safe_mode = True
+    cfg.auto_mode = False
+    _prime_status(monkeypatch, cfg)
+    assert "safe off" not in main.format_status_toolbar_plain(cfg)
+
+    cfg.safe_mode = False
+    cfg.auto_mode = True
+    main.refresh_runtime_status(cfg, None)  # throttled: RUNTIME_STATUS keeps the old flags
+
+    plain = main.format_status_toolbar_plain(cfg)
+    rich = main.build_status_toolbar(cfg).value
+    assert "safe off" in plain and "auto on" in plain
+    assert "safe off" in rich and "auto on" in rich
+
+
+def test_rprompt_reads_theme_and_cwd_live(monkeypatch, tmp_path):
+    cfg = Config(model="test-model")
+    cfg.theme = "tokyo-night"
+    _prime_status(monkeypatch, cfg)
+
+    cfg.theme = "dracula"
+    cfg.cwd = str(tmp_path)
+    main.refresh_runtime_status(cfg, None)
+
+    rprompt = main.build_status_rprompt(cfg).value
+    assert "dracula" in rprompt
+    assert escape(main.compact_path(str(tmp_path), 32)) in rprompt
+
+
+@pytest.mark.parametrize("command", ["/safe off", "/auto on", "/policy on", "/clear", "/mode status"])
+def test_state_changing_slash_commands_force_status_refresh(monkeypatch, command):
+    cfg = Config(model="test-model")
+    monkeypatch.setattr(cfg, "save", lambda: None)
+    monkeypatch.setattr(main, "show_info", lambda _msg: None)
+    monkeypatch.setattr(main.console, "print", lambda *_a, **_k: None)
+    monkeypatch.setattr(main, "clear_session_pipeline_blocks", lambda: None)
+    refreshes: list[bool] = []
+    invalidations: list[object] = []
+    monkeypatch.setattr(main, "refresh_runtime_status", lambda _cfg, _client, *, force=False: refreshes.append(force))
+    monkeypatch.setattr(main, "invalidate_prompt_toolbar", invalidations.append)
+    session = object()
+
+    handled, _client = dispatch.handle_command(command, cfg, object(), session, user_initiated=True)
+
+    assert handled is True
+    assert refreshes == [True]
+    assert invalidations == [session]
+
+
+def test_read_only_slash_command_does_not_force_refresh(monkeypatch):
+    cfg = Config(model="test-model")
+    monkeypatch.setattr(dispatch.display, "show_help", lambda *_a: None)
+    refreshes: list[bool] = []
+    monkeypatch.setattr(main, "refresh_runtime_status", lambda *_a, **_k: refreshes.append(True))
+
+    dispatch.handle_command("/help", cfg, object(), None)
+
+    assert refreshes == []
+
+
+@pytest.mark.parametrize(
+    ("buffer", "last", "expected"),
+    [
+        ("half typed prompt", None, "clear"),
+        ("half typed prompt", 99.5, "clear"),
+        ("", None, "hint"),
+        ("   ", 90.0, "hint"),
+        ("", 99.0, "exit"),
+    ],
+)
+def test_prompt_interrupt_action(buffer, last, expected):
+    assert main.prompt_interrupt_action(buffer, 100.0, last) == expected
+
+
+class _FakeBuffer:
+    def __init__(self) -> None:
+        self.text = ""
+
+
+class _FakeSession:
+    """Mimics prompt_toolkit: Ctrl+C raises KeyboardInterrupt with the typed text still in the buffer."""
+
+    def __init__(self, inputs: list[object]) -> None:
+        self.inputs = inputs
+        self.default_buffer = _FakeBuffer()
+
+    def prompt(self, *_args, **_kwargs):
+        item = self.inputs.pop(0)
+        if isinstance(item, tuple):
+            exc, buffered = item
+            self.default_buffer.text = buffered
+            raise exc
+        self.default_buffer.text = ""
+        return item
+
+
+def _read_all(monkeypatch, inputs: list[object], clock: list[float]) -> tuple[list[str | None], list[str]]:
+    printed: list[str] = []
+    monkeypatch.setattr(main.console, "print", lambda *args, **_k: printed.append(" ".join(map(str, args))))
+    monkeypatch.setattr(main.time, "monotonic", lambda: clock.pop(0))
+    session = _FakeSession(inputs)
+    state = main.PromptInterruptState()
+    results: list[str | None] = []
+    while session.inputs:
+        results.append(main.read_repl_input(session, state))
+        if results[-1] is None:
+            break
+    return results, printed
+
+
+def test_ctrl_c_with_typed_text_clears_line_without_exiting(monkeypatch):
+    results, printed = _read_all(
+        monkeypatch,
+        [(KeyboardInterrupt(), "a long half-typed prompt"), "hello"],
+        clock=[10.0],
+    )
+    assert results == ["", "hello"]
+    assert printed == []
+
+
+def test_ctrl_c_on_empty_line_needs_second_press_to_exit(monkeypatch):
+    results, printed = _read_all(
+        monkeypatch,
+        [(KeyboardInterrupt(), ""), (KeyboardInterrupt(), "")],
+        clock=[10.0, 11.0],
+    )
+    assert results == ["", None]
+    assert any("Ctrl+D to exit" in line for line in printed)
+
+
+def test_slow_second_ctrl_c_only_warns_again(monkeypatch):
+    results, _printed = _read_all(
+        monkeypatch,
+        [(KeyboardInterrupt(), ""), (KeyboardInterrupt(), "")],
+        clock=[10.0, 20.0],
+    )
+    assert results == ["", ""]
+
+
+def test_ctrl_d_exits_immediately(monkeypatch):
+    results, _printed = _read_all(monkeypatch, [(EOFError(), "")], clock=[])
+    assert results == [None]
+
+
+def _stub_agent_loop(monkeypatch) -> None:
+    monkeypatch.setattr(main.identity, "detect_changes", lambda: [])
+    monkeypatch.setattr(main, "ensure_lessons_index", lambda _cfg: False)
+    monkeypatch.setattr(main, "ensure_harness_index", lambda _cfg, _local=None: False)
+    monkeypatch.setattr(main, "prune_stale_tool_messages", lambda _cfg: None)
+    monkeypatch.setattr(main, "maybe_compact_context", lambda _client, _cfg, **_: None)
+    monkeypatch.setattr(main._model_info_module, "ensure_model_info", lambda _client, _model: {})
+    monkeypatch.setattr(main, "record_chat_metrics", lambda _cfg, _chunk: None)
+    monkeypatch.setattr(main, "start_streaming_response", lambda: None)
+    monkeypatch.setattr(main, "show_stream_text", lambda _text: None)
+    monkeypatch.setattr(main, "finish_streaming_response", lambda: None)
+    monkeypatch.setattr(
+        main.memory_runtime, "capture_completed_user_turn", lambda *_a, **_k: {"status": "skipped"}
+    )
+
+
+def test_ctrl_c_mid_stream_keeps_partial_answer_in_history(monkeypatch):
+    cfg = Config(model="test-model")
+    cfg.skill_crystallize_enabled = False
+    closed: list[bool] = []
+
+    class InterruptedStream:
+        def __iter__(self):
+            yield {"message": {"content": "Partial answer."}}
+            raise KeyboardInterrupt
+
+        def close(self):
+            closed.append(True)
+
+    class InterruptedClient:
+        def chat(self, **_kwargs):
+            return InterruptedStream()
+
+    _stub_agent_loop(monkeypatch)
+
+    with pytest.raises(KeyboardInterrupt) as excinfo:
+        main.agent_loop(InterruptedClient(), cfg, "explain the codebase")  # type: ignore[arg-type]
+
+    assert cfg.messages[-2]["role"] == "user"
+    assert cfg.messages[-1] == {
+        "role": "assistant",
+        "content": "Partial answer." + main.GENERATION_INTERRUPTED_MARKER,
+    }
+    assert closed == [True]
+    assert "Partial response kept" in main.generation_interrupted_message(excinfo.value)
+
+
+def test_ctrl_c_before_any_text_reports_nothing_kept(monkeypatch):
+    cfg = Config(model="test-model")
+    cfg.skill_crystallize_enabled = False
+
+    class InterruptedClient:
+        def chat(self, **_kwargs):
+            def chunks():
+                raise KeyboardInterrupt
+                yield {}
+
+            return chunks()
+
+    _stub_agent_loop(monkeypatch)
+
+    with pytest.raises(KeyboardInterrupt) as excinfo:
+        main.agent_loop(InterruptedClient(), cfg, "explain the codebase")  # type: ignore[arg-type]
+
+    assert all(message.get("role") != "assistant" for message in cfg.messages)
+    assert "No response text" in main.generation_interrupted_message(excinfo.value)
+    assert main.generation_interrupted_message(KeyboardInterrupt()) == "Generation interrupted."
+
+
+def test_ctrl_c_after_earlier_round_text_does_not_claim_nothing_received(monkeypatch):
+    cfg = Config(model="test-model")
+    cfg.skill_crystallize_enabled = False
+    calls: list[int] = []
+
+    class TwoRoundClient:
+        def chat(self, **_kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                return iter(
+                    [
+                        {
+                            "message": {
+                                "content": "Here is what I found so far.",
+                                "tool_calls": [{"function": {"name": "list_directory", "arguments": {"path": "."}}}],
+                            }
+                        }
+                    ]
+                )
+
+            def chunks():
+                raise KeyboardInterrupt
+                yield {}
+
+            return chunks()
+
+    _stub_agent_loop(monkeypatch)
+
+    with pytest.raises(KeyboardInterrupt) as excinfo:
+        main.agent_loop(TwoRoundClient(), cfg, "explain the codebase")  # type: ignore[arg-type]
+
+    assert len(calls) == 2
+    assert any(
+        m.get("role") == "assistant" and m.get("content") == "Here is what I found so far." for m in cfg.messages
+    )
+    assert main.generation_interrupted_message(excinfo.value) == "Generation interrupted."
+
+
+def test_repl_error_hint_explains_common_failures():
+    from algo_cli.config import Config
+
+    cfg = Config()
+    cfg.cloud = False
+    cfg.model = "qwen3"
+    cfg.host = "http://localhost:11434"
+
+    class ConnectError(Exception):
+        pass
+
+    class ResponseError(Exception):
+        status_code = 404
+
+    assert "ollama serve" in main.repl_error_hint(ConnectionRefusedError("refused"), cfg)
+    assert "ollama serve" in main.repl_error_hint(ConnectError("boom"), cfg)
+    assert "timed out" in main.repl_error_hint(TimeoutError(), cfg)
+    assert "ollama pull qwen3" in main.repl_error_hint(ResponseError("model 'qwen3' not found"), cfg)
+    assert main.repl_error_hint(ValueError("bad"), cfg) is None
+
+
+def test_show_repl_error_prints_class_and_hint(monkeypatch):
+    from algo_cli.config import Config
+
+    seen = {}
+    monkeypatch.setattr(main, "show_error", lambda msg, **kw: seen.update(msg=msg, **kw))
+    cfg = Config()
+    cfg.cloud = False
+    main.show_repl_error(TimeoutError(), cfg)
+    assert seen["msg"] == "TimeoutError"
+    assert seen["error_class"] == "TimeoutError"
+    assert "timed out" in seen["hint"]

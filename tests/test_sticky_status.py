@@ -14,6 +14,8 @@ from algo_cli.config import Config
 
 def test_format_status_toolbar_plain_matches_key_chips() -> None:
     cfg = Config()
+    cfg.safe_mode = False
+    cfg.auto_mode = True
     main.RUNTIME_STATUS.clear()
     main.RUNTIME_STATUS.update(
         {
@@ -26,8 +28,6 @@ def test_format_status_toolbar_plain_matches_key_chips() -> None:
             "context_pct_left": 99,
             "max_tool_iterations": 128,
             "tool_think_every": 50,
-            "safe_mode": False,
-            "auto_mode": True,
         }
     )
     line = main.format_status_toolbar_plain(cfg)

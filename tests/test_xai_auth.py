@@ -18,6 +18,7 @@ def test_api_key_status_is_safe_when_unconfigured(monkeypatch) -> None:
     assert xai_auth.auth_status() == {
         "authenticated": False,
         "api_key_configured": False,
+        "api_key_source": None,
         "legacy_oauth_detected": False,
     }
 

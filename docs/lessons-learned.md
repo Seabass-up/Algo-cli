@@ -1343,6 +1343,29 @@ result is observed. Prevention: the release checklist should include the
 website manifest and a rendered-page check before publication is called
 complete.
 
+## 2026-09-23: Rich Markup Parsed Tool Arguments And Output
+
+**Symptom:** a tool call whose arguments contained text like `[/tmp]` aborted
+the turn with a Rich `MarkupError` after the assistant tool-call message was
+already stored, and code previews silently dropped bracketed text (`d[key]`
+rendered as `d`).
+
+**Confirmed cause:** `show_tool_call`, `show_tool_result` and related display
+helpers interpolated untrusted strings into Rich markup f-strings. Several
+`Text(...)` objects also contained markup tags, which `Text` never parses, so
+literal `[muted]` tags appeared.
+
+**Repair:** untrusted values are appended to `Text` objects as plain text with
+explicit styles; markup is used only for fixed labels. The same review fixed
+about thirty other issues listed under 0.20.1 in `CHANGELOG.md`.
+
+**Verification and limits:** each fix has a regression test that fails on the
+previous source and passes now, and the full local suite passes apart from the
+source-bound qualification receipts, which are regenerated with their runners
+before release. Hosted CI and publication are recorded separately in
+`docs/henry-release-0.20.1.md`. Prevention: never pass tool, model or file
+text through Rich markup; build `Text` objects instead.
+
 ## Repair Log Checklist
 
 - Date and component.

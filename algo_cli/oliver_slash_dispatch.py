@@ -229,6 +229,7 @@ class SlashCommandCompleter(Completer):
 
 
 _PATH_SLASH_COMMANDS = frozenset({"/cd", "/read", "/ls"})
+_STATUS_REFRESH_COMMANDS = frozenset({"/safe", "/auto", "/theme", "/cd", "/mode", "/clear", "/policy"})
 _HARNESS_SUBCOMMANDS = (
     "status",
     "refresh",
@@ -1618,4 +1619,7 @@ def handle_command(
             m.console.print(harness_read(arg, cfg=cfg))
     else:
         return False, client
+    if command in _STATUS_REFRESH_COMMANDS:
+        # The prompt loop's status refresh is throttled; without this the footer can lag the new state.
+        refresh_after_model_change(client)
     return True, client

@@ -47,6 +47,7 @@ from .config import (
     _windows_pinned_directory_chain,
     _windows_safe_creation_dacl,
 )
+from .harness import embedding_function_identity
 from .intelligence.project_graph import build_project_graph
 from .intelligence.repo_map import rank_repo_map, render_repo_map, snapshot_project_graph
 from .retrieval_algorithms import stable_top_k
@@ -347,6 +348,9 @@ def _chunk_content_hash(text: str) -> str:
     return hashlib.sha256(_chunk_body(text).encode("utf-8", errors="replace")).hexdigest()
 
 
+_EMBEDDING_FIELDS = ("embedding", "embedding_model", "embedding_dimensions", "embedding_identity")
+
+
 def _reuse_content_embeddings(
     fresh: list[dict[str, Any]],
     previous: list[dict[str, Any]],
@@ -374,8 +378,9 @@ def _reuse_content_embeddings(
         if match_index is None:
             continue
         prior = matches.pop(match_index)
-        chunk["embedding"] = prior["embedding"]
-        chunk["embedding_model"] = prior["embedding_model"]
+        for field in _EMBEDDING_FIELDS:
+            if field in prior:
+                chunk[field] = prior[field]
         reused += 1
     return reused
 
@@ -744,7 +749,7 @@ def build_or_update_index(cwd: str, *, force: bool = False) -> dict[str, Any]:
             break
 
     prior_structural = index.get("structural") if isinstance(index, dict) else None
-    if reused_files == len(new_files) and isinstance(prior_structural, dict):
+    if reused_files == len(new_files) and new_files.keys() == old_files.keys() and isinstance(prior_structural, dict):
         structural = prior_structural
     else:
         try:
@@ -774,11 +779,57 @@ def build_or_update_index(cwd: str, *, force: bool = False) -> dict[str, Any]:
     return index
 
 
-def ensure_embeddings(cwd: str, embed_fn: EmbedFn, model: str, *, cap: int = EMBED_PER_TURN_CAP) -> dict[str, Any]:
-    """Embed up to `cap` chunks missing an embedding for `model`. Returns the index."""
+def _embedding_matches(
+    chunk: dict[str, Any],
+    model: str,
+    dimensions: int | None,
+    identity: str | None,
+    *,
+    allow_legacy: bool = False,
+) -> bool:
+    vector = chunk.get("embedding")
+    if not vector or chunk.get("embedding_model") != model:
+        return False
+    if dimensions is not None and len(vector) != dimensions:
+        return False
+    if identity == "unbound" or chunk.get("embedding_identity") == identity:
+        return True
+    # Indexes written before identities were recorded would otherwise leave
+    # retrieval seeing only the few chunks re-embedded so far each turn.
+    return allow_legacy and "embedding_identity" not in chunk
+
+
+def ensure_embeddings(
+    cwd: str,
+    embed_fn: EmbedFn,
+    model: str,
+    *,
+    cap: int = EMBED_PER_TURN_CAP,
+    dimensions: int | None = None,
+) -> dict[str, Any]:
+    """Embed up to `cap` chunks missing a matching embedding for `model`. Returns the index.
+
+    `dimensions` is the width the embedder currently returns; chunks stored
+    at another width (or under another embedder identity) are re-embedded.
+    """
+    identity = embedding_function_identity(embed_fn)
+    return _ensure_embeddings(cwd, embed_fn, model, cap=cap, dimensions=dimensions, identity=identity)
+
+
+def _ensure_embeddings(
+    cwd: str,
+    embed_fn: EmbedFn,
+    model: str,
+    *,
+    cap: int,
+    dimensions: int | None,
+    identity: str | None,
+) -> dict[str, Any]:
     index = build_or_update_index(cwd)
+    if identity is None:
+        return index
     chunks = index.get("chunks", [])
-    pending = [c for c in chunks if not c.get("embedding") or c.get("embedding_model") != model]
+    pending = [c for c in chunks if not _embedding_matches(c, model, dimensions, identity)]
     if not pending:
         return index
     batch = pending[:cap]
@@ -791,6 +842,11 @@ def ensure_embeddings(cwd: str, embed_fn: EmbedFn, model: str, *, cap: int = EMB
     for chunk, vec in zip(batch, vectors):
         chunk["embedding"] = vec
         chunk["embedding_model"] = model
+        chunk["embedding_dimensions"] = len(vec)
+        if identity == "unbound":
+            chunk.pop("embedding_identity", None)
+        else:
+            chunk["embedding_identity"] = identity
     if not _save_index(cwd, index):
         return {"cwd": str(Path(cwd).resolve()), "files": {}, "chunks": [], "structural": {}}
     return index
@@ -824,17 +880,27 @@ def retrieve(
     if not query:
         return []
     structural_weight = min(1.0, max(0.0, structural_weight))
-    index = ensure_embeddings(cwd, embed_fn, model)
-    candidates = [c for c in index.get("chunks", []) if c.get("embedding") and c.get("embedding_model") == model]
-    if not candidates:
+    # Resolved once per turn: a bound embedder's identity check probes the provider.
+    identity = embedding_function_identity(embed_fn)
+    if identity is None:
         return []
     try:
         qvecs = embed_fn([query])
     except Exception:
         return []
-    if not qvecs:
+    if not qvecs or not qvecs[0]:
         return []
     qvec = qvecs[0]
+    # The query width decides which stored vectors are comparable; a changed
+    # embedder width would otherwise make the matrix product raise every turn.
+    index = _ensure_embeddings(
+        cwd, embed_fn, model, cap=EMBED_PER_TURN_CAP, dimensions=len(qvec), identity=identity
+    )
+    candidates = [
+        c for c in index.get("chunks", []) if _embedding_matches(c, model, len(qvec), identity, allow_legacy=True)
+    ]
+    if not candidates:
+        return []
     if _NUMPY:
         # Normalize both sides so this path computes true cosine and agrees
         # with the scalar fallback even for non-unit embedders.

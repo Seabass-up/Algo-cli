@@ -2099,6 +2099,36 @@ def _load_json_file(
         return default
 
 
+class MemoryFileUnreadableError(OSError):
+    pass
+
+
+def _memory_file_is_blank() -> bool:
+    # A zero-byte or whitespace-only file holds no facts, so treating it as an
+    # empty list cannot lose anything; unsafe files still fail the guarded read.
+    try:
+        return not _state_descriptor_payload(MEMORY_FILE, max_bytes=MAX_JSON_STATE_BYTES).strip()
+    except OSError:
+        return False
+
+
+def _load_memory_facts_for_update() -> list[str]:
+    # A read failure must never be mistaken for an empty list, or the next
+    # rewrite would silently replace every stored fact.
+    unreadable = object()
+    loaded = _load_json_file(MEMORY_FILE, unreadable)
+    if loaded is unreadable:
+        if not os.path.lexists(MEMORY_FILE) or _memory_file_is_blank():
+            return []
+        raise MemoryFileUnreadableError(
+            f"{MEMORY_FILE} exists but could not be read safely (unsafe permissions, a symlink, a hard link, "
+            "or invalid JSON); no memory was changed. Repair the file, then retry."
+        )
+    if not isinstance(loaded, list):
+        raise MemoryFileUnreadableError(f"{MEMORY_FILE} does not contain a JSON list; no memory was changed.")
+    return [str(item) for item in loaded]
+
+
 @contextmanager
 def _exclusive_state_lock(path: Path, *, timeout_seconds: float = 30.0) -> Iterator[None]:
     """Cross-platform advisory lock for state-file transactions.
@@ -2506,6 +2536,7 @@ class Config:
     jev_kernel_enabled: bool = False
     jev_kernel_cli: str = ""  # Explicit absolute companion path; credentials stay in the companion.
     memory_config_error: str = field(default="", init=False, repr=False)
+    memory_load_error: str = field(default="", init=False, repr=False)
     memory_auto_capture_enabled: bool = False  # Explicit opt-in only; see consent version below
     memory_auto_capture_consent_version: int = 0
     memory_auto_daily_limit: int = 5  # User may lower; admission hard-maxes at 5/day
@@ -2576,6 +2607,7 @@ class Config:
         data.pop("memories", None)
         data.pop("session_auto_approve", None)
         data.pop("memory_config_error", None)
+        data.pop("memory_load_error", None)
         _atomic_write_text(CONFIG_FILE, json.dumps(data, indent=2))
 
     def save_memories(self) -> None:
@@ -2596,13 +2628,13 @@ class Config:
         if continuum_memory.selected(self):
             return continuum_memory.remember_fact(self, fact)
         with _exclusive_state_lock(MEMORY_FILE):
-            loaded = _load_json_file(MEMORY_FILE, [])
-            current = [str(item) for item in loaded] if isinstance(loaded, list) else []
+            current = _load_memory_facts_for_update()
             added = fact not in current
             if added:
                 current.append(fact)
                 _atomic_write_text(MEMORY_FILE, json.dumps(current, indent=2))
         self.memories = current
+        self.memory_load_error = ""
         return added
 
     def reconcile_memory_facts(
@@ -2628,8 +2660,7 @@ class Config:
             return " ".join(value.split()).casefold()
 
         with _exclusive_state_lock(MEMORY_FILE):
-            loaded = _load_json_file(MEMORY_FILE, [])
-            current = [str(item) for item in loaded] if isinstance(loaded, list) else []
+            current = _load_memory_facts_for_update()
             retained = [fact for fact in current if remove_if is None or not remove_if(fact)]
             removed = len(current) - len(retained)
             seen = {normalized_key(fact) for fact in retained if normalized_key(fact)}
@@ -2649,6 +2680,7 @@ class Config:
                     _atomic_write_text(backup_path, MEMORY_FILE.read_text(encoding="utf-8"))
                 _atomic_write_text(MEMORY_FILE, json.dumps(retained, indent=2))
         self.memories = retained
+        self.memory_load_error = ""
         return {
             "changed": changed,
             "removed": removed,
@@ -2663,11 +2695,11 @@ class Config:
         if selected(self):
             raise RuntimeError("use Continuum memory_revoke; no plaintext memory was changed")
         with _exclusive_state_lock(MEMORY_FILE):
-            loaded = _load_json_file(MEMORY_FILE, [])
-            current = [str(item) for item in loaded] if isinstance(loaded, list) else []
+            current = _load_memory_facts_for_update()
             removed = current.pop(index)
             _atomic_write_text(MEMORY_FILE, json.dumps(current, indent=2))
         self.memories = current
+        self.memory_load_error = ""
         return removed
 
     def save_conversation(self, name: str) -> Path:
@@ -2824,9 +2856,15 @@ class Config:
         if (
             not _config_selects_memory_authority(cfg) and MEMORY_FILE.exists()
         ):
-            loaded = _load_json_file(MEMORY_FILE, [])
+            unreadable = object()
+            loaded = _load_json_file(MEMORY_FILE, unreadable)
             if isinstance(loaded, list):
                 cfg.memories = [str(item) for item in loaded]
+            elif loaded is unreadable:
+                if os.path.lexists(MEMORY_FILE) and not _memory_file_is_blank():
+                    cfg.memory_load_error = "unreadable"
+            else:
+                cfg.memory_load_error = "not_a_list"
         return cfg
 
 

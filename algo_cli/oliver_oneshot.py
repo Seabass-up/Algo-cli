@@ -441,7 +441,11 @@ def run_oneshot(
             delattr(cfg, "_nathan_approval_mode")
         if hasattr(cfg, "_nathan_authority_session"):
             delattr(cfg, "_nathan_authority_session")
-        cfg.save()
+        # Bridges wait for the terminal done event, so a refused save must not escape.
+        try:
+            cfg.save()
+        except Exception as exc:
+            sink.error(error_class="internal", message=f"Config save failed: {type(exc).__name__}: {exc}")
 
     if status == "complete" and sink.errors:
         status = "partial"

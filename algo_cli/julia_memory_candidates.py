@@ -76,6 +76,20 @@ _STANDING_RE = re.compile(
     r"^(?:i|we|you)\s+(?:should\s+)?(?:always|never)\b.+$|^(?:always|never)\b.+$",
     re.I,
 )
+# "always/never" sentences that report the past or complain about the assistant
+# are not standing rules, even though they share the directive's opening. A
+# "should" always makes the sentence an instruction, so it never matches here.
+_NON_DIRECTIVE_STANDING_RE = re.compile(
+    r"^(?:i|we|you)\s+(?:always|never)\s+(?:"
+    r"(?!(?:need|proceed|succeed|exceed|embed|feed|seed|speed)\b)[a-z]+ed|"
+    r"said|told|asked|did|didn't|wrote|ran|made|got|went|knew|thought|meant|sent|saw|gave|took|came|"
+    r"left|forgot|broke|say|says|tell|tells)\b(?!-)"
+    r"|^you\s+(?:always|never)\s+(?:forget|forgets|ignore|ignores|miss|misses|skip|skips|break|breaks|"
+    r"mess|messes|screw|screws|fail|fails|overlook|overlooks)\b"
+    # "you always read X" states a team norm; only "never read" is a complaint.
+    r"|^you\s+never\s+read\b",
+    re.I,
+)
 _WORD_RE = re.compile(r"[\w./~+:-]+", re.UNICODE)
 _INLINE_CODE_RE = re.compile(r"`|\{\{|\}\}|=>|\(\)\s*[;{]|\b[A-Z][A-Z0-9_]{2,}\s*=|<[/!]?[A-Za-z][^>]*>")
 _TRANSIENT_RE = re.compile(
@@ -360,6 +374,8 @@ def evaluate_candidate(
         return EligibilityDecision(False, "code", fingerprint)
     if candidate.marker == "remember" and _TASK_RE.search(text):
         return EligibilityDecision(False, "task_or_imperative", fingerprint)
+    if candidate.marker == "standing_rule" and _NON_DIRECTIVE_STANDING_RE.match(text):
+        return EligibilityDecision(False, "not_directive", fingerprint)
     if _TRANSIENT_RE.search(text):
         return EligibilityDecision(False, "transient", fingerprint)
     if fingerprint in set(accepted_fingerprints):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import copy_context
+from dataclasses import dataclass
 from html import escape
 import importlib
 import json
@@ -689,11 +690,12 @@ def build_status_toolbar(cfg: Config):
         parts.append(sep)
         parts.append(rate_chip)
 
-    if not RUNTIME_STATUS.get("safe_mode", cfg.safe_mode):
+    # Safety flags come straight from cfg: RUNTIME_STATUS is throttled and can lag a toggle.
+    if not cfg.safe_mode:
         parts.append(sep)
         parts.append(_ftr_chip("safe off", palette["error"], bold=True))
 
-    if RUNTIME_STATUS.get("auto_mode", cfg.auto_approve_active):
+    if cfg.auto_approve_active:
         parts.append(sep)
         parts.append(_ftr_chip("auto on", palette["warning"], bold=True))
 
@@ -757,9 +759,9 @@ def format_status_toolbar_plain(cfg: Config) -> str:
             except (TypeError, ValueError):
                 pass
 
-    if not RUNTIME_STATUS.get("safe_mode", cfg.safe_mode):
+    if not cfg.safe_mode:
         parts.append("safe off")
-    if RUNTIME_STATUS.get("auto_mode", cfg.auto_approve_active):
+    if cfg.auto_approve_active:
         parts.append("auto on")
 
     return " · ".join(parts)
@@ -777,6 +779,55 @@ def build_prompt_style(palette: dict[str, str]) -> Style:
             "rprompt.text": f"noreverse {palette['muted']}",
         }
     )
+
+
+PROMPT_EXIT_CONFIRM_WINDOW_S = 2.0
+
+
+def prompt_interrupt_action(buffer_text: str, now: float, last_empty_interrupt: float | None) -> str:
+    """Decide what Ctrl+C at the input prompt does: "clear", "hint" or "exit"."""
+    if buffer_text.strip():
+        return "clear"
+    if last_empty_interrupt is not None and now - last_empty_interrupt <= PROMPT_EXIT_CONFIRM_WINDOW_S:
+        return "exit"
+    return "hint"
+
+
+def _prompt_buffer_text(session: Any | None) -> str:
+    # prompt_toolkit resets the buffer only when the next prompt starts, so the
+    # interrupted text is still readable here.
+    try:
+        return str(session.default_buffer.text) if session is not None else ""
+    except Exception:
+        return ""
+
+
+@dataclass
+class PromptInterruptState:
+    last_empty_interrupt: float | None = None
+
+
+def read_repl_input(session: Any | None, state: PromptInterruptState) -> str | None:
+    """Read one REPL line. Returns None to exit, "" when Ctrl+C only cleared or warned."""
+    try:
+        text = (
+            session.prompt(" ❯ ", complete_style=CompleteStyle.MULTI_COLUMN) if session else input(" ❯ ")
+        ).strip()
+    except EOFError:
+        return None
+    except KeyboardInterrupt:
+        now = time.monotonic()
+        action = prompt_interrupt_action(_prompt_buffer_text(session), now, state.last_empty_interrupt)
+        if action == "exit":
+            return None
+        if action == "hint":
+            state.last_empty_interrupt = now
+            console.print("[muted]Press Ctrl+C again or Ctrl+D to exit.[/]")
+        else:
+            state.last_empty_interrupt = None
+        return ""
+    state.last_empty_interrupt = None
+    return text
 
 
 def invalidate_prompt_toolbar(session: Any | None) -> None:
@@ -797,9 +848,9 @@ def invalidate_prompt_toolbar(session: Any | None) -> None:
 def build_status_rprompt(cfg: Config):
     palette = theme_colors(cfg.theme)
     sep = _ftr_sep(palette)
-    cwd = RUNTIME_STATUS.get("cwd", compact_path(cfg.cwd, 32))
-    theme_name = RUNTIME_STATUS.get("theme", cfg.theme)
-    memory_count = RUNTIME_STATUS.get("memory_count", len(cfg.memories))
+    cwd = compact_path(cfg.cwd, 32)
+    theme_name = cfg.theme
+    memory_count = len(cfg.memories)
     from . import session_mode
 
     mode_label = session_mode.active_mode(cfg)
@@ -3106,6 +3157,47 @@ def _model_round_indices(max_iterations: int | None) -> Iterator[int]:
         yield from range(max_iterations + 1)
 
 
+GENERATION_INTERRUPTED_MARKER = "\n\n[response interrupted by user]"
+
+
+def generation_interrupted_message(exc: BaseException) -> str:
+    if getattr(exc, "partial_output_kept", False):
+        return "Generation interrupted. Partial response kept in the conversation."
+    if getattr(exc, "no_response_text", False):
+        return "Generation interrupted. No response text was received."
+    return "Generation interrupted."
+
+
+def repl_error_hint(exc: BaseException, cfg: Config) -> str | None:
+    # httpx (used by the Ollama client) and urllib raise their own classes, so match on
+    # the class name as well as the stdlib hierarchy.
+    name = type(exc).__name__
+    if isinstance(exc, TimeoutError) or "Timeout" in name:
+        return "the request timed out; retry, or pick a smaller or faster model with /model"
+    if isinstance(exc, ConnectionError) or name in {"ConnectError", "URLError", "RemoteProtocolError"}:
+        if routes_to_xai(cfg) or routes_to_chatgpt(cfg) or uses_ollama_cloud(cfg):
+            return "could not reach the provider; check your network connection"
+        return f"could not reach Ollama at {cfg.host}; is `ollama serve` running?"
+    status = getattr(exc, "status_code", None)
+    if status == 404 and "not found" in str(exc).lower():
+        return f"pull it with `ollama pull {cfg.model}` or choose another with /models"
+    return None
+
+
+def show_repl_error(exc: BaseException, cfg: Config) -> None:
+    show_error(str(exc) or type(exc).__name__, error_class=type(exc).__name__, hint=repl_error_hint(exc, cfg))
+
+
+def _model_wait_is_local(cfg: Config) -> bool:
+    # A ":cloud" model served through a signed-in local daemon never loads local weights.
+    return not (
+        uses_ollama_cloud(cfg)
+        or is_cloud_model_name(cfg.model)
+        or routes_to_xai(cfg)
+        or routes_to_chatgpt(cfg)
+    )
+
+
 def agent_loop(
     client: Client,
     cfg: Config,
@@ -3504,6 +3596,7 @@ def _agent_loop_body(
     completion_nudged = False
     completion_recovery_rounds = 0
     no_progress_tool_rounds = 0
+    turn_text_received = False
     next_round_trigger = "initial_plan"
     tool_ms_since_previous_round = 0.0
     loop_state = nathan_provider_protocol.ProviderToolLoopState()
@@ -3815,7 +3908,9 @@ def _agent_loop_body(
                 )
             status = None
             if json_sink() is None:
-                status = console.status("[muted]waiting for model...[/]", spinner="dots")
+                from .display import model_wait_status
+
+                status = model_wait_status(cfg.model, local=_model_wait_is_local(cfg))
                 status.start()
             stream_started = False
             stream_error: Exception | None = None
@@ -3823,6 +3918,7 @@ def _agent_loop_body(
             context_build_ms = (time.perf_counter() - context_build_started) * 1000
             model_started = time.perf_counter()
             loop_state.begin_model_round(_)
+            stream: Any = None
             try:
                 stream = client.chat(
                     model=cfg.model,
@@ -3893,6 +3989,22 @@ def _agent_loop_body(
                     sig = get_attr(message, "thought_signature", None) or get_attr(message, "thoughtSignature", None)
                     if sig:
                         message_signature = sig
+            except KeyboardInterrupt as exc:
+                # Keep the text the user already saw so a follow-up like "continue" has it,
+                # and history does not end with back-to-back user turns.
+                if content_text:
+                    cfg.messages.append(
+                        {"role": "assistant", "content": content_text + GENERATION_INTERRUPTED_MARKER}
+                    )
+                exc.partial_output_kept = bool(content_text)  # type: ignore[attr-defined]
+                exc.no_response_text = not (content_text or turn_text_received)  # type: ignore[attr-defined]
+                close_stream = getattr(stream, "close", None)
+                if callable(close_stream):
+                    try:
+                        close_stream()
+                    except Exception:
+                        pass
+                raise
             except Exception as exc:
                 stream_error = exc
             finally:
@@ -3973,6 +4085,7 @@ def _agent_loop_body(
             if content_text:
                 assistant["content"] = content_text
                 final_content = content_text
+                turn_text_received = True
             if thinking_text:
                 assistant["thinking"] = thinking_text
             if tool_calls and stream_error is None:
@@ -5212,13 +5325,14 @@ def main() -> None:
     except Exception:
         session = None
 
+    interrupt_state = PromptInterruptState()
     while True:
         try:
             refresh_runtime_status(cfg, client)
-            user_input = (
-                session.prompt(" ❯ ", complete_style=CompleteStyle.MULTI_COLUMN) if session else input(" ❯ ")
-            ).strip()
+            user_input = read_repl_input(session, interrupt_state)
         except (EOFError, KeyboardInterrupt):
+            user_input = None
+        if user_input is None:
             console.print("\n[dim]Bye.[/]")
             break
         if not user_input:
@@ -5231,7 +5345,7 @@ def main() -> None:
                 console.print("\n[dim]Bye.[/]")
                 break
             except Exception as exc:
-                show_error(str(exc))
+                show_repl_error(exc, cfg)
                 refresh_runtime_status(cfg, client)
                 invalidate_prompt_toolbar(session)
                 continue
@@ -5256,12 +5370,13 @@ def main() -> None:
                     total,
                     summary_active=bool(cfg.session_summary.strip()),
                 )
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Generation interrupted.[/]")
+        except KeyboardInterrupt as exc:
+            console.print()
+            console.print(generation_interrupted_message(exc), style="warning")
             refresh_runtime_status(cfg, client)
             invalidate_prompt_toolbar(session)
         except Exception as exc:
-            show_error(str(exc))
+            show_repl_error(exc, cfg)
             refresh_runtime_status(cfg, client)
             invalidate_prompt_toolbar(session)
 

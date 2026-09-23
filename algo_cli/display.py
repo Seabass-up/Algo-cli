@@ -261,6 +261,38 @@ def tool_execution_status(label: str, *, spinner: str | None = None) -> Iterator
         yield
 
 
+class _ModelWaitLabel:
+    """Status label re-rendered on every spinner refresh, so elapsed time ticks live."""
+
+    def __init__(self, model: str, *, local: bool, started_at: float | None = None) -> None:
+        self.model = model
+        self.local = local
+        self.started_at = time.perf_counter() if started_at is None else started_at
+
+    def label(self, now: float | None = None) -> Text:
+        elapsed = max(0.0, (time.perf_counter() if now is None else now) - self.started_at)
+        # Local Ollama spends the first seconds of a cold request loading weights;
+        # saying so keeps a slow load from reading as a hang.
+        verb = "loading" if self.local and elapsed >= _MODEL_LOAD_HINT_SECONDS else "waiting for"
+        return Text(f"{verb} {self.model} · {elapsed:.1f}s", style="muted")
+
+    def __rich__(self) -> Text:
+        return self.label()
+
+
+_MODEL_LOAD_HINT_SECONDS = 3.0
+
+
+def model_wait_status(model: str, *, local: bool) -> Any:
+    """Unstarted buddy spinner for the gap before a model's first chunk."""
+    thinking = animation_for(AIState.THINKING)
+    return console.status(
+        _ModelWaitLabel(model, local=local),
+        spinner=spinner_name(AIState.THINKING),
+        spinner_style=thinking.style,
+    )
+
+
 def available_themes() -> list[str]:
     return sorted(THEME_MAP)
 
@@ -785,10 +817,15 @@ def show_tool_call(name: str, args: dict, *, call_id: str | None = None) -> None
         cid = call_id or _json_sink.next_call_id()
         _json_sink.tool_call(call_id=cid, name=name, args=visible_args)
         return
-    rendered = " ".join(f"[secondary]{key}[/]={_short_value(value)}" for key, value in visible_args.items())
-    suffix = f" {rendered}" if rendered else ""
+    # Built as Text, not markup: tool arguments are model-controlled and a
+    # value such as "ls [/tmp]" would otherwise raise MarkupError mid-turn.
     # DOING glyph (bolt) marks tool dispatch — matches the buddy's strike animation.
-    console.print(f"[accent]{glyph(AIState.DOING).plain}[/] [bold]{name}[/]{suffix}", highlight=False)
+    line = Text.assemble((glyph(AIState.DOING).plain, "accent"), " ", (name, "bold"))
+    for key, value in visible_args.items():
+        line.append(" ")
+        line.append(str(key), style="secondary")
+        line.append(f"={_short_value(value)}")
+    console.print(line, highlight=False)
 
 
 def show_tool_result(
@@ -805,16 +842,19 @@ def show_tool_result(
         else:
             _json_sink.tool_result(call_id=call_id, name=name, result=result, duration_ms=duration_ms)
         return
-    status = "[success]OK[/]" if approved else "[error]ERR[/]"
     lines = str(result).splitlines()
     byte_count = len(str(result).encode("utf-8", errors="replace"))
     duration = f"  {duration_ms:.0f}ms" if duration_ms is not None else ""
-    console.print(f"{status} [bold]{name}[/]{duration}  {_format_bytes(byte_count)}  {len(lines)} lines")
+    status = ("OK", "success") if approved else ("ERR", "error")
+    console.print(
+        Text.assemble(status, " ", (name, "bold"), f"{duration}  {_format_bytes(byte_count)}  {len(lines)} lines")
+    )
     preview = lines[:5] or [str(result)[:160]]
     for line in preview:
-        console.print(f"  [muted]{_short_value(line, 180)}[/]", highlight=False)
+        # Plain Text keeps tool output literal: "d[key]" must not be eaten as a style tag.
+        console.print(Text(f"  {_short_value(line, 180)}", style="muted"), highlight=False)
     if len(lines) > 5:
-        console.print(f"  [muted]... {len(lines) - 5} more lines[/]")
+        console.print(Text(f"  ... {len(lines) - 5} more lines", style="muted"))
 
 
 def show_recalled_context(blocks: list[dict[str, Any]]) -> None:
@@ -823,20 +863,24 @@ def show_recalled_context(blocks: list[dict[str, Any]]) -> None:
     if _json_sink is not None:
         # Internal RAG detail — bridge consumers don't need this in the event stream.
         return
-    lines: list[str] = []
+    lines: list[Text] = []
     for block in blocks[:5]:
         block_type = str(block.get("type", "note")).upper()
         block_id = str(block.get("id", "?"))
         score = float(block.get("score", 0.0) or 0.0)
         content = _short_value(block.get("content", ""), 180)
-        lines.append(f"[bold secondary][{block_type}][/bold secondary] [muted]{block_id}[/] [info]({score:.2f})[/]")
+        lines.append(
+            Text.assemble(
+                (f"[{block_type}]", "bold secondary"), " ", (block_id, "muted"), " ", (f"({score:.2f})", "info")
+            )
+        )
         if content:
-            lines.append(f"  [text]{content}[/]")
+            lines.append(Text(f"  {content}", style="text"))
     if len(blocks) > 5:
-        lines.append(f"[muted]... {len(blocks) - 5} more recalled block(s)[/]")
+        lines.append(Text(f"... {len(blocks) - 5} more recalled block(s)", style="muted"))
     console.print(
         Panel(
-            "\n".join(lines),
+            Text("\n").join(lines),
             title=f"Recalled - {len(blocks)} block{'s' if len(blocks) != 1 else ''}",
             border_style="border",
             box=box.ROUNDED,
@@ -1270,11 +1314,19 @@ def _estimated_tokens(text: str) -> int:
 
 
 def _thinking_renderable(text: str, *, final: bool = False) -> Panel:
-    visible = text[:_THINKING_VISIBLE_CHARS]
     token_count = _estimated_tokens(text)
-    truncated = len(text) > _THINKING_VISIBLE_CHARS
-    if truncated:
-        visible = visible.rstrip() + f"\n\n[muted]... truncated, ~{token_count} tokens total[/]"
+    body = Text(style="secondary italic")
+    if len(text) <= _THINKING_VISIBLE_CHARS:
+        body.append(text or "Thinking...")
+    elif final:
+        body.append(text[:_THINKING_VISIBLE_CHARS].rstrip())
+        body.append(f"\n\n... truncated, ~{token_count} tokens total", style="muted")
+    else:
+        # Live panel follows the tail so new reasoning stays visible instead of
+        # freezing on the opening paragraph once the buffer passes the cap.
+        hidden = len(text) - _THINKING_VISIBLE_CHARS
+        body.append(f"... {hidden} earlier chars\n", style="muted")
+        body.append(text[-_THINKING_VISIBLE_CHARS:].lstrip())
     elapsed = time.monotonic() - _thinking_started_at if _thinking_started_at else 0.0
     # Non-final title carries a time-derived frame: each Live update (token
     # batches arrive faster than the 90ms frame interval) advances the pulse,
@@ -1285,7 +1337,7 @@ def _thinking_renderable(text: str, *, final: bool = False) -> Panel:
         else f"{current_frame(AIState.THINKING)} Thinking..."
     )
     return Panel(
-        Text(visible or "Thinking...", style="secondary italic"),
+        body,
         title=title,
         border_style="border",
         box=box.ROUNDED,
@@ -1407,19 +1459,24 @@ def show_thinking_token(text: str) -> None:
     show_thinking_text(text)
 
 
-def show_error(msg: str) -> None:
+def show_error(msg: str, *, error_class: str | None = None, hint: str | None = None) -> None:
     if _json_sink is not None and not _console_capture_active.get():
+        # JSON event schema is fixed: the class and hint are terminal-only extras.
         _json_sink.error(error_class="internal", message=msg)
         return
-    marker = Text.assemble(glyph(AIState.ERROR), (" Error: ", "bold error"))
-    console.print(marker.append(msg, style="text"))
+    label = f" Error ({error_class}): " if error_class else " Error: "
+    marker = Text.assemble(glyph(AIState.ERROR), (label, "bold error"), (msg, "text"))
+    if hint:
+        marker.append(f" — {hint}", style="muted")
+    console.print(marker)
 
 
 def show_info(msg: str) -> None:
     if _json_sink is not None and not _console_capture_active.get():
         # info chatter is dropped in JSON mode; bridge consumers only want events.
         return
-    console.print(f"[info]{msg}[/]")
+    # Plain Text: usage strings like "[status|query]" were being parsed as tags and vanished.
+    console.print(Text(msg, style="info"))
 
 
 def show_status_footer(model: str, used_tokens: int, total_tokens: int, summary_active: bool = False) -> None:

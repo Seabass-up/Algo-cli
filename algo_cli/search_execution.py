@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fnmatch
 import json
 import os
 import queue
@@ -24,6 +23,15 @@ class _Capture:
     lines: int = 0
     truncated: bool = False
     error: Exception | None = None
+    # A draining capture keeps reading (and discarding) past its cap so a noisy stderr, such as rg
+    # permission errors, neither blocks nor ends the search; drain_limit still stops an unbounded writer.
+    drain: bool = False
+    drain_limit: int = 1_048_576
+    discarded: int = 0
+
+    @property
+    def stopped(self) -> bool:
+        return self.truncated and (not self.drain or self.discarded > self.drain_limit)
 
     def append(self, chunk: bytes) -> None:
         allowed = min(len(chunk), self.max_bytes - len(self.data))
@@ -39,10 +47,11 @@ class _Capture:
                     break
                 remaining -= 1
                 position = newline + 1
+        self.discarded += len(chunk) - allowed
         selected = chunk[:allowed]
         self.data.extend(selected)
         self.lines += selected.count(b"\n")
-        self.truncated = allowed < len(chunk)
+        self.truncated = self.truncated or allowed < len(chunk)
 
 
 @dataclass(frozen=True)
@@ -57,7 +66,7 @@ class SearchProcessResult:
 
 def _capture_pipe(pipe: BinaryIO, capture: _Capture, finished: queue.Queue[_Capture]) -> None:
     try:
-        while not capture.truncated:
+        while not capture.stopped:
             chunk = pipe.read1(4096)  # type: ignore[attr-defined]
             if not chunk:
                 break
@@ -108,7 +117,7 @@ def run_search_process(
     )
     assert proc.stdout is not None and proc.stderr is not None
     stdout = _Capture(max_bytes, limit)
-    stderr = _Capture(min(max_bytes, 4096))
+    stderr = _Capture(min(max_bytes, 4096), drain=True)
     finished: queue.Queue[_Capture] = queue.Queue()
     readers = [
         threading.Thread(target=_capture_pipe, args=(pipe, capture, finished), daemon=True)
@@ -138,7 +147,7 @@ def run_search_process(
             except queue.Empty:
                 timed_out = True
                 break
-            if captured.truncated or captured.error is not None:
+            if captured.stopped or captured.error is not None:
                 break
         else:
             try:
@@ -173,6 +182,67 @@ def run_search_process(
     )
 
 
+def _glob_regex(body: str) -> str:
+    out: list[str] = []
+    index = 0
+    in_braces = False
+    while index < len(body):
+        char = body[index]
+        if body.startswith("**/", index):
+            out.append("(?:.*/)?")
+            index += 3
+            continue
+        if body.startswith("**", index):
+            out.append(".*")
+            index += 2
+            continue
+        if char == "*":
+            out.append("[^/]*")
+        elif char == "?":
+            out.append("[^/]")
+        elif char == "[":
+            end = body.find("]", index + 2 if body[index + 1 : index + 2] in {"!", "^", "]"} else index + 1)
+            if end < 0:
+                out.append(re.escape(char))
+            else:
+                inner = body[index + 1 : end].replace("\\", "\\\\")
+                if inner.startswith("!"):
+                    inner = "^" + inner[1:]
+                out.append(f"[{inner}]")
+                index = end
+        elif char == "{" and not in_braces and "}" in body[index:]:
+            in_braces = True
+            out.append("(?:")
+        elif char == "}" and in_braces:
+            in_braces = False
+            out.append(")")
+        elif char == "," and in_braces:
+            out.append("|")
+        else:
+            out.append(re.escape(char))
+        index += 1
+    return "".join(out)
+
+
+def glob_matcher(glob: str | None) -> Callable[[str], bool]:
+    """Approximate ripgrep --glob semantics for the fallback: '/'-free globs match the
+    file name, other globs match the root-relative path, and a leading '!' excludes."""
+    if not glob:
+        return lambda _relative: True
+    negate = glob.startswith("!")
+    body = glob[1:] if negate else glob
+    anchored = "/" in body.rstrip("/")
+    # Windows keeps the case-insensitive matching the earlier fnmatch-based fallback gave it.
+    flags = re.DOTALL | (re.IGNORECASE if os.name == "nt" else 0)
+    compiled = re.compile(_glob_regex(body.lstrip("/").rstrip("/")) + r"\Z", flags)
+
+    def matches(relative: str) -> bool:
+        target = relative if anchored else relative.rsplit("/", 1)[-1]
+        return bool(compiled.match(target)) != negate
+
+    return matches
+
+
 def _python_search(request: dict[str, Any]) -> int:
     """Run only in the child so a backtracking regex cannot hang the harness."""
     root = Path(request["path"])
@@ -181,12 +251,14 @@ def _python_search(request: dict[str, Any]) -> int:
     max_files = request["max_files"]
     max_file_bytes = request["max_file_bytes"]
     skip_dirs = set(request["skip_dirs"])
+    matches_glob = glob_matcher(glob)
     scanned = 0
     found = 0
 
     def search_one(path: Path) -> None:
         nonlocal scanned, found
-        if glob and not fnmatch.fnmatch(path.name, glob):
+        relative = path.name if path == root else path.relative_to(root).as_posix()
+        if not matches_glob(relative):
             return
         try:
             if path.stat().st_size > max_file_bytes:

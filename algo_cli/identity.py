@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import stat
 from dataclasses import dataclass
 from datetime import datetime
@@ -46,6 +47,8 @@ ALL_PATHS: tuple[Path, ...] = (SOUL_PATH, IDENTITY_PATH, USER_PATH, LESSONS_PATH
 DEFAULT_EMBED_MODEL = "qwen3-embedding:latest"
 QUERY_VEC_CACHE_SIZE = 32
 LESSON_MIN_CHARS = 30
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_PARAGRAPH_SPLIT_RE = re.compile(r"\n\s*\n")
 LESSONS_INDEX_VERSION = 2
 
 EmbedFn = Callable[[list[str]], list[list[float]]]
@@ -294,25 +297,39 @@ def purge_legacy_lessons_index() -> int:
 
 
 def _chunk_lessons(text: str) -> list[str]:
-    """Split lessons-learned.md into chunks at `## ` headings. Drops top-level title."""
+    """Split lessons-learned.md into chunks.
+
+    Each `## ` section is one chunk. Text before the first heading is split on
+    blank lines, because the template tells users to write paragraph lessons.
+    The top-level title and HTML comments are dropped.
+    """
     if not text.strip():
         return []
-    chunks: list[str] = []
-    current: list[str] = []
+    sections: list[tuple[str, list[str]]] = []
+    heading = ""
+    body: list[str] = []
     for line in text.splitlines():
         if line.startswith("## "):
-            if current:
-                joined = "\n".join(current).strip()
-                if joined:
-                    chunks.append(joined)
-            current = [line]
-        elif current or line.strip():
-            current.append(line)
-    if current:
-        joined = "\n".join(current).strip()
-        if joined:
-            chunks.append(joined)
-    return [c for c in chunks if len(c) >= LESSON_MIN_CHARS and not c.startswith("# Lessons Learned")]
+            sections.append((heading, body))
+            heading, body = line.rstrip(), []
+        else:
+            body.append(line)
+    sections.append((heading, body))
+    chunks: list[str] = []
+    for heading, lines in sections:
+        content = _HTML_COMMENT_RE.sub("", "\n".join(lines)).strip()
+        if heading:
+            # Timestamped /lesson entries can be short; judge the body, not the heading.
+            if content:
+                chunks.append(f"{heading}\n{content}")
+            elif len(heading) >= LESSON_MIN_CHARS:
+                chunks.append(heading)
+            continue
+        for paragraph in _PARAGRAPH_SPLIT_RE.split(content):
+            kept = "\n".join(line for line in paragraph.splitlines() if not line.startswith("# ")).strip()
+            if kept:
+                chunks.append(kept)
+    return chunks
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
