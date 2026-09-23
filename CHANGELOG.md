@@ -4,6 +4,104 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-09-23
+
+A patch release from a whole-codebase bug hunt. Candidate issues were
+confirmed by reading or running the code, independently challenged, and fixed
+with a regression test each.
+
+### Fixed
+
+- Tool-call and tool-result lines no longer parse tool arguments or output as
+  Rich markup. Text such as `ls [/tmp]` used to crash the turn and leave an
+  unanswered tool call in history, and code previews silently dropped
+  bracketed text (`d[key]` showed as `d`). Recalled-context and info lines
+  get the same treatment.
+- Tool failures reported as `Error reading/writing/listing ...` are now
+  classified as failures instead of "worked".
+- `search_files` keeps ripgrep matches when ripgrep also reports errors (for
+  example one unreadable folder) and marks the result as partial. Long
+  stderr no longer stops the search early. The Python fallback now honors
+  path globs such as `**/*.py`, `dir/*.py` and `!*.md`, case-insensitively on
+  Windows.
+- `run_shell` keeps leading whitespace on the first output line, so formats
+  such as `git status --short` stay intact.
+- A schemeless `OLLAMA_HOST` (for example `127.0.0.1:11434`) no longer fails
+  the readiness check and blocks every prompt, and the supplemental gateway
+  receives a normalized host.
+- Agent-block models are routed to Ollama Cloud or local Ollama by the block's
+  own model instead of the active model.
+- `--oneshot --json` always ends with a `done` event, reporting `partial` when
+  saving the configuration fails.
+- `/agent` fixes: a model error marks the block as failed; tasks that begin
+  with `show`, `switch`, `resume` or `fork` are only treated as thread
+  commands when followed by a thread reference; apostrophes and quotes in the
+  task no longer drop `--pipeline` or `--roles`; Ctrl+C on a team run stops
+  waiting for running specialists.
+- Saving a memory never overwrites a `memory.json` that exists but cannot be
+  read safely; an empty file still counts as no memories. One invalid legacy
+  fact no longer breaks `/remember` or turns off recall, and the load error
+  clears after a successful repair.
+- Lessons written as paragraphs (the template format) are indexed, not only
+  `## ` sections.
+- Automatic memory capture rejects complaints and reported speech such as
+  "You always forget to run the tests".
+- When the context summarizer fails, the lossy fallback summary is reported
+  instead of being used silently.
+- Code-RAG re-embeds chunks after an embedding-width or embedder change
+  instead of failing on every turn, keeps older indexes usable after upgrade,
+  and drops deleted files from the repository map.
+- A source file with a future modification time no longer forces a full
+  harness re-index on every load.
+- Ctrl+C during a streamed answer keeps the partial answer in the
+  conversation and says so.
+- `/agent resume` and `/agent fork` no longer treat English words made of hex
+  letters (`add`, `beef`, `decade`) as thread references; a reference followed
+  by a task must contain a digit or match a full thread id.
+- A schemeless `OLLAMA_HOST` now also works for embedding identity and the
+  gateway upstream, so code, lesson and memory retrieval stay semantic.
+- File contents that happen to begin like a tool error are no longer recorded
+  as failed tool calls, in the chat loop, `/agent`, one-shot and program runs.
+- Partial search results are recorded as not fully successful.
+- Malformed search globs such as `*[^]` no longer crash the Python fallback.
+- `/agent team` cancellation stops `write_file` before it writes and
+  terminates a running `run_shell` command.
+- Ctrl+C during a parallel tool batch returns within a bounded wait and keeps
+  every tool call paired with a result.
+- `/diff`, `/changes`, agent-block panels, `/help`, the memory table and the
+  runtime overview show bracketed text literally instead of treating it as
+  Rich markup.
+- Existing lesson indexes are rebuilt with the new chunker, and lesson text
+  containing comment markers is kept intact.
+- Memory capture: `needed`/`embedded` standing rules are accepted, and
+  first-person complaints (`I always forget ...`) are rejected.
+- Files created after the last code-RAG scan are found on the next scan.
+- The settled thinking panel shows both the opening and the ending of long
+  reasoning, and the live panel keeps indentation.
+
+### Changed
+
+- Ctrl+C at the prompt clears a half-typed line; on an empty line it asks for
+  a second Ctrl+C (or Ctrl+D) before exiting.
+- The footer reflects `/safe`, `/auto`, `/theme` and `/cd` changes
+  immediately.
+- The model-wait spinner shows the elapsed time, and switches to "loading" for
+  slow local model loads.
+- The live thinking panel follows the newest reasoning instead of freezing
+  after the first 1,200 characters.
+- Errors show their class and, for connection, timeout and missing-model
+  failures, a short hint about what to check.
+
+### Security
+
+- The public-release scan also rejects local keychain item names used for
+  companion credentials, in source and in built artifacts.
+
+### Release Limits
+
+- Native signing, M8 external-browser metrics and other blocked hardening
+  work remain blocked and are not claimed.
+
 ## [0.20.0] - 2026-09-20
 
 ### Added

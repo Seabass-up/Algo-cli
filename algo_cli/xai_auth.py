@@ -46,7 +46,8 @@ def require_api_key() -> str:
     if not key:
         raise RuntimeError(
             "xAI API authentication is not configured. Run `algo-cli config setup xai` "
-            "to save XAI_API_KEY locally, or set XAI_API_KEY in the environment."
+            "to save XAI_API_KEY locally, or set XAI_API_KEY in the environment "
+            "(a value saved in the Algo CLI env file takes precedence)."
         )
     return key
 
@@ -98,10 +99,19 @@ def get_valid_token() -> str | None:
 def auth_status() -> dict[str, Any]:
     """Return safe xAI readiness metadata with no credential material."""
 
-    load_runtime_env(override=True)
+    loaded = load_runtime_env(override=True)
     configured = api_key_configured()
+    # The env file overrides the shell, so a rotated exported key is ignored
+    # while a stale saved one remains; report which one is in effect.
+    if not configured:
+        source = None
+    elif loaded.get(XAI_API_KEY_ENV, "").strip():
+        source = "runtime_env_file"
+    else:
+        source = "environment"
     return {
         "authenticated": configured,
         "api_key_configured": configured,
+        "api_key_source": source,
         "legacy_oauth_detected": legacy_oauth_detected(),
     }

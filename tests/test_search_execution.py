@@ -273,7 +273,7 @@ def test_output_limit_does_not_hide_a_reported_search_failure(tmp_path: Path, mo
 
     result = tools.search_files("needle", path=str(tmp_path))
 
-    assert result.startswith("Error searching:")
+    assert result.startswith("some matches\n[partial: search reported 1 error(s)")
     assert "permission denied" in result
 
 

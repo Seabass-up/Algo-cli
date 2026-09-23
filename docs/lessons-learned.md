@@ -1343,6 +1343,610 @@ result is observed. Prevention: the release checklist should include the
 website manifest and a rendered-page check before publication is called
 complete.
 
+## 2026-09-23: Schemeless Ollama Host Failed Readiness
+
+**Symptom and cause:** theodore_runtime_services.py:191 - ollama_server_ready fails for a host without a scheme (OLLAMA_HOST=127.0.0.1:11434), so the REPL runs a second `ollama serve` and skips every prompt
+
+**Repair:** Added normalize_ollama_host(), which adds http:// when the scheme is missing. It is used in the ollama_server_ready /api/version probe and in start_supplemental_gateway's local_service_address check. Hosts that already have a scheme behave as before.
+
+**Verification and limits:** tests/test_providers_fixes.py::test_ollama_server_ready_accepts_host_without_scheme (127.0.0.1:PORT, localhost:PORT and http:// probed against a real local HTTPServer) and ::test_start_local_ollama_host_does_not_spawn_for_schemeless_running_host. Both fail before the fix and pass after it.. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Normalize user-supplied hosts at every probe and launch boundary, and test the documented schemeless form.
+
+## 2026-09-23: Gateway Received A Schemeless Ollama Host
+
+**Symptom and cause:** algo_cli/theodore_runtime_services.py:328 - the gateway was launched with the raw cfg.host, which has no http:// scheme, so it exited; Python then waited 20 to 45 s before reporting 'did not become ready'
+
+**Repair:** start_supplemental_gateway now normalizes the host once (ollama_host = normalize_ollama_host(cfg.host)). It uses that value for both the loopback check and the gateway's `-ollama` argument, so the Go validateOllamaHost check gets a full http:// URL. The wait loop now checks GATEWAY_PROCESS.poll() on each pass. If the process has exited, it clears GATEWAY_PROCESS, reports 'Supplemental gateway exited with code N before becoming ready at URL' and returns False immediately.
+
+**Verification and limits:** New test_supplemental_gateway_gets_normalized_host_and_fails_fast_on_exit: with host '127.0.0.1:11434' and a fake Popen whose process has already exited, the -ollama argument is 'http://127.0.0.1:11434'. The function returns False without sleeping (sleep is patched to fail the test), GATEWAY_PROCESS is None, and the error names the exit code.. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Pass one normalized host to every child process, and check child exit while waiting for readiness.
+
+## 2026-09-23: Agent Blocks Routed By The Active Model
+
+**Symptom and cause:** theodore_runtime_services.py:88 - client_for_model picks Ollama Cloud or local from the active model's route instead of the agent block's model
+
+**Repair:** model_routing.uses_ollama_cloud(cfg, model=None) now takes an optional model. For a block model that is not the active model, it returns False for xAI and ChatGPT models. Otherwise it returns cfg.cloud and is_cloud_model_name(model) and OLLAMA_API_KEY. Active-model behaviour is unchanged. client_for_model uses uses_ollama_cloud(cfg, model). The redundant require_cloud_api_key call there was dropped because the key is already required by the route check.
+
+**Verification and limits:** tests/test_providers_fixes.py::test_cloud_block_routes_to_ollama_cloud_while_xai_model_is_active, ::test_local_block_routes_to_local_host_while_ollama_cloud_is_active and ::test_uses_ollama_cloud_for_active_model_is_unchanged. All fail before and pass after.. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Route by the model that is actually being called, and test a block model that differs from the active one.
+
+## 2026-09-23: Plain-Named Cloud Block Models Went To The Local Host
+
+**Symptom and cause:** algo_cli/model_routing.py:81 - an agent-block model with a plain name (e.g. qwen3-coder:480b) went to the local cfg.host in direct Ollama Cloud mode
+
+**Repair:** For a block model that is not the active model and not xAI or ChatGPT, uses_ollama_cloud now uses the same test as the active model's Ollama route: cfg.cloud and OLLAMA_API_KEY. It no longer requires the name to end in :cloud or -cloud. An Ollama block still goes to Ollama Cloud while an xAI or ChatGPT model is active, which was the original purpose of the model parameter. The docstring now explains why the name is not checked.
+
+**Verification and limits:** Replaced test_local_block_routes_to_local_host_while_ollama_cloud_is_active, which assumed a plain name means local; that assumption is wrong in direct cloud mode. New test_unsuffixed_block_routes_to_ollama_cloud_in_direct_cloud_mode: Config(model='gpt-oss:120b', cloud=True), block model 'qwen3-coder:480b' goes to https://ollama.com and gets the same route as the active model. New test_cloud_suffixed_block_uses_local_daemon_when_direct_cloud_is_off: with cfg.cloud=False, a -cloud block uses the local daemon. Kept test_cloud_block_routes_to_ollama_cloud_while_xai_model_is_active.. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Keep block routing identical to active-model routing unless a test names the difference.
+
+## 2026-09-23: Env-File xAI Key Silently Overrode The Shell
+
+**Symptom and cause:** xai_auth.py:94 - with load_runtime_env(override=True), a stale XAI_API_KEY in ~/.algo_cli/env silently overrides a key exported in the shell
+
+**Repair:** I took the spec's alternative fix, because the precedence is intentional and repo-wide: main.py:4959 and 20+ other call sites in files I do not own also use override=True, including at startup. Changing the default in xai_auth alone would not stop the file value from overriding the shell. auth_status() now returns api_key_source ('runtime_env_file' | 'environment' | None) without exposing the key. The require_api_key error now says a value saved in the Algo CLI env file takes precedence. The exact-dict assertion in tests/test_xai_auth.py was updated for the new field.
+
+**Verification and limits:** tests/test_providers_fixes.py::test_xai_status_reports_env_file_key_precedence, ::test_xai_status_reports_environment_key_source and ::test_require_api_key_explains_env_file_precedence. All fail before and pass after.. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Report which source supplied a credential whenever precedence can surprise the user.
+
+## 2026-09-23: Tool Arguments Were Parsed As Rich Markup
+
+**Symptom and cause:** display.py:791 show_tool_call used raw tool args inside Rich markup, so 'ls [/tmp]' raised MarkupError after the assistant tool_calls message was already stored, and 'd[key]' was silently cut
+
+**Repair:** show_tool_call now builds the line with Text.assemble. The glyph, name and key are styled and each value is appended as plain text. The JSON sink path is unchanged.
+
+**Verification and limits:** tests/test_display_fixes.py::test_show_tool_call_keeps_bracket_arguments_literal (fails on HEAD with MarkupError, passes now). Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Never interpolate tool, model or file text into Rich markup; build Text objects.
+
+## 2026-09-23: Tool Output Previews Dropped Bracketed Text
+
+**Symptom and cause:** display.py:815 show_tool_result put each preview line inside '[muted]{line}[/]' markup, so 'd[key]' showed as 'd' and '[/tmp]' crashed the turn
+
+**Repair:** The header and preview lines are now Text objects (style muted / success / error / bold) instead of markup f-strings
+
+**Verification and limits:** tests/test_display_fixes.py::test_show_tool_result_preview_keeps_brackets. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Test display helpers with bracketed code such as d[key] and closing-tag lookalikes.
+
+## 2026-09-23: Literal Markup Tags In The Thinking Panel
+
+**Symptom and cause:** UI proposal u6: thinking panel that follows the tail (also fixes an existing bug where the literal text '[muted]... truncated[/]' appeared, because the markup sat inside a Text)
+
+**Repair:** While streaming, _thinking_renderable shows the last 1200 characters under a muted '... N earlier chars' note. The final panel keeps the opening text plus a muted '... truncated, ~N tokens total' note, both built as styled Text.
+
+**Verification and limits:** tests/test_display_fixes.py::test_live_thinking_panel_follows_tail, ::test_final_thinking_panel_truncation_note_is_styled_not_markup (existing test_display thinking tests still pass). Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Text() never parses markup; use styled Text segments instead of tags inside Text.
+
+## 2026-09-23: Code-RAG Failed After An Embedding Width Change
+
+**Symptom and cause:** code_rag.py:781: Code-RAG embeddings were keyed only by model name, so a change in embedding width made retrieve() raise a numpy matmul ValueError on every turn
+
+**Repair:** ensure_embeddings() now takes a dimensions= argument and counts a chunk as pending when the model, the vector width or the embedder identity differs (the new _embedding_matches helper, which works like harness._embedding_matches). Each chunk now stores embedding_dimensions and embedding_identity. retrieve() resolves the identity once per turn, because a bound embedder's check probes the provider. It then embeds the query, calls a shared _ensure_embeddings with the query's width, and keeps only candidates of that width and identity; if the identity is unavailable it returns []. _reuse_content_embeddings copies the width and identity fields as well. The one-time user notice in main.py was NOT done because I don't own main.py.
+
+**Verification and limits:** tests/test_rag_fixes.py::test_code_rag_reembeds_after_embedding_width_change (before the fix: ValueError 'size 4 is different from 8'), test_code_rag_reembeds_when_embedding_identity_changes (before the fix: KeyError embedding_identity). Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Bind stored vectors to model, width and embedder identity, not model name alone.
+
+## 2026-09-23: Legacy Code-RAG Chunks Vanished After Upgrade
+
+**Symptom and cause:** algo_cli/code_rag.py:890. After an upgrade, retrieve() drops chunks from older indexes that have no embedding_identity, so a bound embedder only sees the chunks re-embedded so far (at most EMBED_PER_TURN_CAP per turn)
+
+**Repair:** Added a keyword-only allow_legacy flag to _embedding_matches. When it is set, a chunk with no 'embedding_identity' key still counts as a match if its model and vector width match. retrieve() passes allow_legacy=True when it picks candidates, so the whole legacy index stays searchable during migration. _ensure_embeddings still uses the strict match, so legacy chunks keep being re-embedded and tagged in the background, EMBED_PER_TURN_CAP per turn. Chunks tagged with a different identity are still excluded, so the protection against an identity change is kept.
+
+**Verification and limits:** Added tests/test_rag_fixes.py::test_code_rag_keeps_legacy_unbound_chunks_retrievable_during_identity_migration. It builds 10 chunks with an unbound embedder, sets the cap to 3 and runs a bound embedder (sha256 identity). It checks that all 10 chunks come back as hits and exactly 3 get the identity. It then checks that chunks tagged with a different identity return nothing. The test fails when retrieve() uses allow_legacy=False and passes with the fix.. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Accept unbound legacy records that still match model and width during migration.
+
+## 2026-09-23: Deleted Files Stayed In The Code-RAG Repo Map
+
+**Symptom and cause:** code_rag.py:747: when the only change was a deleted file, the old project graph was reused, so the repo map still ranked the deleted file
+
+**Repair:** build_or_update_index now reuses prior_structural only when every file was reused and new_files.keys() == old_files.keys()
+
+**Verification and limits:** tests/test_rag_fixes.py::test_code_rag_repo_map_drops_deleted_file (before the fix: b.py was still in the structural snapshot). Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Reuse a derived graph only when the file set is unchanged, including deletions.
+
+## 2026-09-23: Future-Dated Sources Forced Endless Harness Rebuilds
+
+**Symptom and cause:** harness.py:1511: a source file dated in the future made the harness index stale permanently, so every load rebuilt and rewrote it
+
+**Repair:** Added _record_signature_matches(record, stat). _source_watermark_ns now skips an indexed record's path when its current size and mtime_ns match the record's stored file_size and file_mtime_ns, because that file is already in the index. Changed or new files still raise the watermark. This also covers the source-change guard in embed_index_records.
+
+**Verification and limits:** tests/test_rag_fixes.py::test_future_dated_indexed_source_does_not_keep_index_stale (before the fix: index_is_stale() was True straight after a matching index; it also checks that an edit to a future-dated file is still detected). Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Compare stored size and mtime signatures instead of a global newest-mtime watermark.
+
+## 2026-09-23: Tool Failures Were Labeled As Worked
+
+**Symptom and cause:** nathan_runtime.py:1195 classify_tool_status labels 'Error <verb>ing ...' tool failures (Error writing/reading/listing/searching/running/fetching/searching web, etc.) as 'worked'
+
+**Repair:** Added _TOOL_ERROR_PREFIX_RE, which matches 'error (reading|writing|listing|searching|running|fetching|extracting|rendering|generating|executing|pulling|deleting|creating|copying|showing) ...: ', and checked it right after the existing 'error:' prefix check. The verb list stays tight so file content such as 'Error handling ...' or 'error rates ...' is still classified 'worked'.
+
+**Verification and limits:** tests/test_tools_fixes.py::test_classify_tool_status_marks_verb_prefixed_tool_errors_failed (9 cases, all fail on HEAD) plus test_classify_tool_status_keeps_ordinary_error_text_worked (guard cases). Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Classify tool results by the exact error prefixes tools emit, with a test per prefix.
+
+## 2026-09-23: Error-Like File Content Was Labeled As A Failure
+
+**Symptom and cause:** nathan_runtime.py:1202 _TOOL_ERROR_PREFIX_RE marks raw read_file content and exit-0 run_shell output starting 'Error <verb>ing ...: ' as failed
+
+**Repair:** The regex now requires an absolute path target (/, X:\ or \\) for 'reading|writing|listing'. Every built-in file tool reports the resolved absolute path, so a line like 'Error reading sensor 3: timeout' is no longer treated as a tool error. classify_tool_status now computes the [exit code: N] matches first and skips the prefix check whenever an exit code is present, so shell output is judged only by its exit code. Genuine errors such as 'Error reading /x: ...', 'Error reading C:\x.txt: ...', 'Error running command: ...' and 'Error searching: ...' are still classified as failed.
+
+**Verification and limits:** tests/test_tools_fixes.py::test_classify_tool_status_keeps_raw_error_like_output_worked covers three cases: read_file multi-line content, unnamed single-line content, and run_shell with exit code 0. tests/test_tools_fixes.py::test_classify_tool_status_uses_exit_code_for_error_like_shell_output checks that exit code 1 still gives failed and that a Windows-path read error gives failed. The existing verb-prefixed failure tests still pass.. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Anchor failure detection to tool-emitted shapes (absolute path targets), not any leading 'Error'.
+
+## 2026-09-23: Partial ripgrep Errors Discarded All Matches
+
+**Symptom and cause:** tools.py:1531 / search_execution.py:141 search_files discards every rg match when rg exits 2 on a partial error such as an unreadable subfolder
+
+**Repair:** When rg exits with a code above 1 and stdout has matches, search_files now returns the matches followed by '[partial: search reported N error(s); first: <first stderr line>]'. 'Error searching:' is kept for a nonzero exit with no stdout. A stderr overflow alone no longer turns the result into an error.
+
+**Verification and limits:** tests/test_tools_fixes.py::test_search_files_keeps_rg_matches_when_rg_reports_partial_errors (stubbed) and ::test_search_files_real_rg_with_unreadable_subfolder_returns_matches (real rg with a chmod 000 folder, skipped on Windows, as root or without rg). Both fail on HEAD.. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Treat ripgrep exit 2 with stdout as partial success and say so.
+
+## 2026-09-23: Large stderr Stopped Searches Early
+
+**Symptom and cause:** search_execution.py:141 a 4 KiB stderr cap ends and kills the search, so many permission errors stop it early
+
+**Repair:** _Capture gained drain, drain_limit (1 MiB) and discarded fields plus a stopped property. The stderr capture keeps reading and discarding output past its 4 KiB cap, and the wait loop breaks only on stopped or error. The stdout cap and the deadline still end the search, and an unbounded stderr writer still stops at the 1 MiB drain limit, so test_process_capture_stops_an_unbounded_writer[stderr] still passes.
+
+**Verification and limits:** tests/test_tools_fixes.py::test_run_search_process_drains_large_stderr_without_ending_search (about 105 KB of stderr, then a stdout match; fails on HEAD). Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Cap what is kept, not what is read; drain pipes past the retention cap.
+
+## 2026-09-23: Python Search Fallback Ignored Path Globs
+
+**Symptom and cause:** search_execution.py:189 the Python fallback matches globs against the file name only, so '**/*.py', 'dir/*.py' and '!*.md' return 'No matches.'
+
+**Repair:** Removed fnmatch and added a stdlib glob_matcher/_glob_regex that follows ripgrep's rules: a glob without '/' matches the file name, a glob with '/' matches the path relative to the search root, a leading '!' negates, and '**/', '**', '*', '?', [..] and {a,b} are supported. This works under the child's -I -S flags, where wcmatch is unavailable.
+
+**Verification and limits:** tests/test_tools_fixes.py::test_search_files_python_fallback_honors_rg_style_globs (**/*.py, pkg/*.py, !*.md, *.{py,txt} with rg absent) and ::test_glob_matcher_matches_ripgrep_semantics. Both fail on HEAD.. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Match fallback globs with ripgrep's rules and test the fallback separately from rg.
+
+## 2026-09-23: Windows Fallback Globs Became Case-Sensitive
+
+**Symptom and cause:** search_execution.py:235 glob_matcher became case-sensitive on Windows, which narrows the rg-less fallback compared with the old fnmatch/normcase behaviour
+
+**Repair:** glob_matcher now compiles with re.IGNORECASE when os.name == 'nt'. This restores the earlier Windows case-insensitive behaviour. POSIX stays case-sensitive, matching rg.
+
+**Verification and limits:** tests/test_tools_fixes.py::test_glob_matcher_case_sensitivity_follows_platform monkeypatches os.name. On 'nt', '*.py' matches 'SETUP.PY' and 'docs/*.md' matches 'DOCS/README.MD'. On 'posix', '*.py' does not match 'SETUP.PY'.. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Preserve platform filesystem case rules when replacing a matcher.
+
+## 2026-09-23: run_shell Stripped Significant Leading Whitespace
+
+**Symptom and cause:** tools.py:1651 run_shell .strip() removes significant leading whitespace from the first output line (git status --short ' M' becomes 'M ')
+
+**Repair:** stdout and stderr now have only leading newlines and trailing whitespace removed (.lstrip('\r\n').rstrip()), so leading spaces are kept.
+
+**Verification and limits:** tests/test_tools_fixes.py::test_run_shell_preserves_leading_whitespace_of_first_line (POSIX only; fails on HEAD). Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Trim only framing newlines and trailing space from command output.
+
+## 2026-09-23: One-Shot Mode Could End Without A done Event
+
+**Symptom and cause:** oliver_oneshot.py:444 cfg.save() in finally raises (memory config needs repair) so no 'done' event is written
+
+**Repair:** Wrapped cfg.save() in the finally block in try/except. A failure now sends sink.error('Config save failed: ...'), so the run reports status partial (or stays failed) and sink.done() is always written with exit code 2.
+
+**Verification and limits:** tests/test_pipeline_fixes.py::test_oneshot_emits_done_when_config_save_refuses. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Terminal protocol events belong outside anything in a finally block that can raise.
+
+## 2026-09-23: Failed Agent Blocks Stayed In Running State
+
+**Symptom and cause:** agent_pipeline.py:681 a model stream exception leaves block.status 'running'
+
+**Repair:** The except Exception branch around block_client.chat now sets status='failed', status_code='model_error' and status_reason='<Type>: <msg>' before re-raising. The completion panel and thread records then show a failed block.
+
+**Verification and limits:** tests/test_pipeline_fixes.py::test_run_agent_block_marks_model_stream_failure_as_failed. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Set a terminal status before re-raising from any block execution path.
+
+## 2026-09-23: Ordinary /agent Tasks Were Taken As Thread Commands
+
+**Symptom and cause:** agent_pipeline.py:3207 tasks starting with show/switch/resume/fork are hijacked as thread commands; error shows stray quotes
+
+**Repair:** A thread command now needs a hex thread ref (4-64 chars, the same format as the uuid-hex ids). show/switch also need that ref to be the only token. Anything else runs as a normal /agent task. KeyError messages are built from exc.args[0] through _key_error_message.
+
+**Verification and limits:** tests/test_pipeline_fixes.py::test_plain_language_task_starting_with_thread_verb_runs_as_task[show|switch|resume|fork], ::test_unknown_thread_error_has_no_stray_quotes. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Require an explicit reference before treating a verb-led sentence as a command.
+
+## 2026-09-23: Short Thread References Stopped Resolving
+
+**Symptom and cause:** agent_pipeline.py:3253 thread commands required a 4-64 char hex ref, so short prefixes (show ab, resume a1b, fork 9f fix it) and mistyped refs (resume abcx) started a full pipeline
+
+**Repair:** _THREAD_REF_RE now accepts 1-64 hex chars. is_thread_command is true when the argument is a single token for any verb, so a lone ref, even a mistyped non-hex one, goes to resolve_thread and gets 'Unknown agent thread'. It is also true for resume/fork when a hex ref is followed by task text. Multi-word plain-language tasks whose first word is not hex (for example 'show the failing tests') still run as tasks.
+
+**Verification and limits:** tests/test_pipeline_fixes.py::test_short_and_mistyped_thread_refs_resolve_instead_of_running_task, parametrized over show ab / switch a1 / resume a1b / fork 9f fix it / resume abcx. It asserts resolve_thread got the ref, the error is 'Unknown agent thread' and no pipeline started. The existing plain-language parametrized test still passes.. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Keep command detection as permissive as the resolver it feeds.
+
+## 2026-09-23: Apostrophes Dropped /agent Options
+
+**Symptom and cause:** agent_pipeline.py:1175 shlex parsing: an apostrophe drops --pipeline, quotes are stripped, and team fails with 'No closing quotation'
+
+**Repair:** parse_agent_invocation_checked and parse_agent_team_invocation now read only the leading --pipeline/--roles option tokens (a regex tokenizer that also handles quoted values). The task body is kept raw, with outer quotes removed only when the whole task is one quoted string, so existing tests still pass. resume/fork also stopped using shlex: --same-worktree is removed by regex. The unused shlex import was dropped.
+
+**Verification and limits:** tests/test_pipeline_fixes.py::test_pipeline_flag_survives_apostrophes_and_keeps_inner_quotes, ::test_team_task_with_apostrophe_is_accepted, ::test_resume_task_with_apostrophe_is_accepted. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Do not shell-tokenize free text; parse only leading option tokens.
+
+## 2026-09-23: Trailing --roles Options Were Ignored
+
+**Symptom and cause:** agent_pipeline.py:1162 parse_agent_team_invocation dropped trailing or mid-task --roles options (they stayed in the task text and default roles were used)
+
+**Repair:** After the leading-option loop, _TRAILING_ROLES_RE takes --roles VALUE / --roles=VALUE (quoted or bare) from anywhere in the rest of the text and removes it, keeping the last one found. A --roles left with no value is a usage error (_BARE_ROLES_RE). The task text keeps its apostrophes and quotes.
+
+**Verification and limits:** tests/test_pipeline_fixes.py::test_team_roles_option_is_parsed_anywhere (trailing, trailing with =, and mid-task) and ::test_team_trailing_roles_without_value_is_usage_error.. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Test options in every documented position after changing a parser.
+
+## 2026-09-23: Team Cancellation Waited For Every Specialist
+
+**Symptom and cause:** agent_pipeline.py:2924 Ctrl+C in /agent team blocks until running specialists finish, and they can overwrite the cancelled records
+
+**Repair:** The ThreadPoolExecutor is now managed by hand. On an interrupt it sets a shared threading.Event, attached to each member_cfg as _algo_team_cancellation, and calls shutdown(wait=False, cancel_futures=True). run_agent_block checks the event at every model round and every stream chunk (_raise_if_team_cancelled). _run_contract_bound_specialist checks it again after the block and before persisting terminal thread records, so a running specialist stops and does not overwrite the 'cancelled' records. Remaining gap: a specialist blocked in a model call only notices the event at its next chunk or round, and there is a small window if it is already inside a record write.
+
+**Verification and limits:** tests/test_pipeline_fixes.py::test_team_interrupt_returns_without_waiting_for_running_specialists. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Give cooperative workers a cancellation signal and test cancel latency.
+
+## 2026-09-23: A Helper Displaced The delegated_scope Decorator
+
+**Symptom and cause:** agent_pipeline.py:242 @delegated_scope() moved onto _raise_if_team_cancelled, so run_agent_block no longer ran in the delegated scope (children, including team specialists on ThreadPoolExecutor workers, could inherit parent YOLO)
+
+**Repair:** Put @delegated_scope() back directly above def run_agent_block. _raise_if_team_cancelled is now undecorated.
+
+**Verification and limits:** tests/test_pipeline_fixes.py::test_run_agent_block_runs_in_delegated_scope_on_worker_threads calls run_agent_block on a ThreadPoolExecutor worker, spies on tool_policy.compute_policy and checks that session_mode._DELEGATED is True inside the call and False afterwards.. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Keep decorators attached to the function they wrap when inserting helpers; test the scope on worker threads.
+
+## 2026-09-23: Unreadable memory.json Could Be Overwritten With One Fact
+
+**Symptom and cause:** config.py:2098 (high): an unreadable memory.json (0664, symlink, hardlink, corrupt or non-list) loaded as [], so the next /remember, /forget or reconcile replaced every stored fact
+
+**Repair:** Added config._load_memory_facts_for_update(), which uses a sentinel default and raises the new MemoryFileUnreadableError(OSError) when the file exists but can't be used, so the write never happens. Config.remember_fact, reconcile_memory_facts and forget_memory_index now use it. Config.load sets a new non-persisted field, memory_load_error ('unreadable' or 'not_a_list'), and save() drops it. In julia_memory_runtime, _latest_legacy_facts, _remove_legacy_fact and remember_fact turn the error into MemorySystemError, so /remember and the remember tool show a clean error, and the catalog insert is rolled back or never made. /memory home now starts with a WARNING line, and /memory doctor reports ready=false plus memory_file_error.
+
+**Verification and limits:** tests/test_memory_fixes.py: test_corrupt_memory_file_blocks_remember_instead_of_wiping_it, test_group_writable_memory_file_is_reported_and_preserved (POSIX only), test_non_list_memory_file_is_not_replaced, test_memory_home_and_doctor_warn_when_memory_file_is_unreadable, test_memory_load_error_is_not_persisted_to_config, test_missing_memory_file_still_accepts_first_fact. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Refuse writes when the prior state cannot be read; never treat unreadable as empty.
+
+## 2026-09-23: Blank memory.json Was Treated As Unreadable
+
+**Symptom and cause:** config.py:2112 a zero-byte memory.json is treated as unreadable
+
+**Repair:** Added _memory_file_is_blank(). It reads through the same guarded _state_descriptor_payload, and an unsafe file returns False. A blank or whitespace-only memory.json now counts as an empty list in _load_memory_facts_for_update and does not set memory_load_error in Config.load. Unsafe, symlinked, corrupt or non-list files still fail closed.
+
+**Verification and limits:** tests/test_memory_fixes.py::test_blank_memory_file_is_treated_as_empty_list[empty|whitespace]. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Distinguish empty from unreadable explicitly in state loaders.
+
+## 2026-09-23: Memory Load Warning Persisted After Repair
+
+**Symptom and cause:** julia_memory_runtime.py:1688 memory_load_error is never cleared after repair
+
+**Repair:** memory_load_error is reset to '' after each successful locked load-and-write: Config.remember_fact, reconcile_memory_facts and forget_memory_index in config.py, and _remove_legacy_fact in julia_memory_runtime.py
+
+**Verification and limits:** tests/test_memory_fixes.py::test_repaired_memory_file_clears_load_warning_after_successful_write. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Clear error state after the next successful locked load-and-write.
+
+## 2026-09-23: One Invalid Legacy Fact Broke /remember And Recall
+
+**Symptom and cause:** julia_memory_runtime.py:709 (medium): one legacy fact that is too long or contains a control character broke every /remember and turned off recall
+
+**Repair:** sync_legacy_facts now catches MemorySystemError per fact, skips the bad one and returns a 'skipped' count. The legacy list itself is left as is. doctor() gains invalid_legacy_facts, and home_text (now built from a list of lines) shows 'Skipped N stored fact(s)...' with cleanup guidance.
+
+**Verification and limits:** tests/test_memory_fixes.py: test_invalid_legacy_fact_does_not_block_remember[oversized|control-char], test_sync_legacy_facts_counts_skipped_and_doctor_reports_them. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Validate imported records individually and report skips instead of failing the batch.
+
+## 2026-09-23: Paragraph Lessons Produced No Index Chunks
+
+**Symptom and cause:** identity.py:282 (medium): the lessons chunker split only on '## ', so paragraph lessons gave 0 chunks, and short /lesson entries under 30 characters were dropped
+
+**Repair:** _chunk_lessons now splits text before the first heading on blank lines, drops '# ' title lines and HTML comments, and keeps a headed section whenever its body is non-empty. A heading-only section still uses LESSON_MIN_CHARS. I did not follow the fix sketch's 'measure LESSON_MIN_CHARS on the body': the 'Use uv' body is only 6 characters, so that would still drop it.
+
+**Verification and limits:** tests/test_memory_fixes.py: test_paragraph_lessons_without_headings_are_chunked, test_short_appended_lesson_is_kept, test_template_only_lessons_file_has_no_chunks, test_paragraph_lessons_reach_retrieval_index. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Chunk the documented template format, not only the heading form.
+
+## 2026-09-23: Complaints Were Captured As Standing Rules
+
+**Symptom and cause:** julia_memory_candidates.py:75 (medium): complaints and reported speech such as 'You always forget...' and 'I never said...' were accepted as standing-rule memories
+
+**Repair:** Added _NON_DIRECTIVE_STANDING_RE. It rejects I/we/you + (should) always/never + a past-tense verb (with exceptions for need, proceed, succeed and similar words) or a reporting verb, and 'you always/never forget/ignore/miss/skip/break/fail/overlook/read...'. evaluate_candidate returns reason 'not_directive' for standing_rule candidates that match. Directive forms stay eligible, e.g. 'We never use pip directly', 'Always run...', 'You should always ask...' and 'We always need...'.
+
+**Verification and limits:** tests/test_memory_fixes.py: test_non_directive_always_never_sentences_are_not_eligible (4 cases), test_directive_standing_rules_stay_eligible (4 guard cases). Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Reject past-tense complaints and reported speech before admitting durable rules.
+
+## 2026-09-23: Valid Directives Were Rejected As Complaints
+
+**Symptom and cause:** julia_memory_candidates.py:85 regex rejects 'should always tell/say' and 'red-team' directives
+
+**Repair:** _NON_DIRECTIVE_STANDING_RE no longer accepts an optional 'should' (a 'should' sentence is always an instruction). Added (?!-) after the verb group so hyphenated words such as 'red-team' do not match the [a-z]+ed branch.
+
+**Verification and limits:** tests/test_memory_fixes.py::test_directive_standing_rules_stay_eligible now also covers 'You should always tell me before pushing to main.', 'You should always say which files...', 'We should never tell customers...' and 'You should always red-team new prompts...'. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Pair every new rejection pattern with positive directive fixtures.
+
+## 2026-09-23: A Team Norm Was Rejected As A Complaint
+
+**Symptom and cause:** julia_memory_candidates.py:87 'read' in the complaint branch rejects the team norm 'You always read CLAUDE.md...'
+
+**Repair:** Removed 'read' from the always/never complaint list. Added a separate '^you\s+never\s+read\b' branch so the existing complaint case 'You never read the file before editing it.' is still rejected.
+
+**Verification and limits:** test_directive_standing_rules_stay_eligible now covers 'You always read CLAUDE.md before editing files in this repo.'; the existing non-directive test still passes. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Keep complaint patterns narrow and test ordinary standing rules.
+
+## 2026-09-23: Compaction Used A Lossy Summary Silently
+
+**Symptom and cause:** context_budget.py:663 (medium): when the summarizer failed, compaction silently used a lossy fallback summary
+
+**Repair:** summarize_message_batch now marks its local fallback by returning FallbackSummary, a str subclass, so its signature and the existing monkeypatched fakes still work. maybe_compact_context stores str(summary) and, when the fallback was used, calls show_info with a notice that a lossy fallback summary was used (suppressed in JSON mode, as show_info already does). rebuild_context_summary returns that notice as its message. Compaction still goes ahead, so the context window does not overflow.
+
+**Verification and limits:** tests/test_memory_fixes.py: test_summarizer_failure_returns_marked_fallback_summary, test_fallback_compaction_warns_user, test_fallback_manual_rebuild_reports_lossy_summary. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Mark fallback results in the type and tell the user when information was dropped.
+
+## 2026-09-23: Footer Showed Stale Safety State After A Toggle
+
+**Symptom and cause:** main.py:505 - the footer and rprompt showed stale safe/auto/theme/cwd state after a toggle made within the 2 s refresh throttle
+
+**Repair:** build_status_toolbar and format_status_toolbar_plain now read cfg.safe_mode and cfg.auto_approve_active directly. build_status_rprompt reads cwd, theme and memory count directly from cfg. oliver_slash_dispatch.handle_command now calls refresh_after_model_change (a forced refresh_runtime_status plus invalidate_prompt_toolbar) after /safe, /auto, /theme, /cd, /mode, /clear and /policy, through the new _STATUS_REFRESH_COMMANDS set.
+
+**Verification and limits:** tests/test_repl_fixes.py: test_footer_shows_safety_toggle_inside_refresh_throttle, test_rprompt_reads_theme_and_cwd_live, test_state_changing_slash_commands_force_status_refresh[5 commands], test_read_only_slash_command_does_not_force_refresh (guard). tests/test_sticky_status.py::test_format_status_toolbar_plain_matches_key_chips now sets the flags on cfg instead of RUNTIME_STATUS, which is the new source of truth.. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Render safety state from live config, not a throttled snapshot.
+
+## 2026-09-23: Ctrl+C At The Prompt Exited With Typed Text
+
+**Symptom and cause:** main.py:5221 - Ctrl+C at the input prompt exited the CLI even with a half-typed line
+
+**Repair:** Added prompt_interrupt_action, PromptInterruptState, read_repl_input and _prompt_buffer_text to main.py; main()'s REPL loop now reads input through read_repl_input. Ctrl+C with text in the buffer clears the line. Ctrl+C on an empty line prints the muted hint 'Press Ctrl+C again or Ctrl+D to exit.', and a second Ctrl+C within 2 s (PROMPT_EXIT_CONFIRM_WINDOW_S) exits. Ctrl+D (EOFError) still exits immediately.
+
+**Verification and limits:** tests/test_repl_fixes.py: test_prompt_interrupt_action[5 cases], test_ctrl_c_with_typed_text_clears_line_without_exiting, test_ctrl_c_on_empty_line_needs_second_press_to_exit, test_slow_second_ctrl_c_only_warns_again, test_ctrl_d_exits_immediately. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Make exit require an empty line and a confirming second interrupt.
+
+## 2026-09-23: Ctrl+C Mid-Stream Dropped The Partial Answer
+
+**Symptom and cause:** main.py:3896 - Ctrl+C mid-stream dropped the partial assistant text, leaving back-to-back user turns
+
+**Repair:** agent_loop's stream try now has 'except KeyboardInterrupt'. When content_text is non-empty it appends {'role':'assistant','content': content_text + GENERATION_INTERRUPTED_MARKER}. It then sets exc.partial_output_kept, closes the stream if it has close(), and re-raises. The REPL prints generation_interrupted_message(exc) in the theme's 'warning' style, stating whether the partial response was kept, instead of the hard-coded '[yellow]Generation interrupted.'.
+
+**Verification and limits:** tests/test_repl_fixes.py: test_ctrl_c_mid_stream_keeps_partial_answer_in_history, test_ctrl_c_before_any_text_reports_nothing_kept. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Persist what the user already saw before propagating an interrupt.
+
+## 2026-09-23: Interrupt Message Misreported Earlier Output
+
+**Symptom and cause:** algo_cli/main.py:3166 generation_interrupted_message said 'No response text was received.' for any KeyboardInterrupt without partial_output_kept, including an interrupt after an earlier round had already streamed text and saved it to history
+
+**Repair:** The message now has three cases. partial_output_kept gives 'Partial response kept in the conversation.' A new no_response_text attribute gives 'No response text was received.' Anything else gives the neutral 'Generation interrupted.' agent_loop keeps a turn-level turn_text_received flag, set when a round's content is saved to history. The stream KeyboardInterrupt handler sets exc.no_response_text = not (content_text or turn_text_received), so the 'no text' message only appears when the whole turn produced no text. Other interrupts, such as a tool-dispatch cancellation or a bare KeyboardInterrupt, now print the neutral message, as they did before this diff.
+
+**Verification and limits:** Added tests/test_repl_fixes.py::test_ctrl_c_after_earlier_round_text_does_not_claim_nothing_received, which reproduces the probe: round 1 returns text plus a list_directory call, round 2 raises KeyboardInterrupt before its first chunk. The test checks that the model was called twice, that the round-1 text is in history, and that the message is exactly 'Generation interrupted.' With the old code it would get 'No response text...'. Also changed the bare-KeyboardInterrupt assertion in test_ctrl_c_before_any_text_reports_nothing_kept to expect the neutral message. The first-round no-text case still asserts 'No response text'.. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Base user-facing messages on recorded state, not the absence of a flag.
+
+## 2026-09-23: Model-Wait Spinner Misjudged Cloud Routes As Local
+
+**Symptom and cause:** algo_cli/main.py:3880 model-wait spinner decides local from cfg.cloud alone, so a ':cloud' model via a signed-in local daemon shows 'loading <model>', and stale cfg.cloud=True without OLLAMA_API_KEY is shown as not local
+
+**Repair:** Added the helper _model_wait_is_local(cfg) in main.py. It returns not (uses_ollama_cloud(cfg) or is_cloud_model_name(cfg.model) or routes_to_xai(cfg) or routes_to_chatgpt(cfg)). The spinner hook now calls model_wait_status(cfg.model, local=_model_wait_is_local(cfg)). The main.py edit is limited to the helper and the one-line hook change.
+
+**Verification and limits:** tests/test_display_fixes.py::test_model_wait_local_flag_follows_actual_ollama_route checks four cases: gpt-oss:120b-cloud with cloud=False gives not local; qwen3 with stale cloud=True and no key gives local; qwen3 with cloud=False gives local; qwen3 with cloud=True and a key gives not local. Local test evidence only; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Derive local-versus-cloud from the same routing helpers the request uses.
+
+## 2026-09-23: Cancelled Team Specialists Kept Running And Rewrote Status
+
+**Symptom and cause:** review of the first cancellation fix found that Ctrl+C
+on `/agent team` detached running specialists with `shutdown(wait=False)`, so
+they kept using provider time, and a late worker could write `running` over a
+child thread already recorded as `cancelled`. The regression test also relied
+on a 1.5 s wall-clock bound and failed on hosted Windows at 2.05 s.
+
+**Repair:** Ctrl+C sets the cancellation event first, then waits up to
+`TEAM_CANCEL_GRACE_SECONDS` for running specialists and reports any still
+running as detached. Specialist thread-record writes go through a team lock
+that refuses writes after cancellation, so status can only move forward.
+
+**Verification and limits:** event-driven tests cover cooperative
+acknowledgement, a detached non-cooperative worker, a late write that must not
+overwrite `cancelled`, and a second Ctrl+C during the lock wait (POSIX only);
+a no-op lock reproduces the race. Hosted Windows results are recorded with the
+release.
+
+**Prevention:** cancellation tests should synchronize on events, not elapsed
+time, and status persistence should be monotonic once cancelled.
+
+## 2026-09-23: Memory Catalog Changed Before The Unreadable-File Check
+
+**Symptom and cause:** with an unreadable `memory.json`, `/memory demote`,
+`/memory archive` and pinned `/memory supersede` persisted their catalog change
+and then reported that nothing changed, leaving a demoted, archived or
+half-superseded record.
+
+**Repair:** those commands run the guarded legacy read before any catalog
+mutation, so an unreadable file stops the command with no change.
+
+**Verification and limits:** a parametrized test corrupts `memory.json` and
+checks the catalog is unchanged for demote, archive and supersede. Local only.
+
+**Prevention:** run every precondition that can fail before the first durable
+write in a multi-store command.
+
+## 2026-09-23: Missing-Model Hint Suggested A Local Pull On Provider Routes
+
+**Symptom and cause:** the new error hint suggested `ollama pull` for any 404
+"not found", including direct Ollama Cloud, xAI and ChatGPT routes, where a
+local pull cannot help.
+
+**Repair:** the pull hint is limited to routes served by local Ollama
+(including `:cloud` models through a signed-in local daemon); other routes are
+told to check the model name or pick one with `/models`.
+
+**Verification and limits:** tests cover local, direct-cloud and provider 404s.
+Local only.
+
+**Prevention:** derive user guidance from the same routing helpers the request
+used.
+
+## 2026-09-23: Hex English Words Were Taken As Thread References
+
+**Symptom and cause:** `/agent resume add a regression test` looked up thread `add`; any all-hex word (`a`, `beef`, `decade`) could select a real thread by prefix and restore its workspace, because the earlier fix accepted 1-64 hex characters.
+
+**Repair:** A reference followed by task words must contain a digit or exactly match an existing thread id; lone references still resolve for feedback.
+
+**Verification and limits:** Tests cover all 16 reported words for resume and fork, digit prefixes, and exact all-letter ids. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Command detection over free text needs a signal English cannot produce, such as a digit.
+
+## 2026-09-23: Schemeless Host Still Disabled Embedding Identity
+
+**Symptom and cause:** `probe_ollama_identity` and the gateway upstream check required an `http` scheme, so `127.0.0.1:11434` produced no identity and bound retrieval silently returned nothing.
+
+**Repair:** Both paths normalize the host with `normalize_ollama_host` before the loopback check.
+
+**Verification and limits:** Tests cover schemeless loopback identity and gateway upstream, and remote hosts still refused. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Fix a normalization gap at every consumer of the value, not only the one that was reproduced.
+
+## 2026-09-23: File Bodies Were Classified As Tool Failures
+
+**Symptom and cause:** `classify_tool_status` sniffed content, so a file whose first line looked like `Error reading /...:` was recorded as failed; three callers also omitted the tool name.
+
+**Repair:** read_file failures are recognized by the tool's own single-line error shape, and `/agent`, one-shot and program runs pass the tool name.
+
+**Verification and limits:** Tests cover real errors, look-alike bodies, and each caller. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Classify by what the tool emitted, not by what the content resembles.
+
+## 2026-09-23: Partial Searches Were Recorded As Success
+
+**Symptom and cause:** Matches plus a trailing partial-search note classified as `worked`, so retry and the attempt ledger treated an incomplete search as complete.
+
+**Repair:** Results carrying the partial-search note are classified as not successful while keeping the matches.
+
+**Verification and limits:** A test classifies the partial note. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** A status that other code branches on must reflect the note the model reads.
+
+## 2026-09-23: Malformed Globs Crashed The Search Fallback
+
+**Symptom and cause:** The new glob-to-regex translation compiled unvalidated character classes, so `*[^]` raised `re.error`.
+
+**Repair:** Invalid or unterminated classes match literally.
+
+**Verification and limits:** A fuzz set of odd globs compiles without exceptions. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Translators from user syntax to regex need a malformed-input test set.
+
+## 2026-09-23: Team Cancellation Did Not Stop Running Tools
+
+**Symptom and cause:** After team Ctrl+C, a specialist already inside `run_shell` or `write_file` could still change the workspace.
+
+**Repair:** `write_file` refuses after cancellation and `run_shell` terminates its subprocess when the team cancellation event is set.
+
+**Verification and limits:** Tests cover both tools with and without cancellation. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Cancellation must reach the operations that mutate state, not only the model loop.
+
+## 2026-09-23: Parallel Tool Batch Ignored Ctrl+C
+
+**Symptom and cause:** After an interrupt the chat loop waited on every running tool future with no timeout.
+
+**Repair:** Not-started futures are cancelled, running ones get a bounded grace, and unfinished calls are recorded as interrupted so tool calls stay paired.
+
+**Verification and limits:** A hung future no longer blocks Ctrl+C and history stays well formed. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Every interrupt path needs a deadline.
+
+## 2026-09-23: Rich Markup Holes Outside Tool Lines
+
+**Symptom and cause:** `/diff` read the block role as a style, and the agent-block panel, `/help`, the memory table and runtime overview parsed untrusted text as markup (`[/tmp/x]` crashed, `d[key]` vanished).
+
+**Repair:** Untrusted values are appended as plain Text across display.py and main.py; `Text.from_markup` is no longer used on them.
+
+**Verification and limits:** Regression tests cover every fixed site; they fail on the previous source. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** After fixing one markup hole, audit the whole module for the same pattern.
+
+## 2026-09-23: Existing Lesson Indexes Kept Old Chunks
+
+**Symptom and cause:** The stale check ignored the index version, and v0.20.0 already wrote version 2, so upgraded installs kept pre-fix chunks.
+
+**Repair:** The version was bumped and a mismatched or missing version rebuilds the index.
+
+**Verification and limits:** Tests include an index written by the released version. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** When changing derived data, bump its version and test the upgrade from the published release.
+
+## 2026-09-23: Lesson Comment Stripping Cut Paragraph Text
+
+**Symptom and cause:** A regex deleted `<!-- ... -->` spans inside paragraphs, cutting text with nested markers.
+
+**Repair:** Only the template's own full comment blocks are removed; paragraph text is kept whole.
+
+**Verification and limits:** The reported paragraph is indexed intact. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Strip only the structure you own.
+
+## 2026-09-23: Memory Filter Exceptions And First-Person Complaints
+
+**Symptom and cause:** `You always needed a backup...` was rejected despite the documented exception, and `I always forget to run the tests` was stored.
+
+**Repair:** The -ed exception is limited to the intended verbs, and first-person complaints are rejected like second-person ones.
+
+**Verification and limits:** A table of accepted rules and rejected complaints covers both directions. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Keep filter changes paired with positive and negative fixtures.
+
+## 2026-09-23: New Files Were Invisible To Code-RAG For 15 Seconds
+
+**Symptom and cause:** The in-memory scan cache checked only files already indexed, so a new file stayed invisible until the cache expired.
+
+**Repair:** The freshness check also compares recorded directory signatures, so additions and removals trigger a rescan.
+
+**Verification and limits:** Tests cover new files, nested and new directories, ignored directories and cache reuse. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** A freshness check must cover additions, not only changes to known entries.
+
+## 2026-09-23: Thinking Panels Hid The Ending And Indentation
+
+**Symptom and cause:** The settled panel showed only the first 1,200 characters, and the live tail stripped leading spaces.
+
+**Repair:** The settled panel shows head, an omission marker and tail; the live window starts at a line boundary and keeps indentation.
+
+**Verification and limits:** Tests check the ending marker and an indented final line. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Truncation should keep the part the reader needs, and never alter the kept text.
+
+## 2026-09-23: Keychain Item Names Were Not Release-Blocked
+
+**Symptom and cause:** The public-release scan blocked personal names but not local keychain service names used for companion credentials.
+
+**Repair:** Those names are private markers in the scan of source and built artifacts.
+
+**Verification and limits:** A regression test proves both names are flagged and generic labels are not. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Treat credential locator names as private data, not only the secrets.
+
 ## Repair Log Checklist
 
 - Date and component.

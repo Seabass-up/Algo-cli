@@ -102,7 +102,7 @@ def _summarize(text: str, limit: int = SUMMARY_LIMIT) -> tuple[str, bool]:
     return s[:limit].rstrip() + "...", True
 
 
-def _tool_status_from_result(result: str) -> str:
+def _tool_status_from_result(result: str, *, name: str = "") -> str:
     lowered = str(result).strip().casefold()
     if "unknown outcome:" in lowered:
         return "unknown_outcome"
@@ -121,7 +121,7 @@ def _tool_status_from_result(result: str) -> str:
     # non-zero ``run_shell`` exit-code suffixes.
     from .nathan_runtime import classify_tool_status
 
-    return "failed" if classify_tool_status(result) == "failed" else "ok"
+    return "failed" if classify_tool_status(result, name=name) == "failed" else "ok"
 
 
 class JsonEventSink:
@@ -255,7 +255,7 @@ class JsonEventSink:
     ) -> None:
         call_id = self._matching_call_id(name, call_id)
         if outcome_status is None:
-            status = _tool_status_from_result(result)
+            status = _tool_status_from_result(result, name=name)
         else:
             normalized = str(outcome_status).strip().casefold()
             if normalized not in _TYPED_TOOL_STATUSES:
@@ -441,7 +441,11 @@ def run_oneshot(
             delattr(cfg, "_nathan_approval_mode")
         if hasattr(cfg, "_nathan_authority_session"):
             delattr(cfg, "_nathan_authority_session")
-        cfg.save()
+        # Bridges wait for the terminal done event, so a refused save must not escape.
+        try:
+            cfg.save()
+        except Exception as exc:
+            sink.error(error_class="internal", message=f"Config save failed: {type(exc).__name__}: {exc}")
 
     if status == "complete" and sink.errors:
         status = "partial"

@@ -5,11 +5,11 @@ from __future__ import annotations
 import copy
 import logging
 import re
-import shlex
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import ExitStack, contextmanager
+from concurrent.futures import wait as wait_futures
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
@@ -79,7 +79,7 @@ TOOL_MAP = tools_module.TOOL_MAP
 logger = logging.getLogger(__name__)
 
 
-def _pipeline_outcome_status(execution: Any, result: str) -> str:
+def _pipeline_outcome_status(execution: Any, result: str, *, name: str = "") -> str:
     """Prefer the canonical typed outcome; parse text only for legacy adapters."""
 
     outcome = getattr(execution, "outcome", None)
@@ -91,7 +91,7 @@ def _pipeline_outcome_status(execution: Any, result: str) -> str:
         return "denied"
     if lowered.startswith("skipped repeated"):
         return "skipped"
-    legacy = classify_tool_status(result)
+    legacy = classify_tool_status(result, name=name)
     return "succeeded" if legacy == "worked" else legacy
 
 
@@ -238,6 +238,21 @@ def _agent_execution_scope():
         yield
     finally:
         _execution_state.depth = depth
+
+
+def _raise_if_team_cancelled(cfg: Config) -> None:
+    cancellation = getattr(cfg, "_algo_team_cancellation", None)
+    if cancellation is not None and cancellation.is_set():
+        raise KeyboardInterrupt("Agent team cancelled")
+
+
+@contextmanager
+def _team_status_write(cfg: Config):
+    # The team sets its cancellation event and then waits for this lock, so a specialist either
+    # finishes an in-flight write before cancellation is recorded or never writes again.
+    with getattr(cfg, "_algo_team_status_lock", None) or nullcontext():
+        _raise_if_team_cancelled(cfg)
+        yield
 
 
 @delegated_scope()
@@ -570,6 +585,7 @@ def run_agent_block(
 
     try:
         for _ in range(iteration_limit):
+            _raise_if_team_cancelled(cfg)
             recovery_finalization = completion_nudged and completion_recovery_rounds >= MAX_COMPLETION_RECOVERY_ROUNDS
             if recovery_finalization:
                 if not execution_guardrails.completion_decision().allowed:
@@ -658,6 +674,7 @@ def run_agent_block(
                     options=_model_chat_options(block_model, cfg),
                 )
                 for chunk in stream:
+                    _raise_if_team_cancelled(cfg)
                     record_chat_metrics(cfg, chunk)
                     message = get_attr(chunk, "message", {})
                     thinking = get_attr(message, "thinking", "")
@@ -683,6 +700,9 @@ def run_agent_block(
                     str(exc),
                     timed_out=isinstance(exc, TimeoutError),
                 )
+                block.status = "failed"
+                block.status_code = "model_error"
+                block.status_reason = f"{type(exc).__name__}: {exc}"
                 raise
             finally:
                 finish_thinking_block()
@@ -874,8 +894,8 @@ def run_agent_block(
                 result: str,
             ) -> None:
                 nonlocal journal_result_failed
-                status = _pipeline_outcome_status(execution, result)
                 receipt_name = normalized_batch[index][0] if index < len(normalized_batch) else "unknown"
+                status = _pipeline_outcome_status(execution, result, name=receipt_name)
                 outcome = getattr(execution, "outcome", None)
                 block.tool_call_receipts.append(
                     {
@@ -1004,7 +1024,7 @@ def run_agent_block(
                     execution = PipelineToolResult(exc.result.message, exc.result.result, exc.result.outcome)
                 tool_message, _result = execution
                 append_journal_result(index, execution, _result)
-                outcome_status = _pipeline_outcome_status(execution, _result)
+                outcome_status = _pipeline_outcome_status(execution, _result, name=name)
                 mutation_action = tool_policy.describes_mutation_action(name, args)
                 mutation_succeeded = outcome_status == "succeeded" and (
                     (name == "write_file" and str(_result).lstrip().startswith("Wrote "))
@@ -1091,6 +1111,7 @@ AGENT_THREAD_USAGE = (
 )
 MIN_TEAM_ROLES = 2
 MAX_TEAM_ROLES = 4
+TEAM_CANCEL_GRACE_SECONDS = 5.0
 
 
 def agent_usage_text() -> str:
@@ -1126,36 +1147,73 @@ def default_team_roles(route: task_router.TaskRoute) -> list[str]:
     return ["planner", "analyst", "critic"]
 
 
+_OPTION_TOKEN_RE = re.compile(r"""\s*("[^"]*"|'[^']*'|\S+)""")
+_THREAD_REF_RE = re.compile(r"[0-9a-fA-F]{1,64}")
+_TRAILING_ROLES_RE = re.compile(r"""(?<!\S)--roles(?:=|\s+)("[^"]*"|'[^']*'|\S+)(?!\S)""")
+_BARE_ROLES_RE = re.compile(r"(?<!\S)--roles=?(?!\S)")
+_SAME_WORKTREE_RE = re.compile(r"(?<!\S)--same-worktree(?!\S)")
+
+
+def _unquote(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"} and value[0] not in value[1:-1]:
+        return value[1:-1]
+    return value
+
+
+def _is_thread_ref_before_task(token: str, cfg: Config) -> bool:
+    """Decide whether `resume|fork TOKEN more words` names a thread rather than starting a task.
+
+    Thread ids are hex, so English words such as "add", "beef" or "facade" look like prefixes.
+    A digit marks a deliberate ref; an all-letter token counts only as an exact existing id.
+    """
+    if not _THREAD_REF_RE.fullmatch(token) or len(token) < 2:
+        return False
+    if any(char.isdigit() for char in token):
+        return True
+    try:
+        from .continuum_memory import selected
+
+        record = agent_threads.resolve_thread(token, protected=selected(cfg))
+    except Exception:
+        return False
+    return str(record.get("id", "")).lower() == token.lower()
+
+
+def _next_token(text: str) -> tuple[str, str]:
+    """Return (token, rest); option tokens only, so task bodies keep apostrophes and quotes."""
+    match = _OPTION_TOKEN_RE.match(text)
+    if not match:
+        return "", ""
+    return _unquote(match.group(1)), text[match.end() :].strip()
+
+
 def parse_agent_team_invocation(arg: str) -> tuple[list[str], str, str]:
     """Parse the portion after `/agent team`."""
 
-    try:
-        parts = shlex.split((arg or "").strip())
-    except ValueError as exc:
-        return [], "", f"{AGENT_TEAM_USAGE} ({exc})"
+    rest = (arg or "").strip()
     roles: list[str] = []
-    task_parts: list[str] = []
-    index = 0
-    while index < len(parts):
-        part = parts[index]
+    while rest.startswith("--"):
+        part, after = _next_token(rest)
         if part == "--roles":
-            if index + 1 >= len(parts):
+            raw_roles, rest = _next_token(after)
+            if not raw_roles:
                 return [], "", AGENT_TEAM_USAGE
-            raw_roles = parts[index + 1]
-            index += 2
         elif part.startswith("--roles="):
-            raw_roles = part.split("=", 1)[1]
-            index += 1
-        elif part.startswith("--"):
-            return [], "", f"Unknown team option '{part}'. {AGENT_TEAM_USAGE}"
+            raw_roles = _unquote(part.split("=", 1)[1])
+            rest = after
         else:
-            task_parts.append(part)
-            index += 1
-            continue
+            return [], "", f"Unknown team option '{part}'. {AGENT_TEAM_USAGE}"
         roles = [_normalize_team_role(item) for item in raw_roles.split(",")]
         if not all(roles):
             return [], "", "Team roles must be short names using letters, numbers, '-' or '_'."
-    task = " ".join(task_parts).strip()
+    while match := _TRAILING_ROLES_RE.search(rest):
+        roles = [_normalize_team_role(item) for item in _unquote(match.group(1)).split(",")]
+        if not all(roles):
+            return [], "", "Team roles must be short names using letters, numbers, '-' or '_'."
+        rest = f"{rest[: match.start()].rstrip()} {rest[match.end() :].lstrip()}".strip()
+    if _BARE_ROLES_RE.search(rest):
+        return [], "", AGENT_TEAM_USAGE
+    task = _unquote(rest).strip()
     if not task:
         return [], "", AGENT_TEAM_USAGE
     if roles:
@@ -1171,23 +1229,19 @@ def parse_agent_invocation_checked(arg: str) -> tuple[str, str, str]:
     text = (arg or "").strip()
     if not text:
         return "default", "", ""
-    try:
-        parts = shlex.split(text)
-    except ValueError:
+    if not text.startswith("--pipeline"):
         return "default", text, ""
-    if len(parts) >= 3 and parts[0] == "--pipeline":
-        pipeline = parts[1]
-        task = " ".join(parts[2:]).strip()
-        return pipeline, task, ""
-    if len(parts) >= 2 and parts[0].startswith("--pipeline="):
-        pipeline = parts[0].split("=", 1)[1]
-        task = " ".join(parts[1:]).strip()
-        if not pipeline.strip() or not task:
-            return "default", "", AGENT_USAGE
-        return pipeline, task, ""
-    if parts and parts[0].startswith("--pipeline"):
+    first, rest = _next_token(text)
+    if first == "--pipeline":
+        pipeline, rest = _next_token(rest)
+    elif first.startswith("--pipeline="):
+        pipeline = _unquote(first.split("=", 1)[1])
+    else:
         return "default", "", AGENT_USAGE
-    return "default", text, ""
+    task = _unquote(rest).strip()
+    if not pipeline.strip() or not task:
+        return "default", "", AGENT_USAGE
+    return pipeline, task, ""
 
 
 def parse_agent_invocation(arg: str) -> tuple[str, str]:
@@ -2624,18 +2678,19 @@ def _run_contract_bound_specialist(
         )
         lease.enter_context(journal.execution_lease())
         tracker = run_contracts.RunContractTracker(contract)
-        agent_threads.begin_turn(
-            thread_id,
-            task,
-            pipeline="specialist",
-            model=contract.blocks[0].model,
-            workspace=_capture_thread_workspace(cfg),
-            run_contract=_contract_thread_link(contract),
-            checkpoint=_checkpoint_payload(journal),
-            protected=protected,
-            receipt_authority=thread_receipt_authority,
-            anchor_store=receipt_anchor_store,
-        )
+        with _team_status_write(cfg):
+            agent_threads.begin_turn(
+                thread_id,
+                task,
+                pipeline="specialist",
+                model=contract.blocks[0].model,
+                workspace=_capture_thread_workspace(cfg),
+                run_contract=_contract_thread_link(contract),
+                checkpoint=_checkpoint_payload(journal),
+                protected=protected,
+                receipt_authority=thread_receipt_authority,
+                anchor_store=receipt_anchor_store,
+            )
         context_bundle = agent_context.build_agent_context(
             task,
             [],
@@ -2660,6 +2715,7 @@ def _run_contract_bound_specialist(
             run_journal=journal,
             block_ordinal=0,
         )
+        _raise_if_team_cancelled(cfg)
         block.context_output = agent_blocks.compact_block_output(block.output)[: agent_threads.MAX_BLOCK_CONTEXT_CHARS]
         final_snapshot = git_evidence.capture_git_snapshot(cfg.cwd, protected_memory=continuum_memory.selected(cfg))
         output_verified = _block_output_is_verified(block)
@@ -2675,17 +2731,18 @@ def _run_contract_bound_specialist(
             block.status_code = "output_contract_failed"
             block.status_reason = "Specialist output did not satisfy the required '## Block Output' evidence contract."
             block.verification_warning = block.status_reason
-        agent_threads.update_thread(
-            thread_id,
-            status="running",
-            blocks=[_block_record(block)],
-            workspace=_capture_thread_workspace(cfg, block),
-            run_contract=_contract_thread_link(contract),
-            checkpoint=_checkpoint_payload(journal),
-            protected=protected,
-            receipt_authority=thread_receipt_authority,
-            anchor_store=receipt_anchor_store,
-        )
+        with _team_status_write(cfg):
+            agent_threads.update_thread(
+                thread_id,
+                status="running",
+                blocks=[_block_record(block)],
+                workspace=_capture_thread_workspace(cfg, block),
+                run_contract=_contract_thread_link(contract),
+                checkpoint=_checkpoint_payload(journal),
+                protected=protected,
+                receipt_authority=thread_receipt_authority,
+                anchor_store=receipt_anchor_store,
+            )
         journal.verifier_result(
             ordinal=0,
             verifier="block_output",
@@ -2712,45 +2769,10 @@ def _run_contract_bound_specialist(
             }
             else "failed"
         )
-        persisted = _finish_thread_record(
-            thread_id,
-            status=terminal_status,
-            output=block.output,
-            error=block.status_reason,
-            blocks=[_block_record(block)],
-            pipeline="specialist",
-            workspace=_capture_thread_workspace(cfg, block),
-            contract=contract,
-            checkpoint=_checkpoint_payload(journal),
-            protected=protected,
-            receipt_authority=thread_receipt_authority,
-            anchor_store=receipt_anchor_store,
-        )
-        if not persisted:
-            raise agent_run_journal.AgentRunJournalError("specialist terminal state was not persisted")
-        if state.uncertain_mutation_steps:
-            raise agent_run_journal.AgentRunJournalError("read-only specialist recorded an uncertain mutation")
-        journal.run_finished(
-            status=terminal_status,
-            last_verified_sequence=state.last_verified_sequence,
-        )
-        agent_threads.update_thread(
-            thread_id,
-            checkpoint=_checkpoint_payload(journal),
-            protected=protected,
-            receipt_authority=thread_receipt_authority,
-            anchor_store=receipt_anchor_store,
-        )
-    except Exception as exc:
-        block.status = "failed"
-        block.status_code = block.status_code or "specialist_contract_error"
-        block.status_reason = str(exc)
-        block.output = block.output or f"## Block Output\n\nSpecialist failed: {exc}"
-        block.context_output = agent_blocks.compact_block_output(block.output)[: agent_threads.MAX_BLOCK_CONTEXT_CHARS]
-        if contract is not None and journal is not None:
-            _finish_thread_record(
+        with _team_status_write(cfg):
+            persisted = _finish_thread_record(
                 thread_id,
-                status="failed",
+                status=terminal_status,
                 output=block.output,
                 error=block.status_reason,
                 blocks=[_block_record(block)],
@@ -2762,15 +2784,53 @@ def _run_contract_bound_specialist(
                 receipt_authority=thread_receipt_authority,
                 anchor_store=receipt_anchor_store,
             )
-        else:
-            _finish_specialist_thread(
+        if not persisted:
+            raise agent_run_journal.AgentRunJournalError("specialist terminal state was not persisted")
+        if state.uncertain_mutation_steps:
+            raise agent_run_journal.AgentRunJournalError("read-only specialist recorded an uncertain mutation")
+        journal.run_finished(
+            status=terminal_status,
+            last_verified_sequence=state.last_verified_sequence,
+        )
+        with _team_status_write(cfg):
+            agent_threads.update_thread(
                 thread_id,
-                block,
-                error=block.status_reason,
+                checkpoint=_checkpoint_payload(journal),
                 protected=protected,
                 receipt_authority=thread_receipt_authority,
                 anchor_store=receipt_anchor_store,
             )
+    except Exception as exc:
+        block.status = "failed"
+        block.status_code = block.status_code or "specialist_contract_error"
+        block.status_reason = str(exc)
+        block.output = block.output or f"## Block Output\n\nSpecialist failed: {exc}"
+        block.context_output = agent_blocks.compact_block_output(block.output)[: agent_threads.MAX_BLOCK_CONTEXT_CHARS]
+        with _team_status_write(cfg):
+            if contract is not None and journal is not None:
+                _finish_thread_record(
+                    thread_id,
+                    status="failed",
+                    output=block.output,
+                    error=block.status_reason,
+                    blocks=[_block_record(block)],
+                    pipeline="specialist",
+                    workspace=_capture_thread_workspace(cfg, block),
+                    contract=contract,
+                    checkpoint=_checkpoint_payload(journal),
+                    protected=protected,
+                    receipt_authority=thread_receipt_authority,
+                    anchor_store=receipt_anchor_store,
+                )
+            else:
+                _finish_specialist_thread(
+                    thread_id,
+                    block,
+                    error=block.status_reason,
+                    protected=protected,
+                    receipt_authority=thread_receipt_authority,
+                    anchor_store=receipt_anchor_store,
+                )
     finally:
         lease.close()
     return block
@@ -2881,6 +2941,9 @@ def run_agent_team(
         f"({', '.join(selected_roles)})."
     )
 
+    team_cancellation = threading.Event()
+    team_status_lock = threading.Lock()
+
     def run_specialist(role: str) -> agent_blocks.AgentBlock:
         # Copy persisted fields only, never locks, scoped grants, or YOLO activation.
         member_cfg = copy.deepcopy(replace(cfg, session_mode=active_mode(cfg)))
@@ -2891,6 +2954,8 @@ def run_agent_team(
         member_cfg.messages = []
         member_cfg.session_summary = ""
         member_cfg.attempt_ledger = []
+        setattr(member_cfg, "_algo_team_cancellation", team_cancellation)
+        setattr(member_cfg, "_algo_team_status_lock", team_status_lock)
         block = agent_blocks.AgentBlock(
             role=role,
             prompt=_specialist_prompt(role),
@@ -2921,7 +2986,11 @@ def run_agent_team(
         return block
 
     specialists: dict[str, agent_blocks.AgentBlock] = {}
-    with ThreadPoolExecutor(max_workers=len(selected_roles), thread_name_prefix="algo-agent") as pool:
+    # Managed by hand: the context manager's shutdown(wait=True) would block Ctrl+C until
+    # every running specialist finished its model and tool rounds.
+    pool = ThreadPoolExecutor(max_workers=len(selected_roles), thread_name_prefix="algo-agent")
+    interrupted = False
+    try:
         futures = {pool.submit(run_specialist, role): role for role in selected_roles}
         try:
             for future in as_completed(futures):
@@ -2929,8 +2998,43 @@ def run_agent_team(
                 block = future.result()
                 specialists[role] = block
         except KeyboardInterrupt:
+            interrupted = True
+            # Set first so a repeated Ctrl+C cannot skip cancellation; then wait out any
+            # in-flight specialist status write so none lands after the cancelled records.
+            team_cancellation.set()
+            status_locked = False
+            try:
+                status_locked = team_status_lock.acquire(timeout=TEAM_CANCEL_GRACE_SECONDS)
+            except KeyboardInterrupt:
+                pass
+            finally:
+                if status_locked:
+                    team_status_lock.release()
             for future in futures:
                 future.cancel()
+            running = [future for future in futures if not future.done()]
+            try:
+                # Bounded acknowledgement: cooperative specialists stop at their next
+                # cancellation check; anything still running afterwards is detached.
+                wait_futures(running, timeout=TEAM_CANCEL_GRACE_SECONDS)
+            except KeyboardInterrupt:
+                pass
+            detached: list[str] = []
+            for future, role in futures.items():
+                if role in specialists:
+                    continue
+                if not future.done():
+                    detached.append(role)
+                elif not future.cancelled() and future.exception() is None:
+                    # Finished before cancellation; its own terminal record stands.
+                    specialists[role] = future.result()
+            detached_note = (
+                f" Specialists still running after {TEAM_CANCEL_GRACE_SECONDS:g}s were detached: "
+                f"{', '.join(role for role in selected_roles if role in detached)}."
+                if detached
+                else ""
+            )
+            cancelled_blocks: list[agent_blocks.AgentBlock] = []
             for role in selected_roles:
                 if role in specialists:
                     continue
@@ -2938,8 +3042,14 @@ def run_agent_team(
                     role=role,
                     prompt=_specialist_prompt(role),
                     status="cancelled",
-                    status_reason="Team run cancelled.",
+                    status_code="specialist_detached" if role in detached else "",
+                    status_reason=(
+                        "Team run cancelled; specialist did not acknowledge cancellation and was detached."
+                        if role in detached
+                        else "Team run cancelled."
+                    ),
                 )
+                cancelled_blocks.append(block)
                 _finish_specialist_thread(
                     child_by_role.get(role, ""),
                     block,
@@ -2947,26 +3057,30 @@ def run_agent_team(
                     receipt_authority=thread_receipt_authority,
                     anchor_store=_receipt_anchor_store,
                 )
+            error = f"Team run cancelled.{detached_note}"
             if parent_id:
                 try:
                     agent_threads.update_thread(
                         parent_id,
                         status="cancelled",
-                        error="Team run cancelled.",
+                        error=error,
                         protected=protected,
                         receipt_authority=thread_receipt_authority,
                         anchor_store=_receipt_anchor_store,
                     )
                 except (OSError, ValueError, KeyError, ElsieReceiptError):
                     pass
-            show_error("Agent team cancelled.")
+            show_error(f"Agent team cancelled.{detached_note}")
             return AgentRunResult(
                 thread_id=parent_id,
                 status="cancelled",
                 pipeline="team",
-                error="Team run cancelled.",
+                error=error,
                 children=child_ids,
+                blocks=[_block_record(block) for block in cancelled_blocks],
             )
+    finally:
+        pool.shutdown(wait=not interrupted, cancel_futures=interrupted)
 
     ordered = [specialists[role] for role in selected_roles if role in specialists]
     useful = [block for block in ordered if block.status in {"complete", "partial"} and block.output.strip()]
@@ -3188,6 +3302,10 @@ def _completed_agent_result_for_tool(
     return result.for_tool()
 
 
+def _key_error_message(exc: KeyError) -> str:
+    return str(exc.args[0]) if exc.args else str(exc)
+
+
 def execute_agent_command(
     arg: str,
     cfg: Config,
@@ -3215,27 +3333,39 @@ def execute_agent_command(
         return message
     if lowered in {"threads", "list", "status"}:
         return show_agent_threads(cfg)
-    if lowered.startswith("show "):
+    thread_action, _, thread_rest = text.partition(" ")
+    thread_action = thread_action.lower()
+    thread_ref, thread_task = _next_token(thread_rest.strip())
+    # Plain-language tasks such as "show the failing tests" must run as tasks, not thread lookups;
+    # a lone ref (even a mistyped one) still resolves so the user gets "Unknown agent thread".
+    is_thread_command = bool(thread_ref) and (
+        not thread_task or (thread_action in {"resume", "fork"} and _is_thread_ref_before_task(thread_ref, cfg))
+    )
+    if thread_action == "show" and is_thread_command:
         try:
-            return show_agent_thread(text.split(maxsplit=1)[1], cfg)
+            return show_agent_thread(thread_ref, cfg)
         except KeyError as exc:
-            message = str(exc).strip("'")
+            message = _key_error_message(exc)
             show_error(message)
             return f"Error: {message}"
     if lowered == "show":
         show_error(AGENT_THREAD_USAGE)
         return f"Error: {AGENT_THREAD_USAGE}"
-    if lowered.startswith("switch "):
+    if thread_action == "switch" and is_thread_command:
         try:
             from .continuum_memory import selected
 
             record = agent_threads.resolve_thread(
-                text.split(maxsplit=1)[1],
+                thread_ref,
                 protected=selected(cfg),
             )
             restored = worktree_runtime.activate_thread_workspace(record, cfg)
-        except (KeyError, worktree_runtime.WorktreeError) as exc:
-            message = str(exc).strip("'")
+        except KeyError as exc:
+            message = _key_error_message(exc)
+            show_error(message)
+            return f"Error: {message}"
+        except worktree_runtime.WorktreeError as exc:
+            message = str(exc)
             show_error(message)
             return f"Error: {message}"
         if not restored:
@@ -3266,29 +3396,24 @@ def execute_agent_command(
             cfg=cfg,
         )
     for action in ("resume", "fork"):
-        if lowered == action or lowered.startswith(f"{action} "):
-            try:
-                parts = shlex.split(text)
-            except ValueError as exc:
-                message = f"{AGENT_THREAD_USAGE} ({exc})"
-                show_error(message)
-                return f"Error: {message}"
+        if lowered == action or (thread_action == action and is_thread_command):
             same_worktree = False
-            if action == "fork" and "--same-worktree" in parts[2:]:
-                parts.remove("--same-worktree")
+            if action == "fork" and _SAME_WORKTREE_RE.search(thread_task):
+                thread_task = _SAME_WORKTREE_RE.sub("", thread_task, count=1).strip()
                 same_worktree = True
-            if len(parts) < 2 or (action == "fork" and len(parts) < 3):
+            thread_task = _unquote(thread_task).strip()
+            if not thread_ref or (action == "fork" and not thread_task):
                 show_error(AGENT_THREAD_USAGE)
                 return f"Error: {AGENT_THREAD_USAGE}"
             try:
                 from .continuum_memory import selected
 
                 record = agent_threads.resolve_thread(
-                    parts[1],
+                    thread_ref,
                     protected=selected(cfg),
                 )
             except KeyError as exc:
-                message = str(exc).strip("'")
+                message = _key_error_message(exc)
                 show_error(message)
                 return f"Error: {message}"
             structured_journal = None
@@ -3341,7 +3466,7 @@ def execute_agent_command(
                 show_info(
                     f"Restored thread {record['id']} workspace: {record.get('workspace', {}).get('branch') or cfg.cwd}"
                 )
-            task = " ".join(parts[2:]).strip() or ("Continue from the latest verified state and finish remaining work.")
+            task = thread_task or ("Continue from the latest verified state and finish remaining work.")
             if action == "fork" and restored and not same_worktree:
                 source_state = worktree_runtime.capture_workspace(cfg.cwd, protected_memory=continuum_memory.selected(cfg))
                 if not source_state.get("available"):

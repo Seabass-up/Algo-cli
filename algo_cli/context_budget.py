@@ -27,7 +27,7 @@ from . import model_info as _model_info_module
 from . import reflex
 from .session_mode import active_mode
 from .chat_protocol import get_attr, normalize_tool_call
-from .display import json_sink
+from .display import json_sink, show_info
 from .model_routing import routes_to_chatgpt, routes_to_xai
 
 CONTEXT_COMPACT_THRESHOLD = 0.85
@@ -601,6 +601,10 @@ def context_status(
     return used, display_total, remaining, runtime_cap, native_ctx
 
 
+class FallbackSummary(str):
+    """A lossy summary built locally because the summarizer model failed."""
+
+
 def summarize_message_batch(
     cfg: Config,
     batch: list[dict[str, Any]],
@@ -669,7 +673,7 @@ def summarize_message_batch(
         role = item.get("role", "message")
         content = (item.get("content") or item.get("thinking") or "")[:240]
         fallback.append(f"{role}: {content}")
-    return "\n".join(fallback).strip()
+    return FallbackSummary("\n".join(fallback).strip())
 
 
 def _tool_call_id(call: Any) -> str | None:
@@ -817,6 +821,13 @@ def _split_for_compaction(
     return messages[:keep_from], messages[keep_from:]
 
 
+def _fallback_summary_notice(compacted: int) -> str:
+    return (
+        f"Summarizer model unavailable; compacted {compacted} older messages into a lossy fallback "
+        "summary (the last 4 messages, truncated). Check the maintenance model."
+    )
+
+
 def maybe_compact_context(
     client: Client,
     cfg: Config,
@@ -845,9 +856,11 @@ def maybe_compact_context(
 
     summary = summarize_message_batch(cfg, batch, client, maintenance_client_fn=_main.small_maintenance_client)
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
-    cfg.session_summary = summary
+    cfg.session_summary = str(summary)
     cfg.messages = kept
     cfg.save()
+    if isinstance(summary, FallbackSummary):
+        show_info(_fallback_summary_notice(len(batch)))
     perf_telemetry.record_perf_event(
         "compaction",
         duration_ms=duration_ms,
@@ -869,8 +882,10 @@ def rebuild_context_summary(client: Client, cfg: Config) -> tuple[bool, str]:
 
     summary = summarize_message_batch(cfg, batch, client, maintenance_client_fn=_main.small_maintenance_client)
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
-    cfg.session_summary = summary
+    cfg.session_summary = str(summary)
     cfg.messages = kept
     cfg.save()
     perf_telemetry.record_perf_event("compaction", duration_ms=duration_ms, messages_compacted=len(batch), manual=True)
+    if isinstance(summary, FallbackSummary):
+        return True, _fallback_summary_notice(len(batch)) + f" Kept {len(kept)} recent messages."
     return True, f"Context summary rebuilt from {len(batch)} messages; kept {len(kept)} recent messages."

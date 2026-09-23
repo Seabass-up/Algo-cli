@@ -214,9 +214,9 @@ def test_two_round_release_pipeline_is_exact_and_emits_structural_evidence(tmp_p
     assert evidence["version"] == NATIVE_RELEASE_VERSION
     assert result.package_path.name == f"Algo-CLI-Control-{NATIVE_RELEASE_VERSION}.pkg"
     info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
-    assert info["CFBundleShortVersionString"] == "0.20.0"
+    assert info["CFBundleShortVersionString"] == "0.20.1"
     pkgbuild = next(command for command in runner.commands if command[0] == "/usr/bin/pkgbuild")
-    assert pkgbuild[pkgbuild.index("--version") + 1] == "0.20.0"
+    assert pkgbuild[pkgbuild.index("--version") + 1] == "0.20.1"
     assert str(tmp_path) not in result.evidence_path.read_text(encoding="utf-8")
     assert stat.S_IMODE(result.evidence_path.stat().st_mode) == 0o600
     assert stat.S_IMODE(result.package_path.stat().st_mode) == 0o644

@@ -10,7 +10,7 @@ import re
 from typing import Callable
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-from .theodore_runtime_services import local_service_address
+from .theodore_runtime_services import local_service_address, normalize_ollama_host
 
 EmbedFn = Callable[[list[str]], list[list[float]]]
 MAX_TAGS_BYTES = 2 * 1024 * 1024
@@ -38,7 +38,7 @@ def probe_ollama_identity(host: str, model: str, *, timeout: float = 2.0) -> str
     """Return a bounded endpoint/model-artifact fingerprint, or unavailable."""
     if type(host) is not str or type(model) is not str or not model or len(model) > 256:
         return None
-    endpoint = host.strip().rstrip("/")
+    endpoint = normalize_ollama_host(host).rstrip("/")
     if local_service_address(endpoint) is None:
         return None
     try:

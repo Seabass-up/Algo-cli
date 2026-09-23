@@ -1468,7 +1468,7 @@ def _value_bytes(value: Any) -> tuple[bytes, str]:
     return _canonical_json(value).encode("utf-8"), "application/json"
 
 
-def _action_result_status(result: str) -> str:
+def _action_result_status(result: str, *, name: str = "") -> str:
     lowered = str(result).strip().casefold()
     if "unknown outcome:" in lowered:
         return "unknown_outcome"
@@ -1480,7 +1480,7 @@ def _action_result_status(result: str) -> str:
         return "denied"
     if lowered.startswith("skipped repeated"):
         return "skipped"
-    return classify_tool_status(result)
+    return classify_tool_status(result, name=name)
 
 
 def _structured_requires_reconciliation(result: Any) -> bool:
@@ -1839,7 +1839,7 @@ def execute_program(
                     value = action_result
                     typed_outcome = getattr(dispatched, "outcome", None)
                     if typed_outcome is None:
-                        step_status = _action_result_status(action_result)
+                        step_status = _action_result_status(action_result, name=step.action)
                     elif typed_outcome.status.value == "succeeded":
                         step_status = "worked"
                     else:

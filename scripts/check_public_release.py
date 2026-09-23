@@ -32,6 +32,9 @@ PRIVATE_TERMS = (
     "05_" + "software_tools",
     "cloud" + "storage",
     "googledrive-",
+    # Local keychain item names for companion credentials; never ship them.
+    "ai.typesafe" + ".api-key",
+    "codex-" + "typesafe",
 )
 PRIVATE_FILENAME_PARTS = (
     "personal/",

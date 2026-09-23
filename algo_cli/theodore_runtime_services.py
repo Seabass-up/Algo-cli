@@ -85,8 +85,7 @@ def client_for_model(model: str, cfg: Config, active_client: Any) -> Any:
 
         return chatgpt_client.active_chatgpt_client()
     timeout = max(1.0, float(cfg.chat_stream_timeout_seconds))
-    if uses_ollama_cloud(cfg):
-        require_cloud_api_key(cfg)
+    if uses_ollama_cloud(cfg, model):
         api_key = os.environ.get("OLLAMA_API_KEY", "").strip()
         headers = {"Authorization": f"Bearer {api_key}"}
         return Client(host="https://ollama.com", headers=headers, timeout=timeout)
@@ -180,6 +179,15 @@ def host_is_local(host: str) -> bool:
         return False
 
 
+def normalize_ollama_host(host: str) -> str:
+    """Add the ``http://`` scheme that ``OLLAMA_HOST`` may omit (``127.0.0.1:11434``)."""
+
+    value = str(host or "").strip()
+    if value and "://" not in value:
+        return f"http://{value}"
+    return value
+
+
 def ollama_server_ready(host: str) -> bool:
     now = time.monotonic()
     with _SERVER_READY_CACHE_LOCK:
@@ -188,7 +196,7 @@ def ollama_server_ready(host: str) -> bool:
     if cached and now - cached[0] <= cache_ttl:
         return cached[1]
     try:
-        request = Request(urljoin(host.rstrip("/") + "/", "api/version"), method="GET")
+        request = Request(urljoin(normalize_ollama_host(host).rstrip("/") + "/", "api/version"), method="GET")
         with urlopen(request, timeout=1.5) as response:
             ready = 200 <= response.status < 500
     except (OSError, URLError, ValueError):
@@ -317,7 +325,8 @@ def start_supplemental_gateway(cfg: Config) -> bool:
     global GATEWAY_PROCESS
     if not uses_ollama_cloud(cfg):
         return True
-    if local_service_address(cfg.host) is None:
+    ollama_host = normalize_ollama_host(cfg.host)
+    if local_service_address(ollama_host) is None:
         show_error("Supplemental gateway requires a credential-free loopback Ollama endpoint.")
         return False
     if not start_local_ollama_host(cfg.host):
@@ -340,7 +349,7 @@ def start_supplemental_gateway(cfg: Config) -> bool:
     startup_timeout = (
         45 if len(command) >= 2 and Path(command[0]).name.lower().startswith("go") and command[1] == "run" else 20
     )
-    args = command + ["-addr", addr, "-index", str(harness.INDEX_PATH), "-ollama", cfg.host]
+    args = command + ["-addr", addr, "-index", str(harness.INDEX_PATH), "-ollama", ollama_host]
     try:
         kwargs: dict[str, Any] = {
             "cwd": str(cwd),
@@ -360,6 +369,11 @@ def start_supplemental_gateway(cfg: Config) -> bool:
         if gateway_ready(url):
             show_info(f"Supplemental gateway is running at {url}.")
             return True
+        exit_code = GATEWAY_PROCESS.poll()
+        if exit_code is not None:
+            GATEWAY_PROCESS = None
+            show_error(f"Supplemental gateway exited with code {exit_code} before becoming ready at {url}.")
+            return False
         time.sleep(0.5)
     show_error(f"Supplemental gateway did not become ready at {url}.")
     return False

@@ -62,14 +62,24 @@ def _runtime_ollama_api_key() -> str:
     return os.environ.get("OLLAMA_API_KEY", "").strip()
 
 
-def uses_ollama_cloud(cfg: Config) -> bool:
+def uses_ollama_cloud(cfg: Config, model: str | None = None) -> bool:
     """Whether chat traffic should route through Ollama Cloud's direct API.
 
     A ``:cloud`` model can also be served by a signed-in local Ollama daemon.
     The first-run picker represents that case as ``cloud via local Ollama`` and
     leaves ``cfg.cloud`` false. Even if stale config has ``cfg.cloud`` true, the
     direct API route is active only when ``OLLAMA_API_KEY`` is present.
+
+    With *model* other than the active model (an agent block's model), the
+    route is decided from that model's own provider, so an Ollama block still
+    reaches Ollama Cloud while an xAI or ChatGPT model is active. The name is
+    not consulted: ollama.com lists its models without a ``:cloud`` suffix,
+    so a block gets the same Ollama route the active model would.
     """
+    if model is not None and model != cfg.model:
+        if routes_to_xai(cfg, model) or routes_to_chatgpt(cfg, model):
+            return False
+        return bool(cfg.cloud and _runtime_ollama_api_key())
     if routes_to_xai(cfg) or routes_to_chatgpt(cfg):
         return False
     return bool(cfg.cloud and _runtime_ollama_api_key())

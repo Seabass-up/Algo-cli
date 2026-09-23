@@ -1577,6 +1577,17 @@ def _path_relative_to_some_root(
     return best
 
 
+def _record_signature_matches(record: dict[str, Any], source_stat: os.stat_result) -> bool:
+    size = record.get("file_size")
+    mtime_ns = record.get("file_mtime_ns")
+    return (
+        type(size) is int
+        and type(mtime_ns) is int
+        and size == int(source_stat.st_size)
+        and mtime_ns == int(source_stat.st_mtime_ns)
+    )
+
+
 def _source_watermark_ns(index: dict[str, Any] | None = None) -> int:
     """Maximum mtime across harness roots and source files.
 
@@ -1621,9 +1632,15 @@ def _source_watermark_ns(index: dict[str, Any] | None = None) -> int:
             if rel is not None and any(part in _SKIP_DIRS for part in rel.parts[:-1]):
                 continue
             try:
-                watermark = max(watermark, path.stat().st_mtime_ns)
+                source_stat = path.stat()
             except OSError:
                 continue
+            # A source still matching its recorded signature is already reflected
+            # in the index; comparing its mtime with the index file's own mtime
+            # would keep a future-dated source stale on every load.
+            if _record_signature_matches(record, source_stat):
+                continue
+            watermark = max(watermark, source_stat.st_mtime_ns)
         for root in all_roots:
             if not root.root.exists():
                 continue

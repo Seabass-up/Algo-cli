@@ -5,7 +5,7 @@ from __future__ import annotations
 from importlib import import_module
 from types import ModuleType
 
-__version__ = "0.20.0"
+__version__ = "0.20.1"
 
 _RENAMED_INTERNAL_MODULES = {
     "elsie_memory_path_policy": "irene_memory_path_policy",
