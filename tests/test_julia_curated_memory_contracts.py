@@ -203,7 +203,7 @@ def test_reviewed_wiki_docs_expose_runtime_and_evidence_boundaries() -> None:
     privacy_frontmatter = harness.parse_frontmatter(privacy)
     assert privacy_frontmatter["updated"] == "2026-09-21"
     assert privacy_frontmatter["last_reviewed"] == "2026-09-21"
-    assert privacy_frontmatter["runtime_version"] == "Algo CLI v0.20.0 development"
+    assert privacy_frontmatter["runtime_version"] == "Algo CLI v0.20.1 development"
 
     graph_frontmatter = harness.parse_frontmatter(graph)
     assert graph_frontmatter["concept"] == "concept:algo-cli"

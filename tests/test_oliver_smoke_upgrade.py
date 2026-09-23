@@ -25,7 +25,7 @@ def _wheel(path: Path, *, version: str = "0.19.0", extra: str = "") -> Path:
 def test_candidate_version_and_experimental_scope_are_checked(tmp_path):
     path = _wheel(tmp_path / "candidate.whl")
     smoke.validate_candidate(path, "0.19.0")
-    for version in (smoke.BASELINE_VERSION, "0.20.0"):
+    for version in (smoke.BASELINE_VERSION, "0.20.1"):
         with pytest.raises(ValueError, match="source version"):
             smoke.validate_candidate(path, version)
     for module in smoke.EXCLUDED_MODULES:
@@ -129,7 +129,7 @@ def test_installed_identity_verifies_actual_wheel_and_reports_version_mismatch(t
     monkeypatch.setattr(smoke, "run", lambda *args, **kwargs: json.dumps(identity))
     assert smoke.installed_identity(Path("python"), env_dir, "0.19.0", {}, tmp_path, wheel=wheel) == 4
     identity["metadata"] = identity["runtime"] = "0.19.1.post1"
-    with pytest.raises(ValueError, match=r"expected 0\.19\.2.*0\.19\.1\.post1"):
+    with pytest.raises(ValueError, match=r"expected 0\.20\.0.*0\.19\.1\.post1"):
         smoke.installed_identity(Path("python"), env_dir, smoke.BASELINE_VERSION, {}, tmp_path, wheel=wheel)
 
 
@@ -176,13 +176,13 @@ def test_failure_receipt_only_claims_a_completed_updater_call(tmp_path, monkeypa
 
 
 def test_uv_pip_exercises_published_updater_without_bootstrap(tmp_path, monkeypatch):
-    wheel = _wheel(tmp_path / "candidate.whl", version="0.20.0")
+    wheel = _wheel(tmp_path / "candidate.whl", version="0.20.1")
     report = tmp_path / "uv-pip.json"
     commands = []
     managers = []
     monkeypatch.setattr(smoke.sys, "platform", "linux")
     monkeypatch.setattr(smoke, "_wheel_from", lambda _: wheel)
-    monkeypatch.setattr(smoke, "_source_version", lambda: "0.20.0")
+    monkeypatch.setattr(smoke, "_source_version", lambda: "0.20.1")
     monkeypatch.setattr(smoke, "download_baseline", lambda _: None)
     monkeypatch.setattr(smoke, "_create_isolated_environment", lambda env_dir: (
         env_dir / "bin/python", ["python", "-m", "pip", "install"],
