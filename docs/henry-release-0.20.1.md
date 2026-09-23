@@ -7,7 +7,7 @@ install and predecessor-upgrade checks.
 
 ## Included Scope
 
-- Bug, quality-of-life and terminal UI fixes from a Jev-ranked codebase review,
+- Bug, quality-of-life and terminal UI fixes from a codebase review,
   each with a regression test: Rich markup safety in tool display, tool-failure
   classification, partial ripgrep results and fallback globs, `run_shell`
   whitespace, schemeless Ollama hosts, agent-block routing, one-shot `done`
@@ -20,7 +20,6 @@ install and predecessor-upgrade checks.
 
 ## Excluded Scope
 
-- The Jev Shadow routing layer is not part of this release.
 - M8 external-browser and native authority work that remains blocked is not
   represented as complete.
 - Published `v0.20.0` artifacts and its immutable tag remain unchanged.

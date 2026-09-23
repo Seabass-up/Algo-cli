@@ -6,9 +6,9 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [0.20.1] - 2026-09-23
 
-A patch release from a whole-codebase bug hunt. Candidate issues were ranked
-with Jev, confirmed by reading or running the code, independently challenged,
-and fixed with a regression test each.
+A patch release from a whole-codebase bug hunt. Candidate issues were
+confirmed by reading or running the code, independently challenged, and fixed
+with a regression test each.
 
 ### Fixed
 
