@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "product": "algo-cli",
-  "version": "0.20.0",
-  "tag": "v0.20.0",
+  "version": "0.20.1",
+  "tag": "v0.20.1",
   "channel": "stable",
   "published": true,
   "python": ">=3.10",
-  "source_revision": "55a7ec5328892a07129c48e370d175eff8e0eff6",
+  "source_revision": "2fae0bfbf915af0cd204ad81e171d499333efc82",
   "package": {
     "name": "algo-cli-runtime",
     "index": "https://pypi.org/project/algo-cli-runtime/",
@@ -14,23 +14,23 @@
   },
   "source": {
     "url": "https://github.com/Seabass-up/Algo-cli",
-    "release_url": "https://github.com/Seabass-up/Algo-cli/releases/tag/v0.20.0",
+    "release_url": "https://github.com/Seabass-up/Algo-cli/releases/tag/v0.20.1",
     "available": true
   },
   "security_advisory": {
     "active": true
   },
-  "notes": "Version 0.20.0 is published from the immutable v0.20.0 tag through the protected release workflow with trusted PyPI publishing.",
+  "notes": "Version 0.20.1 is published from the immutable v0.20.1 tag through the protected release workflow with trusted PyPI publishing.",
   "artifacts": [
     {
-      "filename": "algo_cli_runtime-0.20.0-py3-none-any.whl",
-      "size": 1304126,
-      "sha256": "dfd8f45d944bc0ea0e0645121f24be34d3ace54ff7c13497ee304815cc6fb3f1"
+      "filename": "algo_cli_runtime-0.20.1-py3-none-any.whl",
+      "size": 1317884,
+      "sha256": "5c897032c12cf2be568059e3c3ecf70681e25615358f01cfe82d50da9fd260cd"
     },
     {
-      "filename": "algo_cli_runtime-0.20.0.tar.gz",
-      "size": 1173353,
-      "sha256": "4bad73b8afb0692011237fc08c4af073f27e5cae632dde267afc5f96f2e06a57"
+      "filename": "algo_cli_runtime-0.20.1.tar.gz",
+      "size": 1188889,
+      "sha256": "bbeaba8ab33b5d2ad65aecad0e0e9c319e7f742f5fad2ada461a67b1a62608ba"
     }
   ]
 }
