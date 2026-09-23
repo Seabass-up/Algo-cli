@@ -117,6 +117,32 @@ def test_missing_memory_file_still_accepts_first_fact() -> None:
     assert json.loads(config.MEMORY_FILE.read_text(encoding="utf-8")) == ["the build tool is uv"]
 
 
+@pytest.mark.parametrize(
+    "command",
+    ["demote {id}", "archive {id}", "supersede {id} the build tool is poetry"],
+    ids=["demote", "archive", "supersede"],
+)
+def test_unreadable_memory_file_blocks_catalog_mutation(command: str) -> None:
+    cfg = Config.load()
+    assert memory_runtime.remember_fact(cfg, "the build tool is uv") is True
+    record_id = next(
+        record["id"]
+        for record in memory_runtime.MemoryCatalog().records()
+        if record["content"] == "the build tool is uv"
+    )
+    original = '["the build tool is uv",'
+    config.MEMORY_FILE.write_text(original, encoding="utf-8")
+    memory_runtime.command_text("home", cfg)
+    before = memory_runtime.MemoryCatalog().records()
+
+    with pytest.raises(memory_runtime.MemorySystemError, match="no memory was changed"):
+        memory_runtime.command_text(command.format(id=record_id), cfg)
+
+    assert memory_runtime.MemoryCatalog().records() == before
+    assert memory_runtime.MemoryCatalog().get(record_id)["tier"] == "pinned"
+    assert config.MEMORY_FILE.read_text(encoding="utf-8") == original
+
+
 # --- invalid legacy facts must not block new writes ---
 
 

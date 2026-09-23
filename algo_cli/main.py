@@ -3180,6 +3180,10 @@ def repl_error_hint(exc: BaseException, cfg: Config) -> str | None:
         return f"could not reach Ollama at {cfg.host}; is `ollama serve` running?"
     status = getattr(exc, "status_code", None)
     if status == 404 and "not found" in str(exc).lower():
+        # A signed-in local daemon serves ":cloud" tags only after `ollama pull`, so only direct
+        # provider routes skip the pull hint.
+        if uses_ollama_cloud(cfg) or routes_to_xai(cfg) or routes_to_chatgpt(cfg):
+            return f"check the model name `{cfg.model}` or choose an available model with /models"
         return f"pull it with `ollama pull {cfg.model}` or choose another with /models"
     return None
 

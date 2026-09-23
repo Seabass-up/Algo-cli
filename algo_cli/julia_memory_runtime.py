@@ -1741,6 +1741,10 @@ def command_text(
         if len(remainder) < 2:
             raise MemorySystemError("Usage: /memory supersede ID REPLACEMENT")
         old = catalog.get(remainder[0])
+        if old.get("tier") == "pinned":
+            # Refuse before the catalog changes so an unreadable legacy file
+            # cannot leave a half-applied supersede behind.
+            _latest_legacy_facts(cfg)
         replacement = catalog.supersede(remainder[0], " ".join(remainder[1:]))
         if old.get("tier") == "pinned":
             _remove_legacy_fact(cfg, str(old.get("content") or ""))
@@ -1756,6 +1760,7 @@ def command_text(
     if subcommand == "demote":
         if len(remainder) != 1:
             raise MemorySystemError("Usage: /memory demote ID")
+        _latest_legacy_facts(cfg)
         record = catalog.set_tier(remainder[0], "history")
         _remove_legacy_fact(cfg, str(record.get("content") or ""))
         return f"Demoted {record['id']} to searchable history."
@@ -1763,6 +1768,7 @@ def command_text(
         if len(remainder) != 1:
             raise MemorySystemError("Usage: /memory archive ID")
         existing = catalog.get(remainder[0])
+        _latest_legacy_facts(cfg)
         record = catalog.archive(remainder[0])
         _remove_legacy_fact(cfg, str(existing.get("content") or ""))
         return f"Archived {record['id']}."

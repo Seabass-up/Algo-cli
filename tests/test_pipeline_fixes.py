@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import signal
 import threading
 import time
 from typing import Any
@@ -160,43 +161,220 @@ def test_resume_task_with_apostrophe_is_accepted(monkeypatch):
     assert errors == ["Unknown agent thread 'abc12345'. Use /agent threads to list runs."]
 
 
-def test_team_interrupt_returns_without_waiting_for_running_specialists(monkeypatch):
+def _interrupt_team_once_started(monkeypatch, started: dict[str, threading.Event]) -> None:
+    def interrupted_as_completed(_futures):
+        for event in started.values():
+            assert event.wait(timeout=10)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(agent_pipeline, "as_completed", interrupted_as_completed)
+
+
+def _join_team_workers() -> None:
+    for thread in threading.enumerate():
+        if thread.name.startswith("algo-agent"):
+            thread.join(timeout=10)
+            assert not thread.is_alive()
+
+
+def _child_statuses(result) -> list[str]:
+    return [agent_threads.resolve_thread(thread_id)["status"] for thread_id in result.children]
+
+
+def test_team_interrupt_waits_for_cooperative_specialists_to_acknowledge(monkeypatch):
     cfg = Config()
     _quiet(monkeypatch)
     monkeypatch.setattr(agent_pipeline, "create_client", lambda _cfg: object())
-    started = threading.Barrier(3)
-    observed = threading.Event()
+    monkeypatch.setattr(agent_pipeline, "TEAM_CANCEL_GRACE_SECONDS", 30.0)
+    started = {role: threading.Event() for role in ("scout", "critic")}
+    acknowledged = {role: threading.Event() for role in ("scout", "critic")}
 
-    def slow_run_block(block, **kwargs):
-        started.wait(timeout=2)
-        deadline = time.monotonic() + 3
+    def cooperative_run_block(block, **kwargs):
+        started[block.role].set()
+        deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             try:
                 agent_pipeline._raise_if_team_cancelled(kwargs["cfg"])
             except KeyboardInterrupt:
-                observed.set()
+                acknowledged[block.role].set()
                 raise
             time.sleep(0.01)
-        block.status = "complete"
-        block.output = "## Block Output\nlate evidence"
+        raise AssertionError("specialist never observed team cancellation")
 
-    def interrupted_as_completed(_futures):
-        started.wait(timeout=2)
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(agent_pipeline, "run_agent_block", slow_run_block)
-    monkeypatch.setattr(agent_pipeline, "as_completed", interrupted_as_completed)
+    monkeypatch.setattr(agent_pipeline, "run_agent_block", cooperative_run_block)
+    _interrupt_team_once_started(monkeypatch, started)
 
     began = time.monotonic()
     result = agent_pipeline.run_agent_team("Review auth", cfg, object(), roles=["scout", "critic"])
     elapsed = time.monotonic() - began
 
     assert result.status == "cancelled"
-    assert elapsed < 1.5
-    assert observed.wait(timeout=2)
-    time.sleep(0.1)
-    children = [agent_threads.resolve_thread(thread_id) for thread_id in result.children]
-    assert [child["status"] for child in children] == ["cancelled", "cancelled"]
+    assert result.error == "Team run cancelled."
+    assert all(event.is_set() for event in acknowledged.values())
+    # Generous bound: returning must not wait out the 30s grace when workers cooperate.
+    assert elapsed < 20
+    assert _child_statuses(result) == ["cancelled", "cancelled"]
+    assert [block["status_code"] for block in result.blocks] == ["", ""]
+    _join_team_workers()
+
+
+def test_team_interrupt_reports_non_cooperative_specialist_as_detached(monkeypatch):
+    cfg = Config()
+    _quiet(monkeypatch)
+    monkeypatch.setattr(agent_pipeline, "create_client", lambda _cfg: object())
+    monkeypatch.setattr(agent_pipeline, "TEAM_CANCEL_GRACE_SECONDS", 0.2)
+    started = {role: threading.Event() for role in ("scout", "critic")}
+    release = threading.Event()
+
+    def mixed_run_block(block, **kwargs):
+        started[block.role].set()
+        if block.role == "critic":
+            assert release.wait(timeout=30)
+            block.status = "complete"
+            block.output = "## Block Output\nlate evidence"
+            return
+        while True:
+            agent_pipeline._raise_if_team_cancelled(kwargs["cfg"])
+            time.sleep(0.01)
+
+    monkeypatch.setattr(agent_pipeline, "run_agent_block", mixed_run_block)
+    _interrupt_team_once_started(monkeypatch, started)
+
+    try:
+        result = agent_pipeline.run_agent_team("Review auth", cfg, object(), roles=["scout", "critic"])
+    finally:
+        release.set()
+    _join_team_workers()
+
+    assert result.status == "cancelled"
+    assert "detached: critic." in result.error
+    assert [(block["role"], block["status_code"]) for block in result.blocks] == [
+        ("scout", ""),
+        ("critic", "specialist_detached"),
+    ]
+    assert _child_statuses(result) == ["cancelled", "cancelled"]
+
+
+def test_late_specialist_cannot_overwrite_cancelled_thread_status(monkeypatch):
+    from algo_cli import git_evidence
+
+    cfg = Config()
+    _quiet(monkeypatch)
+    monkeypatch.setattr(agent_pipeline, "create_client", lambda _cfg: object())
+    monkeypatch.setattr(agent_pipeline, "TEAM_CANCEL_GRACE_SECONDS", 0.2)
+    started = {role: threading.Event() for role in ("scout", "critic")}
+    late_threads: set[str] = set()
+    at_late_write = threading.Event()
+    release = threading.Event()
+    real_snapshot = git_evidence.capture_git_snapshot
+
+    def paused_snapshot(*args, **kwargs):
+        snapshot = real_snapshot(*args, **kwargs)
+        if threading.current_thread().name in late_threads:
+            # The block passed its cancellation check; hold it just before the status write.
+            at_late_write.set()
+            assert release.wait(timeout=30)
+        return snapshot
+
+    def finishing_run_block(block, **kwargs):
+        block.status = "complete"
+        block.output = "## Block Output\nevidence"
+        if block.role == "critic":
+            late_threads.add(threading.current_thread().name)
+        started[block.role].set()
+        if block.role == "scout":
+            while True:
+                agent_pipeline._raise_if_team_cancelled(kwargs["cfg"])
+                time.sleep(0.01)
+
+    def interrupted_as_completed(_futures):
+        for event in started.values():
+            assert event.wait(timeout=10)
+        assert at_late_write.wait(timeout=10)
+        raise KeyboardInterrupt
+
+    writes: list[tuple[str, str]] = []
+    real_update = agent_threads.update_thread
+
+    def recording_update(thread_id, **kwargs):
+        writes.append((thread_id, str(kwargs.get("status", ""))))
+        return real_update(thread_id, **kwargs)
+
+    monkeypatch.setattr(git_evidence, "capture_git_snapshot", paused_snapshot)
+    monkeypatch.setattr(agent_threads, "update_thread", recording_update)
+    monkeypatch.setattr(agent_pipeline, "run_agent_block", finishing_run_block)
+    monkeypatch.setattr(agent_pipeline, "as_completed", interrupted_as_completed)
+
+    try:
+        result = agent_pipeline.run_agent_team("Review auth", cfg, object(), roles=["scout", "critic"])
+        assert _child_statuses(result) == ["cancelled", "cancelled"]
+    finally:
+        release.set()
+    _join_team_workers()
+
+    assert "detached: critic." in result.error
+    critic_id = result.children[1]
+    assert (critic_id, "running") not in writes
+    assert _child_statuses(result) == ["cancelled", "cancelled"]
+
+
+@pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="needs POSIX signal delivery to the main thread")
+def test_second_ctrl_c_during_status_lock_wait_still_cancels_specialists(monkeypatch):
+    cfg = Config()
+    _quiet(monkeypatch)
+    monkeypatch.setattr(agent_pipeline, "create_client", lambda _cfg: object())
+    monkeypatch.setattr(agent_pipeline, "TEAM_CANCEL_GRACE_SECONDS", 10.0)
+    in_locked_write = threading.Event()
+    release = threading.Event()
+    observed_cancel: list[str] = []
+    real_capture = agent_pipeline._capture_thread_workspace
+
+    def paused_capture(capture_cfg, block=None):
+        # The specialist's begin-turn capture runs inside _team_status_write, holding the lock.
+        if threading.current_thread().name.startswith("algo-agent") and block is None:
+            if not in_locked_write.is_set():
+                in_locked_write.set()
+                assert release.wait(timeout=30)
+        return real_capture(capture_cfg, block)
+
+    def cooperative_run_block(block, **kwargs):
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                agent_pipeline._raise_if_team_cancelled(kwargs["cfg"])
+            except KeyboardInterrupt:
+                observed_cancel.append(block.role)
+                raise
+            time.sleep(0.01)
+        raise AssertionError("specialist never observed team cancellation")
+
+    main_ident = threading.get_ident()
+
+    def second_interrupt_then_release():
+        signal.pthread_kill(main_ident, signal.SIGINT)
+        time.sleep(0.3)
+        release.set()
+
+    def interrupted_as_completed(_futures):
+        assert in_locked_write.wait(timeout=10)
+        # The user presses Ctrl+C again while the handler waits for the status lock.
+        threading.Timer(0.3, second_interrupt_then_release).start()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(agent_pipeline, "_capture_thread_workspace", paused_capture)
+    monkeypatch.setattr(agent_pipeline, "run_agent_block", cooperative_run_block)
+    monkeypatch.setattr(agent_pipeline, "as_completed", interrupted_as_completed)
+
+    try:
+        result = agent_pipeline.run_agent_team("Review auth", cfg, object(), roles=["scout", "critic"])
+    finally:
+        release.set()
+    _join_team_workers()
+
+    assert result.status == "cancelled"
+    # The paused specialist may stop at its next status write instead of inside the block.
+    assert observed_cancel
+    assert _child_statuses(result) == ["cancelled", "cancelled"]
 
 
 def test_run_agent_block_runs_in_delegated_scope_on_worker_threads(monkeypatch):

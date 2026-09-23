@@ -290,6 +290,57 @@ def test_repl_error_hint_explains_common_failures():
     assert main.repl_error_hint(ValueError("bad"), cfg) is None
 
 
+class _NotFoundError(Exception):
+    status_code = 404
+
+
+def test_repl_error_hint_suggests_pull_for_local_404():
+    cfg = Config(model="qwen3")
+    cfg.cloud = False
+
+    hint = main.repl_error_hint(_NotFoundError("model 'qwen3' not found"), cfg)
+
+    assert "ollama pull qwen3" in hint
+
+
+def test_repl_error_hint_skips_pull_for_direct_cloud_404(monkeypatch):
+    monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+    cfg = Config(model="gpt-oss:120b")
+    cfg.cloud = True
+    assert main.uses_ollama_cloud(cfg)
+
+    hint = main.repl_error_hint(_NotFoundError("model 'gpt-oss:120b' not found"), cfg)
+
+    assert "ollama pull" not in hint
+    assert "gpt-oss:120b" in hint and "/models" in hint
+
+
+def test_repl_error_hint_suggests_pull_for_cloud_tag_via_local_daemon(monkeypatch):
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    cfg = Config(model="gpt-oss:120b-cloud")
+    cfg.cloud = False
+    assert not main.uses_ollama_cloud(cfg)
+
+    hint = main.repl_error_hint(_NotFoundError("model 'gpt-oss:120b-cloud' not found"), cfg)
+
+    assert "ollama pull gpt-oss:120b-cloud" in hint
+
+
+@pytest.mark.parametrize("route", ["xai", "chatgpt"])
+def test_repl_error_hint_skips_pull_for_provider_404(monkeypatch, route):
+    cfg = Config(model="some-model")
+    cfg.cloud = False
+    if route == "xai":
+        monkeypatch.setattr(main, "routes_to_xai", lambda _cfg, *_a: True)
+    elif route == "chatgpt":
+        monkeypatch.setattr(main, "routes_to_chatgpt", lambda _cfg, *_a: True)
+
+    hint = main.repl_error_hint(_NotFoundError("model not found"), cfg)
+
+    assert "ollama pull" not in hint
+    assert "/models" in hint
+
+
 def test_show_repl_error_prints_class_and_hint(monkeypatch):
     from algo_cli.config import Config
 

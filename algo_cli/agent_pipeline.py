@@ -8,7 +8,8 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import ExitStack, contextmanager
+from concurrent.futures import wait as wait_futures
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
@@ -243,6 +244,15 @@ def _raise_if_team_cancelled(cfg: Config) -> None:
     cancellation = getattr(cfg, "_algo_team_cancellation", None)
     if cancellation is not None and cancellation.is_set():
         raise KeyboardInterrupt("Agent team cancelled")
+
+
+@contextmanager
+def _team_status_write(cfg: Config):
+    # The team sets its cancellation event and then waits for this lock, so a specialist either
+    # finishes an in-flight write before cancellation is recorded or never writes again.
+    with getattr(cfg, "_algo_team_status_lock", None) or nullcontext():
+        _raise_if_team_cancelled(cfg)
+        yield
 
 
 @delegated_scope()
@@ -1101,6 +1111,7 @@ AGENT_THREAD_USAGE = (
 )
 MIN_TEAM_ROLES = 2
 MAX_TEAM_ROLES = 4
+TEAM_CANCEL_GRACE_SECONDS = 5.0
 
 
 def agent_usage_text() -> str:
@@ -2648,18 +2659,19 @@ def _run_contract_bound_specialist(
         )
         lease.enter_context(journal.execution_lease())
         tracker = run_contracts.RunContractTracker(contract)
-        agent_threads.begin_turn(
-            thread_id,
-            task,
-            pipeline="specialist",
-            model=contract.blocks[0].model,
-            workspace=_capture_thread_workspace(cfg),
-            run_contract=_contract_thread_link(contract),
-            checkpoint=_checkpoint_payload(journal),
-            protected=protected,
-            receipt_authority=thread_receipt_authority,
-            anchor_store=receipt_anchor_store,
-        )
+        with _team_status_write(cfg):
+            agent_threads.begin_turn(
+                thread_id,
+                task,
+                pipeline="specialist",
+                model=contract.blocks[0].model,
+                workspace=_capture_thread_workspace(cfg),
+                run_contract=_contract_thread_link(contract),
+                checkpoint=_checkpoint_payload(journal),
+                protected=protected,
+                receipt_authority=thread_receipt_authority,
+                anchor_store=receipt_anchor_store,
+            )
         context_bundle = agent_context.build_agent_context(
             task,
             [],
@@ -2700,17 +2712,18 @@ def _run_contract_bound_specialist(
             block.status_code = "output_contract_failed"
             block.status_reason = "Specialist output did not satisfy the required '## Block Output' evidence contract."
             block.verification_warning = block.status_reason
-        agent_threads.update_thread(
-            thread_id,
-            status="running",
-            blocks=[_block_record(block)],
-            workspace=_capture_thread_workspace(cfg, block),
-            run_contract=_contract_thread_link(contract),
-            checkpoint=_checkpoint_payload(journal),
-            protected=protected,
-            receipt_authority=thread_receipt_authority,
-            anchor_store=receipt_anchor_store,
-        )
+        with _team_status_write(cfg):
+            agent_threads.update_thread(
+                thread_id,
+                status="running",
+                blocks=[_block_record(block)],
+                workspace=_capture_thread_workspace(cfg, block),
+                run_contract=_contract_thread_link(contract),
+                checkpoint=_checkpoint_payload(journal),
+                protected=protected,
+                receipt_authority=thread_receipt_authority,
+                anchor_store=receipt_anchor_store,
+            )
         journal.verifier_result(
             ordinal=0,
             verifier="block_output",
@@ -2737,46 +2750,10 @@ def _run_contract_bound_specialist(
             }
             else "failed"
         )
-        _raise_if_team_cancelled(cfg)
-        persisted = _finish_thread_record(
-            thread_id,
-            status=terminal_status,
-            output=block.output,
-            error=block.status_reason,
-            blocks=[_block_record(block)],
-            pipeline="specialist",
-            workspace=_capture_thread_workspace(cfg, block),
-            contract=contract,
-            checkpoint=_checkpoint_payload(journal),
-            protected=protected,
-            receipt_authority=thread_receipt_authority,
-            anchor_store=receipt_anchor_store,
-        )
-        if not persisted:
-            raise agent_run_journal.AgentRunJournalError("specialist terminal state was not persisted")
-        if state.uncertain_mutation_steps:
-            raise agent_run_journal.AgentRunJournalError("read-only specialist recorded an uncertain mutation")
-        journal.run_finished(
-            status=terminal_status,
-            last_verified_sequence=state.last_verified_sequence,
-        )
-        agent_threads.update_thread(
-            thread_id,
-            checkpoint=_checkpoint_payload(journal),
-            protected=protected,
-            receipt_authority=thread_receipt_authority,
-            anchor_store=receipt_anchor_store,
-        )
-    except Exception as exc:
-        block.status = "failed"
-        block.status_code = block.status_code or "specialist_contract_error"
-        block.status_reason = str(exc)
-        block.output = block.output or f"## Block Output\n\nSpecialist failed: {exc}"
-        block.context_output = agent_blocks.compact_block_output(block.output)[: agent_threads.MAX_BLOCK_CONTEXT_CHARS]
-        if contract is not None and journal is not None:
-            _finish_thread_record(
+        with _team_status_write(cfg):
+            persisted = _finish_thread_record(
                 thread_id,
-                status="failed",
+                status=terminal_status,
                 output=block.output,
                 error=block.status_reason,
                 blocks=[_block_record(block)],
@@ -2788,15 +2765,53 @@ def _run_contract_bound_specialist(
                 receipt_authority=thread_receipt_authority,
                 anchor_store=receipt_anchor_store,
             )
-        else:
-            _finish_specialist_thread(
+        if not persisted:
+            raise agent_run_journal.AgentRunJournalError("specialist terminal state was not persisted")
+        if state.uncertain_mutation_steps:
+            raise agent_run_journal.AgentRunJournalError("read-only specialist recorded an uncertain mutation")
+        journal.run_finished(
+            status=terminal_status,
+            last_verified_sequence=state.last_verified_sequence,
+        )
+        with _team_status_write(cfg):
+            agent_threads.update_thread(
                 thread_id,
-                block,
-                error=block.status_reason,
+                checkpoint=_checkpoint_payload(journal),
                 protected=protected,
                 receipt_authority=thread_receipt_authority,
                 anchor_store=receipt_anchor_store,
             )
+    except Exception as exc:
+        block.status = "failed"
+        block.status_code = block.status_code or "specialist_contract_error"
+        block.status_reason = str(exc)
+        block.output = block.output or f"## Block Output\n\nSpecialist failed: {exc}"
+        block.context_output = agent_blocks.compact_block_output(block.output)[: agent_threads.MAX_BLOCK_CONTEXT_CHARS]
+        with _team_status_write(cfg):
+            if contract is not None and journal is not None:
+                _finish_thread_record(
+                    thread_id,
+                    status="failed",
+                    output=block.output,
+                    error=block.status_reason,
+                    blocks=[_block_record(block)],
+                    pipeline="specialist",
+                    workspace=_capture_thread_workspace(cfg, block),
+                    contract=contract,
+                    checkpoint=_checkpoint_payload(journal),
+                    protected=protected,
+                    receipt_authority=thread_receipt_authority,
+                    anchor_store=receipt_anchor_store,
+                )
+            else:
+                _finish_specialist_thread(
+                    thread_id,
+                    block,
+                    error=block.status_reason,
+                    protected=protected,
+                    receipt_authority=thread_receipt_authority,
+                    anchor_store=receipt_anchor_store,
+                )
     finally:
         lease.close()
     return block
@@ -2908,6 +2923,7 @@ def run_agent_team(
     )
 
     team_cancellation = threading.Event()
+    team_status_lock = threading.Lock()
 
     def run_specialist(role: str) -> agent_blocks.AgentBlock:
         # Copy persisted fields only, never locks, scoped grants, or YOLO activation.
@@ -2920,6 +2936,7 @@ def run_agent_team(
         member_cfg.session_summary = ""
         member_cfg.attempt_ledger = []
         setattr(member_cfg, "_algo_team_cancellation", team_cancellation)
+        setattr(member_cfg, "_algo_team_status_lock", team_status_lock)
         block = agent_blocks.AgentBlock(
             role=role,
             prompt=_specialist_prompt(role),
@@ -2963,9 +2980,42 @@ def run_agent_team(
                 specialists[role] = block
         except KeyboardInterrupt:
             interrupted = True
+            # Set first so a repeated Ctrl+C cannot skip cancellation; then wait out any
+            # in-flight specialist status write so none lands after the cancelled records.
             team_cancellation.set()
+            status_locked = False
+            try:
+                status_locked = team_status_lock.acquire(timeout=TEAM_CANCEL_GRACE_SECONDS)
+            except KeyboardInterrupt:
+                pass
+            finally:
+                if status_locked:
+                    team_status_lock.release()
             for future in futures:
                 future.cancel()
+            running = [future for future in futures if not future.done()]
+            try:
+                # Bounded acknowledgement: cooperative specialists stop at their next
+                # cancellation check; anything still running afterwards is detached.
+                wait_futures(running, timeout=TEAM_CANCEL_GRACE_SECONDS)
+            except KeyboardInterrupt:
+                pass
+            detached: list[str] = []
+            for future, role in futures.items():
+                if role in specialists:
+                    continue
+                if not future.done():
+                    detached.append(role)
+                elif not future.cancelled() and future.exception() is None:
+                    # Finished before cancellation; its own terminal record stands.
+                    specialists[role] = future.result()
+            detached_note = (
+                f" Specialists still running after {TEAM_CANCEL_GRACE_SECONDS:g}s were detached: "
+                f"{', '.join(role for role in selected_roles if role in detached)}."
+                if detached
+                else ""
+            )
+            cancelled_blocks: list[agent_blocks.AgentBlock] = []
             for role in selected_roles:
                 if role in specialists:
                     continue
@@ -2973,8 +3023,14 @@ def run_agent_team(
                     role=role,
                     prompt=_specialist_prompt(role),
                     status="cancelled",
-                    status_reason="Team run cancelled.",
+                    status_code="specialist_detached" if role in detached else "",
+                    status_reason=(
+                        "Team run cancelled; specialist did not acknowledge cancellation and was detached."
+                        if role in detached
+                        else "Team run cancelled."
+                    ),
                 )
+                cancelled_blocks.append(block)
                 _finish_specialist_thread(
                     child_by_role.get(role, ""),
                     block,
@@ -2982,25 +3038,27 @@ def run_agent_team(
                     receipt_authority=thread_receipt_authority,
                     anchor_store=_receipt_anchor_store,
                 )
+            error = f"Team run cancelled.{detached_note}"
             if parent_id:
                 try:
                     agent_threads.update_thread(
                         parent_id,
                         status="cancelled",
-                        error="Team run cancelled.",
+                        error=error,
                         protected=protected,
                         receipt_authority=thread_receipt_authority,
                         anchor_store=_receipt_anchor_store,
                     )
                 except (OSError, ValueError, KeyError, ElsieReceiptError):
                     pass
-            show_error("Agent team cancelled.")
+            show_error(f"Agent team cancelled.{detached_note}")
             return AgentRunResult(
                 thread_id=parent_id,
                 status="cancelled",
                 pipeline="team",
-                error="Team run cancelled.",
+                error=error,
                 children=child_ids,
+                blocks=[_block_record(block) for block in cancelled_blocks],
             )
     finally:
         pool.shutdown(wait=not interrupted, cancel_futures=interrupted)
