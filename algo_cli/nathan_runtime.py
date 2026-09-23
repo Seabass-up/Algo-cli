@@ -66,6 +66,13 @@ _TOOL_ERROR_PREFIX_RE = re.compile(
     r"|(?:searching|running|fetching|extracting|rendering|generating|"
     r"executing|pulling|deleting|creating|copying|showing)\b)[^\n]{0,400}?: "
 )
+# search_files keeps rg matches when rg also reports errors and appends this note as the final
+# line (or just before the truncation marker); the search is incomplete, not a success.
+_PARTIAL_SEARCH_NOTE_RE = re.compile(
+    r"\n\[partial: search reported \d+\+? error\(s\); first: [^\n]*\]"
+    r"(?:\n\.\.\.\[truncated: [^\n]*\])?\Z"
+)
+_READ_FILE_NOT_FOUND_RETRY = "\nRetry read_file with the intended exact path."
 _BASELINE_CAPABILITIES = CapabilityMask(Capability.READ.value | Capability.MODEL.value | Capability.MEMORY.value)
 _BASELINE_ACTIONS = frozenset(
     {
@@ -900,6 +907,12 @@ def run_tool(name: str, args: dict[str, Any], cfg: Config) -> str:
         from . import session_commands
 
         return session_commands.execute(str(call_args.get("command") or ""), cfg)
+    if name in {"run_shell", "write_file"}:
+        # Team cancellation is runtime authority; never accept a model-supplied value.
+        call_args.pop("cancel_event", None)
+        team_cancellation = getattr(cfg, "_algo_team_cancellation", None)
+        if team_cancellation is not None:
+            call_args["cancel_event"] = team_cancellation
     fn = TOOL_MAP.get(name)
     if not fn:
         available = ", ".join(sorted(TOOL_MAP)[:40])
@@ -1188,6 +1201,25 @@ def _structured_result_status(result: str, *, name: str = "") -> str | None:
     return None
 
 
+def _is_read_file_error(result: str) -> bool:
+    """Recognize only the error shapes read_file and the runtime emit, never file bodies.
+
+    read_file returns file text verbatim, so its first line proves nothing. Its own errors
+    and the runtime's refusals are single lines with no trailing newline; the two multi-line
+    shapes are the not-found suggestion list and the argument-correction hint.
+    """
+
+    lowered = result.lower()
+    if lowered.startswith("error: file not found: ") and result.endswith(_READ_FILE_NOT_FOUND_RETRY):
+        return True
+    if lowered.startswith("tool argument error for read_file:"):
+        return True
+    if "\n" in result or "\r" in result:
+        return False
+    lowered = lowered.strip()
+    return lowered.startswith(("error:", "tool error", "unknown tool")) or bool(_TOOL_ERROR_PREFIX_RE.match(lowered))
+
+
 def classify_tool_status(
     result: str,
     *,
@@ -1199,8 +1231,13 @@ def classify_tool_status(
         return "skipped"
     if not approved:
         return "denied"
+    if name == "read_file":
+        return "failed" if _is_read_file_error(str(result)) else "worked"
     lowered = str(result).strip().lower()
     if lowered.startswith(("error:", "tool error", "tool argument error", "unknown tool")):
+        return "failed"
+    if name in {"", "search_files"} and _PARTIAL_SEARCH_NOTE_RE.search(str(result).rstrip()):
+        # The matches stay in the result; only the status stops claiming a complete search.
         return "failed"
     exit_matches = _SHELL_EXIT_CODE_RE.findall(str(result))
     # Shell output carries its own exit code; its first line is the command's output, not a tool error.

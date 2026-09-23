@@ -1807,6 +1807,146 @@ Local only.
 **Prevention:** derive user guidance from the same routing helpers the request
 used.
 
+## 2026-09-23: Hex English Words Were Taken As Thread References
+
+**Symptom and cause:** `/agent resume add a regression test` looked up thread `add`; any all-hex word (`a`, `beef`, `decade`) could select a real thread by prefix and restore its workspace, because the earlier fix accepted 1-64 hex characters.
+
+**Repair:** A reference followed by task words must contain a digit or exactly match an existing thread id; lone references still resolve for feedback.
+
+**Verification and limits:** Tests cover all 16 reported words for resume and fork, digit prefixes, and exact all-letter ids. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Command detection over free text needs a signal English cannot produce, such as a digit.
+
+## 2026-09-23: Schemeless Host Still Disabled Embedding Identity
+
+**Symptom and cause:** `probe_ollama_identity` and the gateway upstream check required an `http` scheme, so `127.0.0.1:11434` produced no identity and bound retrieval silently returned nothing.
+
+**Repair:** Both paths normalize the host with `normalize_ollama_host` before the loopback check.
+
+**Verification and limits:** Tests cover schemeless loopback identity and gateway upstream, and remote hosts still refused. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Fix a normalization gap at every consumer of the value, not only the one that was reproduced.
+
+## 2026-09-23: File Bodies Were Classified As Tool Failures
+
+**Symptom and cause:** `classify_tool_status` sniffed content, so a file whose first line looked like `Error reading /...:` was recorded as failed; three callers also omitted the tool name.
+
+**Repair:** read_file failures are recognized by the tool's own single-line error shape, and `/agent`, one-shot and program runs pass the tool name.
+
+**Verification and limits:** Tests cover real errors, look-alike bodies, and each caller. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Classify by what the tool emitted, not by what the content resembles.
+
+## 2026-09-23: Partial Searches Were Recorded As Success
+
+**Symptom and cause:** Matches plus a trailing partial-search note classified as `worked`, so retry and the attempt ledger treated an incomplete search as complete.
+
+**Repair:** Results carrying the partial-search note are classified as not successful while keeping the matches.
+
+**Verification and limits:** A test classifies the partial note. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** A status that other code branches on must reflect the note the model reads.
+
+## 2026-09-23: Malformed Globs Crashed The Search Fallback
+
+**Symptom and cause:** The new glob-to-regex translation compiled unvalidated character classes, so `*[^]` raised `re.error`.
+
+**Repair:** Invalid or unterminated classes match literally.
+
+**Verification and limits:** A fuzz set of odd globs compiles without exceptions. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Translators from user syntax to regex need a malformed-input test set.
+
+## 2026-09-23: Team Cancellation Did Not Stop Running Tools
+
+**Symptom and cause:** After team Ctrl+C, a specialist already inside `run_shell` or `write_file` could still change the workspace.
+
+**Repair:** `write_file` refuses after cancellation and `run_shell` terminates its subprocess when the team cancellation event is set.
+
+**Verification and limits:** Tests cover both tools with and without cancellation. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Cancellation must reach the operations that mutate state, not only the model loop.
+
+## 2026-09-23: Parallel Tool Batch Ignored Ctrl+C
+
+**Symptom and cause:** After an interrupt the chat loop waited on every running tool future with no timeout.
+
+**Repair:** Not-started futures are cancelled, running ones get a bounded grace, and unfinished calls are recorded as interrupted so tool calls stay paired.
+
+**Verification and limits:** A hung future no longer blocks Ctrl+C and history stays well formed. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Every interrupt path needs a deadline.
+
+## 2026-09-23: Rich Markup Holes Outside Tool Lines
+
+**Symptom and cause:** `/diff` read the block role as a style, and the agent-block panel, `/help`, the memory table and runtime overview parsed untrusted text as markup (`[/tmp/x]` crashed, `d[key]` vanished).
+
+**Repair:** Untrusted values are appended as plain Text across display.py and main.py; `Text.from_markup` is no longer used on them.
+
+**Verification and limits:** Regression tests cover every fixed site; they fail on the previous source. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** After fixing one markup hole, audit the whole module for the same pattern.
+
+## 2026-09-23: Existing Lesson Indexes Kept Old Chunks
+
+**Symptom and cause:** The stale check ignored the index version, and v0.20.0 already wrote version 2, so upgraded installs kept pre-fix chunks.
+
+**Repair:** The version was bumped and a mismatched or missing version rebuilds the index.
+
+**Verification and limits:** Tests include an index written by the released version. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** When changing derived data, bump its version and test the upgrade from the published release.
+
+## 2026-09-23: Lesson Comment Stripping Cut Paragraph Text
+
+**Symptom and cause:** A regex deleted `<!-- ... -->` spans inside paragraphs, cutting text with nested markers.
+
+**Repair:** Only the template's own full comment blocks are removed; paragraph text is kept whole.
+
+**Verification and limits:** The reported paragraph is indexed intact. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Strip only the structure you own.
+
+## 2026-09-23: Memory Filter Exceptions And First-Person Complaints
+
+**Symptom and cause:** `You always needed a backup...` was rejected despite the documented exception, and `I always forget to run the tests` was stored.
+
+**Repair:** The -ed exception is limited to the intended verbs, and first-person complaints are rejected like second-person ones.
+
+**Verification and limits:** A table of accepted rules and rejected complaints covers both directions. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Keep filter changes paired with positive and negative fixtures.
+
+## 2026-09-23: New Files Were Invisible To Code-RAG For 15 Seconds
+
+**Symptom and cause:** The in-memory scan cache checked only files already indexed, so a new file stayed invisible until the cache expired.
+
+**Repair:** The freshness check also compares recorded directory signatures, so additions and removals trigger a rescan.
+
+**Verification and limits:** Tests cover new files, nested and new directories, ignored directories and cache reuse. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** A freshness check must cover additions, not only changes to known entries.
+
+## 2026-09-23: Thinking Panels Hid The Ending And Indentation
+
+**Symptom and cause:** The settled panel showed only the first 1,200 characters, and the live tail stripped leading spaces.
+
+**Repair:** The settled panel shows head, an omission marker and tail; the live window starts at a line boundary and keeps indentation.
+
+**Verification and limits:** Tests check the ending marker and an indented final line. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Truncation should keep the part the reader needs, and never alter the kept text.
+
+## 2026-09-23: Keychain Item Names Were Not Release-Blocked
+
+**Symptom and cause:** The public-release scan blocked personal names but not local keychain service names used for companion credentials.
+
+**Repair:** Those names are private markers in the scan of source and built artifacts.
+
+**Verification and limits:** A regression test proves both names are flagged and generic labels are not. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
+
+**Prevention:** Treat credential locator names as private data, not only the secrets.
+
 ## Repair Log Checklist
 
 - Date and component.

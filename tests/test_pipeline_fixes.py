@@ -456,3 +456,107 @@ def test_team_trailing_roles_without_value_is_usage_error():
         "",
         agent_pipeline.AGENT_TEAM_USAGE,
     )
+
+
+_HEX_WORDS = ["a", "be", "add", "ace", "bad", "bed", "bee", "cab", "dad", "dead", "face", "cafe", "beef", "decade"]
+_HEX_WORDS += ["facade", "defaced"]
+
+
+def _record_pipeline_tasks(monkeypatch) -> list[str]:
+    started: list[str] = []
+
+    def fake_run_pipeline(task, _cfg, _client, pipeline_name="default", **_kwargs):
+        started.append(task)
+        return agent_pipeline.AgentRunResult(thread_id="t", status="complete", pipeline=pipeline_name, output="ok")
+
+    monkeypatch.setattr(agent_pipeline, "run_agent_pipeline", fake_run_pipeline)
+    monkeypatch.setattr(agent_pipeline.memory_runtime, "capture_completed_user_turn", lambda *_a, **_k: {})
+    return started
+
+
+@pytest.mark.parametrize("action", ["resume", "fork"])
+@pytest.mark.parametrize("word", _HEX_WORDS)
+def test_hex_english_word_after_resume_or_fork_runs_as_task(monkeypatch, action, word):
+    _quiet(monkeypatch)
+    started = _record_pipeline_tasks(monkeypatch)
+    # Every stored id begins with the word, so a prefix lookup would silently select a real thread.
+    threads = [{"id": (word * 8)[:8]}]
+
+    def prefix_resolve(ref, **_kwargs):
+        matches = [record for record in threads if record["id"].startswith(ref.lower())]
+        if not matches:
+            raise KeyError(f"Unknown agent thread '{ref}'. Use /agent threads to list runs.")
+        return matches[0]
+
+    monkeypatch.setattr(agent_threads, "resolve_thread", prefix_resolve)
+    command = f"{action} {word} up the error text"
+
+    agent_pipeline.execute_agent_command(command, Config(), object())
+
+    assert started == [command]
+
+
+@pytest.mark.parametrize("command", ["resume add a regression test", "fork beef up the error text"])
+def test_reported_hex_sentences_start_tasks_without_real_threads(monkeypatch, command):
+    _quiet(monkeypatch)
+    started = _record_pipeline_tasks(monkeypatch)
+
+    agent_pipeline.execute_agent_command(command, Config(), object())
+
+    assert started == [command]
+
+
+@pytest.mark.parametrize(
+    ("command", "ref"),
+    [
+        ("resume abc12345 fix the user's bug", "abc12345"),
+        ("resume 9f3 finish the checks", "9f3"),
+        ("fork 7d12a9 try another approach", "7d12a9"),
+    ],
+)
+def test_digit_thread_refs_before_task_words_still_resolve(monkeypatch, command, ref):
+    errors = _quiet(monkeypatch)
+    resolved: list[str] = []
+
+    def fake_resolve(value, **_kwargs):
+        resolved.append(value)
+        raise KeyError(f"Unknown agent thread '{value}'. Use /agent threads to list runs.")
+
+    def forbid_pipeline(*_args, **_kwargs):
+        raise AssertionError("thread command must not start a pipeline")
+
+    monkeypatch.setattr(agent_threads, "resolve_thread", fake_resolve)
+    monkeypatch.setattr(agent_pipeline, "run_agent_pipeline", forbid_pipeline)
+
+    result = agent_pipeline.execute_agent_command(command, Config(), object())
+
+    assert resolved == [ref]
+    assert errors == [f"Unknown agent thread '{ref}'. Use /agent threads to list runs."]
+    assert result == f"Error: {errors[0]}"
+
+
+def test_all_letter_thread_id_before_task_words_resumes_only_on_exact_match(monkeypatch):
+    _quiet(monkeypatch)
+    resolved: list[str] = []
+
+    class Resumed(Exception):
+        pass
+
+    def fake_resolve(value, **_kwargs):
+        resolved.append(value)
+        return {"id": "deadbeef"}
+
+    def stop_at_journal(record, **_kwargs):
+        raise Resumed(record["id"])
+
+    def forbid_pipeline(*_args, **_kwargs):
+        raise AssertionError("an exact thread id must not start a pipeline")
+
+    monkeypatch.setattr(agent_threads, "resolve_thread", fake_resolve)
+    monkeypatch.setattr(agent_pipeline, "_journal_for_thread", stop_at_journal)
+    monkeypatch.setattr(agent_pipeline, "run_agent_pipeline", forbid_pipeline)
+
+    with pytest.raises(Resumed, match="deadbeef"):
+        agent_pipeline.execute_agent_command("resume deadbeef finish the checks", Config(), object())
+
+    assert set(resolved) == {"deadbeef"}

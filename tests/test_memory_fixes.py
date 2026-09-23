@@ -214,6 +214,111 @@ def test_paragraph_lessons_reach_retrieval_index() -> None:
     assert result["chunk_count"] == 2
 
 
+def test_lesson_text_with_comment_markers_is_kept_whole() -> None:
+    paragraph = "<!-- Keep this: never <!-- strip me --> trust comments. -->"
+
+    assert identity._chunk_lessons(identity.DEFAULT_LESSONS + "\n" + paragraph + "\n") == [paragraph]
+
+
+@pytest.mark.parametrize(
+    "paragraph",
+    [
+        "Use <!-- markers --> sparingly in docs.",
+        "<!-- open comment without an end marker",
+        "<!-- note --> trailing text after a comment",
+    ],
+)
+def test_partial_comment_markers_do_not_cut_lesson_text(paragraph: str) -> None:
+    assert identity._chunk_lessons(identity.DEFAULT_LESSONS + "\n" + paragraph + "\n") == [paragraph]
+
+
+def test_template_comment_blocks_are_still_removed() -> None:
+    text = (
+        "# Lessons Learned\n\n"
+        "<!-- single-line template comment -->\n"
+        "  <!-- indented template comment -->\n"
+        "<!--\nmulti-line template\ncomment block\n-->\n\n"
+        "Keep the real lesson.\n\n"
+        "## 2026-01-01\n<!-- heading comment -->\nSection body.\n"
+    )
+
+    assert identity._chunk_lessons(text) == ["Keep the real lesson.", "## 2026-01-01\nSection body."]
+
+
+@pytest.mark.parametrize("version", [None, 1, 2])
+def test_old_version_lessons_index_is_stale_and_rebuilds(version: int | None) -> None:
+    identity.scaffold_if_needed()
+    identity.LESSONS_PATH.write_text(
+        identity.DEFAULT_LESSONS + "\nFirst paragraph lesson.\n\nSecond paragraph lesson.\n",
+        encoding="utf-8",
+    )
+
+    def embed(texts: list[str]) -> list[list[float]]:
+        return [[1.0, float(i)] for i in range(len(texts))]
+
+    identity.rebuild_lessons_index(embed, "m")
+    assert identity.lessons_index_stale("m") is False
+
+    old = json.loads(identity.LESSONS_INDEX_PATH.read_text(encoding="utf-8"))
+    old["chunks"] = old["chunks"][:1]
+    old["chunks"][0]["text"] = "First paragraph lesson.\n\nSecond paragraph lesson."
+    if version is None:
+        old.pop("version")
+    else:
+        old["version"] = version
+    identity.LESSONS_INDEX_PATH.write_text(json.dumps(old), encoding="utf-8")
+    identity._LESSONS_INDEX = None
+
+    assert identity.lessons_index_stale("m") is True
+    assert identity.lessons_index_status()["stale"] is True
+    assert identity.retrieve_lessons("paragraph", embed, "m") == []
+
+    result = identity.rebuild_lessons_index(embed, "m")
+
+    assert result["chunk_count"] == 2
+    assert identity.lessons_index_stale("m") is False
+    assert json.loads(identity.LESSONS_INDEX_PATH.read_text(encoding="utf-8"))["version"] == identity.LESSONS_INDEX_VERSION
+
+
+def test_lessons_index_written_by_v0_20_0_is_stale_and_rebuilds() -> None:
+    # v0.20.0 wrote "version": 2 and its heading-only chunker indexed paragraph lessons as zero chunks.
+    assert identity.LESSONS_INDEX_VERSION > 2
+    identity.scaffold_if_needed()
+    identity.LESSONS_PATH.write_text(
+        identity.DEFAULT_LESSONS
+        + "\nFirst paragraph lesson about footer toolbars.\n\nSecond paragraph lesson about rust indexers.\n",
+        encoding="utf-8",
+    )
+    released = {
+        "version": 2,
+        "mtime_ns": identity.LESSONS_PATH.stat().st_mtime_ns,
+        "model": "m",
+        "embedding_model": "m",
+        "vector_dimensions": 0,
+        "chunks": [],
+    }
+    identity.LESSONS_INDEX_PATH.write_text(json.dumps(released), encoding="utf-8")
+    identity._LESSONS_INDEX = None
+
+    def embed(texts: list[str]) -> list[list[float]]:
+        return [[1.0, float(i)] for i in range(len(texts))]
+
+    assert identity.lessons_index_stale("m") is True
+    assert identity.lessons_index_status()["stale"] is True
+
+    result = identity.rebuild_lessons_index(embed, "m")
+
+    assert result["chunk_count"] == 2
+    assert identity.lessons_index_stale("m") is False
+    persisted = json.loads(identity.LESSONS_INDEX_PATH.read_text(encoding="utf-8"))
+    assert persisted["version"] == identity.LESSONS_INDEX_VERSION
+    assert [chunk["text"] for chunk in persisted["chunks"]] == [
+        "First paragraph lesson about footer toolbars.",
+        "Second paragraph lesson about rust indexers.",
+    ]
+    assert identity.retrieve_lessons("footer toolbars", embed, "m")
+
+
 # --- standing-rule auto-capture ---
 
 

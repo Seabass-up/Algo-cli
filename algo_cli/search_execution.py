@@ -182,6 +182,29 @@ def run_search_process(
     )
 
 
+def _glob_class(body: str, start: int) -> tuple[str, int] | None:
+    # Unterminated or invalid classes (e.g. '*[^]', '[z-a]') return None so the '[' matches literally.
+    index = start + 1
+    negate = body[index : index + 1] in {"!", "^"}
+    index += negate
+    first = index
+    items: list[str] = []
+    while index < len(body) and (body[index] != "]" or index == first):
+        low = body[index]
+        if body[index + 1 : index + 2] == "-" and index + 2 < len(body) and body[index + 2] != "]":
+            high = body[index + 2]
+            if low > high:
+                return None
+            items.append(f"{re.escape(low)}-{re.escape(high)}")
+            index += 3
+        else:
+            items.append(re.escape(low))
+            index += 1
+    if index >= len(body):
+        return None
+    return f"[{'^' if negate else ''}{''.join(items)}]", index
+
+
 def _glob_regex(body: str) -> str:
     out: list[str] = []
     index = 0
@@ -200,16 +223,9 @@ def _glob_regex(body: str) -> str:
             out.append("[^/]*")
         elif char == "?":
             out.append("[^/]")
-        elif char == "[":
-            end = body.find("]", index + 2 if body[index + 1 : index + 2] in {"!", "^", "]"} else index + 1)
-            if end < 0:
-                out.append(re.escape(char))
-            else:
-                inner = body[index + 1 : end].replace("\\", "\\\\")
-                if inner.startswith("!"):
-                    inner = "^" + inner[1:]
-                out.append(f"[{inner}]")
-                index = end
+        elif char == "[" and (parsed := _glob_class(body, index)) is not None:
+            regex, index = parsed
+            out.append(regex)
         elif char == "{" and not in_braces and "}" in body[index:]:
             in_braces = True
             out.append("(?:")

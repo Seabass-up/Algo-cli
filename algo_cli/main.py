@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait as futures_wait
 from contextvars import copy_context
 from dataclasses import dataclass
 from html import escape
@@ -134,6 +134,7 @@ from .nathan_runtime import (
     run_tool,
     show_typed_tool_result,
     run_args_preview as _run_args_preview,
+    tool_result_message,
     tool_runtime_args,
 )
 from .james_dispatch import (
@@ -146,6 +147,7 @@ from .james_dispatch import (
     default_dispatch_dependencies,
     dispatch_action,
 )
+from .arthur_outcomes import OutcomeStatus
 from .marcus_authority import ConfirmationMode, EffectClass, IdempotencyClass
 from .samuel_policy_engine import resolve_action
 from .tool_context import select_tools_for_prompt
@@ -968,7 +970,7 @@ def handle_embed_command(arg: str, cfg: Config, client: Client) -> None:
         show_error(f"Error generating embeddings: {exc}")
         return
     payload = tools_module.unpack_embed_response(response, model, text, truncate=ns.truncate, dimensions=ns.dimensions)
-    console.print(json.dumps(payload, indent=2))
+    console.print(Text(json.dumps(payload, indent=2)))
 
 
 def handle_vision_command(arg: str, cfg: Config, client: Client) -> None:
@@ -1026,7 +1028,7 @@ def handle_vision_command(arg: str, cfg: Config, client: Client) -> None:
         return
     message = get_attr(response, "message", {}) or {}
     content = get_attr(message, "content", "")
-    console.print(content or "(empty response)")
+    console.print(Text(content or "(empty response)"))
 
 
 def handle_pdf_command(arg: str, cfg: Config) -> None:
@@ -1138,14 +1140,14 @@ def run_google_login(arg: str = "") -> bool:
         return False
     if no_browser or manual_only:
         show_info("Open this URL in a browser where you are signed into Google with the target Workspace account:")
-        console.print(prep["auth_url"])
+        console.print(Text(prep["auth_url"]))
         if no_browser and not manual_only:
             show_info("If you're SSHed in, forward the callback port first:")
-            console.print(f"  {prep['ssh_tunnel_cmd']}")
+            console.print(Text(f"  {prep['ssh_tunnel_cmd']}"))
     else:
         show_info("Opening Google auth in your browser…")
         show_info("If the browser does not open, copy this URL manually:")
-        console.print(prep["auth_url"])
+        console.print(Text(prep["auth_url"]))
 
     callback: dict[str, str] = {}
     if not manual_only:
@@ -1357,13 +1359,32 @@ def _google_pop_flag(tokens: list[str], flag: str) -> bool:
     return found
 
 
+_GOOGLE_MUTED_OPEN = "  [muted]("
+_GOOGLE_MUTED_CLOSE = ")[/]  id="
+
+
+def _google_line_text(line: str) -> Text:
+    # The Drive/Calendar formatters wrap their parenthetical in [muted]...[/]; render that span as a
+    # style while keeping API-supplied names and ids literal so they cannot inject or break markup.
+    head, sep, rest = line.rpartition(_GOOGLE_MUTED_OPEN)
+    if not sep:
+        return Text(line)
+    detail, close, tail = rest.rpartition(_GOOGLE_MUTED_CLOSE)
+    if not close:
+        return Text(line)
+    text = Text(head + "  ")
+    text.append(f"({detail})", style="muted")
+    text.append("  id=" + tail)
+    return text
+
+
 def _google_print_lines(lines: list[str]) -> None:
     for line in lines:
-        console.print(line)
+        console.print(_google_line_text(line))
 
 
 def _google_print_text(text: str, *, limit: int = _GOOGLE_TEXT_LIMIT) -> None:
-    console.print(text[:limit] + ("\n...[truncated]" if len(text) > limit else ""))
+    console.print(Text(text[:limit] + ("\n...[truncated]" if len(text) > limit else "")))
 
 
 def run_google(arg: str = "") -> None:
@@ -1417,7 +1438,7 @@ def run_google(arg: str = "") -> None:
                 data, _headers = client.drive_download(file_id)
                 _google_print_text(data.decode("utf-8", errors="replace"))
             else:
-                console.print(json.dumps(client.drive_get(file_id), indent=2, sort_keys=True))
+                console.print(Text(json.dumps(client.drive_get(file_id), indent=2, sort_keys=True)))
         elif sub == "docs-get":
             if len(rest) != 1:
                 show_error("Usage: /google docs-get DOCUMENT_ID")
@@ -1425,7 +1446,7 @@ def run_google(arg: str = "") -> None:
             document = client.docs_get(rest[0])
             title = document.get("title")
             if title:
-                console.print(f"# {title}")
+                console.print(Text(f"# {title}"))
             _google_print_text(google_workspace.format_docs_plain_text(document, client))
         elif sub == "sheets-values":
             if len(rest) != 2:
@@ -1455,7 +1476,7 @@ def run_google(arg: str = "") -> None:
             if not messages:
                 console.print("  (no messages)")
             for msg in messages:
-                console.print(f"  - id={msg.get('id', '?')}  thread={msg.get('threadId', '?')}")
+                console.print(Text(f"  - id={msg.get('id', '?')}  thread={msg.get('threadId', '?')}"))
         elif sub == "gmail-get":
             if not rest:
                 show_error("Usage: /google gmail-get MESSAGE_ID")
@@ -1533,14 +1554,14 @@ def run_chatgpt_login(arg: str = "") -> bool:
         return False
     if no_browser or manual_only:
         show_info("Open this URL on any browser you're signed into ChatGPT/OpenAI with:")
-        console.print(prep["auth_url"])
+        console.print(Text(prep["auth_url"]))
         if no_browser and not manual_only:
             show_info("If you're SSHed in, forward the callback port first:")
-            console.print(f"  {prep['ssh_tunnel_cmd']}")
+            console.print(Text(f"  {prep['ssh_tunnel_cmd']}"))
     else:
         show_info("Opening ChatGPT/OpenAI auth in your browser…")
         show_info("If the browser does not open, copy this URL manually:")
-        console.print(prep["auth_url"])
+        console.print(Text(prep["auth_url"]))
 
     callback: dict[str, str] = {}
     if not manual_only:
@@ -1639,7 +1660,7 @@ def run_model_check(arg: str = "", *, active_model: str = "") -> None:
     if not _mi.is_xai_model(name):
         lines.append("Family: not Grok/xAI — routed via Ollama host/cloud per /model and cfg.host.")
         for line in lines:
-            console.print(line)
+            console.print(Text(line))
         return
     lines.append("Family: Grok/xAI (documented API-key authentication)")
     auth = xai_auth.auth_status()
@@ -1662,7 +1683,7 @@ def run_model_check(arg: str = "", *, active_model: str = "") -> None:
     )
     lines.append("Sources: algo_cli/main.py (XAI_MODEL_CHOICES), xai_client.py, tests/test_xai_client.py")
     for line in lines:
-        console.print(line)
+        console.print(Text(line))
 
 
 def run_xai_test() -> bool:
@@ -1687,9 +1708,9 @@ def run_xai_test() -> bool:
         if isinstance(item, dict):
             name = item.get("id") or item.get("name") or "(unnamed)"
             owned = item.get("owned_by", "")
-            console.print(f"  - {name}" + (f"  [muted]({owned})[/]" if owned else ""))
+            console.print(Text.assemble(f"  - {name}", (f"  ({owned})", "muted") if owned else ""))
         else:
-            console.print(f"  - {item}")
+            console.print(Text(f"  - {item}"))
     return True
 
 
@@ -1746,7 +1767,7 @@ def run_x_account(arg: str = "") -> None:
     else:
         show_error(result.message)
     if result.data:
-        console.print(json.dumps(result.data, indent=2))
+        console.print(Text(json.dumps(result.data, indent=2)))
 
 
 def auth_hint_for_cloud() -> None:
@@ -1914,10 +1935,9 @@ def collect_dashboard_state(
 
 
 def choose_from_menu(title: str, choices: list[tuple[str, str]], default: int = 1) -> int | None:
-    console.print(f"\n[bold]{title}[/]")
+    console.print(Text.assemble("\n", (title, "bold")))
     for index, (label, detail) in enumerate(choices, 1):
-        suffix = f" [dim]{detail}[/]" if detail else ""
-        console.print(f"  [cyan]{index}[/]. {label}{suffix}")
+        console.print(Text.assemble("  ", (str(index), "cyan"), f". {label}", (f" {detail}", "dim") if detail else ""))
     while True:
         raw = input(f"Select [{default}]: ").strip()
         if not raw:
@@ -2090,8 +2110,8 @@ def handle_status_command(cfg: Config, client: Any | None = None) -> None:
     ):
         if enabled:
             features.append(label)
-    console.print(f"[bold primary]Model:[/] {cfg.model}")
-    console.print(f"[bold primary]Context:[/] {ctx_line}")
+    console.print(Text.assemble(("Model:", "bold primary"), f" {cfg.model}"))
+    console.print(Text.assemble(("Context:", "bold primary"), f" {ctx_line}"))
     console.print(f"[bold primary]Features:[/] {', '.join(features) if features else 'none'}")
     from .tools import intelligence_runtime_snapshot
     from .kernels.manifest import kernel_runtime_snapshot
@@ -2100,10 +2120,18 @@ def handle_status_command(cfg: Config, client: Any | None = None) -> None:
     if intelligence.get("wired"):
         caps = ", ".join(intelligence.get("capabilities") or []) or "none"
         console.print(
-            f"[bold primary]Intelligence:[/] wired · {intelligence.get('exports', 0)} exports · {caps}"
+            Text.assemble(
+                ("Intelligence:", "bold primary"),
+                f" wired · {intelligence.get('exports', 0)} exports · {caps}",
+            )
         )
     else:
-        console.print(f"[bold primary]Intelligence:[/] unavailable ({intelligence.get('error', 'import failed')})")
+        console.print(
+            Text.assemble(
+                ("Intelligence:", "bold primary"),
+                f" unavailable ({intelligence.get('error', 'import failed')})",
+            )
+        )
     kernels = kernel_runtime_snapshot()
     counts = kernels.get("counts") or {}
     console.print(
@@ -2151,15 +2179,24 @@ def handle_diff_command() -> None:
         return
     for block in reversed(blocks):
         if block.requires_change and (block.git_evidence or "").strip():
-            console.print(f"[bold]Diff captured by [{block.role}] block[/] — status: [text]{block.status}[/]")
+            # Block fields carry model and tool text; Text segments keep brackets literal.
+            console.print(
+                Text.assemble(
+                    ("Diff captured by ", "bold"),
+                    (f"[{block.role}]", "bold"),
+                    (" block", "bold"),
+                    " — status: ",
+                    (str(block.status), "text"),
+                )
+            )
             if block.status_reason:
-                console.print(f"[muted]reason:[/] {block.status_reason}")
+                console.print(Text.assemble(("reason:", "muted"), f" {block.status_reason}"))
             if block.verification_warning:
-                console.print(f"[warning]verification:[/] {block.verification_warning}")
+                console.print(Text.assemble(("verification:", "warning"), f" {block.verification_warning}"))
             if block.successful_writes:
-                console.print(f"[muted]successful_writes:[/] {', '.join(block.successful_writes)}")
+                console.print(Text.assemble(("successful_writes:", "muted"), f" {', '.join(block.successful_writes)}"))
             console.print()
-            console.print(block.git_evidence.strip())
+            console.print(Text(block.git_evidence.strip()))
             return
     show_info(
         "No verified diff captured in this session. requires_change blocks have run "
@@ -2180,18 +2217,24 @@ def handle_changes_command() -> None:
             "success" if block.status == "complete" else ("warning" if block.status == "partial" else "error")
         )
         console.print(
-            f"  [bold][{block.role}][/]  [{status_style}]{block.status}[/]"
-            f"  {duration_s:.1f}s  {block.tool_calls} tool call"
-            f"{'' if block.tool_calls == 1 else 's'}"
+            Text.assemble(
+                "  ",
+                (f"[{block.role}]", "bold"),
+                "  ",
+                (str(block.status), status_style),
+                f"  {duration_s:.1f}s  {block.tool_calls} tool call{'' if block.tool_calls == 1 else 's'}",
+            )
         )
         if block.status_reason:
-            console.print(f"      [muted]reason:[/] {block.status_reason}")
+            console.print(Text.assemble("      ", ("reason:", "muted"), f" {block.status_reason}"))
         if block.verification_warning:
-            console.print(f"      [warning]verification:[/] {block.verification_warning}")
+            console.print(Text.assemble("      ", ("verification:", "warning"), f" {block.verification_warning}"))
         if block.successful_writes:
-            console.print(f"      [muted]writes:[/] {', '.join(block.successful_writes)}")
+            console.print(Text.assemble("      ", ("writes:", "muted"), f" {', '.join(block.successful_writes)}"))
         if block.mutation_actions:
-            console.print(f"      [muted]mutation_actions:[/] {', '.join(block.mutation_actions)}")
+            console.print(
+                Text.assemble("      ", ("mutation_actions:", "muted"), f" {', '.join(block.mutation_actions)}")
+            )
 
 
 def handle_context_command(arg: str, cfg: Config, client: Client) -> None:
@@ -2284,6 +2327,35 @@ def _main_dispatch_dependencies() -> DispatchDependencies:
     dependencies.invoke = invoke
     dependencies.approve = ask_approval
     return dependencies
+
+
+PARALLEL_INTERRUPT_GRACE_SECONDS = 2.0
+PARALLEL_INTERRUPTED_RESULT = (
+    "[interrupted] The user pressed Ctrl+C before this read-only call returned; no result was recorded."
+)
+
+
+def _drain_interrupted_batch(
+    future_to_index: dict[Any, int],
+    ordered_results: list[DispatchResult | None],
+    cancellation: DispatchCancellation,
+) -> None:
+    """Collect finished results within a bounded grace; unfinished slots stay None."""
+
+    cancellation.cancel("keyboard_interrupt")
+    for future in future_to_index:
+        future.cancel()
+    try:
+        futures_wait(list(future_to_index), timeout=PARALLEL_INTERRUPT_GRACE_SECONDS)
+    except KeyboardInterrupt:
+        pass  # A second Ctrl+C ends the grace period early.
+    for future, index in future_to_index.items():
+        if not future.done() or future.cancelled():
+            continue
+        try:
+            ordered_results[index] = future.result(timeout=0)
+        except BaseException:
+            ordered_results[index] = None  # Reported as interrupted so the call still gets a result.
 
 
 def _parallel_dispatch_allowed(
@@ -2553,9 +2625,9 @@ def handle_icl_command(arg: str, cfg: Config) -> None:
         if len(parts) < 2 or not parts[1].strip():
             show_error("Usage: /icl ask <question>")
             return
-        console.print(index_compute_lab.run_ask(parts[1].strip(), limit=10))
+        console.print(Text(index_compute_lab.run_ask(parts[1].strip(), limit=10)))
         return
-    console.print(f"[muted]index-compute-lab root:[/] {index_compute_lab.resolve_lab_root()}")
+    console.print(Text.assemble(("index-compute-lab root:", "muted"), f" {index_compute_lab.resolve_lab_root()}"))
     console.print(f"  assets ready     : [text]{index_compute_lab.lab_available()}[/]")
     console.print(f"  auto-inject      : [text]{'on' if cfg.index_compute_lab_auto_inject else 'off'}[/]")
     console.print("[muted]Use /icl on|off, /icl ask <question>, /icl path.[/]")
@@ -2591,7 +2663,7 @@ def handle_intuition_command(arg: str, cfg: Config) -> None:
 
     if sub == "status":
         status = intuition_engine.status()
-        console.print(f"[muted]Intuition index:[/] {status['index_path']}")
+        console.print(Text.assemble(("Intuition index:", "muted"), f" {status['index_path']}"))
         console.print(f"  recall enabled : [text]{cfg.intuition_recall_enabled}[/]")
         console.print(f"  capture enabled: [text]{cfg.intuition_capture_enabled}[/]")
         console.print(f"  blocks         : [text]{status['block_count']}[/]")
@@ -2599,7 +2671,7 @@ def handle_intuition_command(arg: str, cfg: Config) -> None:
         console.print(f"  pending        : [text]{status['pending']}[/]")
         console.print(f"  max blocks     : [text]{status['max_blocks']}[/]")
         if status["by_type"]:
-            console.print(f"  by type        : [text]{json.dumps(status['by_type'], sort_keys=True)}[/]")
+            console.print(Text.assemble("  by type        : ", (json.dumps(status['by_type'], sort_keys=True), "text")))
         console.print("[muted]Use /intuition on|off|list|reindex|forget <id>|add <type> <text>.[/]")
         return
 
@@ -2699,7 +2771,7 @@ def handle_intelligence_command(arg: str = "", cfg: Config | None = None) -> Non
             return
         graph = intelligence.build_project_graph(root, persist=False)
         rows = intelligence.query_project_graph(graph, term, limit=10)
-        console.print(f"[muted]Intelligence query:[/] {term}")
+        console.print(Text.assemble(("Intelligence query:", "muted"), f" {term}"))
         if not rows:
             console.print("  [text]no matches[/]")
             return
@@ -2709,13 +2781,13 @@ def handle_intelligence_command(arg: str = "", cfg: Config | None = None) -> Non
             line = row.get("line")
             suffix = f":{line}" if line else ""
             label = str(row.get("qualname") or row.get("module") or row.get("id") or "")
-            console.print(f"  [primary]{kind}[/] [text]{path}{suffix}[/] {label}")
+            console.print(Text.assemble("  ", (kind, "primary"), " ", (f"{path}{suffix}", "text"), f" {label}"))
         return
 
     if sub == "reindex":
         graph = intelligence.build_project_graph(root, persist=True)
         console.print("[muted]Intelligence graph indexed:[/]")
-        console.print(f"  root   : [text]{graph.root}[/]")
+        console.print(Text.assemble("  root   : ", (str(graph.root), "text")))
         console.print(f"  files  : [text]{len(graph.files)}[/]")
         console.print(f"  symbols: [text]{len(graph.symbols)}[/]")
         console.print(f"  imports: [text]{len(graph.imports)}[/]")
@@ -2738,7 +2810,7 @@ def handle_intelligence_command(arg: str = "", cfg: Config | None = None) -> Non
     available = [name for name in capability_names if name in exports or hasattr(intelligence, name)]
     console.print("[muted]Intelligence layer:[/] wired")
     console.print("  commands    : [text]status, query <term>, reindex, init[/]")
-    console.print(f"  root        : [text]{root}[/]")
+    console.print(Text.assemble("  root        : ", (str(root), "text")))
     console.print(f"  module      : [text]{intelligence.__name__}[/]")
     console.print(f"  exports     : [text]{len(exports)}[/]")
     console.print(f"  capabilities: [text]{', '.join(available) if available else 'none'}[/]")
@@ -2763,18 +2835,18 @@ def _print_personal_library() -> None:
     if not catalog.is_file():
         console.print("  catalog     : [text]empty[/]")
     elif patterns is None:
-        console.print(f"  catalog     : [text]{catalog} (could not be parsed)[/]")
+        console.print(Text.assemble("  catalog     : ", (f"{catalog} (could not be parsed)", "text")))
     else:
-        console.print(f"  catalog     : [text]{patterns} patterns in {catalog}[/]")
+        console.print(Text.assemble("  catalog     : ", (f"{patterns} patterns in {catalog}", "text")))
     console.print(f"  kernels     : [text]{len(user_kernels.kernels) or 'none'}[/]")
     for issue in user_kernels.issues:
-        console.print(f"  issue       : [text]{issue}[/]")
+        console.print(Text.assemble("  issue       : ", (str(issue), "text")))
     if not catalog.is_file() or not user_kernels.kernels:
         console.print("[muted]Build your own:[/]")
         if not catalog.is_file() or not user_kernels.path.is_file():
             console.print("  - run /intelligence init to create a starter catalog and kernel file")
-        console.print(f"  - add patterns to {catalog}, then /harness refresh")
-        console.print(f"  - declare kernels in {user_kernels.path} (see /kernel help)")
+        console.print(Text(f"  - add patterns to {catalog}, then /harness refresh"))
+        console.print(Text(f"  - declare kernels in {user_kernels.path} (see /kernel help)"))
 
 
 def _init_personal_library() -> None:
@@ -2828,7 +2900,7 @@ def handle_kernel_command(arg: str = "") -> None:
         from .kernels.manifest import user_kernels_dir
 
         show_info("Usage: /kernel list | /kernel show NAME | /kernel check [NAME]")
-        console.print(f"Add your own kernels in {user_kernels_dir() / 'kernels.json'}:")
+        console.print(Text(f"Add your own kernels in {user_kernels_dir() / 'kernels.json'}:"))
         console.print(USER_KERNEL_EXAMPLE, markup=False, highlight=False)
         console.print("Modules are imported from that folder, e.g. my_kernels/summarize.py.")
         return
@@ -2840,15 +2912,15 @@ def handle_kernel_command(arg: str = "") -> None:
         console.print("Built-in kernels:")
         for spec in specs:
             if spec.source == "built-in":
-                console.print(f"  {spec.name} ({spec.status}/{spec.safety_level}) - {spec.description}")
+                console.print(Text(f"  {spec.name} ({spec.status}/{spec.safety_level}) - {spec.description}"))
         user_catalog = load_user_kernels()
         console.print("Your kernels:")
         if not user_catalog.kernels:
-            console.print(f"  none yet - declare them in {user_catalog.path} (/kernel help shows the format)")
+            console.print(Text(f"  none yet - declare them in {user_catalog.path} (/kernel help shows the format)"))
         for spec in user_catalog.kernels:
-            console.print(f"  {spec.name} ({spec.status}/{spec.safety_level}) - {spec.description}")
+            console.print(Text(f"  {spec.name} ({spec.status}/{spec.safety_level}) - {spec.description}"))
         for issue in user_catalog.issues:
-            console.print(f"  issue: {issue}")
+            console.print(Text(f"  issue: {issue}"))
         return
 
     if sub == "show":
@@ -2860,20 +2932,20 @@ def handle_kernel_command(arg: str = "") -> None:
         if selected_spec is None:
             show_error(f"Unknown kernel: {name}")
             return
-        console.print(f"Kernel: {selected_spec.name}")
-        console.print(f"Description: {selected_spec.description}")
-        console.print(f"Status: {selected_spec.status}")
-        console.print(f"Safety: {selected_spec.safety_level}")
+        console.print(Text(f"Kernel: {selected_spec.name}"))
+        console.print(Text(f"Description: {selected_spec.description}"))
+        console.print(Text(f"Status: {selected_spec.status}"))
+        console.print(Text(f"Safety: {selected_spec.safety_level}"))
         console.print("Modules:")
         for module in selected_spec.modules:
-            console.print(f"  - {module}")
+            console.print(Text(f"  - {module}"))
         console.print("Actions:")
         for action in selected_spec.actions:
-            console.print(f"  - {action}")
+            console.print(Text(f"  - {action}"))
         console.print("Slash commands:")
         for command in selected_spec.slash_commands:
-            console.print(f"  - {command}")
-        console.print(f"Readiness: /kernel check {selected_spec.name}")
+            console.print(Text(f"  - {command}"))
+        console.print(Text(f"Readiness: /kernel check {selected_spec.name}"))
         return
 
     if sub == "check":
@@ -2883,7 +2955,7 @@ def handle_kernel_command(arg: str = "") -> None:
         except KeyError as exc:
             show_error(str(exc).strip("'"))
             return
-        console.print(render_kernel_audit(audits))
+        console.print(Text(render_kernel_audit(audits)))
         return
 
     show_error("Usage: /kernel list | /kernel show NAME | /kernel check [NAME]")
@@ -4261,6 +4333,28 @@ def _agent_loop_body(
                 )
                 tool_calls_since_reflection += 1
 
+            def consume_unfinished(name: str, args: dict[str, Any], tool_call_id: str | None) -> None:
+                # Every dispatched call needs a paired result, or the provider rejects the next turn.
+                nonlocal tool_calls_since_reflection
+
+                show_typed_tool_result(
+                    name,
+                    PARALLEL_INTERRUPTED_RESULT,
+                    outcome_status=OutcomeStatus.CANCELLED,
+                    call_id=tool_call_id,
+                )
+                cfg.messages.append(tool_result_message(name, PARALLEL_INTERRUPTED_RESULT, tool_call_id))
+                loop_state.record_tool_result(tool_call_id)
+                run_tool_calls.append(
+                    {
+                        "name": name,
+                        "status": "cancelled",
+                        "args": _run_args_preview(args, name=name),
+                        "explicit_memory_write": False,
+                    }
+                )
+                tool_calls_since_reflection += 1
+
             if not any(batch_ceiling_codes) and _parallel_dispatch_allowed(
                 normalized_calls,
                 cfg,
@@ -4270,7 +4364,9 @@ def _agent_loop_body(
 
                 ordered_results: list[DispatchResult | None] = [None] * len(batch)
                 dispatch_order = order_tool_batch_by_qos([item[0] for item in batch])
-                with ThreadPoolExecutor(max_workers=min(4, len(batch))) as pool:
+                pool = ThreadPoolExecutor(max_workers=min(4, len(batch)))
+                interrupted_batch = False
+                try:
                     future_to_index = {}
                     for queue_position, batch_index in enumerate(dispatch_order):
                         (name, args), tool_call_id = batch[batch_index]
@@ -4293,15 +4389,19 @@ def _agent_loop_body(
                         for future in as_completed(future_to_index):
                             ordered_results[future_to_index[future]] = future.result()
                     except KeyboardInterrupt:
-                        # Stop queued actions; retain outcomes from observations already in flight.
-                        batch_cancellation.cancel("keyboard_interrupt")
-                        for future, index in future_to_index.items():
-                            ordered_results[index] = future.result()
+                        interrupted_batch = True
+                        _drain_interrupted_batch(future_to_index, ordered_results, batch_cancellation)
+                finally:
+                    # Parallel batches are pure observations, so an abandoned worker may finish in the background.
+                    pool.shutdown(wait=not interrupted_batch, cancel_futures=interrupted_batch)
 
                 for index, ((name, args), tool_call_id) in enumerate(batch):
                     dispatched = ordered_results[index]
-                    if dispatched is None:  # pragma: no cover - executor invariant
-                        raise RuntimeError("canonical dispatcher returned no result")
+                    if dispatched is None:
+                        if not batch_cancellation.cancelled:  # pragma: no cover - executor invariant
+                            raise RuntimeError("canonical dispatcher returned no result")
+                        consume_unfinished(name, args, tool_call_id)
+                        continue
                     consume_dispatch(name, args, tool_call_id, dispatched)
             else:
                 for index, ((name, args), tool_call_id) in enumerate(batch):
@@ -4584,19 +4684,19 @@ def show_goal_status(cfg: Config, *, _preflighted: bool = False) -> None:
     except ElsieReceiptError:
         show_error("Protected goal state could not be authenticated; status was withheld.")
         return
-    console.print(f"[bold primary]Goal:[/] {projected['goal']}")
-    console.print(f"  status : [text]{projected['status']}[/]")
+    console.print(Text.assemble(("Goal:", "bold primary"), f" {projected['goal']}"))
+    console.print(Text.assemble("  status : ", (str(projected['status']), "text")))
     console.print(f"  rounds : [text]{projected['rounds_done']}/{projected['max_rounds']}[/]")
     if projected["cwd"]:
-        console.print(f"  cwd    : [text]{projected['cwd']}[/]")
+        console.print(Text.assemble("  cwd    : ", (str(projected['cwd']), "text")))
     if projected["reason"]:
-        console.print(f"  reason : [text]{projected['reason']}[/]")
+        console.print(Text.assemble("  reason : ", (str(projected['reason']), "text")))
     elif projected["reason_receipt"]:
-        console.print(f"  reason : [muted]{projected['reason_receipt']}[/]")
+        console.print(Text.assemble("  reason : ", (str(projected['reason_receipt']), "muted")))
     if projected["last_summary"]:
-        console.print(f"  last   : [muted]{projected['last_summary']}[/]")
+        console.print(Text.assemble("  last   : ", (str(projected['last_summary']), "muted")))
     elif projected["last_summary_receipt"]:
-        console.print(f"  last   : [muted]{projected['last_summary_receipt']}[/]")
+        console.print(Text.assemble("  last   : ", (str(projected['last_summary_receipt']), "muted")))
     if record.is_open:
         console.print("[muted]Resume with /goal resume; drop with /goal clear.[/]")
 
@@ -4673,7 +4773,7 @@ def print_models(client: Client) -> None:
         name = get_attr(model, "name", None) or get_attr(model, "model", "?")
         size = get_attr(model, "size", 0) or 0
         size_text = f"{size / 1e9:.1f} GB" if size else "?"
-        console.print(f"  {name} ({size_text})")
+        console.print(Text(f"  {name} ({size_text})"))
 
 
 def print_harness_results(
@@ -4913,7 +5013,7 @@ def _run_update_entry() -> int:
     """Upgrade the published package without initializing user runtime state."""
     result = updater.update_algo_cli()
     style = "green" if result.returncode == 0 else "red"
-    console.print(f"[{style}]{result.message}[/{style}]")
+    console.print(Text(str(result.message), style=style))
     if result.returncode != 0 and result.details:
         console.print(result.details, markup=False, soft_wrap=True)
     return result.returncode
@@ -4969,7 +5069,7 @@ def _run_daemon_entry(prompt: str | None) -> int | None:
         except (OSError, RuntimeError, TimeoutError) as exc:
             show_error(str(exc))
             return 1
-        console.print(f"[green]{message}[/]" if ok else f"[red]{message}[/]")
+        console.print(Text(str(message), style="green" if ok else "red"))
         return 0 if ok else 1
 
     if action == "stop":
@@ -4978,7 +5078,7 @@ def _run_daemon_entry(prompt: str | None) -> int | None:
         except (OSError, RuntimeError, TimeoutError) as exc:
             show_error(str(exc))
             return 1
-        console.print(f"[green]{message}[/]" if ok else f"[yellow]{message}[/]")
+        console.print(Text(str(message), style="green" if ok else "yellow"))
         return 0 if ok else 1
 
     try:
@@ -4997,10 +5097,12 @@ def _run_daemon_entry(prompt: str | None) -> int | None:
     )
     state = "running" if compatible else "incompatible"
     console.print(
-        f"Daemon {state}: PID {result.get('pid', '?')}, "
+        Text(
+            f"Daemon {state}: PID {result.get('pid', '?')}, "
         f"uptime {result.get('uptime_seconds', '?')}s, "
         f"protocol {result.get('protocol_version', '?')}, "
-        f"Algo CLI {result.get('app_version', '?')}"
+            f"Algo CLI {result.get('app_version', '?')}"
+        )
     )
     return 0 if compatible else 1
 
@@ -5083,7 +5185,7 @@ def main() -> None:
     if args.version:
         from .version_manifest import build_manifest, format_version_string
 
-        console.print(format_version_string(build_manifest()))
+        console.print(Text(format_version_string(build_manifest())))
         return
     if (args.prompt or "").strip().casefold() == "update" and not args.oneshot:
         raise SystemExit(_run_update_entry())
@@ -5236,9 +5338,9 @@ def main() -> None:
 
             val = get_credential(helper, key)
             if val is None:
-                console.print(f"[dim]No credential found for '{key}' in helper '{helper}'[/dim]")
+                console.print(Text(f"No credential found for '{key}' in helper '{helper}'", style="dim"))
             else:
-                console.print(f"[green]{helper}/{key}[/green]: configured (value redacted)")
+                console.print(Text.assemble((f"{helper}/{key}", "green"), ": configured (value redacted)"))
             return
         else:
             console.print("[yellow]Usage: algo-cli credential [list|get <helper> <key>][/yellow]")
@@ -5250,17 +5352,17 @@ def main() -> None:
 
         url = args.prompt.strip().split(maxsplit=1)[1] if " " in args.prompt.strip() else ""
         if not url or url == "help":
-            console.print(format_help())
+            console.print(Text(format_help()))
             return
         result = handle_deep_link(url)
         if not result.get("valid"):
-            console.print(f"[red]Invalid URL: {result.get('error', 'unknown error')}[/red]")
+            console.print(Text(f"Invalid URL: {result.get('error', 'unknown error')}", style="red"))
             return
-        console.print(f"[green]Action:[/green] {result.get('action', '?')}")
+        console.print(Text.assemble(("Action:", "green"), f" {result.get('action', '?')}"))
         if result.get("target"):
-            console.print(f"[green]Target:[/green] {result['target']}")
+            console.print(Text.assemble(("Target:", "green"), f" {result['target']}"))
         if result.get("query"):
-            console.print(f"[green]Query:[/green] {result['query']}")
+            console.print(Text.assemble(("Query:", "green"), f" {result['query']}"))
         return
     try:
         cfg.theme = set_theme(cfg.theme)

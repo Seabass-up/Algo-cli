@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from html import escape
+import threading
+import time
 
 import pytest
 
@@ -352,3 +354,144 @@ def test_show_repl_error_prints_class_and_hint(monkeypatch):
     assert seen["msg"] == "TimeoutError"
     assert seen["error_class"] == "TimeoutError"
     assert "timed out" in seen["hint"]
+
+
+def _render(monkeypatch, handler) -> str:
+    from algo_cli import agent_blocks
+
+    blocks = [
+        agent_blocks.AgentBlock(
+            role=role,
+            prompt="p",
+            status="partial",
+            output="ok",
+            requires_change=True,
+            git_evidence="diff --git a/x b/x\n+[bold]kept[/bold] d[key]",
+            status_reason="write outside [/tmp] was refused",
+            verification_warning="lookup d[key] failed [Errno 2]",
+            successful_writes=["a[b].py"],
+            mutation_actions=["write_file: c[d].py"],
+        )
+        for role in ("code-scout", "planner")
+    ]
+    main._session_pipeline_blocks[:] = blocks
+    try:
+        with main.console.capture() as captured:
+            handler()
+    finally:
+        main.clear_session_pipeline_blocks()
+    return captured.get()
+
+
+def test_diff_command_prints_role_and_bracketed_values_literally(monkeypatch):
+    out = _render(monkeypatch, main.handle_diff_command)
+
+    assert "Diff captured by [planner] block" in out
+    assert "write outside [/tmp] was refused" in out
+    assert "lookup d[key] failed [Errno 2]" in out
+    assert "a[b].py" in out
+    assert "+[bold]kept[/bold] d[key]" in out
+
+
+def test_changes_command_prints_roles_and_bracketed_values_literally(monkeypatch):
+    out = _render(monkeypatch, main.handle_changes_command)
+
+    assert "[code-scout]" in out and "[planner]" in out
+    assert out.count("write outside [/tmp] was refused") == 2
+    assert "lookup d[key] failed [Errno 2]" in out
+    assert "a[b].py" in out and "c[d].py" in out
+
+
+def test_ctrl_c_during_parallel_batch_does_not_wait_for_hung_tool(monkeypatch, tmp_path):
+    from test_agent_progress_recovery import run_script
+
+    hung_entered = threading.Event()
+    fast_done = threading.Event()
+    release = threading.Event()
+    configs: list = []
+
+    def invoke(_name, args, _cfg):
+        if args["path"] == "hung":
+            hung_entered.set()
+            release.wait(timeout=30)
+            return "late observation"
+        fast_done.set()
+        return "fast observation"
+
+    def interrupt_wait(_futures):
+        assert hung_entered.wait(timeout=5) and fast_done.wait(timeout=5)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(main, "as_completed", interrupt_wait)
+    monkeypatch.setattr(main, "PARALLEL_INTERRUPT_GRACE_SECONDS", 0.3)
+    started = time.monotonic()
+    try:
+        code, events, client, _invoked, _captures = run_script(
+            monkeypatch,
+            tmp_path,
+            lambda _turn: {
+                "tool_calls": [
+                    {"id": path, "function": {"name": "read_file", "arguments": {"path": path}}}
+                    for path in ("fast", "hung")
+                ]
+            },
+            invoke=invoke,
+            configure=configs.append,
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+
+    assert elapsed < 5
+    assert code == 2 and len(client.calls) == 1
+    results = {item["call_id"]: item for item in events if item["type"] == "tool_result"}
+    assert list(results) == ["fast", "hung"]
+    assert results["hung"]["status"] == "cancelled"
+    assert events[-1]["status_reason"] == "interrupted"
+
+    messages = configs[0].messages
+    call_ids = [
+        call.get("id")
+        for message in messages
+        if message.get("role") == "assistant"
+        for call in message.get("tool_calls") or []
+    ]
+    tool_messages = [message for message in messages if message.get("role") == "tool"]
+    assert call_ids == ["fast", "hung"]
+    assert [message.get("tool_call_id") for message in tool_messages] == call_ids
+    assert "fast observation" in tool_messages[0]["content"]
+    assert tool_messages[1]["content"] == main.PARALLEL_INTERRUPTED_RESULT
+
+
+def test_google_list_lines_render_muted_span_without_literal_tags():
+    from algo_cli import google_workspace
+
+    lines = google_workspace.format_drive_files(
+        {"files": [{"id": "abc", "name": "Report", "mimeType": "text/plain", "size": 10}]}
+    ) + google_workspace.format_calendar_events(
+        {"items": [{"summary": "Sync", "id": "e1", "start": {"date": "2026-09-23"}}]}
+    )
+    with main.console.capture() as capture:
+        main._google_print_lines(lines)
+    out = capture.get()
+    assert "[muted]" not in out and "[/]" not in out
+    assert "  - Report  (text/plain  10B)  id=abc" in out
+    assert "  - Sync  (2026-09-23)  id=e1" in out
+
+    text = main._google_line_text(lines[0])
+    muted = [text.plain[span.start:span.end] for span in text.spans if span.style == "muted"]
+    assert muted == ["(text/plain  10B)"]
+
+
+def test_google_list_lines_keep_api_names_literal():
+    from algo_cli import google_workspace
+
+    lines = google_workspace.format_drive_files(
+        {"files": [{"id": "x[1]", "name": "[/tmp] d[key] [bold]", "mimeType": "text/plain"}]}
+    ) + ["  (no files)", "  - odd [muted]name"]
+    with main.console.capture() as capture:
+        main._google_print_lines(lines)
+    out = capture.get()
+    assert "  - [/tmp] d[key] [bold]  (text/plain)  id=x[1]" in out
+    assert "  (no files)" in out
+    assert "  - odd [muted]name" in out

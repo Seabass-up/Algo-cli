@@ -201,6 +201,7 @@ _thinking_pending = ""
 _thinking_last_render_time = 0.0
 _thinking_started_at = 0.0
 _THINKING_VISIBLE_CHARS = 1200
+_THINKING_SETTLED_HEAD_CHARS = 400
 
 # One-shot JSON event sink. When set, display helpers route to it instead of
 # rendering Rich panels. Installed by algo_cli.oneshot.run_oneshot().
@@ -432,12 +433,18 @@ def compact_path(path: str, limit: int = 42) -> str:
     return f"{text[: max(1, limit - 3)]}..."
 
 
-def _kv_table(rows: list[tuple[str, str]]) -> Table:
+def _plain(value: Any, style: str = "") -> Text:
+    # Table cells, panel titles and bodies given as str are parsed as Rich
+    # markup; runtime values (model names, paths, messages) must stay literal.
+    return Text(str(value), style=style)
+
+
+def _kv_table(rows: list[tuple[str, Text]]) -> Table:
     table = Table.grid(padding=(0, 1), expand=True)
     table.add_column(style="muted", no_wrap=True)
     table.add_column(style="text", overflow="ellipsis")
     for label, value in rows:
-        table.add_row(f"{label}:", value)
+        table.add_row(_plain(f"{label}:"), value)
     return table
 
 
@@ -479,9 +486,9 @@ def _render_model_rows(items: list[dict[str, str]], *, max_rows: int = 4) -> Tab
     table.add_column(style="text", justify="right", no_wrap=True)
     for row in items[:max_rows]:
         table.add_row(
-            row.get("name", "?"),
-            row.get("size", "?"),
-            row.get("quant", "?"),
+            _plain(row.get("name", "?")),
+            _plain(row.get("size", "?")),
+            _plain(row.get("quant", "?")),
         )
     if not items:
         table.add_row("[muted]No models found[/]", "", "")
@@ -495,9 +502,9 @@ def _render_running_rows(items: list[dict[str, str]], *, max_rows: int = 3) -> T
     table.add_column(style="text", justify="right", no_wrap=True)
     for row in items[:max_rows]:
         table.add_row(
-            row.get("name", "?"),
-            row.get("size_vram", row.get("size", "?")),
-            row.get("context", "?"),
+            _plain(row.get("name", "?")),
+            _plain(row.get("size_vram", row.get("size", "?"))),
+            _plain(row.get("context", "?")),
         )
     if not items:
         table.add_row("[muted]No running models[/]", "", "")
@@ -524,8 +531,8 @@ def _render_chat_panel(cfg: Any) -> Panel:
             border = "border_accent" if role == "ASSISTANT" else "border"
             blocks.append(
                 Panel(
-                    _message_preview(message),
-                    title=title,
+                    _plain(_message_preview(message)),
+                    title=_plain(title),
                     border_style=border,
                     box=box.ROUNDED,
                 )
@@ -559,14 +566,16 @@ def _render_inspector_panel(
 
     session_box = _kv_table(
         [
-            ("Current model", f"[bold primary]{cfg.model}[/]"),
-            ("Mode", f"[text]{'cloud' if cfg.cloud else 'local'}[/]"),
-            ("System prompt", f"[text]{(cfg.system.splitlines()[0] if cfg.system else '').strip() or 'default'}[/]"),
+            ("Current model", _plain(cfg.model, "bold primary")),
+            ("Mode", _plain("cloud" if cfg.cloud else "local", "text")),
+            ("System prompt", _plain((cfg.system.splitlines()[0] if cfg.system else "").strip() or "default", "text")),
             (
                 "Parameters",
-                f"[text]temp {cfg.temperature}, ctx {cfg.num_ctx}, reflect {max(1, int(cfg.tool_think_every))}[/]",
+                _plain(
+                    f"temp {cfg.temperature}, ctx {cfg.num_ctx}, reflect {max(1, int(cfg.tool_think_every))}", "text"
+                ),
             ),
-            ("cwd", f"[muted]{compact_path(cfg.cwd, 34)}[/]"),
+            ("cwd", _plain(compact_path(cfg.cwd, 34), "muted")),
         ]
     )
     sections.append(Panel(session_box, title="Session", border_style="border", box=box.ROUNDED))
@@ -582,10 +591,10 @@ def _render_inspector_panel(
     runtime_body.add_column(style="text", ratio=2, overflow="ellipsis")
     runtime_body.add_column(style="text", justify="right", no_wrap=True)
     runtime_body.add_column(style="text", justify="right", no_wrap=True)
-    runtime_body.add_row("[bold]Server[/]", f"[info]{cfg.host}[/]", f"[text]{'cloud' if cfg.cloud else 'local'}[/]")
+    runtime_body.add_row("[bold]Server[/]", _plain(cfg.host, "info"), f"[text]{'cloud' if cfg.cloud else 'local'}[/]")
     runtime_body.add_row(
         "[bold]Context[/]",
-        f"[text]{cfg.num_ctx}[/]",
+        _plain(cfg.num_ctx, "text"),
         f"[text]{'summary' if cfg.session_summary.strip() else 'live'}[/]",
     )
     runtime_body.add_row(
@@ -595,8 +604,8 @@ def _render_inspector_panel(
         runtime_body.add_row("", "", "")
         runtime_body.add_row(
             "[muted]Active[/]",
-            f"[text]{running_models[0].get('name', '?')}[/]",
-            f"[text]{running_models[0].get('size_vram', running_models[0].get('size', '?'))}[/]",
+            _plain(running_models[0].get("name", "?"), "text"),
+            _plain(running_models[0].get("size_vram", running_models[0].get("size", "?")), "text"),
         )
     sections.append(
         Panel(runtime_body, title=f"Runtime  {len(running_models)} running", border_style="border", box=box.ROUNDED)
@@ -617,7 +626,7 @@ def _render_inspector_panel(
     logs_body.add_column(style="text", overflow="ellipsis")
     if event_lines:
         for index, line in enumerate(event_lines[:5], 1):
-            logs_body.add_row(f"{index:02d}", line)
+            logs_body.add_row(f"{index:02d}", _plain(line))
     else:
         logs_body.add_row("01", "No events yet")
     sections.append(Panel(logs_body, title="Logs", border_style="border", box=box.ROUNDED))
@@ -663,16 +672,23 @@ def show_session_overview(
     if console.width < 100:
         header_status: Any = _kv_table(
             [
-                ("Connected", f"[text]{execution_label}[/]"),
-                ("Model", f"[bold primary]{model}[/]"),
-                ("Mode", f"[info]{mode_label}[/]"),
-                ("Context", f"[text]{context_line}[/]"),
+                ("Connected", _plain(execution_label, "text")),
+                ("Model", _plain(model, "bold primary")),
+                ("Mode", _plain(mode_label, "info")),
+                ("Context", _plain(context_line, "text")),
                 (
                     "Safety",
-                    f"[text]{'safe' if safe_mode else 'safe off'} · {'manual approval' if not auto_mode else 'auto approval'}[/]",
+                    _plain(
+                        f"{'safe' if safe_mode else 'safe off'} · "
+                        f"{'manual approval' if not auto_mode else 'auto approval'}",
+                        "text",
+                    ),
                 ),
-                ("Memory", f"[text]{memory_count} saved · {'summary active' if summary_active else 'live context'}[/]"),
-                ("Theme", f"[secondary]{theme_name}[/]"),
+                (
+                    "Memory",
+                    _plain(f"{memory_count} saved · {'summary active' if summary_active else 'live context'}", "text"),
+                ),
+                ("Theme", _plain(theme_name, "secondary")),
             ]
         )
     else:
@@ -684,8 +700,8 @@ def show_session_overview(
             Panel(
                 _kv_table(
                     [
-                        ("Connected", f"[text]{execution_label}[/]"),
-                        ("Session", f"[text]{model}[/]"),
+                        ("Connected", _plain(execution_label, "text")),
+                        ("Session", _plain(model, "text")),
                     ]
                 ),
                 border_style="border",
@@ -694,9 +710,9 @@ def show_session_overview(
             Panel(
                 _kv_table(
                     [
-                        ("Mode", f"[info]{mode_label}[/]"),
-                        ("Context", f"[text]{context_line}[/]"),
-                        ("Theme", f"[secondary]{theme_name}[/]"),
+                        ("Mode", _plain(mode_label, "info")),
+                        ("Context", _plain(context_line, "text")),
+                        ("Theme", _plain(theme_name, "secondary")),
                     ]
                 ),
                 border_style="border",
@@ -705,9 +721,9 @@ def show_session_overview(
             Panel(
                 _kv_table(
                     [
-                        ("Auto", f"[text]{'on' if auto_mode else 'off'}[/]"),
-                        ("Safe", f"[text]{'on' if safe_mode else 'off'}[/]"),
-                        ("Memories", f"[text]{memory_count}[/]"),
+                        ("Auto", _plain("on" if auto_mode else "off", "text")),
+                        ("Safe", _plain("on" if safe_mode else "off", "text")),
+                        ("Memories", _plain(memory_count, "text")),
                     ]
                 ),
                 border_style="border",
@@ -1077,7 +1093,7 @@ def _agent_block_title(
     status_code: str = "",
     model: str = "",
     write_count: int = 0,
-) -> str:
+) -> Text:
     duration_s = duration_ms / 1000.0
     calls_label = "tool call" if tool_calls == 1 else "tool calls"
     parts = [f"Agent · {role}", f"{duration_s:.1f}s", f"{tool_calls} {calls_label}", status]
@@ -1087,7 +1103,7 @@ def _agent_block_title(
         parts.append(model)
     if write_count > 0:
         parts.append(f"writes:{write_count}")
-    return " — ".join(parts)
+    return Text(" — ".join(parts))
 
 
 def _render_structured_sections(sections: dict[str, list[str]]) -> Group:
@@ -1097,7 +1113,7 @@ def _render_structured_sections(sections: dict[str, list[str]]) -> Group:
         for item in bullets[:16]:
             blocks.append(Text(f"  • {item}", style="text"))
         if len(bullets) > 16:
-            blocks.append(Text(f"  [muted]… {len(bullets) - 16} more[/]", style="muted"))
+            blocks.append(Text(f"  … {len(bullets) - 16} more", style="muted"))
         blocks.append(Text(""))
     return Group(*blocks)
 
@@ -1132,7 +1148,7 @@ def _render_agent_block_body(
             body = Group(
                 body,
                 Text(
-                    f"[muted]Full text ({len(remainder)} chars) — see file or raise ALGO_CLI_AGENT_PREVIEW[/]",
+                    f"Full text ({len(remainder)} chars) — see file or raise ALGO_CLI_AGENT_PREVIEW",
                     style="muted",
                 ),
             )
@@ -1147,7 +1163,7 @@ def _render_agent_block_body(
         Group(
             Markdown(preview),
             Text(
-                f"[muted]Preview ({preview_limit} chars). Set ALGO_CLI_AGENT_PREVIEW=0 for full panel text.[/]",
+                f"Preview ({preview_limit} chars). Set ALGO_CLI_AGENT_PREVIEW=0 for full panel text.",
                 style="muted",
             ),
         ),
@@ -1168,12 +1184,17 @@ def show_agent_block_start(
     if _json_sink is not None:
         return
     label = "Enforced policy" if policy_enforced else "Advisory policy"
-    policy_line = f"\n[text]{label}:[/] {policy_summary}" if policy_summary else ""
-    cwd_line = f"\n[text]Workspace:[/] [muted]{compact_path(cwd, 72)}[/]" if cwd else ""
+    body = Text.assemble(
+        ("Model:", "text"), " ", (str(model), "primary"), "\n", ("Runtime tools:", "text"), f" {tool_count}"
+    )
+    if cwd:
+        body.append_text(Text.assemble("\n", ("Workspace:", "text"), " ", (compact_path(cwd, 72), "muted")))
+    if policy_summary:
+        body.append_text(Text.assemble("\n", (f"{label}:", "text"), " ", str(policy_summary)))
     console.print(
         Panel(
-            f"[text]Model:[/] [primary]{model}[/]\n[text]Runtime tools:[/] {tool_count}{cwd_line}{policy_line}",
-            title=f"Agent · {role}",
+            body,
+            title=_plain(f"Agent · {role}"),
             border_style="border_accent",
             box=box.ROUNDED,
         )
@@ -1225,32 +1246,36 @@ def show_agent_block_complete(
     writes = successful_writes or []
     write_count = len(writes)
 
-    header_lines: list[str] = []
+    # Reasons, warnings, policy text and paths come from tools and models; a
+    # value such as "[/tmp/x]" must render literally, never parse as markup.
+    header_lines: list[Text] = []
     status_style = _agent_block_border_style(status)
-    header_lines.append(f"[{status_style}]Status: {status.upper()}[/]")
+    header_lines.append(Text(f"Status: {status.upper()}", style=status_style))
     if status_code:
-        header_lines.append(f"[muted]Code:[/] {status_code}")
+        header_lines.append(Text.assemble(("Code:", "muted"), " ", str(status_code)))
     if status_reason:
-        header_lines.append(f"[text]{_short_value(status_reason, 220)}[/]")
+        header_lines.append(Text(_short_value(status_reason, 220), style="text"))
     if verification_warning and not status_reason:
-        header_lines.append(f"[warning]Verification warning:[/] {_short_value(verification_warning, 200)}")
+        header_lines.append(
+            Text.assemble(("Verification warning:", "warning"), " ", _short_value(verification_warning, 200))
+        )
 
     footer_parts = [
-        f"[muted]{tool_calls} tool call{'s' if tool_calls != 1 else ''}[/]",
-        f"[muted]{duration_ms / 1000:.1f}s[/]",
+        Text(f"{tool_calls} tool call{'s' if tool_calls != 1 else ''}", style="muted"),
+        Text(f"{duration_ms / 1000:.1f}s", style="muted"),
     ]
     if policy_summary:
-        footer_parts.append(f"[muted]{_short_value(policy_summary, 120)}[/]")
+        footer_parts.append(Text(_short_value(policy_summary, 120), style="muted"))
     if dump_path is not None:
-        footer_parts.append(f"[info]Full output:[/] [accent]{dump_path}[/]")
+        footer_parts.append(Text.assemble(("Full output:", "info"), " ", (str(dump_path), "accent")))
     elif protected:
         safe_receipt = dump_receipt if dump_receipt else "empty"
-        footer_parts.append(f"[muted]Protected dump omitted · receipt {safe_receipt}[/]")
+        footer_parts.append(Text(f"Protected dump omitted · receipt {safe_receipt}", style="muted"))
     if write_count:
-        footer_parts.append(f"[success]writes: {write_count}[/]")
+        footer_parts.append(Text(f"writes: {write_count}", style="success"))
 
-    header_renderable = Text.from_markup("\n".join(header_lines)) if header_lines else Text("")
-    footer_renderable = Text.from_markup("  ·  ".join(footer_parts)) if footer_parts else Text("")
+    header_renderable = Text("\n").join(header_lines)
+    footer_renderable = Text("  ·  ").join(footer_parts)
     panel_body = Group(
         header_renderable,
         Text(""),
@@ -1262,7 +1287,7 @@ def show_agent_block_complete(
         panel_body = Group(
             panel_body,
             Text(""),
-            Text.from_markup(f"[warning]Verification:[/] {_short_value(verification_warning, 200)}"),
+            Text.assemble(("Verification:", "warning"), " ", _short_value(verification_warning, 200)),
         )
 
     console.print(
@@ -1291,7 +1316,7 @@ def show_agent_recovery_start(role: str, reason: str, retry_iterations: int) -> 
                 f"**Recovery:** one tool-free replan, then one focused retry "
                 f"with at most {retry_iterations} iterations."
             ),
-            title=f"Recovery - {role} retry",
+            title=_plain(f"Recovery - {role} retry"),
             border_style="warning",
             box=box.ROUNDED,
         )
@@ -1313,20 +1338,54 @@ def _estimated_tokens(text: str) -> int:
     return max(1, len(text) // 4) if text else 0
 
 
+_LEADING_BLANK_LINES_RE = re.compile(r"\A(?:[ \t]*\n)+")
+
+
+def _thinking_head(text: str, budget: int) -> str:
+    head = text[:budget]
+    if len(text) > budget and text[budget] != "\n":
+        # Stop at the last full line when one ends in the back half of the budget.
+        cut = head.rfind("\n")
+        if cut >= budget // 2:
+            head = head[: cut + 1]
+    return head
+
+
+def _thinking_tail(text: str, budget: int) -> str:
+    # Start on a full line so indentation survives; only leading blank lines
+    # are dropped. Very long lines fall back to a plain character cut.
+    start = max(0, len(text) - budget)
+    if start and text[start - 1] != "\n":
+        cut = text.find("\n", start, start + budget // 2)
+        if cut != -1:
+            start = cut + 1
+    tail = text[start:]
+    blank = _LEADING_BLANK_LINES_RE.match(tail)
+    return tail[blank.end() :] if blank else tail
+
+
 def _thinking_renderable(text: str, *, final: bool = False) -> Panel:
     token_count = _estimated_tokens(text)
     body = Text(style="secondary italic")
     if len(text) <= _THINKING_VISIBLE_CHARS:
         body.append(text or "Thinking...")
     elif final:
-        body.append(text[:_THINKING_VISIBLE_CHARS].rstrip())
+        # Settled panel keeps both the opening and the conclusion; the ending
+        # is usually where the model states what it decided.
+        head = _thinking_head(text, _THINKING_SETTLED_HEAD_CHARS)
+        tail = _thinking_tail(text, _THINKING_VISIBLE_CHARS - _THINKING_SETTLED_HEAD_CHARS)
+        omitted = len(text) - len(head) - len(tail)
+        body.append(head.rstrip())
+        body.append(f"\n\n... {omitted} chars omitted ...\n\n", style="muted")
+        body.append(tail.rstrip())
         body.append(f"\n\n... truncated, ~{token_count} tokens total", style="muted")
     else:
         # Live panel follows the tail so new reasoning stays visible instead of
         # freezing on the opening paragraph once the buffer passes the cap.
-        hidden = len(text) - _THINKING_VISIBLE_CHARS
+        tail = _thinking_tail(text, _THINKING_VISIBLE_CHARS)
+        hidden = len(text) - len(tail)
         body.append(f"... {hidden} earlier chars\n", style="muted")
-        body.append(text[-_THINKING_VISIBLE_CHARS:].lstrip())
+        body.append(tail)
     elapsed = time.monotonic() - _thinking_started_at if _thinking_started_at else 0.0
     # Non-final title carries a time-derived frame: each Live update (token
     # batches arrive faster than the 90ms frame interval) advances the pulse,
@@ -1487,7 +1546,7 @@ def show_status_footer(model: str, used_tokens: int, total_tokens: int, summary_
     # repeated footer redraws make it breathe/blink.
     idle_glyph = buddy_frame(AIState.IDLE).plain
     if total_tokens <= 0:
-        console.print(f"[info]{idle_glyph} {model}  ·  ctx unknown[/]")
+        console.print(Text(f"{idle_glyph} {model}  ·  ctx unknown", style="info"))
         return
     used = min(max(used_tokens, 0), total_tokens)
     remaining = max(total_tokens - used, 0)
@@ -1495,8 +1554,14 @@ def show_status_footer(model: str, used_tokens: int, total_tokens: int, summary_
     ctx_color = "info" if pct_left >= 50 else ("warning" if pct_left >= 20 else "error")
     summary_flag = "  ·  summary" if summary_active else ""
     console.print(
-        f"[info]{idle_glyph}[/] [bold]{model}[/]  ·  "
-        f"[{ctx_color}]▣ {used}/{total_tokens} ({pct_left}% left)[/]{summary_flag}"
+        Text.assemble(
+            (idle_glyph, "info"),
+            " ",
+            (str(model), "bold"),
+            "  ·  ",
+            (f"▣ {used}/{total_tokens} ({pct_left}% left)", ctx_color),
+            summary_flag,
+        )
     )
 
 
@@ -1508,7 +1573,7 @@ def show_memory(facts: list[str]) -> None:
     table.add_column("#", justify="right")
     table.add_column("Fact")
     for index, fact in enumerate(facts, 1):
-        table.add_row(str(index), fact)
+        table.add_row(str(index), _plain(fact))
     console.print(table)
 
 
@@ -1524,10 +1589,10 @@ def show_help(topic: str = "") -> None:
     descriptions = dict(slash_dispatch.SLASH_COMMANDS)
     if not topic:
         for index, command in enumerate(slash_dispatch.COMMON_SLASH_COMMANDS):
-            table.add_row("Common" if index == 0 else "", command, descriptions[command])
+            table.add_row("Common" if index == 0 else "", _plain(command), _plain(descriptions[command]))
         table.add_row("", "", "")
         for index, (group, description) in enumerate(slash_dispatch.COMMAND_GROUP_DESCRIPTIONS.items()):
-            table.add_row("Categories" if index == 0 else "", f"/help {group}", description)
+            table.add_row("Categories" if index == 0 else "", _plain(f"/help {group}"), _plain(description))
         table.add_row("", "/help all", "Full reference, including compatibility aliases")
     else:
         # A category or exact command is addressable without printing the entire
@@ -1546,7 +1611,7 @@ def show_help(topic: str = "") -> None:
         previous_group = ""
         for command, description in rows:
             group = slash_dispatch.command_group(command).title()
-            table.add_row(group if group != previous_group else "", command, description)
+            table.add_row(group if group != previous_group else "", _plain(command), _plain(description))
             previous_group = group
     intro = Text.assemble(
         ("Ask naturally for ordinary work. ", "text"),
@@ -1563,7 +1628,7 @@ def show_help(topic: str = "") -> None:
     console.print(
         Panel(
             Group(intro, Text(""), table),
-            title=f"Command Reference: {topic.title()}" if topic else "Command Reference",
+            title=_plain(f"Command Reference: {topic.title()}") if topic else "Command Reference",
             subtitle="[muted]type / to search inline[/]",
             border_style="border_accent",
             box=box.ROUNDED,

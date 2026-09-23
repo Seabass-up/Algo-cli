@@ -79,7 +79,7 @@ TOOL_MAP = tools_module.TOOL_MAP
 logger = logging.getLogger(__name__)
 
 
-def _pipeline_outcome_status(execution: Any, result: str) -> str:
+def _pipeline_outcome_status(execution: Any, result: str, *, name: str = "") -> str:
     """Prefer the canonical typed outcome; parse text only for legacy adapters."""
 
     outcome = getattr(execution, "outcome", None)
@@ -91,7 +91,7 @@ def _pipeline_outcome_status(execution: Any, result: str) -> str:
         return "denied"
     if lowered.startswith("skipped repeated"):
         return "skipped"
-    legacy = classify_tool_status(result)
+    legacy = classify_tool_status(result, name=name)
     return "succeeded" if legacy == "worked" else legacy
 
 
@@ -894,8 +894,8 @@ def run_agent_block(
                 result: str,
             ) -> None:
                 nonlocal journal_result_failed
-                status = _pipeline_outcome_status(execution, result)
                 receipt_name = normalized_batch[index][0] if index < len(normalized_batch) else "unknown"
+                status = _pipeline_outcome_status(execution, result, name=receipt_name)
                 outcome = getattr(execution, "outcome", None)
                 block.tool_call_receipts.append(
                     {
@@ -1024,7 +1024,7 @@ def run_agent_block(
                     execution = PipelineToolResult(exc.result.message, exc.result.result, exc.result.outcome)
                 tool_message, _result = execution
                 append_journal_result(index, execution, _result)
-                outcome_status = _pipeline_outcome_status(execution, _result)
+                outcome_status = _pipeline_outcome_status(execution, _result, name=name)
                 mutation_action = tool_policy.describes_mutation_action(name, args)
                 mutation_succeeded = outcome_status == "succeeded" and (
                     (name == "write_file" and str(_result).lstrip().startswith("Wrote "))
@@ -1158,6 +1158,25 @@ def _unquote(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"} and value[0] not in value[1:-1]:
         return value[1:-1]
     return value
+
+
+def _is_thread_ref_before_task(token: str, cfg: Config) -> bool:
+    """Decide whether `resume|fork TOKEN more words` names a thread rather than starting a task.
+
+    Thread ids are hex, so English words such as "add", "beef" or "facade" look like prefixes.
+    A digit marks a deliberate ref; an all-letter token counts only as an exact existing id.
+    """
+    if not _THREAD_REF_RE.fullmatch(token) or len(token) < 2:
+        return False
+    if any(char.isdigit() for char in token):
+        return True
+    try:
+        from .continuum_memory import selected
+
+        record = agent_threads.resolve_thread(token, protected=selected(cfg))
+    except Exception:
+        return False
+    return str(record.get("id", "")).lower() == token.lower()
 
 
 def _next_token(text: str) -> tuple[str, str]:
@@ -3320,7 +3339,7 @@ def execute_agent_command(
     # Plain-language tasks such as "show the failing tests" must run as tasks, not thread lookups;
     # a lone ref (even a mistyped one) still resolves so the user gets "Unknown agent thread".
     is_thread_command = bool(thread_ref) and (
-        not thread_task or (thread_action in {"resume", "fork"} and bool(_THREAD_REF_RE.fullmatch(thread_ref)))
+        not thread_task or (thread_action in {"resume", "fork"} and _is_thread_ref_before_task(thread_ref, cfg))
     )
     if thread_action == "show" and is_thread_command:
         try:

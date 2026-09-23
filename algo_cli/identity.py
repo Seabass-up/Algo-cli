@@ -47,9 +47,9 @@ ALL_PATHS: tuple[Path, ...] = (SOUL_PATH, IDENTITY_PATH, USER_PATH, LESSONS_PATH
 DEFAULT_EMBED_MODEL = "qwen3-embedding:latest"
 QUERY_VEC_CACHE_SIZE = 32
 LESSON_MIN_CHARS = 30
-_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _PARAGRAPH_SPLIT_RE = re.compile(r"\n\s*\n")
-LESSONS_INDEX_VERSION = 2
+# v0.20.0 already wrote version 2 with the old heading-only chunker; bump on every chunker change.
+LESSONS_INDEX_VERSION = 3
 
 EmbedFn = Callable[[list[str]], list[list[float]]]
 
@@ -296,12 +296,38 @@ def purge_legacy_lessons_index() -> int:
     return 1
 
 
+def _is_whole_comment(block: str) -> bool:
+    return (
+        block.startswith("<!--")
+        and block.endswith("-->")
+        and len(block) >= 7
+        and "<!--" not in block[4:]
+        and block.find("-->", 4) == len(block) - 3
+    )
+
+
+def _strip_comment_blocks(lines: list[str]) -> list[str]:
+    # Only the template's own whole-line comment blocks are removed. A line with
+    # nested, unbalanced or trailing comment markers is lesson text and is kept whole.
+    kept: list[str] = []
+    i = 0
+    while i < len(lines):
+        if lines[i].strip().startswith("<!--"):
+            end = next((j for j in range(i, len(lines)) if "-->" in lines[j]), None)
+            if end is not None and _is_whole_comment("\n".join(line.strip() for line in lines[i : end + 1])):
+                i = end + 1
+                continue
+        kept.append(lines[i])
+        i += 1
+    return kept
+
+
 def _chunk_lessons(text: str) -> list[str]:
     """Split lessons-learned.md into chunks.
 
     Each `## ` section is one chunk. Text before the first heading is split on
     blank lines, because the template tells users to write paragraph lessons.
-    The top-level title and HTML comments are dropped.
+    The top-level title and template comment blocks are dropped.
     """
     if not text.strip():
         return []
@@ -317,7 +343,7 @@ def _chunk_lessons(text: str) -> list[str]:
     sections.append((heading, body))
     chunks: list[str] = []
     for heading, lines in sections:
-        content = _HTML_COMMENT_RE.sub("", "\n".join(lines)).strip()
+        content = "\n".join(_strip_comment_blocks(lines)).strip()
         if heading:
             # Timestamped /lesson entries can be short; judge the body, not the heading.
             if content:
@@ -421,11 +447,11 @@ def lessons_index_stale(
     model: str | None = None,
     dimensions: int | None = None,
 ) -> bool:
-    """Return whether lesson text or the requested embedding space changed.
+    """Return whether lesson text, the chunker version or the embedding space changed.
 
-    Older indexes remain readable, but an active model identity mismatch forces
-    a rebuild even when the source Markdown has not changed. A configured
-    vector width is checked when supplied.
+    A missing or older index version, or an active model identity mismatch,
+    forces a rebuild even when the source Markdown has not changed. A
+    configured vector width is checked when supplied.
     """
     if not LESSONS_PATH.exists():
         return False
@@ -435,6 +461,9 @@ def lessons_index_stale(
         return False
     idx = _load_lessons_index()
     if idx is None:
+        return True
+    # A chunker change bumps the version; older or unversioned indexes must rebuild.
+    if idx.get("version") != LESSONS_INDEX_VERSION:
         return True
     try:
         index_mtime = int(idx.get("mtime_ns", -1))

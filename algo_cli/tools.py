@@ -1101,7 +1101,21 @@ def cleanup_pdf_render_artifact(
     )
 
 
-def write_file(path: str, content: str, cwd: str | None = None, overwrite: bool = False) -> str:
+TEAM_CANCELLED_WRITE = "Error: write_file was not run because the agent team was cancelled."
+TEAM_CANCELLED_SHELL = "Error: command stopped because the agent team was cancelled; child processes were terminated."
+
+
+def _team_cancelled(cancel_event: threading.Event | None) -> bool:
+    return cancel_event is not None and cancel_event.is_set()
+
+
+def write_file(
+    path: str,
+    content: str,
+    cwd: str | None = None,
+    overwrite: bool = False,
+    cancel_event: threading.Event | None = None,
+) -> str:
     """Write text to a file. Existing files require overwrite=true.
 
     Args:
@@ -1113,6 +1127,8 @@ def write_file(path: str, content: str, cwd: str | None = None, overwrite: bool 
     p = _resolve(path, cwd)
     if p.exists() and not overwrite:
         return f"Error: {p} already exists. Re-run with overwrite=true if intended."
+    if _team_cancelled(cancel_event):
+        return TEAM_CANCELLED_WRITE
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_text(p, content)
@@ -1535,19 +1551,22 @@ def search_files(
             first = errors[0][:200] if errors else f"search exited with {result.returncode}"
             count = f"{len(errors)}{'+' if result.stderr_truncated else ''}"
             return _bounded_search_text(
-                f"{stdout}\n[partial: search reported {count} error(s); first: {first}]", truncated=truncated,
+                stdout, truncated=truncated, trailer=f"[partial: search reported {count} error(s); first: {first}]",
             )
         detail = stderr or f"search exited with {result.returncode}"
         return _bounded_search_text(f"Error searching: {detail}", truncated=result.stderr_truncated)
     return _bounded_search_text(stdout or "No matches.", truncated=truncated)
 
 
-def _bounded_search_text(text: str, *, truncated: bool = False) -> str:
+def _bounded_search_text(text: str, *, truncated: bool = False, trailer: str = "") -> str:
+    # A trailer (the partial-error note) follows the matches and is never cut by truncation.
     suffix = "\n...[truncated: narrow the path or pattern for remaining matches]"
+    tail = f"\n{trailer}" if trailer else ""
     payload = text.encode("utf-8", errors="replace")
-    if truncated or len(payload) > MAX_TOOL_RESULT:
-        return payload[:MAX_TOOL_RESULT - len(suffix)].decode("utf-8", errors="ignore").rstrip("\r\n") + suffix
-    return payload.decode("utf-8")
+    budget = MAX_TOOL_RESULT - len(tail.encode("utf-8", errors="replace"))
+    if truncated or len(payload) > budget:
+        return payload[:budget - len(suffix)].decode("utf-8", errors="ignore").rstrip("\r\n") + tail + suffix
+    return payload.decode("utf-8") + tail
 
 
 def _isolated_process_group_kwargs(platform_name: str | None = None) -> dict[str, Any]:
@@ -1596,7 +1615,34 @@ def _terminate_process_tree(
         pass
 
 
-def run_shell(command: str, cwd: str | None = None, timeout: float = 30, safe_mode: bool = False) -> str:
+def _communicate_or_cancel(
+    proc: subprocess.Popen[Any],
+    timeout: float,
+    cancel_event: threading.Event | None,
+) -> tuple[str, str] | None:
+    """Return process output, or None once ``cancel_event`` is set; timeouts raise as communicate() does."""
+
+    if cancel_event is None:
+        return proc.communicate(timeout=timeout)
+    deadline = time.monotonic() + timeout
+    while not cancel_event.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(proc.args, timeout)
+        try:
+            return proc.communicate(timeout=min(remaining, 0.1))
+        except subprocess.TimeoutExpired:
+            continue
+    return None
+
+
+def run_shell(
+    command: str,
+    cwd: str | None = None,
+    timeout: float = 30,
+    safe_mode: bool = False,
+    cancel_event: threading.Event | None = None,
+) -> str:
     """Run a shell command and return output.
 
     On Windows this executes under cmd.exe: Unix tools like head, tail, grep,
@@ -1615,6 +1661,8 @@ def run_shell(command: str, cwd: str | None = None, timeout: float = 30, safe_mo
             "Blocked by safe mode: command appears destructive or may mutate files/Git state. "
             "Toggle /safe only for an explicitly approved, narrower operation."
         )
+    if _team_cancelled(cancel_event):
+        return "Error: command was not run because the agent team was cancelled."
     workdir = _resolve(cwd or ".", None)
     actual_timeout = max(0.001, min(float(timeout), 120.0))
     # Isolate the child in its own process group. Without this, every child
@@ -1635,7 +1683,15 @@ def run_shell(command: str, cwd: str | None = None, timeout: float = 30, safe_mo
             **popen_kwargs,
         )
         try:
-            stdout, stderr = proc.communicate(timeout=actual_timeout)
+            output_pair = _communicate_or_cancel(proc, actual_timeout, cancel_event)
+            if output_pair is None:
+                _terminate_process_tree(proc)
+                try:
+                    proc.communicate(timeout=5)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+                return TEAM_CANCELLED_SHELL
+            stdout, stderr = output_pair
         except subprocess.TimeoutExpired:
             _terminate_process_tree(proc)
             try:
@@ -2755,12 +2811,13 @@ def gateway_ready(url: str | None = None) -> bool:
 
 
 def _gateway_upstream_host(host: str | None) -> str:
-    from .theodore_runtime_services import local_service_address
+    from .theodore_runtime_services import local_service_address, normalize_ollama_host
 
     raw = host if host is not None else os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)
     if type(raw) is not str:
         raise ValueError("Gateway upstream must be text.")
-    candidate = raw.strip().rstrip("/")
+    # OLLAMA_HOST is commonly set without a scheme (127.0.0.1:11434).
+    candidate = normalize_ollama_host(raw.strip()).rstrip("/")
     if local_service_address(candidate) is None:
         raise ValueError("Gateway upstream must be an explicit credential-free loopback endpoint.")
     return candidate
@@ -5127,12 +5184,12 @@ ALL_TOOLS = [
     read_pdf,
     render_pdf_pages,
     cleanup_pdf_render_artifact,
-    write_file,
+    _hide_runtime_params(write_file, "cancel_event"),
     _hide_cfg_param(list_directory),
     _hide_cfg_param(search_files),
     find_unique_anchor,
     batch_edit,
-    _hide_runtime_params(run_shell, "cwd", "safe_mode"),
+    _hide_runtime_params(run_shell, "cwd", "safe_mode", "cancel_event"),
     git_status,
     git_diff,
     web_search,

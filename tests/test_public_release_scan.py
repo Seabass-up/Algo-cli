@@ -257,3 +257,10 @@ def test_personal_library_rules_exempt_only_already_published_history():
     assert check_public_release._scan_item("docs/ALGO.md", catalog, personal_library=False) == []
     assert check_public_release._scan_name("algo_cli/intelligence/finance/tax.py", personal_library=False) == []
     assert check_public_release._scan_item("docs/ALGO.md", catalog)
+
+
+def test_local_keychain_item_names_are_private_markers():
+    for name in ("ai.typesafe" + ".api-key", "codex-" + "typesafe"):
+        text = f'service = "{name}"\n'
+        assert (1, "private marker") in check_public_release._scan_text("algo_cli/example.py", text)
+    assert check_public_release._scan_text("algo_cli/example.py", 'service = "algo-cli-runtime"\n') == []

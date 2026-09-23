@@ -153,6 +153,11 @@ _SYMBOL_LINE_RE = re.compile(
 # re-parses a multi-MB JSON index and re-walks up to MAX_FILES files.
 _INDEX_MEM: dict[str, dict[str, Any]] = {}
 _LAST_SCAN: dict[str, float] = {}
+# Signatures of every directory the last walk descended into. Adding, removing
+# or renaming an entry updates the parent directory's mtime, so comparing these
+# lets the throttled cache notice new files without re-walking the tree.
+_DIR_SIGNATURES: dict[str, dict[str, tuple[int, int, int]]] = {}
+_LAST_WALK_DIRS: dict[str, dict[str, tuple[int, int, int]]] = {}
 SCAN_TTL_SECONDS = 15.0
 MAX_PERSISTED_INDEX_ENTRIES = 1024
 
@@ -162,8 +167,20 @@ def _index_path_for(cwd: str) -> Path:
     return CODE_INDEX_DIR / f"{digest}.json"
 
 
+def _directory_signature(info: os.stat_result) -> tuple[int, int, int]:
+    return (int(info.st_dev), int(info.st_ino), int(info.st_mtime_ns))
+
+
 def _iter_source_files(root: Path) -> list[Path]:
     found: list[Path] = []
+    # Each directory is stat'ed before os.walk lists it, so a change that races
+    # the listing leaves a stale signature and forces the next rescan.
+    walked: dict[str, tuple[int, int, int]] = {}
+    _LAST_WALK_DIRS[str(root)] = walked
+    try:
+        walked["."] = _directory_signature(root.lstat())
+    except OSError:
+        return found
     for current, dirs, files in os.walk(root):
         retained_dirs: list[str] = []
         for directory in dirs:
@@ -177,6 +194,10 @@ def _iter_source_files(root: Path) -> list[Path]:
             if _path_is_reparse_point(candidate, directory_info) or not stat.S_ISDIR(directory_info.st_mode):
                 continue
             retained_dirs.append(directory)
+            try:
+                walked[candidate.relative_to(root).as_posix()] = _directory_signature(directory_info)
+            except ValueError:
+                continue
         dirs[:] = sorted(retained_dirs, key=str.lower)
         for name in sorted(files, key=str.lower):
             if Path(name).suffix.lower() not in CODE_EXTENSIONS:
@@ -438,6 +459,24 @@ def _index_sources_valid(cwd: str, index: dict[str, Any]) -> bool:
     return True
 
 
+def _directories_unchanged(root: Path, signatures: dict[str, tuple[int, int, int]] | None) -> bool:
+    if not signatures or "." not in signatures:
+        return False
+    for relative, expected in signatures.items():
+        candidate = root if relative == "." else root / relative
+        try:
+            info = candidate.lstat()
+        except OSError:
+            return False
+        if (
+            _path_is_reparse_point(candidate, info)
+            or not stat.S_ISDIR(info.st_mode)
+            or _directory_signature(info) != expected
+        ):
+            return False
+    return True
+
+
 def _save_index(cwd: str, index: dict[str, Any]) -> bool:
     if not _index_sources_valid(cwd, index):
         invalidate_cache(cwd)
@@ -476,10 +515,14 @@ def invalidate_cache(cwd: str | None = None) -> None:
     if cwd is None:
         _INDEX_MEM.clear()
         _LAST_SCAN.clear()
+        _DIR_SIGNATURES.clear()
+        _LAST_WALK_DIRS.clear()
         return
     key = str(Path(cwd).resolve())
     _INDEX_MEM.pop(key, None)
     _LAST_SCAN.pop(key, None)
+    _DIR_SIGNATURES.pop(key, None)
+    _LAST_WALK_DIRS.pop(key, None)
 
 
 def persisted_index_count() -> int:
@@ -696,17 +739,21 @@ def build_or_update_index(cwd: str, *, force: bool = False) -> dict[str, Any]:
     """Rescan cwd, reusing chunks for unchanged files (size+mtime). No embedding.
 
     Rescans are throttled to SCAN_TTL_SECONDS per cwd; within the window the
-    in-memory index is returned as-is (a fresh edit shows up on the next scan).
+    in-memory index is reused only while every indexed file and every walked
+    directory still matches its recorded signature, so edits, deletions and
+    newly created files show up on the next call.
     """
     root = Path(cwd).resolve()
     key = str(root)
     now = time.monotonic()
     if not force and key in _INDEX_MEM and (now - _LAST_SCAN.get(key, 0.0)) < SCAN_TTL_SECONDS:
         cached = _INDEX_MEM[key]
-        if _index_sources_valid(cwd, cached):
+        if _index_sources_valid(cwd, cached) and _directories_unchanged(root, _DIR_SIGNATURES.get(key)):
             return cached
         invalidate_cache(cwd)
     _LAST_SCAN[key] = now
+    _DIR_SIGNATURES.pop(key, None)
+    _LAST_WALK_DIRS.pop(key, None)
     index = _INDEX_MEM.get(key) or _load_index(cwd)
     old_files: dict[str, Any] = index.get("files", {}) if index.get("cwd") == str(root) else {}
     old_chunks_by_file: dict[str, list[dict[str, Any]]] = {}
@@ -718,7 +765,9 @@ def build_or_update_index(cwd: str, *, force: bool = False) -> dict[str, Any]:
     reused_files = 0
     reused_chunk_embeddings = 0
     rebuilt_chunks = 0
-    for path in _iter_source_files(root):
+    source_files = _iter_source_files(root)
+    walked_dirs = _LAST_WALK_DIRS.pop(key, None)
+    for path in source_files:
         source = _read_source_text(path)
         if source is None:
             continue
@@ -776,6 +825,8 @@ def build_or_update_index(cwd: str, *, force: bool = False) -> dict[str, Any]:
     }
     if not _save_index(cwd, index):
         return {"cwd": str(root), "files": {}, "chunks": [], "structural": {}}
+    if walked_dirs:
+        _DIR_SIGNATURES[key] = walked_dirs
     return index
 
 

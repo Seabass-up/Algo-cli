@@ -55,6 +55,29 @@ with a regression test each.
   harness re-index on every load.
 - Ctrl+C during a streamed answer keeps the partial answer in the
   conversation and says so.
+- `/agent resume` and `/agent fork` no longer treat English words made of hex
+  letters (`add`, `beef`, `decade`) as thread references; a reference followed
+  by a task must contain a digit or match a full thread id.
+- A schemeless `OLLAMA_HOST` now also works for embedding identity and the
+  gateway upstream, so code, lesson and memory retrieval stay semantic.
+- File contents that happen to begin like a tool error are no longer recorded
+  as failed tool calls, in the chat loop, `/agent`, one-shot and program runs.
+- Partial search results are recorded as not fully successful.
+- Malformed search globs such as `*[^]` no longer crash the Python fallback.
+- `/agent team` cancellation stops `write_file` before it writes and
+  terminates a running `run_shell` command.
+- Ctrl+C during a parallel tool batch returns within a bounded wait and keeps
+  every tool call paired with a result.
+- `/diff`, `/changes`, agent-block panels, `/help`, the memory table and the
+  runtime overview show bracketed text literally instead of treating it as
+  Rich markup.
+- Existing lesson indexes are rebuilt with the new chunker, and lesson text
+  containing comment markers is kept intact.
+- Memory capture: `needed`/`embedded` standing rules are accepted, and
+  first-person complaints (`I always forget ...`) are rejected.
+- Files created after the last code-RAG scan are found on the next scan.
+- The settled thinking panel shows both the opening and the ending of long
+  reasoning, and the live panel keeps indentation.
 
 ### Changed
 
@@ -68,6 +91,11 @@ with a regression test each.
   after the first 1,200 characters.
 - Errors show their class and, for connection, timeout and missing-model
   failures, a short hint about what to check.
+
+### Security
+
+- The public-release scan also rejects local keychain item names used for
+  companion credentials, in source and in built artifacts.
 
 ### Release Limits
 

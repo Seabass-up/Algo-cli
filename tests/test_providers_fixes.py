@@ -165,3 +165,76 @@ def test_supplemental_gateway_gets_normalized_host_and_fails_fast_on_exit(monkey
     assert args[args.index("-ollama") + 1] == "http://127.0.0.1:11434"
     assert runtime_services.GATEWAY_PROCESS is None
     assert "exited with code 2" in errors[-1]
+
+
+_TAGS_DIGEST = "ab" * 32
+
+
+class _TagsHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802 - http.server API
+        body = b'{"models":[{"name":"fixture:latest","model":"fixture:latest","digest":"sha256:%s"}]}' % (
+            _TAGS_DIGEST.encode()
+        )
+        self.send_response(200 if self.path == "/api/tags" else 404)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args) -> None:
+        pass
+
+
+@pytest.fixture
+def tags_server():
+    server = HTTPServer(("127.0.0.1", 0), _TagsHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize("host_template", ["127.0.0.1:{port}", "localhost:{port}", " 127.0.0.1:{port}/ "])
+def test_probe_ollama_identity_accepts_schemeless_loopback_host(tags_server, host_template):
+    from algo_cli import embedding_binding
+
+    host = host_template.format(port=tags_server)
+    identity = embedding_binding.probe_ollama_identity(host, "fixture")
+    assert identity is not None
+    explicit = "http://" + host.strip().rstrip("/")
+    assert identity == embedding_binding.probe_ollama_identity(explicit, "fixture")
+
+
+def test_bound_embedding_works_with_schemeless_ollama_host(tags_server):
+    from algo_cli import embedding_binding
+
+    host = f"127.0.0.1:{tags_server}"
+    bound = embedding_binding.bind_ollama_embedding(lambda texts: [[1.0] for _ in texts], host, "fixture")
+    assert bound.embedding_identity is not None
+    assert bound(["hello"]) == [[1.0]]
+
+
+@pytest.mark.parametrize("host", ["example.invalid:11434", "10.0.0.5:11434", "user:pw@127.0.0.1:11434", ""])
+def test_probe_ollama_identity_schemeless_non_local_host_matches_explicit_http(monkeypatch, host):
+    from algo_cli import embedding_binding
+
+    def _no_network(*_args, **_kwargs):
+        raise AssertionError("non-loopback or credentialed host must not be probed")
+
+    monkeypatch.setattr(embedding_binding, "build_opener", _no_network)
+    assert embedding_binding.probe_ollama_identity(host, "fixture") is None
+    if host:
+        assert embedding_binding.probe_ollama_identity("http://" + host, "fixture") is None
+
+
+def test_gateway_upstream_host_accepts_schemeless_loopback():
+    from algo_cli import tools
+
+    assert tools._gateway_upstream_host("127.0.0.1:11434") == "http://127.0.0.1:11434"
+    assert tools._gateway_upstream_host("http://localhost:11434/") == "http://localhost:11434"
+    import pytest
+
+    with pytest.raises(ValueError):
+        tools._gateway_upstream_host("example.com:11434")

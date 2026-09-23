@@ -143,3 +143,85 @@ def test_future_dated_indexed_source_does_not_keep_index_stale(monkeypatch, tmp_
     os.utime(source, (future, future))
 
     assert harness.index_is_stale() is True
+
+
+def _count_walks(monkeypatch):
+    walks = {"n": 0}
+    real_iter = code_rag._iter_source_files
+
+    def counting_iter(root):
+        walks["n"] += 1
+        return real_iter(root)
+
+    monkeypatch.setattr(code_rag, "_iter_source_files", counting_iter)
+    return walks
+
+
+def test_code_rag_new_file_visible_on_next_scan_without_clock_change(tmp_path):
+    code_rag.invalidate_cache()
+    _write(tmp_path, "old.py", "def old():\n    return 1\n")
+    first = code_rag.build_or_update_index(str(tmp_path))
+    assert set(first["files"]) == {"old.py"}
+
+    _write(tmp_path, "brand_new.py", "def brand_new():\n    return 2\n")
+    second = code_rag.build_or_update_index(str(tmp_path))
+
+    assert set(second["files"]) == {"old.py", "brand_new.py"}
+    assert any(chunk["relative_path"] == "brand_new.py" for chunk in second["chunks"])
+
+
+def test_code_rag_new_file_in_new_and_nested_directories_visible(tmp_path):
+    code_rag.invalidate_cache()
+    _write(tmp_path, "pkg/sub/old.py", "def old():\n    return 1\n")
+    assert set(code_rag.build_or_update_index(str(tmp_path))["files"]) == {"pkg/sub/old.py"}
+
+    _write(tmp_path, "pkg/sub/nested_new.py", "def nested():\n    return 2\n")
+    assert "pkg/sub/nested_new.py" in code_rag.build_or_update_index(str(tmp_path))["files"]
+
+    _write(tmp_path, "fresh_dir/inner.py", "def inner():\n    return 3\n")
+    assert "fresh_dir/inner.py" in code_rag.build_or_update_index(str(tmp_path))["files"]
+
+
+def test_code_rag_unchanged_tree_reuses_cache_without_rescan(tmp_path, monkeypatch):
+    code_rag.invalidate_cache()
+    _write(tmp_path, "old.py", "def old():\n    return 1\n")
+    _write(tmp_path, "pkg/mod.py", "def mod():\n    return 1\n")
+    walks = _count_walks(monkeypatch)
+
+    first = code_rag.build_or_update_index(str(tmp_path))
+    second = code_rag.build_or_update_index(str(tmp_path))
+    third = code_rag.build_or_update_index(str(tmp_path))
+
+    assert walks["n"] == 1
+    assert second is first and third is first
+
+
+def test_code_rag_ignored_directory_change_does_not_force_rescan(tmp_path, monkeypatch):
+    code_rag.invalidate_cache()
+    _write(tmp_path, "old.py", "def old():\n    return 1\n")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / ".hidden").mkdir()
+    walks = _count_walks(monkeypatch)
+
+    code_rag.build_or_update_index(str(tmp_path))
+    _write(tmp_path, "node_modules/dep.py", "def dep():\n    return 1\n")
+    _write(tmp_path, ".hidden/secret_tool.py", "def hidden():\n    return 1\n")
+    index = code_rag.build_or_update_index(str(tmp_path))
+
+    assert walks["n"] == 1
+    assert set(index["files"]) == {"old.py"}
+
+
+def test_code_rag_edit_and_delete_still_visible_immediately(tmp_path):
+    code_rag.invalidate_cache()
+    _write(tmp_path, "old.py", "def old():\n    return 1\n")
+    _write(tmp_path, "keep.py", "def keep():\n    return 1\n")
+    code_rag.build_or_update_index(str(tmp_path))
+
+    _write(tmp_path, "old.py", "def old_edited():\n    return 'edited value'\n")
+    edited = code_rag.build_or_update_index(str(tmp_path))
+    assert any("edited value" in chunk["text"] for chunk in edited["chunks"])
+
+    (tmp_path / "old.py").unlink()
+    deleted = code_rag.build_or_update_index(str(tmp_path))
+    assert set(deleted["files"]) == {"keep.py"}
