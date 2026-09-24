@@ -2795,3 +2795,9 @@ def test_exact_post_publish_validator_rejects_tag_move(tmp_path: Path) -> None:
     moved = validate("f" * 40)
     assert moved.returncode != 0
     assert "published release authority changed" in moved.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the release reader's POSIX flags exist only off Windows")
+def test_release_reader_keeps_every_posix_hardening_flag():
+    required = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW
+    assert SCRIPT._READ_REGULAR_FLAGS & required == required

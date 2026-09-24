@@ -1080,11 +1080,22 @@ def _same_file_object(left: os.stat_result, right: os.stat_result) -> bool:
     )
 
 
+# Release authority runs on Linux runners with every flag below; the getattr fallbacks only let
+# tests exercise the same reader on Windows, where these POSIX flags do not exist.
+_READ_REGULAR_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_NONBLOCK", 0)
+    | getattr(os, "O_CLOEXEC", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_BINARY", 0)
+)
+
+
 def _read_regular(path: Path, *, maximum: int, reason_code: str) -> bytes:
     """Read one immutable regular-file identity without following a swapped link."""
 
     descriptor = -1
-    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW
+    flags = _READ_REGULAR_FLAGS
     try:
         before = path.lstat()
         if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or not 1 <= before.st_size <= maximum:
