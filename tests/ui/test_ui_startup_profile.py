@@ -6,6 +6,7 @@ import io
 import types
 
 import pytest
+import rich.console
 from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.styles import Style as PromptStyle
 
@@ -29,6 +30,9 @@ def isolated_display(monkeypatch):
     monkeypatch.setattr(display, "console", fresh)
     # The pytest process has no terminal; the refreshed profile must still apply.
     monkeypatch.setattr(display, "_terminal_takes_profile", lambda _probe: True)
+    # Windows runners have no VT-enabled console, so Rich's own probe would report legacy
+    # Windows; these tests simulate VT state through detect instead.
+    monkeypatch.setattr(rich.console, "detect_legacy_windows", lambda: False)
     for key in _COLOUR_ENV:
         monkeypatch.delenv(key, raising=False)
     return fresh
