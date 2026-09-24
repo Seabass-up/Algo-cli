@@ -77,11 +77,12 @@ def _visible_line(line: str | FooterLine, cols: int) -> str:
     if isinstance(line, FooterLine):
         from prompt_toolkit.data_structures import Size
         from prompt_toolkit.formatted_text import to_formatted_text
-        from prompt_toolkit.output import ColorDepth
         from prompt_toolkit.output.vt100 import Vt100_Output
         from prompt_toolkit.renderer import print_formatted_text
         from prompt_toolkit.styles import default_ui_style, merge_styles
         from prompt_toolkit.utils import get_cwidth
+
+        from .display import prompt_color_depth
 
         remaining = cols
         cropped = False
@@ -98,11 +99,13 @@ def _visible_line(line: str | FooterLine, cols: int) -> str:
             fragments.append((f"class:bottom-toolbar {style}", visible))
             if cropped or not remaining:
                 break
+        # Pad with the toolbar class so a painted bar spans the full width.
         fragments.append(("class:bottom-toolbar", " " * remaining))
         buffer = io.StringIO()
         output = Vt100_Output(
             buffer, lambda: Size(rows=1, columns=cols), term=os.environ.get("TERM"),
-            default_color_depth=ColorDepth.from_env(),
+            # The same depth as the Rich console and the prompt session (ui.detect).
+            default_color_depth=prompt_color_depth(),
         )
         print_formatted_text(output, fragments, merge_styles([default_ui_style(), line.style]))
         return buffer.getvalue()

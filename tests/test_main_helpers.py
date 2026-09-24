@@ -2534,7 +2534,6 @@ def test_format_short_count():
 
 
 def test_context_chip_formats_million_token_context_without_cap():
-    palette = main.theme_colors("tokyo-night")
     main.RUNTIME_STATUS.clear()
     main.RUNTIME_STATUS.update(
         {
@@ -2546,7 +2545,7 @@ def test_context_chip_formats_million_token_context_without_cap():
         }
     )
 
-    chip = str(main._context_chip(palette))
+    chip = str(main._context_chip())
 
     assert "5.2k/1M 99%" in chip
     assert "cap" not in chip

@@ -408,7 +408,8 @@ CURATED_TOOL_POLICIES: dict[str, CuratedActionPolicy] = {
         risk="medium",
     ),
     "extensions_manifest_build": _read(target=TargetScope.PLUGIN),
-    "jev_kernel_status": _read(target=TargetScope.PROVIDER, suppress_logs=True),
+    # Readiness is a local companion check that never contacts the provider.
+    "jev_kernel_status": _read(target=TargetScope.RUNTIME, suppress_logs=True),
     "jev_question_contract": CuratedActionPolicy(
         EffectClass.OBSERVE, "medium", ConfirmationMode.SESSION_PREAPPROVAL,
         (Capability.READ, Capability.MODEL, Capability.NETWORK, Capability.DATA_EGRESS),
