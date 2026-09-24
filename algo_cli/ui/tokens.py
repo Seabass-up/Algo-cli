@@ -4,6 +4,11 @@ Two layers. A ``Palette`` holds raw colours per theme. ``semantic_tokens`` maps 
 palette to named Rich style strings whose attributes live inside the token
 ("bold #7aa2f7"), so call sites never compose "bold primary": Rich 15 cannot
 parse a theme name inside a compound style and drops the whole style.
+
+``palette_for`` picks the palette a colour profile renders with: the hex theme at
+truecolor and 256 colours, an ANSI palette of named slots at 16 colours (Rich's
+own quantisation collapses meanings, e.g. success and error both land on white),
+and an attribute-only palette when colour is off.
 """
 
 from __future__ import annotations
@@ -12,6 +17,8 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 
 from rich.theme import Theme
+
+from algo_cli.ui.detect import ColorProfile
 
 # Colour roles every palette defines; ``display.THEME_COLORS`` exposes exactly these.
 PALETTE_KEYS: tuple[str, ...] = (
@@ -38,8 +45,8 @@ class Palette:
     primary: str
     secondary: str
     accent: str
-    surface: str  # rprompt background
-    surface_alt: str  # bottom toolbar background
+    surface: str  # footer and rprompt bar; "default" leaves the terminal's own background
+    surface_alt: str  # completion menu background; always painted
     border: str
     border_accent: str
     text: str
@@ -180,6 +187,79 @@ PALETTES: dict[str, Palette] = {
 }
 
 
+# 16-colour palettes hold Rich's named ANSI slots, so the terminal's own palette decides
+# the exact shade. success, warning, error and info each get their own hue. The footer
+# stays on the terminal's background ("default" text contrasts with it whatever it is);
+# the completion menu, a popup over scrollback, is painted ANSI blue.
+ANSI_PALETTES: dict[str, Palette] = {
+    "ansi-dark": Palette(
+        bg="black",
+        primary="bright_blue",
+        secondary="bright_magenta",
+        accent="bright_cyan",
+        surface="default",
+        surface_alt="blue",
+        border="bright_black",
+        border_accent="white",
+        text="default",
+        muted="bright_black",
+        success="green",
+        warning="yellow",
+        error="red",
+        info="cyan",
+        code_theme="ansi_dark",
+    ),
+    # Stock yellow and cyan measure about 1.7:1 on white, so warning moves to
+    # magenta and info to blue; brand chrome takes the bright slots.
+    "ansi-light": Palette(
+        bg="bright_white",
+        primary="bright_blue",
+        secondary="bright_magenta",
+        accent="black",
+        surface="default",
+        surface_alt="blue",
+        border="bright_black",
+        border_accent="black",
+        text="default",
+        muted="bright_black",
+        success="green",
+        warning="magenta",
+        error="red",
+        info="blue",
+        code_theme="ansi_light",
+    ),
+}
+
+# NO_COLOR and TERM=dumb: every "colour" is an attribute. Glyphs and words carry the
+# meaning; the footer's safety badges are reversed (NO_COLOR permits non-colour attributes).
+MONO = Palette(
+    bg="",
+    primary="bold",
+    secondary="bold",
+    accent="bold",
+    surface="",
+    surface_alt="",
+    border="dim",
+    border_accent="dim",
+    text="",
+    muted="dim",
+    success="",
+    warning="bold",
+    error="bold",
+    info="",
+    code_theme="ansi_dark",
+)
+
+
+def palette_for(name: str, profile: ColorProfile) -> Palette:
+    """The palette a theme renders with under ``profile``; unknown names use the default theme."""
+    if profile is ColorProfile.NONE:
+        return MONO
+    if profile is ColorProfile.ANSI16:
+        return ANSI_PALETTES["ansi-dark"]
+    return PALETTES.get(name, PALETTES["tokyo-night"])
+
+
 def semantic_tokens(p: Palette) -> dict[str, str]:
     """Named styles used at call sites. Every value is a complete Rich style string."""
     b = "bold "
@@ -291,21 +371,72 @@ def rich_theme(p: Palette) -> Theme:
     return Theme(rich_styles(p), inherit=True)
 
 
+_RICH_TO_PROMPT_TOOLKIT_ANSI = {"white": "ansigray", "bright_white": "ansiwhite"}
+
+
+def _pt_color(value: str) -> str:
+    """Rich colour value -> prompt_toolkit colour: hex and ``default`` pass through, ANSI names map."""
+    if value.startswith("#") or value == "default":
+        return value
+    return _RICH_TO_PROMPT_TOOLKIT_ANSI.get(value, "ansi" + value.replace("_", ""))
+
+
+def _mono_prompt_toolkit_styles() -> dict[str, str]:
+    plain = "noreverse"
+    return {
+        "bottom-toolbar": plain,
+        "bottom-toolbar.off": plain,
+        "bottom-toolbar.on": plain,
+        "bottom-toolbar.text": plain,
+        "rprompt": plain,
+        "rprompt.text": plain,
+        "footer.text": "",
+        "footer.model": "bold",
+        "footer.muted": "dim",
+        "footer.sep": "dim",
+        "footer.info": "",
+        "footer.ok": "",
+        "footer.caution": "bold",
+        "footer.alert": "bold",
+        "footer.warn": "reverse bold",
+        "footer.danger": "reverse bold",
+        "footer.theme": "",
+        "completion-menu": "",
+        "completion-menu.completion": "noreverse",
+        "completion-menu.completion.current": "reverse bold",
+        "completion-menu.meta.completion": "dim",
+        "completion-menu.meta.completion.current": "reverse",
+        "completion-menu.multi-column-meta": "dim",
+        "scrollbar.background": "",
+        "scrollbar.button": "reverse",
+    }
+
+
 def prompt_toolkit_styles(colors: Mapping[str, str]) -> dict[str, str]:
     """prompt_toolkit classes for the footer, rprompt and completion menu.
 
     Takes the ``Palette.colors()`` mapping so ``main.build_prompt_style`` keeps its
-    signature. The bar backgrounds stay painted in this slice.
+    signature. Hex palettes paint the footer and rprompt on ``surface``: their text is
+    near-white, and the terminal's background is unknown (macOS Terminal's default
+    profile is white at 256 colours), so only a painted bar guarantees contrast. The
+    16-colour palettes leave the bar on the terminal's background, where their
+    ``default`` text always reads. The completion menu is painted on ``surface_alt``.
     """
-    c = colors
-    bar = f"noreverse bg:{c['surface_alt']} {c['text']}"
+    if dict(colors) == MONO.colors():
+        return _mono_prompt_toolkit_styles()
+    c = {key: _pt_color(value) for key, value in colors.items()}
+    bar_bg = "" if c["surface"] == "default" else f" bg:{c['surface']}"
+    # ANSI menus sit on blue: "default" text could be black on a light terminal.
+    ansi_menu = not c["surface_alt"].startswith("#")
+    menu_text = "ansiwhite" if ansi_menu else c["text"]
+    menu_muted = "ansigray" if ansi_menu else c["muted"]
     return {
         # noreverse: prompt_toolkit defaults reverse video on toolbars (white bar bug).
-        "bottom-toolbar": bar,
-        "bottom-toolbar.off": bar,
-        "bottom-toolbar.on": bar,
+        "bottom-toolbar": f"noreverse{bar_bg} {c['text']}",
+        "bottom-toolbar.off": f"noreverse{bar_bg} {c['text']}",
+        "bottom-toolbar.on": f"noreverse{bar_bg} {c['text']}",
         "bottom-toolbar.text": f"noreverse {c['text']}",
-        "rprompt": f"noreverse bg:{c['surface']} {c['muted']}",
+        "rprompt": f"noreverse{bar_bg} {c['muted']}",
         "rprompt.text": f"noreverse {c['muted']}",
         "footer.text": c["text"],
         "footer.model": "bold " + c["text"],
@@ -318,12 +449,12 @@ def prompt_toolkit_styles(colors: Mapping[str, str]) -> dict[str, str]:
         "footer.warn": "bold " + c["warning"],
         "footer.danger": "bold " + c["error"],
         "footer.theme": c["primary"],
-        "completion-menu": f"bg:{c['surface_alt']} {c['text']}",
-        "completion-menu.completion": f"bg:{c['surface_alt']} {c['text']}",
+        "completion-menu": f"bg:{c['surface_alt']} {menu_text}",
+        "completion-menu.completion": f"bg:{c['surface_alt']} {menu_text}",
         "completion-menu.completion.current": f"noreverse bold bg:{c['primary']} {c['bg']}",
-        "completion-menu.meta.completion": f"bg:{c['surface_alt']} {c['muted']}",
+        "completion-menu.meta.completion": f"bg:{c['surface_alt']} {menu_muted}",
         "completion-menu.meta.completion.current": f"noreverse bg:{c['primary']} {c['bg']}",
-        "completion-menu.multi-column-meta": f"bg:{c['surface_alt']} {c['muted']}",
+        "completion-menu.multi-column-meta": f"bg:{c['surface_alt']} {menu_muted}",
         "scrollbar.background": f"bg:{c['surface_alt']}",
         "scrollbar.button": f"bg:{c['border_accent']}",
     }

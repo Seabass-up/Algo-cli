@@ -70,7 +70,7 @@ def test_prompt_toolkit_style_parses_and_themes_the_completion_menu(name):
     assert current.color == colors["bg"].lstrip("#")
     chip = style.get_attrs_for_style_str("class:bottom-toolbar class:footer.danger")
     assert chip.bold and chip.color == colors["error"].lstrip("#")
-    assert chip.bgcolor == colors["surface_alt"].lstrip("#")
+    assert chip.bgcolor == colors["surface"].lstrip("#")
 
 
 @pytest.mark.parametrize("name", THEMES)

@@ -90,6 +90,8 @@ from .display import (
     theme_colors,
     set_theme,
     json_sink,
+    profile_colors,
+    prompt_color_depth,
 )
 from .ui.tokens import prompt_toolkit_styles
 from . import tools as tools_module
@@ -767,7 +769,9 @@ def format_status_toolbar_plain(cfg: Config) -> str:
 
 
 def build_prompt_style(palette: dict[str, str]) -> Style:
-    return Style.from_dict(prompt_toolkit_styles(palette))
+    # The session renders at the console's colour profile: 16-colour and NO_COLOR
+    # terminals get the ANSI or attribute-only palette instead of quantised hex.
+    return Style.from_dict(prompt_toolkit_styles(profile_colors(palette)))
 
 
 def apply_theme(cfg: Config, session: Any | None, name: str | None = None) -> str:
@@ -5425,6 +5429,7 @@ def main() -> None:
             complete_while_typing=True,
             complete_style=CompleteStyle.MULTI_COLUMN,
             style=build_prompt_style(palette),
+            color_depth=prompt_color_depth(),
             bottom_toolbar=lambda: build_status_toolbar(cfg),
             rprompt=lambda: build_status_rprompt(cfg),
             reserve_space_for_menu=8,
