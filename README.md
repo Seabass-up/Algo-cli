@@ -326,7 +326,7 @@ Config is stored in `~/.algo_cli/` by default (data from `~/.ollama_cli` is auto
 | `ALGO_CLI_CONFIG_DIR` | Override config directory |
 | `ALGO_CLI_ENV_FILE` | Override runtime env file path (`env` is preferred; `.env` is supported as a fallback) |
 | `ALGO_CLI_MODEL` | Default model |
-| `ALGO_CLI_THEME` | Default theme (`tokyo-night`, `catppuccin-mocha`, `dracula`, `nord`, `gruvbox`, `dolphie`) |
+| `ALGO_CLI_THEME` | Default theme (`tokyo-night`, `catppuccin-mocha`, `dracula`, `nord`, `gruvbox`, `dolphie`, `redeye`) |
 | `ALGO_CLI_GATEWAY_URL` | Go gateway URL |
 | `ALGO_CLI_HARNESS_INDEXER` | Optional Rust harness indexer binary |
 | `OPENAI_OAUTH_CLIENT_ID` | Optional override for the bundled ChatGPT/Codex browser OAuth client |

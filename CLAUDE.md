@@ -218,7 +218,9 @@ A run is "substantive" if it used more than 2 tool calls.
 
 ### `display.py` — Rich Terminal Display
 
-- Themes: `tokyo-night` (default), `catppuccin-mocha`, `dracula`, `nord`, `gruvbox`, `dolphie`.
+- Themes: `tokyo-night` (default), `catppuccin-mocha`, `dracula`, `nord`, `gruvbox`, `dolphie`, `redeye`.
+- Theme tokens live in `algo_cli/ui/tokens.py`: one palette table generates `THEME_COLORS`, `THEME_MAP` (base colours, semantic tokens and Rich built-in overrides) and the prompt_toolkit footer/completion style. Call sites use named tokens that carry their attributes (`heading`, `brand.logo`, `notice.error`, `thinking`), never compound styles like `"bold primary"`, which Rich 15 silently drops. `tests/ui/` enforces completeness, contrast floors and the style lint.
+- Assistant Markdown goes through `display.themed_markdown()` (per-theme `code_theme`; fenced code keeps the style's own painted panel and `ui.markdown.ReadableSyntaxTheme` lifts every token to 4.5:1 on it). `main.apply_theme()` is the single switch used by `/theme` and `/reload`.
 - All display goes through the singleton `console = Console(theme=...)`.
 - Theme switching uses `console.push_theme()` / `console.pop_theme()`.
 - Streaming responses use `rich.live.Live` with `Markdown` rendering at 12 fps.

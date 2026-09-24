@@ -91,6 +91,7 @@ from .display import (
     set_theme,
     json_sink,
 )
+from .ui.tokens import prompt_toolkit_styles
 from . import tools as tools_module
 from .chat_protocol import (
     collapse_tool_history_for_gemini,
@@ -573,15 +574,12 @@ def refresh_runtime_status(cfg: Config, client: Any | None = None, *, force: boo
     sticky_status.refresh()
 
 
-def _ftr_chip(text: str, fg: str, *, bold: bool = False) -> str:
-    inner = escape(text)
-    if bold:
-        inner = f"<b>{inner}</b>"
-    return f'<style fg="{fg}">{inner}</style>'
+def _ftr_chip(text: str, role: str) -> str:
+    # role is a footer class from algo_cli.ui.tokens.prompt_toolkit_styles, e.g. "footer.muted".
+    return f"<{role}>{escape(text)}</{role}>"
 
 
-def _ftr_sep(palette: dict[str, str]) -> str:
-    return f'<style fg="{palette["muted"]}"> · </style>'
+_FTR_SEP = "<footer.sep> · </footer.sep>"
 
 
 def _format_short_count(value: Any) -> str:
@@ -598,38 +596,38 @@ def _format_short_count(value: Any) -> str:
     return str(n)
 
 
-def _connectivity_dot(cfg: Config, palette: dict[str, str]) -> str:
+def _connectivity_dot(cfg: Config) -> str:
     if routes_to_xai(cfg) or routes_to_chatgpt(cfg) or cfg.cloud:
-        color = palette["info"]
+        role = "footer.info"
     else:
         cached = SERVER_READY_CACHE.get(cfg.host)
         if cached and cached[1]:
-            color = palette["success"]
+            role = "footer.ok"
         elif cached:
-            color = palette["error"]
+            role = "footer.alert"
         else:
-            color = palette["muted"]
-    return f'<style fg="{color}">●</style>'
+            role = "footer.muted"
+    return _ftr_chip("●", role)
 
 
-def _context_chip(palette: dict[str, str]) -> str:
+def _context_chip() -> str:
     if RUNTIME_STATUS.get("context_error"):
-        return _ftr_chip("ctx unavailable", palette["error"])
+        return _ftr_chip("ctx unavailable", "footer.alert")
     used = RUNTIME_STATUS.get("context_used")
     total = RUNTIME_STATUS.get("context_total")
     native = RUNTIME_STATUS.get("context_native")
     runtime_cap = RUNTIME_STATUS.get("context_runtime_cap")
     pct_left = RUNTIME_STATUS.get("context_pct_left")
     if not total or pct_left is None:
-        return _ftr_chip("▣ ctx ?", palette["muted"])
+        return _ftr_chip("▣ ctx ?", "footer.muted")
     if pct_left >= 50:
-        color = palette["muted"]
+        role = "footer.muted"
         warn = ""
     elif pct_left >= 20:
-        color = palette["warning"]
+        role = "footer.caution"
         warn = ""
     else:
-        color = palette["error"]
+        role = "footer.alert"
         warn = " ⚠"
     body = f"▣ {_format_short_count(used)}/{_format_short_count(total)} {pct_left}%{warn}"
     if (
@@ -640,10 +638,10 @@ def _context_chip(palette: dict[str, str]) -> str:
         and native > runtime_cap
     ):
         body += f" · cap {_format_short_count(runtime_cap)}"
-    return _ftr_chip(body, color)
+    return _ftr_chip(body, role)
 
 
-def _token_rate_chip(palette: dict[str, str]) -> str | None:
+def _token_rate_chip() -> str | None:
     metrics = RUNTIME_STATUS.get("last_metrics") or {}
     if not isinstance(metrics, dict):
         return None
@@ -660,34 +658,33 @@ def _token_rate_chip(palette: dict[str, str]) -> str | None:
     if count <= 0 or duration_s <= 0:
         return None
     rate = count / duration_s
-    return _ftr_chip(f"{rate:.0f} tok/s", palette["info"])
+    return _ftr_chip(f"{rate:.0f} tok/s", "footer.info")
 
 
 def build_status_toolbar(cfg: Config):
-    palette = theme_colors(cfg.theme)
-    sep = _ftr_sep(palette)
+    sep = _FTR_SEP
     parts: list[str] = []
 
     parts.append(" ")
-    parts.append(_connectivity_dot(cfg, palette))
+    parts.append(_connectivity_dot(cfg))
     parts.append(" ")
-    parts.append(_ftr_chip(RUNTIME_STATUS.get("model", cfg.model), palette["text"], bold=True))
+    parts.append(_ftr_chip(RUNTIME_STATUS.get("model", cfg.model), "footer.model"))
     parts.append(sep)
     mode = RUNTIME_STATUS.get("mode", "local")
-    parts.append(_ftr_chip(mode, palette["info"] if mode in {"cloud", "xai", "chatgpt"} else palette["muted"]))
+    parts.append(_ftr_chip(mode, "footer.info" if mode in {"cloud", "xai", "chatgpt"} else "footer.muted"))
     parts.append(sep)
-    parts.append(_context_chip(palette))
+    parts.append(_context_chip())
 
     from . import session_mode as _session_mode
 
     tool_max = RUNTIME_STATUS.get("max_tool_iterations", _session_mode.work_iteration_label(cfg))
     reflect = RUNTIME_STATUS.get("tool_think_every", max(1, int(cfg.tool_think_every)))
     parts.append(sep)
-    parts.append(_ftr_chip(f"tools {tool_max}", palette["muted"]))
+    parts.append(_ftr_chip(f"tools {tool_max}", "footer.muted"))
     parts.append(" ")
-    parts.append(_ftr_chip(f"reflect {reflect}", palette["muted"]))
+    parts.append(_ftr_chip(f"reflect {reflect}", "footer.muted"))
 
-    rate_chip = _token_rate_chip(palette)
+    rate_chip = _token_rate_chip()
     if rate_chip:
         parts.append(sep)
         parts.append(rate_chip)
@@ -695,11 +692,11 @@ def build_status_toolbar(cfg: Config):
     # Safety flags come straight from cfg: RUNTIME_STATUS is throttled and can lag a toggle.
     if not cfg.safe_mode:
         parts.append(sep)
-        parts.append(_ftr_chip("safe off", palette["error"], bold=True))
+        parts.append(_ftr_chip("safe off", "footer.danger"))
 
     if cfg.auto_approve_active:
         parts.append(sep)
-        parts.append(_ftr_chip("auto on", palette["warning"], bold=True))
+        parts.append(_ftr_chip("auto on", "footer.warn"))
 
     parts.append(" ")
     return HTML("".join(parts))
@@ -770,17 +767,22 @@ def format_status_toolbar_plain(cfg: Config) -> str:
 
 
 def build_prompt_style(palette: dict[str, str]) -> Style:
-    return Style.from_dict(
-        {
-            # noreverse: prompt_toolkit defaults reverse video on toolbars (white bar bug).
-            "bottom-toolbar": f"noreverse bg:{palette['surface_alt']} {palette['text']}",
-            "bottom-toolbar.off": f"noreverse bg:{palette['surface_alt']} {palette['text']}",
-            "bottom-toolbar.on": f"noreverse bg:{palette['surface_alt']} {palette['text']}",
-            "rprompt": f"noreverse bg:{palette['surface']} {palette['muted']}",
-            "bottom-toolbar.text": f"noreverse {palette['text']}",
-            "rprompt.text": f"noreverse {palette['muted']}",
-        }
-    )
+    return Style.from_dict(prompt_toolkit_styles(palette))
+
+
+def apply_theme(cfg: Config, session: Any | None, name: str | None = None) -> str:
+    """Switch Rich and prompt_toolkit to one theme; /theme and /reload both use this.
+
+    Raises ValueError for an unknown name, leaving the current theme in place.
+    """
+    cfg.theme = set_theme(name or cfg.theme)
+    if session is not None:
+        try:
+            session.style = build_prompt_style(theme_colors(cfg.theme))
+        except Exception:
+            pass
+        invalidate_prompt_toolbar(session)
+    return cfg.theme
 
 
 PROMPT_EXIT_CONFIRM_WINDOW_S = 2.0
@@ -848,8 +850,7 @@ def invalidate_prompt_toolbar(session: Any | None) -> None:
 
 
 def build_status_rprompt(cfg: Config):
-    palette = theme_colors(cfg.theme)
-    sep = _ftr_sep(palette)
+    sep = _FTR_SEP
     cwd = compact_path(cfg.cwd, 32)
     theme_name = cfg.theme
     memory_count = len(cfg.memories)
@@ -857,13 +858,13 @@ def build_status_rprompt(cfg: Config):
 
     mode_label = session_mode.active_mode(cfg)
     parts = [
-        _ftr_chip(cwd, palette["muted"]),
+        _ftr_chip(cwd, "footer.muted"),
         sep,
-        _ftr_chip(mode_label, palette["info"] if mode_label == "publish" else palette["muted"]),
+        _ftr_chip(mode_label, "footer.info" if mode_label == "publish" else "footer.muted"),
         sep,
-        _ftr_chip(f"mem {memory_count}", palette["text"]),
+        _ftr_chip(f"mem {memory_count}", "footer.text"),
         sep,
-        _ftr_chip(theme_name, palette["primary"]),
+        _ftr_chip(theme_name, "footer.theme"),
     ]
     return HTML("".join(parts))
 
@@ -2110,9 +2111,9 @@ def handle_status_command(cfg: Config, client: Any | None = None) -> None:
     ):
         if enabled:
             features.append(label)
-    console.print(Text.assemble(("Model:", "bold primary"), f" {cfg.model}"))
-    console.print(Text.assemble(("Context:", "bold primary"), f" {ctx_line}"))
-    console.print(f"[bold primary]Features:[/] {', '.join(features) if features else 'none'}")
+    console.print(Text.assemble(("Model:", "label"), f" {cfg.model}"))
+    console.print(Text.assemble(("Context:", "label"), f" {ctx_line}"))
+    console.print(f"[label]Features:[/] {', '.join(features) if features else 'none'}")
     from .tools import intelligence_runtime_snapshot
     from .kernels.manifest import kernel_runtime_snapshot
 
@@ -2121,21 +2122,21 @@ def handle_status_command(cfg: Config, client: Any | None = None) -> None:
         caps = ", ".join(intelligence.get("capabilities") or []) or "none"
         console.print(
             Text.assemble(
-                ("Intelligence:", "bold primary"),
+                ("Intelligence:", "label"),
                 f" wired · {intelligence.get('exports', 0)} exports · {caps}",
             )
         )
     else:
         console.print(
             Text.assemble(
-                ("Intelligence:", "bold primary"),
+                ("Intelligence:", "label"),
                 f" unavailable ({intelligence.get('error', 'import failed')})",
             )
         )
     kernels = kernel_runtime_snapshot()
     counts = kernels.get("counts") or {}
     console.print(
-        "[bold primary]Kernels:[/] "
+        "[label]Kernels:[/] "
         f"{int(counts.get('active', 0))} active · "
         f"{int(counts.get('preview', 0))} preview · "
         f"{int(counts.get('planned', 0))} planned "
@@ -4684,7 +4685,7 @@ def show_goal_status(cfg: Config, *, _preflighted: bool = False) -> None:
     except ElsieReceiptError:
         show_error("Protected goal state could not be authenticated; status was withheld.")
         return
-    console.print(Text.assemble(("Goal:", "bold primary"), f" {projected['goal']}"))
+    console.print(Text.assemble(("Goal:", "label"), f" {projected['goal']}"))
     console.print(Text.assemble("  status : ", (str(projected['status']), "text")))
     console.print(f"  rounds : [text]{projected['rounds_done']}/{projected['max_rounds']}[/]")
     if projected["cwd"]:

@@ -4295,6 +4295,15 @@
           "timestamp": "2026-09-23T19:36:58Z",
           "scope": "source digest sha256:b91ed033e8ce670e311d058f472a46f36253ab5f1d9afc921cbc73d33673c9bb binds the committed v0.20.1 candidate at a06f494cc8ca1b1ccf99fd84c7a6845e2ab3a284 after candidate-testing fixes; frozen non-editable installed-source parity passed before execution",
           "limitations": "This is local evidence, not hosted platform qualification, external-browser completion, signed native lifecycle, live model qualification or public delivery; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "uv run --frozen --no-editable --extra dev --extra supply-chain python -B scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:55b5a497518a43db02c7923d6120576cde58f8d14051b5c6596192a9ecb9b3ca",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-24T00:27:03Z",
+          "scope": "source digest sha256:9555fa31675157371de07698b7896b2b3f5f12aa9f25946b806fead2997c8b89 binds the committed UI slice 1 (semantic theme tokens) at 8568a9c868fa8936c962936819cb42d3df41cc7f; frozen non-editable installed-source parity passed before execution",
+          "limitations": "This is local evidence, not hosted platform qualification, external-browser completion, signed native lifecycle, live model qualification or public delivery; HARD-080 remains in progress"
         }
       ]
     },
@@ -6822,6 +6831,24 @@
           "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics; public_claim_eligible is false",
           "timestamp": "2026-09-23T19:36:58Z",
           "scope": "source digest sha256:b91ed033e8ce670e311d058f472a46f36253ab5f1d9afc921cbc73d33673c9bb binds five local efficiency repetitions and the installed committed v0.20.1 candidate focused suite",
+          "limitations": "Local synthetic efficiency does not qualify live model quality, cross-harness superiority, external browsers, hosted platforms, release publication or YOLO effectiveness; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "uv run --frozen --no-editable --extra dev --extra supply-chain python -B scripts/nathan_agent_runtime_qualification.py --refresh --quiet; hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:500f260b655bac563572c638d49dfc55f495769b81701c31df342e1669678de7",
+          "result": "status pass: 17 correctness probes and 31 deterministic workloads pass with zero policy escapes, duplicate mutations or unverified completions; public_claim_eligible is false",
+          "timestamp": "2026-09-24T00:25:41Z",
+          "scope": "source digest sha256:219752401b96e5d0a267719b3a3cd25a11ef465742127c75277c7b66fbdb9792 and report digest sha256:e946f43084025b6dd59799116ca0deb7660a773986f3d7f87e3bc862472acc73 bind the committed UI slice 1 at 8568a9c868fa8936c962936819cb42d3df41cc7f",
+          "limitations": "Model-free local fixtures do not establish live model or provider behavior, comparative performance, hosted platform qualification, production service isolation or public delivery; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json efficiency and focused matrix executed by scripts/henry_m8_qualification.py",
+          "digest": "sha256:55b5a497518a43db02c7923d6120576cde58f8d14051b5c6596192a9ecb9b3ca",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-24T00:27:03Z",
+          "scope": "source digest sha256:9555fa31675157371de07698b7896b2b3f5f12aa9f25946b806fead2997c8b89 binds five local efficiency repetitions and the installed committed UI slice 1 focused suite",
           "limitations": "Local synthetic efficiency does not qualify live model quality, cross-harness superiority, external browsers, hosted platforms, release publication or YOLO effectiveness; HARD-081 remains in progress"
         }
       ]

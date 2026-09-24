@@ -518,7 +518,7 @@ def render_runtime_quality_snapshot(cfg: Config) -> str:
     baseline_text = f", baseline {float(baseline):.1f} ms" if baseline is not None else ""
     return "\n".join(
         (
-            "[bold primary]Runtime quality diagnostics[/]",
+            "[heading]Runtime quality diagnostics[/]",
             (
                 f"  tool cadence: {sequence['pattern']} "
                 f"(score {sequence['sequence_score']:.2f}, "
@@ -740,7 +740,7 @@ def show_perf_summary() -> None:
             return
         show_info("No chat timing metrics captured yet. Showing runtime events only.")
     else:
-        console.print("[bold primary]Latest latency[/]")
+        console.print("[heading]Latest latency[/]")
         console.print(
             f"  total {format_duration_ns(latest.get('total_duration'))}"
             f" | load {format_duration_ns(latest.get('load_duration'))}"
@@ -753,7 +753,7 @@ def show_perf_summary() -> None:
             f" | keep_alive {latest.get('keep_alive', '?')}"
         )
     if chats:
-        console.print("[bold primary]Recent[/]")
+        console.print("[heading]Recent[/]")
         for item in chats[-5:]:
             model_label = str(item.get("model", "?")).encode("ascii", "replace").decode("ascii")
             console.print(
@@ -766,7 +766,7 @@ def show_perf_summary() -> None:
                 )
             )
     if tool_events:
-        console.print("[bold primary]Runtime events[/]")
+        console.print("[heading]Runtime events[/]")
         for item in tool_events[-5:]:
             if item.get("event") == "tool":
                 console.print(

@@ -1947,6 +1947,28 @@ used.
 
 **Prevention:** Treat credential locator names as private data, not only the secrets.
 
+## 2026-09-23: Theme Styles Were Silently Dropped And Assistant Output Ignored The Theme
+
+**Symptom and cause:** The logo, banner title, error label, thinking text and section headings rendered unstyled in every theme. They used compound styles such as `"bold primary"`; Rich 15 cannot parse a theme name inside a compound style and drops the whole style without an error. Assistant Markdown used Rich defaults and a painted Monokai code block, several footer chips measured below 3:1 on their own bar (dracula muted 2.70, nord error 2.15 after 8-bit quantisation), the completion menu kept prompt_toolkit's light-grey defaults, redeye used red for brand, error and info alike, and `/reload` left the previous theme's footer style in place.
+
+**Repair:** `algo_cli/ui/tokens.py` holds one palette table per theme and generates `display.THEME_COLORS`, `display.THEME_MAP` and the prompt_toolkit style. Semantic tokens carry their attributes (`brand.logo`, `heading`, `notice.error`, `thinking`), and 30 compound call sites now use them. Rich built-ins (`markdown.*`, `repr.*`, `rule.line`, `status.spinner`, `table.header`, `prompt.*`) are overridden per theme, and `display.themed_markdown()` uses a per-theme Pygments style. Footer chips are prompt_toolkit classes from the same table, and `main.apply_theme()` serves both `/theme` and `/reload`. Palettes were tuned to the contrast floors, identical tokens were split, and redeye error and info moved off red.
+
+**Verification and limits:** `tests/ui/` checks that every theme defines every token and that each token parses. It also checks contrast floors against each palette's assumed dark background (text 7:1, muted and semantic colours 4.5:1, borders 3:1, footer chips 4.5:1 on their bars in truecolor and 8-bit), pairwise ΔE2000 of at least 20 between success, warning, error and brand, a lint that bans compound theme styles with a shrinking allow-list for raw colours, recorded renders of the banner, logo, error, thinking and Markdown in all seven themes, and the `/theme` and `/reload` style rebuild. These are local test results. Light terminals, 16-colour quantisation, and the colour-depth mismatch between Rich and prompt_toolkit remain open for later slices.
+
+**Prevention:** Never compose attributes with a theme name at a call site. Add a token that carries the attributes, and let the lint and the completeness test keep the table whole.
+
+## 2026-09-23: Themed Code Blocks Lost Their Panel And Some Tokens Fell Below Readable Contrast
+
+**Symptom:** After the theme-token slice, fenced code blocks drew with `Syntax(background_color="default")`. On a light terminal the dark-theme token colours measured 1.07 to 2.4:1. The gruvbox `diff` lines were `#282828` on `#282828`, because the default background also replaced the red and green token backgrounds. dracula `Generic.Deleted` `#8b080b` measured 1.45:1, and nord comments `#616e87` measured 2.43:1.
+
+**Confirmed cause:** Unpainting the panel put code-theme colours, which assume a dark background, on whatever background the terminal uses, and removed per-token backgrounds. The dracula and nord Pygments styles also ship tokens below any text floor, and the contrast gate never checked code-theme tokens.
+
+**Repair:** `ThemedCodeBlock` paints the Pygments style's own background again. `ui.markdown.ReadableSyntaxTheme` moves any token colour below 4.5:1 against its effective background (token background, else the panel) toward white or black with `contrast.lift_to_floor`. Inline code and all other Markdown stay unpainted.
+
+**Verification:** `tests/ui/test_ui_code_blocks.py` checks every token of every theme's code style against the floor. It also renders `diff` and Python fences in all seven themes and checks that each glyph has a painted background and meets 4.5:1 on it. The new tests fail against the previous renderer and also against a painted but unlifted renderer. These are local test results only.
+
+**Prevention:** Any colour drawn by a third-party style belongs in the contrast gate, together with the background it is actually drawn on.
+
 ## Repair Log Checklist
 
 - Date and component.
