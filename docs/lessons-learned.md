@@ -2109,6 +2109,86 @@ used.
 
 **Prevention:** A prompt_toolkit style attribute must parse at the declared dependency floor, not only at the locked version.
 
+## 2026-09-24: Agent Block Model Errors Were Reported As Journal Corruption
+
+**Symptom and cause:** An end-to-end `/agent` scenario whose first (review) block hit a provider error recorded the block as `completion_check_error` with "journal event sequence is invalid: verifier ran before recorded work settled"; a Ctrl+C in the same block turned `cancelled` into `failed`. Blocks that can mutate run a post-block mutation audit in `run_agent_block`'s `finally`, and that audit's journal verifier refuses to run while the aborted model round is still open. Its failure overwrote the block's original status and cause. The final block has no mutation audit, so unit tests of that path passed.
+
+**Repair:** A completion-check failure now marks a block failed only if the block has not already failed or been cancelled; the original `model_error` or `interrupted` cause is kept. A completion-check failure on an otherwise complete block still fails it.
+
+**Verification and limits:** `tests/scenarios/test_scenario_agent_pipeline.py` fails without the repair and passes with it; `tests/test_pipeline_fixes.py` covers both the kept causes and the unchanged failing check. Local test evidence only. Still unresolved: the run journal has no event for an aborted model round, so `run_finished` is rejected ("run finished with an active block") and the thread's error names journal finalization, and a cancelled pipeline is reported `failed`. Two strict xfail scenarios track this.
+
+**Prevention:** Cleanup code in `finally` must not overwrite a failure that is already propagating. Whole-interaction scenarios (`tests/scenarios/`) now run blocks with mutation-capable tool sets, which unit tests of single blocks did not.
+
+## 2026-09-24: Completion-Check Errors On Failed Blocks Were Dropped
+
+**Symptom and cause:** The previous repair kept a failed or cancelled block's original cause but discarded the completion-check exception entirely. `completion_error` was built and then never read, so a genuine post-block audit failure (git snapshot, protected-memory evidence, or `run_journal.verifier_result`) left no trace on the block.
+
+**Repair:** When the block has already failed or been cancelled, the completion-check error is appended to `verification_warning` (joined with `; ` after any existing warning). `status`, `status_code` and `status_reason` still keep the original cause, and a failing check on an otherwise complete block still fails it with `completion_check_error`. No guard changed: the block stays failed or cancelled, and recovery still requires status `partial`.
+
+**Verification:** `tests/test_pipeline_fixes.py` (kept cause plus recorded warning for model errors and Ctrl+C, and appending to an existing warning) and `tests/scenarios/test_scenario_agent_pipeline.py` fail without the repair and pass with it. Local test evidence only.
+
+**Prevention:** When one failure takes priority over another, record the lower-priority one as evidence rather than dropping it. Tests should check that it is still there.
+
+## 2026-09-24: Scenario Harness Let Approved X Posts Reach The Real Adapter
+
+**Symptom (PR #78 review):** `scenario.run()` replaced only `main.run_tool`. `_main_dispatch_dependencies()` sends `x_account_post`, `x_account_reply` and `x_account_post_action` to the dispatcher's trusted invoker instead, so a scenario that approved one of them called `x_account.post(..., confirm=True)` and `xurl`. On a machine with `xurl` credentials that would have posted to X.
+
+**Confirmed cause:** The recorder patched one of two invoker paths. `default_dispatch_dependencies()` binds `james_dispatch._trusted_invoke`, which the harness never replaced.
+
+**Repair:** The harness now routes `main.run_tool`, `nathan_runtime.run_tool` and `james_dispatch._trusted_invoke` through one `ToolRecorder`; only `real_tools` names reach the saved real invokers. A new autouse `external_guard` fixture blocks and records `x_account._run_xurl`, `jev_kernel._invoke`, `urllib.request.urlopen`, `theodore_runtime_services.urlopen`, `tools.active_ollama_client` and TCP `socket.connect`/`connect_ex`, and fails the test at teardown on any violation. No runtime permission guard changed.
+
+**Verification:** `tests/scenarios/test_scenario_harness_isolation.py::test_scenario_approved_x_account_post_is_recorded_never_executed` failed before the repair with the guard recording `xurl: _run_xurl` (the guard, added first, blocked the real call). It passes after the repair; the guard self-tests cover each blocked client. Local test evidence only.
+
+**Prevention:** A test double for tool execution must cover every invoker the dispatcher can pick, and a hard guard on external clients should back it up.
+
+## 2026-09-24: Repeated Scenario Runs Wrapped The Previous Run's Patches
+
+**Symptom (PR #78 review):** A second `scenario.run()` in one test captured the first run's patched `main.run_tool` and `main.ask_approval` as its "originals". `real_tools` in the second run then reached the first run's fake, and approval could be decided by the first run's callback. Interactive display patches also leaked into a later one-shot run, which then emitted no `tool_result` events.
+
+**Confirmed cause:** Every run patched through the test-scoped `monkeypatch` and read the current module attributes as the originals.
+
+**Repair:** The runner saves the unpatched invokers, approval callback and `run_agent_block` once, at construction. Each run patches through its own `pytest.MonkeyPatch`, which is undone at the start of the next run and at fixture teardown.
+
+**Verification:** `test_scenario_repeated_runs_use_the_original_dispatcher` (a faked interactive run, then a one-shot run with `real_tools={"read_file"}`) failed before the repair ("faked notes" instead of the real file) and passes after it. Local test evidence only.
+
+**Prevention:** A harness that patches module globals must restore them between runs, not only at test teardown.
+
+## 2026-09-24: Agent-Pipeline Scenarios Hid Tool Activity And Ran Real Tools
+
+**Symptom (PR #78 review):** `scenario.run_agent()` results always had empty `messages`, `invocations` and `events`, so pipeline tool calls, wasted calls and history pairing were invisible. Pipeline dispatch (`execute_tool_call_for_pipeline` → `dispatch_action` with default dependencies) bypassed the recorder and could run a real tool body.
+
+**Confirmed cause:** `run_agent()` installed no tool recorder, and the result was built with empty lists.
+
+**Repair:** `run_agent()` accepts `tools=`, `real_tools=` and `approve=`, installs the same recorder and approval log as `run()`, records typed tool outcomes into `events`, and wraps `run_agent_block` to collect each block's messages, in run order, into `result.messages`.
+
+**Verification:** `test_scenario_agent_pipeline_tool_calls_are_recorded_and_faked` failed before the repair (`run_agent()` accepted no fakes and its results carried no invocations or messages) and passes after it: the call is recorded, the tool message carries the fake, and `status_by_call`, `wasted_calls` and `history_well_formed` reflect the pipeline. Local test evidence only.
+
+**Prevention:** Every scenario driver must report the same interaction facts; an empty field should mean nothing happened, not that nothing was measured.
+
+## 2026-09-24: Scenario External Guard Missed Child-Process Network Access
+
+**Symptom (PR #78 review):** A scenario with `real_tools={"run_shell"}` ran a child process that opened a TCP connection. The tool reported `ok`, the guard recorded no violation and a local listener accepted the connection. The README said the guard blocked "any TCP socket connect".
+
+**Confirmed cause:** `ExternalCallGuard` patched only in-process `socket.socket.connect`/`connect_ex` and named Python adapters. A child process (curl, `git push`, the `xurl` CLI run directly) has its own sockets and bypasses both.
+
+**Repair:** The guard now also blocks and records every child-process launch as `process`: `subprocess.Popen` (which `subprocess.run`, `check_output` and asyncio subprocesses use) and `os.system` / `os.posix_spawn*` / `os.spawnv*`. The only exception is an argv-list `git` call whose subcommand is a local read (`rev-parse`, `status`, `diff`, `ls-files`, `log`, `show`), which the pipeline's workspace evidence runs. A test can opt in with `scenario.allow_external("process")`. The README now states that the socket check covers only this process. No runtime permission guard changed.
+
+**Verification:** `test_scenario_guard_blocks_child_processes_from_real_shell` failed before the repair (the listener accepted one connection and `call-1` was `ok`) and passes after it with one `process` violation and no connection. `test_scenario_guard_lets_an_allowed_test_launch_child_processes` covers the opt-in. Local test evidence only.
+
+**Prevention:** An in-process network guard says nothing about child processes. Treat any process launch as external unless it is known to be local.
+
+## 2026-09-24: Scenario Runner Teardown Could Leak A Run's Approval Wrapper
+
+**Symptom (PR #78 review):** If a test called `scenario.run()` and then patched a runner-owned attribute (for example `main.ask_approval`) with its own `monkeypatch`, teardown left the run's `recording_approve` wrapper installed for good. An approve-all wrapper would then approve for every later test in the process.
+
+**Confirmed cause:** The runner patched through a private `pytest.MonkeyPatch`, undone in the `scenario` fixture teardown before the test's `monkeypatch`. The test's monkeypatch had saved the run's wrapper as the value to restore, so its undo wrote the wrapper back after the runner restored the original.
+
+**Repair:** `_RunPatcher` patches through the test's `monkeypatch`, so teardown stays last-in first-out with the test's own patches, and keeps a per-run undo list so the next run still starts unpatched. The per-run undo restores an attribute only if it still holds that run's value, so a patch the test made between runs survives.
+
+**Verification:** `test_scenario_test_patch_after_a_run_does_not_leak_the_run_wrapper` (fixture teardown order: run, test patch, `runner.close()`, `monkeypatch.undo()`) failed before the repair with `main.ask_approval` left as the run's wrapper, and passes after it. `test_scenario_later_run_does_not_clobber_a_test_patch_made_between_runs` also failed before and passes after. In the full scenario run before the repair, the leaked approve-all wrapper made the later `test_scenario_denied_shell_in_noninteractive_run_tells_the_model_why` fail. Local test evidence only.
+
+**Prevention:** Patches that must restore relative to a test's own patches have to share one last-in first-out stack with them.
+
 ## Repair Log Checklist
 
 - Date and component.

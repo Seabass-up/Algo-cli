@@ -1071,9 +1071,17 @@ def run_agent_block(
                 completion_check(block)
         except Exception as exc:
             completion_error = f"Completion check failed: {type(exc).__name__}: {exc}"
-            block.status = "failed"
-            block.status_code = "completion_check_error"
-            block.status_reason = completion_error
+            # A block that already failed or was cancelled keeps its original cause; the
+            # check failing on unsettled work would otherwise mask a provider error. The
+            # check error is still recorded as a warning so audit evidence is not lost.
+            if block.status not in {"failed", "cancelled"}:
+                block.status = "failed"
+                block.status_code = "completion_check_error"
+                block.status_reason = completion_error
+            else:
+                block.verification_warning = "; ".join(
+                    part for part in (block.verification_warning, completion_error) if part
+                )
         try:
             execution_guardrails.end_execution_scope(execution_scope)
         except execution_guardrails.ExecutionGuardrailError as exc:
