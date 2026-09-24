@@ -2115,11 +2115,11 @@ used.
 
 **Confirmed cause:** The captured Rich output kept its colour codes. The secret pattern began with a word boundary, and the code ending in `m` directly before `access_token=` removed that boundary, so the value was never matched. Tests passed in CI because CI does not set `FORCE_COLOR`; the M8 focused suite exposed it in a shell that does.
 
-**Repair:** `_captured_session_result` strips ANSI/VT sequences (7-bit and C1 CSI, OSC with BEL or ST, other escapes including charset designations) and stray control characters before redaction, and the secret and Bearer patterns no longer depend on a leading word boundary. `tests/conftest.py` clears host colour variables before `algo_cli` is imported so the suite renders the same in every terminal.
+**Repair:** `_captured_session_result` strips ANSI/VT sequences (7-bit and C1 CSI, OSC with BEL or ST, other escapes including charset designations) and stray control characters before redaction, and the secret and Bearer patterns no longer depend on a leading word boundary. Review found that stripping alone was unsafe: a stray ESC directly before a key was removed together with the key's first letter (`\x1bBearer` became `earer`), so redaction now runs both before and after normalization. `tests/conftest.py` clears host colour variables before `algo_cli` is imported so the suite renders the same in every terminal.
 
 **Verification:** A forced-colour `session_command` regression test and a parametrized escape-sequence test fail before the change and pass after it; the full suite passes with and without `FORCE_COLOR=3`. Local macOS evidence; hosted CI is recorded on the pull request.
 
-**Prevention:** Anything returned to a model is plain text first and redacted second; test redaction against decorated input, not only clean strings.
+**Prevention:** Anything returned to a model is redacted, normalized to plain text, and redacted again; test redaction against decorated and malformed input, not only clean strings.
 
 ## Repair Log Checklist
 

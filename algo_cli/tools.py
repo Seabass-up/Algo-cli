@@ -3599,7 +3599,10 @@ def _redact_session_command_output(output: str, *, workspace: str = "") -> str:
 
 
 def _captured_session_result(output: str, normalized: str, *, workspace: str = "") -> str:
-    plain = _TERMINAL_SEQUENCE_RE.sub("", str(output))
+    # Redact on both sides of normalization: a stray ESC can swallow the first letter of a
+    # key when stripped, and colour codes can split one when not stripped.
+    redacted = _redact_session_command_output(str(output), workspace=workspace)
+    plain = _TERMINAL_SEQUENCE_RE.sub("", redacted)
     rendered = _redact_session_command_output(plain, workspace=workspace).strip()
     # Rich error output begins with the product glyph. Normalize it so the
     # runtime's existing error classifier still recognizes failed tool calls.

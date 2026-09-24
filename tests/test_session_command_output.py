@@ -364,3 +364,23 @@ def test_captured_result_redacts_secrets_after_any_terminal_sequence(sequence: s
 
     assert "access-secret" not in rendered
     assert "\x1b" not in rendered and "\x9b" not in rendered
+
+
+@pytest.mark.parametrize(
+    "secret_text",
+    [
+        "Bearer bearer-secret",
+        "access_token=access-secret",
+        "refresh_token=refresh-secret",
+        "api_key=key-secret",
+        "client_secret=client-secret",
+        "password=password-secret",
+    ],
+)
+@pytest.mark.parametrize("prefix", ["\x1b", "\x1b[", "\x1b]", "\x1b(", "\x9b"])
+def test_stray_escape_before_a_credential_cannot_hide_it(prefix: str, secret_text: str) -> None:
+    """Regression (review): stripping a stray ESC consumed the first letter of "Bearer"."""
+
+    rendered = tools._captured_session_result(f"error {prefix}{secret_text} done", "/google calendar-list")
+
+    assert "-secret" not in rendered
