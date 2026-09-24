@@ -83,8 +83,8 @@ first. That lets the harness measure latency (see
   harness as `scenarios.scenario_harness`.
 - Assert what the user and the model see: statuses, the text in tool messages, done events,
   history pairing. Don't assert private internals.
-- If you are asserting a behavior an open PR will change, put it in the future-behavior file
-  (for example `test_scenario_pending_pr73.py`) with `xfail(strict=False, reason=...)`. It then
+- If you are asserting a behavior an open PR will change, put it in a future-behavior file
+  (for example `test_scenario_pending_pr<N>.py`) with `xfail(strict=False, reason=...)`. It then
   flips to XPASS when the PR lands, and you remove the marker. A defect the harness finds but
   cannot fix yet gets `xfail(strict=True)` with the cause in `reason`, so the fix has to remove
   the marker.

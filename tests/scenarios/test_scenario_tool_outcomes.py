@@ -95,7 +95,9 @@ def test_scenario_read_outside_workspace_is_denied_with_explanation(scenario):
     explanation = result.denials[0]["summary"]
     assert explanation.startswith("Blocked by runtime authority:") and len(explanation) > 40
     tool_message = next(message for message in result.messages if message.get("role") == "tool")
-    assert tool_message["content"] == explanation  # the model sees the same explanation
+    # The recorded summary may be shortened for display; the model gets the full explanation.
+    assert tool_message["content"].startswith(explanation.removesuffix("..."))
+    assert "Do not retry" in tool_message["content"]
     assert result.history_well_formed and result.completed
 
 
