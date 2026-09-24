@@ -29,6 +29,7 @@ from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from . import harness
+from .cancellation import TEAM_CANCELLED, CancelToken
 from . import identity
 from . import index_compute_lab as _index_compute_lab
 from .alice_artifact_store import (
@@ -1103,10 +1104,19 @@ def cleanup_pdf_render_artifact(
 
 TEAM_CANCELLED_WRITE = "Error: write_file was not run because the agent team was cancelled."
 TEAM_CANCELLED_SHELL = "Error: command stopped because the agent team was cancelled; child processes were terminated."
+TURN_CANCELLED_WRITE = "Error: write_file was not run because the turn was cancelled."
+TURN_CANCELLED_SHELL = "Error: command stopped because the turn was cancelled; child processes were terminated."
+TEAM_CANCELLED_SHELL_NOT_RUN = "Error: command was not run because the agent team was cancelled."
+TURN_CANCELLED_SHELL_NOT_RUN = "Error: command was not run because the turn was cancelled."
 
 
-def _team_cancelled(cancel_event: threading.Event | None) -> bool:
+def _team_cancelled(cancel_event: threading.Event | CancelToken | None) -> bool:
     return cancel_event is not None and cancel_event.is_set()
+
+
+def _cancelled_by_team(cancel_event: threading.Event | CancelToken | None) -> bool:
+    # A bare Event is the team signal the original API carried; a token names its own reason.
+    return not isinstance(cancel_event, CancelToken) or cancel_event.reason == TEAM_CANCELLED
 
 
 def write_file(
@@ -1114,7 +1124,7 @@ def write_file(
     content: str,
     cwd: str | None = None,
     overwrite: bool = False,
-    cancel_event: threading.Event | None = None,
+    cancel_event: threading.Event | CancelToken | None = None,
 ) -> str:
     """Write text to a file. Existing files require overwrite=true.
 
@@ -1128,7 +1138,7 @@ def write_file(
     if p.exists() and not overwrite:
         return f"Error: {p} already exists. Re-run with overwrite=true if intended."
     if _team_cancelled(cancel_event):
-        return TEAM_CANCELLED_WRITE
+        return TEAM_CANCELLED_WRITE if _cancelled_by_team(cancel_event) else TURN_CANCELLED_WRITE
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_text(p, content)
@@ -1618,7 +1628,7 @@ def _terminate_process_tree(
 def _communicate_or_cancel(
     proc: subprocess.Popen[Any],
     timeout: float,
-    cancel_event: threading.Event | None,
+    cancel_event: threading.Event | CancelToken | None,
 ) -> tuple[str, str] | None:
     """Return process output, or None once ``cancel_event`` is set; timeouts raise as communicate() does."""
 
@@ -1641,7 +1651,7 @@ def run_shell(
     cwd: str | None = None,
     timeout: float = 30,
     safe_mode: bool = False,
-    cancel_event: threading.Event | None = None,
+    cancel_event: threading.Event | CancelToken | None = None,
 ) -> str:
     """Run a shell command and return output.
 
@@ -1662,7 +1672,7 @@ def run_shell(
             "Toggle /safe only for an explicitly approved, narrower operation."
         )
     if _team_cancelled(cancel_event):
-        return "Error: command was not run because the agent team was cancelled."
+        return TEAM_CANCELLED_SHELL_NOT_RUN if _cancelled_by_team(cancel_event) else TURN_CANCELLED_SHELL_NOT_RUN
     workdir = _resolve(cwd or ".", None)
     actual_timeout = max(0.001, min(float(timeout), 120.0))
     # Isolate the child in its own process group. Without this, every child
@@ -1690,7 +1700,7 @@ def run_shell(
                     proc.communicate(timeout=5)
                 except (OSError, subprocess.SubprocessError):
                     pass
-                return TEAM_CANCELLED_SHELL
+                return TEAM_CANCELLED_SHELL if _cancelled_by_team(cancel_event) else TURN_CANCELLED_SHELL
             stdout, stderr = output_pair
         except subprocess.TimeoutExpired:
             _terminate_process_tree(proc)

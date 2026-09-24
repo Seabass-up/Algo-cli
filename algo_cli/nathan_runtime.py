@@ -909,6 +909,43 @@ def preflight_runtime_tool(
     return preflight
 
 
+def _prompt_for_approval(
+    name: str,
+    args: dict[str, Any],
+    action: ResolvedAction,
+    current: RuntimeToolPreflight,
+    current_args: dict[str, Any],
+    channel: Any,
+) -> str | None:
+    """Ask the supervisor channel or the terminal; None means denied without an answer."""
+
+    from .display import console
+    from .nathan_approval_channel import ApprovalChannel
+
+    if channel is not None:
+        if not isinstance(channel, ApprovalChannel) or not channel.confirm(action, current_args):
+            return None
+        return "y"
+    options = "[y/N/a]" if action.confirmation_mode is ConfirmationMode.SESSION_PREAPPROVAL else "[y/N]"
+    console.print(f"[yellow]Approve exact {name} action?[/] {options}")
+    console.print(
+        json.dumps(
+            {
+                "target": action.target,
+                "confirmation": action.confirmation_mode.value,
+                "capabilities": list(current.policy.capability_names),
+                "arguments": redact_tool_args(name, args),
+            },
+            indent=2,
+        )
+    )
+    try:
+        return input(f"Approve? {options} ").strip().casefold()
+    except (EOFError, OSError):
+        console.print("[red]No interactive input available; operation denied.[/]")
+        return None
+
+
 def ask_approval(
     name: str,
     args: dict[str, Any],
@@ -975,32 +1012,24 @@ def ask_approval(
     if needs_prompt:
         if mode != "interactive" or action.confirmation_mode is ConfirmationMode.NONE:
             return False
-        from .nathan_approval_channel import ApprovalChannel
+        from .cancellation import APPROVAL_CANCELLED, ApprovalCancelled, current_token
 
+        cancel_token = current_token()
+        if cancel_token is not None:
+            # Never open a prompt for a turn that is already stopping.
+            cancel_token.raise_if_cancelled()
         channel = getattr(cfg, "_nathan_approval_channel", None)
-        if channel is not None:
-            if not isinstance(channel, ApprovalChannel) or not channel.confirm(action, current_args):
-                return False
-            approval = "y"
-        else:
-            options = "[y/N/a]" if action.confirmation_mode is ConfirmationMode.SESSION_PREAPPROVAL else "[y/N]"
-            console.print(f"[yellow]Approve exact {name} action?[/] {options}")
-            console.print(
-                json.dumps(
-                    {
-                        "target": action.target,
-                        "confirmation": action.confirmation_mode.value,
-                        "capabilities": list(current.policy.capability_names),
-                        "arguments": redact_tool_args(name, args),
-                    },
-                    indent=2,
-                )
-            )
-            try:
-                approval = input(f"Approve? {options} ").strip().casefold()
-            except (EOFError, OSError):
-                console.print("[red]No interactive input available; operation denied.[/]")
-                return False
+        try:
+            approval = _prompt_for_approval(name, args, action, current, current_args, channel)
+        except KeyboardInterrupt as exc:
+            if cancel_token is not None:
+                cancel_token.cancel(APPROVAL_CANCELLED)
+            raise ApprovalCancelled() from exc
+        if cancel_token is not None and cancel_token.is_cancelled:
+            # Cancelled elsewhere while the prompt waited: the answer no longer authorizes anything.
+            raise ApprovalCancelled()
+        if approval is None:
+            return False
         session_scope = approval == "a" and action.confirmation_mode is ConfirmationMode.SESSION_PREAPPROVAL
         if approval != "y" and not session_scope:
             return False
@@ -1100,11 +1129,13 @@ def run_tool(name: str, args: dict[str, Any], cfg: Config) -> str:
 
         return session_commands.execute(str(call_args.get("command") or ""), cfg)
     if name in {"run_shell", "write_file"}:
-        # Team cancellation is runtime authority; never accept a model-supplied value.
+        # The turn's cancel token is runtime authority; never accept a model-supplied value.
         call_args.pop("cancel_event", None)
-        team_cancellation = getattr(cfg, "_algo_team_cancellation", None)
-        if team_cancellation is not None:
-            call_args["cancel_event"] = team_cancellation
+        from .cancellation import current_token
+
+        cancel_token = current_token()
+        if cancel_token is not None:
+            call_args["cancel_event"] = cancel_token
     fn = TOOL_MAP.get(name)
     if not fn:
         available = ", ".join(sorted(TOOL_MAP)[:40])

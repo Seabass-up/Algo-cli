@@ -14,6 +14,7 @@ import threading
 import time
 from typing import Any
 
+from .cancellation import APPROVAL_CANCELLED, KEYBOARD_INTERRUPT, CancelToken, current_token, interrupt_reason
 from .arthur_outcomes import (
     ActionOutcome,
     OutcomeStatus,
@@ -103,6 +104,12 @@ class DispatchCancellation:
             return self._reason_code
 
 
+def _follower_reason(reason_code: str) -> str:
+    # Only the call whose own prompt was cancelled is an approval cancel; calls stopped by the
+    # shared signal were never prompted, so they report the plain interrupt.
+    return KEYBOARD_INTERRUPT if reason_code == APPROVAL_CANCELLED else reason_code
+
+
 @dataclass
 class _DispatchControl:
     dependencies: DispatchDependencies
@@ -110,11 +117,13 @@ class _DispatchControl:
     cancellation: DispatchCancellation | None
     last_monotonic: float | None = None
     interruption: KeyboardInterrupt | None = None
+    # The turn's ambient token, captured at dispatch start so a detached worker still sees it.
+    token: CancelToken | None = None
 
     def interrupt(self, exc: KeyboardInterrupt) -> None:
         self.interruption = exc
         if self.cancellation is not None:
-            self.cancellation.cancel("keyboard_interrupt")
+            self.cancellation.cancel(interrupt_reason(exc))
 
     def finish(self, result: DispatchResult) -> DispatchResult:
         if self.interruption is not None:
@@ -123,9 +132,11 @@ class _DispatchControl:
 
     def signal(self) -> tuple[str, str] | None:
         if self.interruption is not None:
-            return "cancelled", "keyboard_interrupt"
+            return "cancelled", interrupt_reason(self.interruption)
         if self.cancellation is not None and self.cancellation.cancelled:
-            return "cancelled", self.cancellation.reason_code
+            return "cancelled", _follower_reason(self.cancellation.reason_code)
+        if self.token is not None and self.token.is_cancelled:
+            return "cancelled", _follower_reason(self.token.reason)
         deadline = self.deadline_monotonic
         if deadline is None:
             return None
@@ -368,6 +379,8 @@ def _termination_outcome(
     status, reason_code = signal
     if result:
         message = result
+    elif status == "cancelled" and reason_code == APPROVAL_CANCELLED:
+        message = "Approval was cancelled by the user; this action was not approved and was not run."
     elif status == "cancelled":
         message = "Action was cancelled before dispatch."
     elif status == "timed_out":
@@ -879,6 +892,7 @@ def dispatch_action(
         dependencies=deps,
         deadline_monotonic=deadline_monotonic,
         cancellation=cancellation,
+        token=current_token(),
     )
     termination = control.signal()
     effective_ceiling = policy_ceiling_code or (
@@ -1032,7 +1046,7 @@ def dispatch_action(
                     cfg=cfg,
                     tool_call_id=tool_call_id,
                     preflight=preflight,
-                    outcome=_termination_outcome(action, ("cancelled", "keyboard_interrupt"), invoked=False),
+                    outcome=_termination_outcome(action, ("cancelled", interrupt_reason(exc)), invoked=False),
                     duration_ms=0.0,
                     render=render,
                 )
