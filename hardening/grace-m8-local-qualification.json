@@ -11,7 +11,7 @@
     "unknown_trials": 1000
   },
   "fixture_digest": "sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659",
-  "generated_at": "2026-09-24T19:12:10Z",
+  "generated_at": "2026-09-24T20:47:15Z",
   "limitations": [
     "Zero observed failures in a finite local sample is not zero risk.",
     "No production browser, selected-Chrome, Developer ID, notarization, Gatekeeper, or live TCC claim is made.",
@@ -45,8 +45,8 @@
       "measurements": {
         "dispatches": 0,
         "mutations": 0,
-        "p50_ms": 4.746,
-        "p95_ms": 5.465,
+        "p50_ms": 4.676,
+        "p95_ms": 5.538,
         "seed": 310400406105
       },
       "numerator": 10000,
@@ -141,8 +141,8 @@
       "limitations": "Finite adapters do not establish that a future native or browser adapter observes a real external target correctly.",
       "measurements": {
         "mutations": 1000,
-        "p50_ms": 6.192,
-        "p95_ms": 7.215
+        "p50_ms": 5.988,
+        "p95_ms": 6.847
       },
       "numerator": 1000,
       "rate": 1.0,
@@ -231,7 +231,7 @@
   "public_claim_eligible": false,
   "qualification": "henry-m8-local-v1",
   "schema_version": 1,
-  "source_digest": "sha256:62055bd02fbb33caa9c3631be0873e13937c52966567e7cb44788adda6d16543",
+  "source_digest": "sha256:9072a03d7e73b13efa0c0946e13e2d439b50c188141432ca2a396998afef44a0",
   "status": "blocked",
   "summary": {
     "blocked": 5,
