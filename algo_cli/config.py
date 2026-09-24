@@ -9,10 +9,12 @@ import os
 import re
 import secrets
 import stat
+import sys
 import tempfile
 import time
 from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Iterator, Mapping
@@ -176,7 +178,9 @@ def repair_memory_configuration() -> dict[str, object]:
         changed = bool(removed or marker_removed or repaired.get("continuum_enabled") is not True)
         repaired["continuum_enabled"] = True
         if changed:
-            _atomic_write_text(CONFIG_FILE, json.dumps(repaired, indent=2))
+            repaired_text = json.dumps(repaired, indent=2)
+            _backup_config_before_write(repaired_text.encode("utf-8"))
+            _atomic_write_text(CONFIG_FILE, repaired_text)
 
         return {
             "changed": changed,
@@ -540,6 +544,228 @@ Operating rules:
 - Format code blocks with language tags and include paths when citing code."""
 
 
+class ConfigWriteUnderTestError(RuntimeError):
+    """A pytest process tried to write the account's real Algo CLI state."""
+
+
+CONFIG_BACKUP_KEEP = 5
+_CONFIG_BACKUP_RE = re.compile(r"config\.json\.bak\.(\d{8}T\d{12}Z)\Z")
+_CONFIG_REPAIR_BACKUP_RE = re.compile(r"config\.json\.before-continuum-[0-9a-f]{16}\.bak\Z")
+
+
+def _running_under_pytest() -> bool:
+    return bool(os.environ.get("PYTEST_CURRENT_TEST")) or "pytest" in sys.modules
+
+
+def _account_home_directory() -> Path | None:
+    # The account database is immune to HOME monkeypatching, which is exactly
+    # the isolation mistake this guard exists to catch.
+    if os.name == "posix":
+        try:
+            import pwd
+
+            return Path(pwd.getpwuid(os.getuid()).pw_dir)
+        except (ImportError, KeyError, OSError):
+            pass
+    try:
+        return Path.home()
+    except RuntimeError:
+        return None
+
+
+def _real_home_config_dirs() -> tuple[Path, ...]:
+    home = _account_home_directory()
+    if home is None:
+        return ()
+    return tuple(
+        Path(os.path.realpath(os.fspath(home / name))) for name in (NEW_CONFIG_DIR_NAME, OLD_CONFIG_DIR_NAME)
+    )
+
+
+def _refuse_real_config_write_under_test(path: Path) -> None:
+    """Fail before any byte reaches the real home state from a pytest process."""
+
+    if not _running_under_pytest():
+        return
+    candidate = Path(os.path.realpath(os.path.abspath(os.fspath(path))))
+    for root in _real_home_config_dirs():
+        if candidate == root or root in candidate.parents:
+            raise ConfigWriteUnderTestError(
+                f"Refusing to write {candidate} during a pytest run: it is inside the real Algo CLI "
+                f"config directory {root}. Set ALGO_CLI_CONFIG_DIR to an isolated temporary directory "
+                "before importing algo_cli (tests/conftest.py does this)."
+            )
+
+
+_CONFIG_BACKUP_TIME_FORMAT = "%Y%m%dT%H%M%S%fZ"
+
+
+def _config_backup_time(name: str) -> datetime | None:
+    match = _CONFIG_BACKUP_RE.fullmatch(name)
+    if match is None:
+        return None
+    try:
+        stamp = datetime.strptime(match.group(1), _CONFIG_BACKUP_TIME_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        # Digits that are not a real instant: not a backup this code wrote.
+        return None
+    # No real clock writes year 9999; treating it as foreign keeps "newest + 1 µs" from overflowing.
+    return stamp if stamp.year < 9999 else None
+
+
+def _next_config_backup_path(retained: list[Path]) -> Path:
+    # Names stay unique and strictly newer than every retained backup, even if
+    # the wall clock stepped backwards, so rotation by name drops the oldest.
+    stamp = datetime.now(timezone.utc)
+    newest = _config_backup_time(retained[-1].name) if retained else None
+    if newest is not None and stamp <= newest:
+        stamp = newest + timedelta(microseconds=1)
+    while True:
+        target = CONFIG_DIR / f"{CONFIG_FILE.name}.bak.{stamp.strftime(_CONFIG_BACKUP_TIME_FORMAT)}"
+        if not os.path.lexists(target):
+            return target
+        stamp += timedelta(microseconds=1)
+
+
+def _rotating_config_backups() -> list[Path]:
+    """Regular rotating backups, oldest first; links and other types are never touched."""
+
+    try:
+        entries = list(os.scandir(CONFIG_DIR))
+    except FileNotFoundError:
+        return []
+    found = []
+    for entry in entries:
+        if _config_backup_time(entry.name) is not None and entry.is_file(follow_symlinks=False):
+            found.append(Path(entry.path))
+    return sorted(found, key=lambda item: item.name)
+
+
+# Conversation state, not settings. Backups exist to recover settings, and
+# keeping these would resurrect a summary the user cleared with /clear.
+_CONFIG_BACKUP_SESSION_DEFAULTS: dict[str, Any] = {"session_summary": "", "attempt_ledger": []}
+
+
+def _config_backup_payload(current: bytes) -> bytes:
+    """The bytes to retain for ``current``: settings only, never session state."""
+
+    try:
+        document = json.loads(current.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        # An unparseable file is kept as-is; recovering it is the point.
+        return current
+    if not isinstance(document, dict):
+        return current
+    if all(document.get(key, empty) == empty for key, empty in _CONFIG_BACKUP_SESSION_DEFAULTS.items()):
+        return current
+    for key, empty in _CONFIG_BACKUP_SESSION_DEFAULTS.items():
+        if key in document:
+            document[key] = type(empty)()
+    return json.dumps(document, indent=2).encode("utf-8")
+
+
+def _backup_config_before_write(new_payload: bytes | None, *, keep: int = CONFIG_BACKUP_KEEP) -> Path | None:
+    """Retain the current config.json before it is replaced. Caller holds the config lock.
+
+    Session state (summary, attempt ledger) is blanked in the retained copy.
+    Returns the backup holding the retained bytes (new or an identical retained
+    one), or None when there is no current file or the write is a no-op.
+    """
+
+    try:
+        current = _state_descriptor_payload(CONFIG_FILE, max_bytes=MAX_JSON_STATE_BYTES)
+    except FileNotFoundError:
+        return None
+    if new_payload is not None and current == new_payload:
+        return None
+    current = _config_backup_payload(current)
+    digest = hashlib.sha256(current).digest()
+    retained = _rotating_config_backups()
+    holder: Path | None = None
+    for backup in reversed(retained):
+        try:
+            existing = _state_descriptor_payload(backup, max_bytes=MAX_JSON_STATE_BYTES)
+        except OSError:
+            continue
+        if hashlib.sha256(existing).digest() == digest:
+            holder = backup
+            break
+    if holder is None:
+        target = _next_config_backup_path(retained)
+        _atomic_write_bytes(target, current)
+        holder = target
+        retained.append(target)
+    for stale in retained[: max(0, len(retained) - max(1, int(keep)))]:
+        if stale == holder:
+            continue
+        try:
+            information = stale.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISREG(information.st_mode) and not _path_is_reparse_point(stale, information):
+            stale.unlink()
+    return holder
+
+
+def list_config_backups() -> list[dict[str, Any]]:
+    """Describe restorable config backups, newest first, without reading their contents."""
+
+    try:
+        entries = list(os.scandir(CONFIG_DIR))
+    except FileNotFoundError:
+        return []
+    backups: list[dict[str, Any]] = []
+    for entry in entries:
+        stamped = _config_backup_time(entry.name)
+        if not (stamped or _CONFIG_REPAIR_BACKUP_RE.fullmatch(entry.name)):
+            continue
+        if not entry.is_file(follow_symlinks=False):
+            continue
+        information = entry.stat(follow_symlinks=False)
+        created = stamped or datetime.fromtimestamp(information.st_mtime, tz=timezone.utc)
+        backups.append(
+            {
+                "name": entry.name,
+                "path": Path(entry.path),
+                "created": created,
+                "size": information.st_size,
+                "kind": "rotating" if stamped else "memory-repair",
+            }
+        )
+    return sorted(backups, key=lambda item: item["created"], reverse=True)
+
+
+def restore_config_backup(name: str) -> dict[str, Any]:
+    """Replace config.json with a listed backup after retaining the current file."""
+
+    if (
+        not isinstance(name, str)
+        or os.path.basename(name) != name
+        or not (_config_backup_time(name) is not None or _CONFIG_REPAIR_BACKUP_RE.fullmatch(name))
+    ):
+        raise ValueError("Pass a backup name exactly as `algo-cli config restore --list` shows it.")
+    source = CONFIG_DIR / name
+    with _exclusive_state_lock(CONFIG_FILE):
+        payload = _state_descriptor_payload(source, max_bytes=MAX_JSON_STATE_BYTES)
+        try:
+            document = json.loads(payload.decode("utf-8", errors="strict"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("The selected backup is not a valid JSON configuration.") from exc
+        if not isinstance(document, dict):
+            raise ValueError("The selected backup is not a valid JSON configuration.")
+        # Memory-repair backups are exact copies and may still hold session
+        # state; a restore must never bring back a summary the user cleared.
+        payload = _config_backup_payload(payload)
+        previous = _backup_config_before_write(payload)
+        _atomic_write_bytes(CONFIG_FILE, payload)
+    return {
+        "restored": name,
+        "previous_backup": previous,
+        "size": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+
 def _config_relative_path(path: Path) -> Path | None:
     try:
         base = Path(os.path.abspath(os.fspath(CONFIG_DIR)))
@@ -557,6 +783,7 @@ def _config_relative_path(path: Path) -> Path | None:
 def _ensure_private_config_parent(path: Path, *, require_windows_private: bool = False) -> bool:
     """Create/check owner-only config directories for config-contained paths."""
 
+    _refuse_real_config_write_under_test(path)
     relative = _config_relative_path(path)
     if relative is None:
         if os.name == "nt":
@@ -628,6 +855,11 @@ def _ensure_private_config_parent(path: Path, *, require_windows_private: bool =
 
 def _atomic_write_text(path: Path, text: str) -> None:
     """Write text using fsync + atomic replace to avoid truncated state files."""
+    _atomic_write_bytes(path, text.encode("utf-8"))
+
+
+def _atomic_write_bytes(path: Path, encoded: bytes) -> None:
+    """Publish exact bytes with the same private staging and fsync contract as text."""
     private_windows_stage = bool(os.name == "nt" and path.name.startswith(".") and path.name.endswith(".elsie-pending"))
     private_config_path = _ensure_private_config_parent(
         path,
@@ -637,7 +869,6 @@ def _atomic_write_text(path: Path, text: str) -> None:
     # the stage at CreateFileW time even for an explicitly configured path
     # outside CONFIG_DIR; never expose bytes under an inherited ACL first.
     private_windows_path = os.name == "nt"
-    encoded = text.encode("utf-8")
     parent_guard = (
         _windows_pinned_directory_chain(Path(os.path.abspath(os.fspath(path.parent))))
         if os.name == "nt"
@@ -671,11 +902,11 @@ def _atomic_write_text(path: Path, text: str) -> None:
                 or (private_windows_path and not _windows_private_dacl(temporary))
             ):
                 raise OSError("config persistence staging file is unsafe")
-            # Keep persisted text byte-stable across platforms.  The default
-            # text mode rewrites ``\n`` to ``\r\n`` on Windows.
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as tmp:
+            # Binary mode keeps persisted bytes stable across platforms; text
+            # mode would rewrite ``\n`` to ``\r\n`` on Windows.
+            with os.fdopen(fd, "wb") as tmp:
                 fd = -1
-                tmp.write(text)
+                tmp.write(encoded)
                 tmp.flush()
                 os.fsync(tmp.fileno())
             staged = Path(tmp_name).lstat()
@@ -2608,7 +2839,10 @@ class Config:
         data.pop("session_auto_approve", None)
         data.pop("memory_config_error", None)
         data.pop("memory_load_error", None)
-        _atomic_write_text(CONFIG_FILE, json.dumps(data, indent=2))
+        text = json.dumps(data, indent=2)
+        with _exclusive_state_lock(CONFIG_FILE):
+            _backup_config_before_write(text.encode("utf-8"))
+            _atomic_write_text(CONFIG_FILE, text)
 
     def save_memories(self) -> None:
         from .continuum_memory import selected
@@ -2982,6 +3216,7 @@ def _write_private_migration_file(
     relative = PurePosixPath(relative_path)
     if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
         raise OSError("legacy migration destination is invalid")
+    _refuse_real_config_write_under_test(root.joinpath(*relative.parts))
     if os.name == "nt":
         _write_private_migration_file_windows(root, relative, payload)
         return

@@ -2109,6 +2109,52 @@ used.
 
 **Prevention:** A prompt_toolkit style attribute must parse at the declared dependency floor, not only at the locked version.
 
+## 2026-09-24: A Scratch Test Overwrote The Real config.json
+
+**Symptom and cause:** A scratch test that reused a test helper outside the `tests/conftest.py` isolation ran `Config.save()` against the real `~/.algo_cli`, replacing `config.json` with defaults. `Config.save()` kept no prior version, and recovery depended on an old, unrelated backup.
+
+**Repair:** Before `Config.save()` or `repair_memory_configuration()` replaces `config.json`, the current file is kept as `config.json.bak.<UTC timestamp>`: written atomically with 0600 permissions, skipped when identical to a kept backup or to the new content, and rotated to the newest five. Links named like backups are never read, counted or removed. Under pytest, every config writer that goes through `_ensure_private_config_parent`, plus legacy migration writes, refuses any target that resolves inside the account's real `~/.algo_cli` or `~/.ollama_cli`. The account home comes from the password database, so changing `HOME` in a test does not hide the real directory. `algo-cli config restore [--list | NAME]` lists and restores backups after backing up the current file. In the REPL, `/config restore` only lists backups, because an open session would overwrite a restore.
+
+**Verification and limits:** `tests/test_config_safety.py` covers rotation, deduplication, permissions, links, a clock that stops or runs backwards, the guard (real home, legacy home, symlinked alias, `HOME` redirection, outside pytest), the restore round trip and the CLI. The full offline suite passes except the two known stale hardening receipts. This is local macOS evidence only. The Windows DACL path for backups uses the existing private-write helper but has not been run on Windows, so it stays pinned for hosted CI. The guard works only when pytest is running or already imported; a plain Python script with no isolation is still unguarded, and the rotating backups are its recovery path.
+
+**Prevention:** Keep recoverable history for any persistent-state rewrite. Tests should fail loudly when they reach real user state, not rely only on fixture discipline.
+
+## 2026-09-24: Config Backups Kept A Cleared Session Summary
+
+**Symptom:** After `/clear` or `/context clear`, the summary text and attempt ledger the user had just cleared were still on disk in `config.json.bak.<timestamp>`, and `algo-cli config restore` could bring them back. Before rotating backups, the atomic overwrite removed them.
+
+**Confirmed cause:** `_backup_config_before_write` copied the whole previous `config.json`, including `session_summary` (stored as written when Continuum is disabled) and `attempt_ledger`, before `Config.save()` wrote the cleared state.
+
+**Repair:** Backups now hold settings only. `_config_backup_payload` blanks `session_summary` and `attempt_ledger` in the retained copy; a file with those fields already empty is kept byte for byte, and an unparseable file is kept verbatim because recovering it is the purpose of the backup. Deduplication works on the retained bytes, so saves that change only the summary share one settings backup.
+
+**Verification:** An isolated scratch repro (HOME and `ALGO_CLI_CONFIG_DIR` in the session scratchpad) no longer finds the summary text in any backup after the clear. New tests in `tests/test_config_safety.py` cover the `/clear` sequence including restore, the blanking of the summary and ledger while settings stay, summary-only saves, and corrupt files. Three of them fail with the blanking removed. Local macOS evidence only; the full offline suite passes except the two known stale hardening receipts.
+
+**Prevention:** When adding persistent history for a file, check which of its fields a user can clear or delete, and keep them out of the history.
+
+## 2026-09-24: Restoring A Memory-Repair Backup Brought Back Cleared Session State
+
+**Symptom:** `algo-cli config restore config.json.before-continuum-<digest>.bak` wrote the old `session_summary` and `attempt_ledger` back into `config.json`, even after the user had cleared them.
+
+**Confirmed cause:** `repair_memory_configuration()` keeps an exact copy of the pre-repair file for audit, and its identity check compares those exact bytes. `restore_config_backup` wrote the selected backup's bytes unchanged, so the session blanking that rotating backups get never applied to this kind.
+
+**Repair:** `restore_config_backup` passes every payload through `_config_backup_payload` before writing, so a restore blanks `session_summary` and `attempt_ledger` and keeps every other key. The returned size and SHA-256 describe the bytes actually written. The memory-repair backup file itself stays exact, because the audit contract and the existing test `test_explicit_memory_config_repair_preserves_unrelated_values_and_exact_backup` require that; its session text therefore stays on disk until the user removes that file.
+
+**Verification:** `test_restoring_memory_repair_backup_does_not_resurrect_cleared_session_state` in `tests/test_config_safety.py` fails without the change and passes with it. Local macOS evidence only.
+
+**Prevention:** Apply one restore-time rule to every backup kind rather than relying on each writer to sanitize.
+
+## 2026-09-24: A Backup Name With An Impossible Timestamp Blocked Config Saves
+
+**Symptom:** A regular file named like `config.json.bak.99999999T999999999999Z` made `algo-cli config restore --list` crash and made every `Config.save()` raise `ValueError`.
+
+**Confirmed cause:** `_CONFIG_BACKUP_RE` accepts any 8+12 digits, and `_config_backup_time` passed them straight to `datetime.strptime`. The name sorted last among rotating backups, so `_next_config_backup_path` parsed it on every save.
+
+**Repair:** `_config_backup_time` returns `None` for digits that are not a real instant. Every enumeration (`_rotating_config_backups`, `list_config_backups`, `restore_config_backup` name validation) now counts a name as a rotating backup only when its timestamp parses, so such a file is never listed, rotated, deleted or restored. Review then found that a valid but maximal stamp (`99991231T235959999999Z`) overflowed when the next name added a microsecond; stamps in year 9999 are now treated as foreign too.
+
+**Verification:** `test_backup_name_with_unparsable_timestamp_is_not_a_backup` and `test_backup_name_at_the_end_of_time_does_not_block_saves` fail without the change and pass with it; they cover listing, the CLI listing, repeated saves past the rotation limit and restore refusal. Local macOS evidence only.
+
+**Prevention:** When a filename pattern is parsed further, make the parser the single test for membership instead of the regex alone.
+
 ## Repair Log Checklist
 
 - Date and component.
