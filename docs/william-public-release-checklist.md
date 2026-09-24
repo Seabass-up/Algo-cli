@@ -94,6 +94,29 @@ Install the wheel in an empty virtual environment and empty home directory. Veri
   evidence to the draft. It then rechecks policy, publishes or repairs only an
   absent/partial-exact PyPI file set, rechecks policy again, and publishes the
   immutable GitHub release last.
+- Preparing a release changes the version only in `algo_cli/__init__.py` (plus
+  the changelog, release notes, and the pinned predecessor below). The
+  release-authority draft snapshot and the protected draft-capture child both
+  derive the tag and the two distribution filenames from `__version__` at the
+  dispatched `main` revision: the capture reads `algo_cli/__init__.py` at
+  exactly `GITHUB_SHA` through one fixed contents GET before any release
+  request, and rejects a dispatched tag that is not `v` plus that version.
+  Do not hand-edit tags or asset names into `scripts/oliver_release_authority.py`,
+  `.github/workflows/oliver-draft-capture.yml`, or their tests. The historical
+  `v0.19.1.post1` recovery identity and the `v0.19.0` dispatch block are fixed
+  owner decisions, not per-release values.
+- Move the upgrade-smoke predecessor deliberately: `BASELINE_VERSION`,
+  `BASELINE_URL`, `BASELINE_SHA256`, and `BASELINE_SIZE` in
+  `scripts/oliver_smoke_upgrade.py` pin the exact public bytes of the previous
+  release. CI step labels say "pinned public predecessor" and carry no version.
+- After upload, `Verify the exact immutable PyPI file set` waits for index
+  visibility with capped exponential backoff (`1, 2, 4, 8, 15`, then `30`
+  seconds; 14 observations, 270 seconds of scheduled sleep) inside a
+  300-second wall-clock deadline, under a 10-minute job limit. Only an absent
+  or partial-but-exact file set is retried; identity, digest, size, type, yank,
+  JSON, transport, and TLS failures stop immediately. If the window still
+  expires with `release_pypi_missing`, start a fresh manual dispatch; the
+  `exact` preflight path revalidates the public bytes and skips upload.
 - If an upstream Boron job must be retried, use **Re-run all jobs** so its
   attempt-scoped report, attestation, and artifact name remain bound together.
   Release-workflow artifacts use producer artifact IDs and attempt-unique names;

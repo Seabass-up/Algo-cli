@@ -52,7 +52,11 @@ MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 MAX_ATTESTATION_BYTES = 32 * 1024 * 1024
 MAX_GITHUB_OUTPUT_BYTES = 1024 * 1024
 ATTESTATION_CLOCK_SKEW = timedelta(minutes=10)
-PYPI_VISIBILITY_RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0, 15.0)
+# Exponential backoff capped at 30s: 270s of scheduled sleep across 14 observations.
+PYPI_VISIBILITY_RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0, 15.0) + (30.0,) * 8
+# Wall-clock bound for the whole wait, including request time; the job timeout must exceed it.
+PYPI_VISIBILITY_DEADLINE_SECONDS = 300.0
+MAX_SOURCE_VERSION_BYTES = 64 * 1024
 
 SIGSTORE_BUNDLE_MEDIA_TYPES = frozenset(
     {
@@ -69,6 +73,7 @@ _TAG_RE = re.compile(
     r"^v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})"
     r"(?:\.post[1-9][0-9]{0,3})?$"
 )
+_SOURCE_VERSION_RE = re.compile(r'^__version__ = "([^"\n]*)"$', re.MULTILINE)
 _INTEGER_RE = re.compile(r"^(?:0|[1-9][0-9]{0,15})$")
 _GITHUB_TIMESTAMP_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 _RFC3339_TIMESTAMP_RE = re.compile(
@@ -182,6 +187,22 @@ def _tag(value: Any) -> str:
 
 def _version(tag: str) -> str:
     return _tag(tag)[1:]
+
+
+def source_release_tag() -> str:
+    """Return v + the exact package version at this checkout; never a hardcoded release identity."""
+
+    payload = _read_regular(
+        ROOT / "algo_cli" / "__init__.py", maximum=MAX_SOURCE_VERSION_BYTES, reason_code="release_source_version",
+    )
+    try:
+        text = payload.decode("utf-8", errors="strict")
+    except UnicodeError:
+        _reject("release_source_version")
+    matches = _SOURCE_VERSION_RE.findall(text)
+    if len(matches) != 1 or _TAG_RE.fullmatch("v" + matches[0]) is None:
+        _reject("release_source_version")
+    return "v" + matches[0]
 
 
 def expected_release_assets(tag: str) -> frozenset[str]:
@@ -1777,7 +1798,9 @@ def verify_pypi_state(
     require_present: bool,
     fetch: Callable[[str], bytes] | None = None,
     visibility_retry_delays: tuple[float, ...] = (),
+    visibility_deadline_seconds: float = PYPI_VISIBILITY_DEADLINE_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> str:
     """Return absent/partial-exact/exact, rejecting every conflicting PyPI file."""
 
@@ -1808,6 +1831,7 @@ def verify_pypi_state(
 
     fetch_payload = default_fetch if fetch is None else fetch
     maximum_observations = len(visibility_retry_delays) + 1
+    started = monotonic()
     for attempt in range(maximum_observations):
         state = _classify_pypi_payload(
             payload=fetch_payload(url), tag=tag, distributions=distributions,
@@ -1817,11 +1841,16 @@ def verify_pypi_state(
         if attempt == len(visibility_retry_delays):
             _reject("release_pypi_missing")
         delay = visibility_retry_delays[attempt]
+        elapsed = monotonic() - started
+        if elapsed + delay > visibility_deadline_seconds:
+            _reject("release_pypi_missing")
         print(
             json.dumps(
                 {
                     "attempt": attempt + 1,
+                    "deadline_seconds": visibility_deadline_seconds,
                     "delay_seconds": delay,
+                    "elapsed_seconds": round(elapsed, 1),
                     "max_observations": maximum_observations,
                     "reason_code": "release_pypi_visibility_pending",
                     "state": state,
@@ -1842,8 +1871,9 @@ def draft_snapshot_api(value: Any, *, environment: Mapping[str, str], api_get: A
     publisher = environment.get("GITHUB_SHA")
     source = value.get("source") if type(value) is dict else None
     listing = value.get("listing") if type(value) is dict else None
+    release_tag = source_release_tag()
     matches = (
-        [row for row in listing if type(row) is dict and row.get("tag_name") == "v0.20.1"]
+        [row for row in listing if type(row) is dict and row.get("tag_name") == release_tag]
         if type(listing) is list
         else []
     )
@@ -1852,7 +1882,7 @@ def draft_snapshot_api(value: Any, *, environment: Mapping[str, str], api_get: A
         or set(value) != {"schema_version", "phase", "tag", "release_id", "publisher", "source",
                           "run_id", "run_attempt", "captured_at", "listing", "release"}
         or value.get("schema_version") != 1 or value.get("phase") != "initial"
-        or value.get("tag") != "v0.20.1"
+        or value.get("tag") != release_tag
         or type(release_id) is not int or release_id < 1
         or type(publisher) is not str or _REVISION_RE.fullmatch(publisher) is None
         or type(source) is not str or _REVISION_RE.fullmatch(source) is None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -336,3 +337,13 @@ def test_ci_requires_upgrade_on_every_installed_platform():
         "run: python scripts/oliver_smoke_upgrade.py dist --manager pipx "
         "--pipx-backend uv --report upgrade-smoke-pipx-uv.json"
     ) in job
+
+
+def test_ci_upgrade_step_labels_do_not_name_a_version():
+    workflow = (smoke.ROOT / ".github/workflows/oliver-ci.yml").read_text(encoding="utf-8")
+    job = workflow.split("  package-smoke:\n", 1)[1]
+    names = [line.split("- name:", 1)[1].strip() for line in job.splitlines() if "- name: Upgrade" in line]
+    assert len(names) == 5
+    # The pinned predecessor lives only in BASELINE_VERSION; a label version goes stale on every bump.
+    assert all(re.search(r"\d+\.\d+", name) is None for name in names)
+    assert sum("pinned public predecessor" in name for name in names) == 4

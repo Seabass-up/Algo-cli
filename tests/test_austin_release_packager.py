@@ -36,6 +36,11 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def test_native_release_version_is_the_numeric_base_of_the_package_version() -> None:
+    assert NATIVE_RELEASE_VERSION == ".".join(str(part) for part in Version(__version__).release)
+    assert len(NATIVE_RELEASE_VERSION.split(".")) == 3
+
+
 @pytest.fixture(autouse=True)
 def native_release_fixture_version(monkeypatch):
     # A local CLI wheel is not a production native-release identity.
@@ -214,9 +219,9 @@ def test_two_round_release_pipeline_is_exact_and_emits_structural_evidence(tmp_p
     assert evidence["version"] == NATIVE_RELEASE_VERSION
     assert result.package_path.name == f"Algo-CLI-Control-{NATIVE_RELEASE_VERSION}.pkg"
     info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
-    assert info["CFBundleShortVersionString"] == "0.20.1"
+    assert info["CFBundleShortVersionString"] == NATIVE_RELEASE_VERSION
     pkgbuild = next(command for command in runner.commands if command[0] == "/usr/bin/pkgbuild")
-    assert pkgbuild[pkgbuild.index("--version") + 1] == "0.20.1"
+    assert pkgbuild[pkgbuild.index("--version") + 1] == NATIVE_RELEASE_VERSION
     assert str(tmp_path) not in result.evidence_path.read_text(encoding="utf-8")
     assert stat.S_IMODE(result.evidence_path.stat().st_mode) == 0o600
     assert stat.S_IMODE(result.package_path.stat().st_mode) == 0o644

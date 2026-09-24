@@ -116,6 +116,23 @@ exceptions. Stop immediately on identity, file, digest, size, type, yank, JSON,
 transport, or TLS failures. Expiration does not justify rewriting artifacts or
 weakening release gates.
 
+**Recurrence (2026-09-24):** v0.19.1.post1 and v0.20.1 both uploaded and then
+failed `Verify the exact immutable PyPI file set` with `release_pypi_missing`
+after the six-observation (~30 s) schedule; each needed a fresh recovery
+dispatch. Confirmed cause: the bound was shorter than observed index lag. The
+exact lag was not captured and remains unknown. Repair: capped exponential
+backoff `1, 2, 4, 8, 15` then eight `30` s delays (14 observations, 270 s of
+scheduled sleep) inside a 300 s monotonic wall-clock deadline, with the
+`pypi-verify` job limit raised from 5 to 10 minutes so the deadline plus a
+final 20 s request and setup fit. The retryable states, fail-closed rejections,
+one-shot preflight, and fresh-dispatch recovery are unchanged. Verification is
+local only: `tests/test_oliver_release_authority.py` covers the schedule shape
+and bounds, full-schedule exhaustion, late convergence beyond 30 s, the
+wall-clock deadline with slow requests, conflicts after absence stopping
+without further sleep, and CLI wiring. Hosted release evidence is still
+required. Prevention: tie retry bounds to observed lag and keep the job
+timeout above the in-process deadline in a test.
+
 ## 2026-09-10: Malformed Registry Responses
 
 **Issue:** A digest map containing only `md5` escaped schema validation and raised
@@ -1946,6 +1963,38 @@ used.
 **Verification and limits:** A regression test proves both names are flagged and generic labels are not. Local test evidence; hosted CI and publication are recorded in `docs/henry-release-0.20.1.md`.
 
 **Prevention:** Treat credential locator names as private data, not only the secrets.
+
+## 2026-09-24: Each Release Required Hand-Edited Tag Bindings
+
+**Symptom:** Every release preparation (for example commit `5ad1255`) hand-edited
+the tag in `draft_snapshot_api`, the tag and two distribution filenames in the
+draft-capture child, and matching test constants. The upgrade-smoke CI labels
+still said "Upgrade public 0.18.0" while the pinned baseline was 0.20.0.
+
+**Cause:** The bindings were written as literals rather than derived from the
+single version source, `algo_cli/__init__.py`. Labels repeated a value that
+only `BASELINE_VERSION` should own.
+
+**Repair:** `source_release_tag()` reads the checkout's `__version__` (one exact
+`__version__ = "..."` line matching the release tag grammar, else
+`release_source_version`) and `draft_snapshot_api` binds to it. The capture
+child now reads `algo_cli/__init__.py` at exactly `GITHUB_SHA` through one fixed
+contents GET before any release request, requires the dispatched tag to equal
+`v` plus that version, and derives the two filenames. No checkout, extra
+permission, environment, or action pin was added. Test constants derive from
+the source. Smoke labels now say "pinned public predecessor". The historical
+`v0.19.1.post1` recovery identity and the `v0.19.0` block stay fixed.
+
+**Verification:** Local tests in `tests/test_oliver_draft_capture.py` cover
+mismatched, duplicated, single-quoted, malformed, non-file, wrong-path and
+non-base64 version files, off-grammar tags, the revision-bound request, a
+snapshot rejected when the checkout version differs, and version bumps.
+Existing capture, authority, packager and smoke tests pass. Hosted
+qualification of the changed workflows is still pending.
+
+**Prevention:** A version bump should touch only `__version__`, release notes
+and the pinned predecessor. Tests fail if a version literal returns to the
+capture program or the upgrade labels.
 
 ## Repair Log Checklist
 

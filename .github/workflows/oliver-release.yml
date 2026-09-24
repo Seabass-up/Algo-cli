@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing non-prerelease draft release tag (for example v0.20.1)
+        description: Existing non-prerelease draft release tag; must equal v plus algo_cli.__version__ on main
         required: true
         type: string
 
@@ -1685,7 +1685,7 @@ jobs:
     if: ${{ always() && !cancelled() && needs.release-authority.result == 'success' && needs.release-assets-ready.result == 'success' && needs.pypi-preflight.result == 'success' && ((needs.pypi-preflight.outputs.pypi-state == 'exact' && needs.publish.result == 'skipped') || ((needs.pypi-preflight.outputs.pypi-state == 'absent' || needs.pypi-preflight.outputs.pypi-state == 'partial-exact') && needs.publish.result == 'success')) }}
     needs: [release-authority, release-assets-ready, pypi-preflight, publish]
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:

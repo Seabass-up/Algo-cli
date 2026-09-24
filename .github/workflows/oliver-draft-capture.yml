@@ -33,7 +33,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           python -I -B -S - <<'PY'
-          import hashlib, json, os, pathlib, re, time, urllib.error, urllib.parse, urllib.request
+          import base64, hashlib, json, os, pathlib, re, time, urllib.error, urllib.parse, urllib.request
 
           def fail():
               raise SystemExit('{"reason_code":"release_draft_capture","status":"blocked"}')
@@ -55,7 +55,8 @@ jobs:
 
           opener = urllib.request.build_opener(NoRedirect())
           phase, tag = os.environ['CAPTURE_PHASE'], os.environ['RELEASE_TAG']
-          if phase not in {'initial', 'before-pypi'} or tag != 'v0.20.1':
+          tag_grammar = r'v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})(\.post[1-9][0-9]{0,3})?'
+          if phase not in {'initial', 'before-pypi'} or type(tag) is not str or re.fullmatch(tag_grammar, tag) is None:
               fail()
           if (os.environ['GITHUB_REPOSITORY'] != 'Seabass-up/Algo-cli'
               or os.environ['GITHUB_ACTOR_ID'] != '184999458'
@@ -70,8 +71,10 @@ jobs:
           assets_dir = root / 'assets'
           assets_dir.mkdir(mode=0o700)
           publisher = os.environ['GITHUB_SHA']
+          # Bound to the package version at the dispatched revision, read below before any release request.
+          version_endpoint = 'contents/algo_cli/__init__.py?ref=' + publisher
           expected = {
-              'algo_cli_runtime-0.20.1-py3-none-any.whl', 'algo_cli_runtime-0.20.1.tar.gz',
+              'algo_cli_runtime-' + tag[1:] + '-py3-none-any.whl', 'algo_cli_runtime-' + tag[1:] + '.tar.gz',
               'algo-cli-runtime.lock.cdx.json', 'SHA256SUMS',
               'grace-boron-hosted-qualification.json', 'grace-boron-hosted-qualification.sigstore.jsonl',
               'algo-cli-release-provenance.sigstore.jsonl',
@@ -85,7 +88,8 @@ jobs:
           allowed_release = None
 
           def fetch(endpoint, binary=False):
-              if endpoint != 'releases?per_page=100' and endpoint != allowed_release and endpoint not in allowed_assets:
+              if (endpoint != version_endpoint and endpoint != 'releases?per_page=100' and endpoint != allowed_release
+                  and endpoint not in allowed_assets):
                   fail()
               headers = {'Authorization': 'Bearer ' + os.environ['CAPTURE_TOKEN'],
                          'Accept': 'application/octet-stream' if binary else 'application/vnd.github+json',
@@ -146,6 +150,15 @@ jobs:
                       result, source)
 
           try:
+              version_file = fetch(version_endpoint)
+              if (type(version_file) is not dict or version_file.get('type') != 'file'
+                  or version_file.get('path') != 'algo_cli/__init__.py' or version_file.get('encoding') != 'base64'
+                  or type(version_file.get('content')) is not str):
+                  fail()
+              source_text = base64.b64decode(version_file['content'].replace('\n', ''), validate=True).decode('utf-8')
+              versions = re.findall(r'^__version__ = "([^"\n]*)"$', source_text, re.MULTILINE)
+              if len(versions) != 1 or tag != 'v' + versions[0]:
+                  fail()
               listing = fetch('releases?per_page=100')
               if type(listing) is not list or len(listing) >= 100:
                   fail()
