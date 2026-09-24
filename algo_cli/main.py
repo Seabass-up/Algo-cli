@@ -92,6 +92,7 @@ from .display import (
     json_sink,
     profile_colors,
     prompt_color_depth,
+    refresh_color_profile,
 )
 from .ui.tokens import prompt_toolkit_styles
 from . import tools as tools_module
@@ -5181,6 +5182,8 @@ def main() -> None:
         show_info(f"Imported legacy config file(s) into {CONFIG_DIR}: {', '.join(sidecar)}")
 
     load_runtime_env(override=True)
+    # After the env file (NO_COLOR, COLORTERM) and VT enablement above; import-time detection saw neither.
+    refresh_color_profile()
     raw_argv = sys.argv[1:]
     if raw_argv and raw_argv[0].strip().lower() == "config":
         from . import cli_config

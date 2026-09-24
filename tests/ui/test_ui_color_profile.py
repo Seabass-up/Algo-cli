@@ -385,7 +385,7 @@ def test_mono_tokens_carry_attributes_only():
         assert attrs.color == "" and attrs.bgcolor == "", cls
     assert style.get_attrs_for_style_str("class:footer.danger").reverse
     assert style.get_attrs_for_style_str("class:footer.warn").reverse
-    assert style.get_attrs_for_style_str("class:footer.muted").dim
+    assert style.get_attrs_for_style_str("class:footer.muted").italic
 
 
 @pytest.mark.parametrize("name", THEMES)

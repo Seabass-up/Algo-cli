@@ -382,6 +382,8 @@ def _pt_color(value: str) -> str:
 
 
 def _mono_prompt_toolkit_styles() -> dict[str, str]:
+    # No "dim": prompt_toolkit parses it only from 3.0.52 and older 3.0.x raise on it,
+    # which would drop the prompt style and the sticky footer. Muted text is italic.
     plain = "noreverse"
     return {
         "bottom-toolbar": plain,
@@ -392,8 +394,8 @@ def _mono_prompt_toolkit_styles() -> dict[str, str]:
         "rprompt.text": plain,
         "footer.text": "",
         "footer.model": "bold",
-        "footer.muted": "dim",
-        "footer.sep": "dim",
+        "footer.muted": "italic",
+        "footer.sep": "",
         "footer.info": "",
         "footer.ok": "",
         "footer.caution": "bold",
@@ -404,9 +406,9 @@ def _mono_prompt_toolkit_styles() -> dict[str, str]:
         "completion-menu": "",
         "completion-menu.completion": "noreverse",
         "completion-menu.completion.current": "reverse bold",
-        "completion-menu.meta.completion": "dim",
+        "completion-menu.meta.completion": "italic",
         "completion-menu.meta.completion.current": "reverse",
-        "completion-menu.multi-column-meta": "dim",
+        "completion-menu.multi-column-meta": "italic",
         "scrollbar.background": "",
         "scrollbar.button": "reverse",
     }

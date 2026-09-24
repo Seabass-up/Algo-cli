@@ -85,8 +85,9 @@ class RuntimeConsole(Console):
         return size
 
 
-# Detected once. Rich, the prompt_toolkit session and the sticky footer all render at
-# this depth, so the body and the chrome can no longer disagree.
+# Rich, the prompt_toolkit session and the sticky footer all render at this depth, so
+# the body and the chrome can no longer disagree. The import-time value is provisional:
+# main() calls refresh_color_profile() once the env file is loaded and Windows VT is on.
 COLOR_PROFILE: ColorProfile = detect_color_profile()
 _PROFILE_THEMES: dict[_ui_tokens.Palette, Theme] = {}
 
@@ -130,10 +131,46 @@ def active_color_profile() -> ColorProfile:
     return COLOR_PROFILE if _profile_active else ColorProfile.TRUECOLOR
 
 
-if _profile_active and not _legacy_windows:
-    console = make_console(COLOR_PROFILE, theme=_rich_theme_for(_base_theme_name, COLOR_PROFILE))
-else:
-    console = RuntimeConsole(theme=_rich_theme_for(_base_theme_name, active_color_profile()))
+def _build_console() -> RuntimeConsole:
+    theme = _rich_theme_for(_base_theme_name, active_color_profile())
+    if _profile_active and not _legacy_windows:
+        return make_console(COLOR_PROFILE, theme=theme)
+    return RuntimeConsole(theme=theme)
+
+
+console = _build_console()
+_base_layer_pushed = False  # refresh_color_profile() pushed the base theme at a re-detected profile
+
+
+def refresh_color_profile() -> ColorProfile:
+    """Re-detect the profile and reconfigure the shared console in place.
+
+    Detection at import runs before main() loads ``~/.algo_cli/env`` (NO_COLOR, COLORTERM,
+    FORCE_COLOR) and before ``_force_utf8_console`` enables VT on Windows consoles. Other
+    modules hold ``console`` by reference, so it is updated rather than replaced. The
+    prompt session and sticky footer read ``active_color_profile()`` when they render.
+    """
+    global COLOR_PROFILE, _profile_active, _legacy_windows, _theme_pushed, _base_layer_pushed
+
+    COLOR_PROFILE = detect_color_profile()
+    probe = RuntimeConsole()
+    _profile_active = _terminal_takes_profile(probe)
+    _legacy_windows = probe.legacy_windows
+    reference = _build_console()
+    console.legacy_windows = reference.legacy_windows
+    console._color_system = reference._color_system
+    console.no_color = reference.no_color
+    if _theme_pushed:
+        console.pop_theme()
+        _theme_pushed = False
+    if _base_layer_pushed:
+        console.pop_theme()
+    console.push_theme(_rich_theme_for(_base_theme_name, active_color_profile()))
+    _base_layer_pushed = True
+    if _active_theme_name != _base_theme_name:
+        console.push_theme(_rich_theme_for(_active_theme_name, active_color_profile()))
+        _theme_pushed = True
+    return COLOR_PROFILE
 
 
 def prompt_color_depth() -> Any:

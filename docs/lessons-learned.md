@@ -1995,6 +1995,30 @@ used.
 
 **Prevention:** Any colour drawn by a third-party style belongs in the contrast gate, together with the background it is actually drawn on.
 
+## 2026-09-23: Colour Profile Ignored The Env File And Late Windows VT Enablement
+
+**Symptom (PR #74 review):** `NO_COLOR`, `COLORTERM` or `FORCE_COLOR` set in `~/.algo_cli/env` or `ALGO_CLI_ENV_FILE` had no effect on colour depth. A Windows console whose VT mode `_force_utf8_console` enabled at startup stayed at ANSI16.
+
+**Confirmed cause:** `display.COLOR_PROFILE` and the shared Rich console were fixed when the module was imported. That happened before `main()` ran `_force_utf8_console()` and `load_runtime_env(override=True)`.
+
+**Repair:** `display.refresh_color_profile()` runs detection again and re-probes the terminal and `legacy_windows`. It then updates the shared console in place, because other modules hold it by reference: it sets `legacy_windows`, the colour system and `no_color`, and pushes the base and active themes again at the new profile. `main()` calls it immediately after `load_runtime_env`. The prompt session and sticky footer already read `active_color_profile()` when they render, and they are created after that call. Import-time detection still gives tests and one-shot runs a safe provisional value.
+
+**Verification:** `tests/ui/test_ui_startup_profile.py` runs `main()` with an env file that sets `NO_COLOR=1` and checks the NONE profile, a 1-bit prompt depth and `console.no_color`. Another test simulates enabling VT after import and expects ANSI16 to become truecolor, and a third checks that the active theme is re-applied. All three fail against the previous source. These are local test results; no Windows console was exercised.
+
+**Prevention:** Anything derived from the environment must be read after startup environment setup, or refreshed at that point.
+
+## 2026-09-23: Mono Prompt Style Used "dim", Which Older prompt_toolkit 3.0.x Rejects
+
+**Symptom (PR #74 review):** The colour-off prompt_toolkit style set `dim`. The dependency floor is `prompt-toolkit>=3.0`, and on older versions in that range `Style.from_dict` raises. The PromptSession style and the sticky footer are then silently lost.
+
+**Confirmed cause:** Wheels checked locally show that `Style.from_dict({"x": "dim"})` fails with "Wrong color format 'dim'" in 3.0.0, 3.0.36, 3.0.43, 3.0.47, 3.0.48, 3.0.50 and 3.0.51, and first succeeds in 3.0.52 (the locked version). `bold`, `italic`, `underline`, `reverse`, `noreverse` and `hidden` parse in all of those versions.
+
+**Repair:** In the mono prompt_toolkit map, `dim` is replaced with `italic` (muted text and completion meta) and plain text (separators). The dependency floor is unchanged.
+
+**Verification:** New tests in `tests/ui/test_ui_startup_profile.py` restrict every prompt_toolkit style string, for every palette and profile, to the attributes that 3.0.0 through 3.0.51 accept. They fail against the previous tokens. The Rich-side mono tokens still use `dim`, which Rich supports.
+
+**Prevention:** A prompt_toolkit style attribute must parse at the declared dependency floor, not only at the locked version.
+
 ## Repair Log Checklist
 
 - Date and component.
