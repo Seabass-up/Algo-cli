@@ -30,6 +30,10 @@ _TEST_CONFIG_DIR = Path(tempfile.gettempdir()) / f"algo_cli_pytest_{os.getpid()}
 os.environ["ALGO_CLI_CONFIG_DIR"] = str(_TEST_CONFIG_DIR)
 os.environ["OLLAMA_CLI_CONFIG_DIR"] = str(_TEST_CONFIG_DIR)
 os.environ["ALGO_CLI_DISABLE_WINDOWS_HOME_FALLBACK"] = "1"
+# The host terminal's colour settings must not change what tests render: Rich reads
+# these at console construction, which happens when algo_cli.display is imported.
+for _colour_variable in ("FORCE_COLOR", "CLICOLOR_FORCE", "NO_COLOR", "COLORTERM", "TTY_COMPATIBLE"):
+    os.environ.pop(_colour_variable, None)
 
 
 def _repoint_package_config_dirs(target: Path) -> None:

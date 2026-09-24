@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 
 import pytest
@@ -314,3 +315,72 @@ def test_session_output_is_bounded() -> None:
 
     assert len(result) < len(oversized)
     assert result.endswith("...[truncated]")
+
+
+def test_session_command_strips_terminal_sequences_before_redacting(
+    monkeypatch: pytest.MonkeyPatch,
+    session_cfg: Config,
+) -> None:
+    """Regression: with FORCE_COLOR a colour code ending in "m" preceded access_token= and hid it from redaction."""
+
+    coloured = display.RuntimeConsole(
+        file=io.StringIO(),
+        force_terminal=True,
+        legacy_windows=False,
+        color_system="truecolor",
+        width=200,
+        theme=display.THEME_MAP[display._active_theme_name],
+    )
+    monkeypatch.setattr(display, "console", coloured)
+
+    class _GoogleClient:
+        def calendar_events_list(self, **_kwargs: object) -> dict[str, object]:
+            raise RuntimeError("Authorization: Bearer bearer-secret access_token=access-secret")
+
+    monkeypatch.setattr(main.google_workspace_auth, "get_valid_token", lambda: "live-token")
+    monkeypatch.setattr(main.google_workspace, "GoogleWorkspaceClient", _GoogleClient)
+
+    result = tools.session_command("/google calendar-list", cfg=session_cfg)
+
+    assert "\x1b" not in result
+    assert result.startswith("Error:")
+    assert "access_token=<redacted>" in result
+    assert "access-secret" not in result and "bearer-secret" not in result and "live-token" not in result
+
+
+@pytest.mark.parametrize(
+    "sequence",
+    [
+        "\x1b[1;38;2;1;2;3m",
+        "\x1b]8;;https://example.invalid\x1b\\",
+        "\x1b]0;title\x07",
+        "\x1b(B",
+        "\x9b0m",
+        "\x00",
+    ],
+)
+def test_captured_result_redacts_secrets_after_any_terminal_sequence(sequence: str) -> None:
+    rendered = tools._captured_session_result(f"value {sequence}access_token=access-secret", "/google calendar-list")
+
+    assert "access-secret" not in rendered
+    assert "\x1b" not in rendered and "\x9b" not in rendered
+
+
+@pytest.mark.parametrize(
+    "secret_text",
+    [
+        "Bearer bearer-secret",
+        "access_token=access-secret",
+        "refresh_token=refresh-secret",
+        "api_key=key-secret",
+        "client_secret=client-secret",
+        "password=password-secret",
+    ],
+)
+@pytest.mark.parametrize("prefix", ["\x1b", "\x1b[", "\x1b]", "\x1b(", "\x9b"])
+def test_stray_escape_before_a_credential_cannot_hide_it(prefix: str, secret_text: str) -> None:
+    """Regression (review): stripping a stray ESC consumed the first letter of "Bearer"."""
+
+    rendered = tools._captured_session_result(f"error {prefix}{secret_text} done", "/google calendar-list")
+
+    assert "-secret" not in rendered

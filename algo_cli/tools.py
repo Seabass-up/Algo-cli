@@ -3499,11 +3499,22 @@ _READ_ONLY_HARNESS_SUBCOMMANDS = frozenset(
     }
 )
 _SESSION_SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)(\b(?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|"
+    # No leading word boundary: leftover characters before a key must never hide its value.
+    r"(?i)((?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|"
     r"client[_-]?secret|password)\b[\"']?\s*[:=]\s*)"
     r"(?:\"[^\"]*\"|'[^']*'|[^\s,;&}\]]+)"
 )
-_SESSION_BEARER_RE = re.compile(r"(?i)\bBearer\s+[^\s,;&}\]]+")
+_SESSION_BEARER_RE = re.compile(r"(?i)Bearer\s+[^\s,;&}\]]+")
+# ANSI/VT sequences (CSI, OSC with BEL or ST terminators, and other two-byte escapes) and
+# stray C0/C1 controls. Captured output returned to the model must be plain text: a color
+# code ending in "m" directly before "access_token=" defeats the word boundary in the
+# secret patterns, so sequences are removed before redaction runs.
+_TERMINAL_SEQUENCE_RE = re.compile(
+    r"(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]"  # CSI, 7-bit or C1
+    r"|(?:\x1b\]|\x9d)[^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)"  # OSC, BEL or ST terminated
+    r"|\x1b[ -/]*[0-~]"  # other escapes, including charset designations such as ESC ( B
+    r"|[\x00-\x08\x0b-\x1f\x7f-\x9f]"
+)
 
 
 def _session_command_captures_output(command_line: str) -> bool:
@@ -3588,7 +3599,11 @@ def _redact_session_command_output(output: str, *, workspace: str = "") -> str:
 
 
 def _captured_session_result(output: str, normalized: str, *, workspace: str = "") -> str:
-    rendered = _redact_session_command_output(output, workspace=workspace).strip()
+    # Redact on both sides of normalization: a stray ESC can swallow the first letter of a
+    # key when stripped, and colour codes can split one when not stripped.
+    redacted = _redact_session_command_output(str(output), workspace=workspace)
+    plain = _TERMINAL_SEQUENCE_RE.sub("", redacted)
+    rendered = _redact_session_command_output(plain, workspace=workspace).strip()
     # Rich error output begins with the product glyph. Normalize it so the
     # runtime's existing error classifier still recognizes failed tool calls.
     first_line, separator, remainder = rendered.partition("\n")
