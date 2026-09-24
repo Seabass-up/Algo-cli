@@ -353,17 +353,29 @@ def _expanded_query_terms(prompt: str) -> tuple[str, ...]:
     return tuple(terms[:MAX_QUERY_TERMS])
 
 
-def document_terms(text: str) -> frozenset[str]:
-    """Return the normalized lexical terms of one candidate document."""
-
-    terms: set[str] = set()
+def _document_term_sequence(text: str) -> list[str]:
+    terms: list[str] = []
     for term in lexical_tokens(text):
         normalized = _normalize_class(term)
         if normalized:
             # ``gmail-list`` and ``read_file`` also answer to their parts.
-            terms.add(normalized)
-            terms.update(part for part in normalized.split("_") if len(part) > 1)
-    return frozenset(terms)
+            terms.append(normalized)
+            parts = [part for part in normalized.split("_") if len(part) > 1]
+            if len(parts) > 1 or (parts and parts[0] != normalized):
+                terms.extend(parts)
+    return terms
+
+
+def _bm25_index(documents: Sequence[str]) -> BM25Index:
+    # Query terms are punctuation-normalized (``x.com`` -> ``x_com``), so BM25
+    # must score documents in the same vocabulary or such terms never match.
+    return BM25Index([" ".join(_document_term_sequence(document)) for document in documents])
+
+
+def document_terms(text: str) -> frozenset[str]:
+    """Return the normalized lexical terms of one candidate document."""
+
+    return frozenset(_document_term_sequence(text))
 
 
 def specific_query_terms(prompt: str) -> frozenset[str]:
@@ -384,7 +396,7 @@ def rank_texts_for_prompt(prompt: str, documents: Sequence[str]) -> list[int]:
     specific = {term for term in query_terms if term not in _GENERIC_QUERY_TERMS}
     if not specific:
         return []
-    scores = BM25Index(list(documents)).scores(query_terms)
+    scores = _bm25_index(documents).scores(query_terms)
     relevant = [
         index for index, document in enumerate(documents) if scores[index] > 0.0 and specific & document_terms(document)
     ]
@@ -405,7 +417,7 @@ def rank_tools_for_prompt(
         return []
     action_metadata = _action_metadata()
     documents = [_tool_search_text(tool, action_metadata) for tool in tools]
-    scores = BM25Index(documents).scores(query_terms)
+    scores = _bm25_index(documents).scores(query_terms)
     query_term_set = set(query_terms)
     specific_terms = query_term_set - _GENERIC_QUERY_TERMS
 

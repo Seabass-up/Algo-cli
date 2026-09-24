@@ -412,32 +412,60 @@ def end_tool_turn(cfg: Config) -> None:
             delattr(cfg, "_nathan_turn_denials")
 
 
-def _turn_denials(cfg: Config) -> dict[str, tuple[str, DenialExplanation | None]] | None:
+_TurnDenial = tuple[str, DenialExplanation | None, tuple[str, ...]]
+
+
+def _turn_denials(cfg: Config) -> dict[str, _TurnDenial] | None:
     denials = getattr(cfg, "_nathan_turn_denials", None)
     return denials if isinstance(denials, dict) else None
 
 
+def _turn_denial_context(cfg: Config) -> tuple[str, ...]:
+    # A cached denial is reused only under the authority that decided it: /cd or
+    # /mode yolo (the recoveries explain_missing_grant advertises) must re-evaluate.
+    from .session_mode import active_mode
+
+    try:
+        root = str(Path(cfg.cwd).expanduser().resolve())
+    except (OSError, RuntimeError, TypeError, ValueError):
+        root = str(cfg.cwd)
+    return (
+        root,
+        active_mode(cfg),
+        approval_mode_for_config(cfg),
+        str(bool(cfg.auto_approve_active)),
+        str(bool(getattr(cfg, "safe_mode", True))),
+    )
+
+
+def _current_turn_denial_unlocked(cfg: Config, signature: str) -> _TurnDenial | None:
+    denials = _turn_denials(cfg)
+    entry = denials.get(signature) if denials is not None else None
+    if entry is None or entry[2] != _turn_denial_context(cfg):
+        return None
+    return entry
+
+
 def _register_turn_denial(
     cfg: Config, signature: str, reason: str, explanation: DenialExplanation | None
-) -> tuple[str, DenialExplanation | None] | None:
-    """Record a denial for this turn and return any earlier identical denial."""
+) -> _TurnDenial | None:
+    """Record a denial for this turn and return any earlier identical denial under the same authority."""
 
     with _ATTEMPT_LEDGER_LOCK:
         denials = _turn_denials(cfg)
         if denials is None:
             return None
-        prior = denials.get(signature)
+        prior = _current_turn_denial_unlocked(cfg, signature)
         if prior is None:
-            denials[signature] = (summarize_tool_result(reason, 300), explanation)
+            denials[signature] = (summarize_tool_result(reason, 300), explanation, _turn_denial_context(cfg))
         return prior
 
 
 def turn_denial(cfg: Config, signature: str) -> DenialExplanation | None:
-    """Return the typed explanation for a call already denied in this turn."""
+    """Return the typed explanation for a call already denied in this turn under the current authority."""
 
     with _ATTEMPT_LEDGER_LOCK:
-        denials = _turn_denials(cfg)
-        entry = denials.get(signature) if denials is not None else None
+        entry = _current_turn_denial_unlocked(cfg, signature)
     return entry[1] if entry is not None else None
 
 
@@ -1278,8 +1306,7 @@ def find_failed_attempt(cfg: Config, signature: str) -> dict[str, Any] | None:
         found = _find_failed_attempt_unlocked(cfg, signature)
         if found is not None:
             return found
-        denials = _turn_denials(cfg)
-        prior = denials.get(signature) if denials is not None else None
+        prior = _current_turn_denial_unlocked(cfg, signature)
     if prior is None:
         return None
     return {"signature": signature, "status": "denied", "summary": _repeated_denial_text(prior[0])}

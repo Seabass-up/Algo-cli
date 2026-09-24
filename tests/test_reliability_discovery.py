@@ -41,6 +41,7 @@ def test_action_search_surfaces_gmail_slash_commands_for_email_intent(query: str
     assert gmail_list["via"] == "session_command"
     assert gmail_list["example"] == {"name": "session_command", "arguments": {"command": "/google gmail-list"}}
     assert gmail_list["example_requires_approval"] is False
+    assert gmail_list["required_arguments"] == []
     assert "algo-cli config setup google" in gmail_list["setup"]
     assert "session_command" in payload["next"]
 
@@ -163,7 +164,7 @@ def test_action_search_hides_slash_commands_refused_by_runtime_policy(monkeypatc
     payload = json.loads(tools.action_search("check my email", limit=12, cfg=_full_ceiling_cfg()))
 
     assert payload["slash_commands"] == []
-    assert payload["match"] == "none"
+    assert payload["match"] == "policy_blocked"
 
 
 def test_session_command_docstring_lists_gmail_commands() -> None:
@@ -237,3 +238,148 @@ def test_generic_verb_with_file_object_still_ranks_read_file(prompt: str) -> Non
 @pytest.mark.parametrize("prompt", ["check x.com", "read my email"])
 def test_domains_and_email_are_not_file_objects(prompt: str) -> None:
     assert "read_file" not in _names(rank_tools_for_prompt(prompt, tools.ALL_TOOLS))
+
+
+def _slash_row(payload: dict, prefix: str) -> dict:
+    return next(row for row in payload["slash_commands"] if row["command"].startswith(prefix))
+
+
+@pytest.mark.parametrize(
+    ("query", "prefix", "required"),
+    [
+        ("gmail", "/google gmail-get", ["MESSAGE_ID"]),
+        ("docs document", "/google docs-get", ["DOCUMENT_ID"]),
+        ("sheets spreadsheet", "/google sheets-values", ["SPREADSHEET_ID", "RANGE"]),
+        ("cd", "/cd", ["PATH"]),
+    ],
+)
+def test_required_argument_commands_get_usage_template_not_broken_example(query, prefix, required) -> None:
+    # "/google gmail-get" alone is rejected by its handler; it must not be offered as executable.
+    payload = json.loads(tools.action_search(query, limit=12))
+
+    row = _slash_row(payload, prefix)
+    assert "example" not in row
+    assert "example_requires_approval" not in row
+    assert row["usage"] == row["command"]
+    assert row["required_arguments"] == required
+    assert isinstance(row["requires_approval"], bool)
+
+
+@pytest.mark.parametrize(
+    ("template", "base", "required"),
+    [
+        ("/google gmail-list [query] [--max N] [--label LABEL]", "/google gmail-list", []),
+        ("/google drive-get FILE_ID [--download | --export MIME]", "/google drive-get", ["FILE_ID"]),
+        ("/mode [execute|explore|publish|yolo|status] (yolo is user-only)", "/mode", []),
+        ("/memory add [--tier curated|history] [--scope NAME] [--slot KEY] TEXT", "/memory add", ["TEXT"]),
+        ("/reason auto-reflexion on|off", "/reason auto-reflexion", ["on|off"]),
+        (
+            "/google gmail-draft --to EMAIL --subject SUBJECT [--html-file PATH | --text-file PATH | BODY...] "
+            "[--cc EMAIL] [--bcc EMAIL]",
+            "/google gmail-draft",
+            ["--to EMAIL", "--subject SUBJECT"],
+        ),
+    ],
+)
+def test_slash_invocation_separates_required_from_optional_arguments(template, base, required) -> None:
+    assert tools._slash_invocation(template) == (base, required)
+
+
+@pytest.mark.parametrize("query", ["draft an email", "compose a gmail message", "write an email draft"])
+def test_action_search_indexes_gmail_draft_with_action_time_approval(query: str) -> None:
+    payload = json.loads(tools.action_search(query))
+
+    row = _slash_row(payload, "/google gmail-draft")
+    assert _slash_commands(payload)[0].startswith("/google gmail-draft")
+    assert "example" not in row
+    assert row["required_arguments"] == ["--to EMAIL", "--subject SUBJECT"]
+    # It creates a remote Gmail draft, so it stays approval-gated.
+    assert row["requires_approval"] is True
+
+
+def test_available_actions_lists_gmail_draft() -> None:
+    focused = json.loads(tools.available_actions("email"))["focused"]
+
+    assert any(command.startswith("/google gmail-draft --to EMAIL") for command in focused["commands"]["google"])
+
+
+def test_rank_texts_matches_punctuated_document_terms() -> None:
+    documents = ["xai grok x.com twitter", "google gmail-list email"]
+
+    assert rank_texts_for_prompt("check x.com", documents) == [0]
+    assert rank_texts_for_prompt("gmail", documents) == [1]
+
+
+def test_action_search_finds_xai_commands_for_domain_query() -> None:
+    payload = json.loads(tools.action_search("check x.com"))
+
+    assert payload["match"] == "found"
+    assert {row["group"] for row in payload["slash_commands"]} == {"xai"}
+
+
+def test_action_search_reports_policy_blocked_slash_matches(monkeypatch) -> None:
+    import algo_cli.irene_memory_path_policy as policy
+
+    reason = "Error: /google is refused while Continuum Memory is authoritative."
+    monkeypatch.setattr(policy, "protected_tool_policy_error", lambda name, args, cfg: reason)
+    payload = json.loads(tools.action_search("check my email", limit=12, cfg=_full_ceiling_cfg()))
+
+    assert payload["slash_commands"] == []
+    assert payload["match"] == "policy_blocked"
+    blocked = payload["policy_blocked_slash_commands"]
+    assert any(row["command"].startswith("/google gmail-list") for row in blocked)
+    assert all(row["reason"] == reason and "example" not in row for row in blocked)
+    assert "no-match" not in payload["next"]
+    assert reason in payload["next"]
+
+
+def test_action_search_unblocked_query_reports_no_policy_blocked_rows() -> None:
+    payload = json.loads(tools.action_search("check my email", cfg=_full_ceiling_cfg()))
+
+    assert payload["policy_blocked_slash_commands"] == []
+
+
+@pytest.mark.parametrize(
+    ("template", "base", "required"),
+    [
+        ("/intel status|query TERM|reindex", "/intel", ["status|query TERM|reindex"]),
+        ("/intelligence status|query TERM|reindex|init", "/intelligence", ["status|query TERM|reindex|init"]),
+    ],
+)
+def test_slash_invocation_keeps_spaced_alternatives_as_one_choice(template, base, required) -> None:
+    # "status|query TERM|reindex" is one choice among status, "query TERM" and reindex, not two arguments.
+    assert tools._slash_invocation(template) == (base, required)
+
+
+@pytest.mark.parametrize(
+    ("prefix", "example", "mutating"),
+    [
+        ("/intel status|", "/intel status", ("/intel reindex",)),
+        ("/intelagence status|", "/intelagence status", ("/intelagence reindex",)),
+        ("/intelligence status|", "/intelligence status", ("/intelligence reindex", "/intelligence init")),
+    ],
+)
+def test_alternative_templates_report_approval_for_any_mutating_choice(prefix, example, mutating) -> None:
+    from algo_cli.samuel_policy_engine import session_command_requires_approval
+
+    payload = json.loads(tools.action_search("intel intelligence intelagence repository reindex", limit=12))
+    row = _slash_row(payload, prefix)
+
+    assert all(session_command_requires_approval(command) for command in mutating)
+    # The template offers reindex/init, so the row must not claim the command runs without approval.
+    assert row["requires_approval"] is True
+    assert row["required_arguments"] == [row["command"].split(" ", 1)[1]]
+    # A read-only concrete choice stays runnable, as the bare command was before.
+    assert row["example"] == {"name": "session_command", "arguments": {"command": example}}
+    assert row["example_requires_approval"] is False
+
+
+def test_single_token_alternative_approval_covers_every_choice() -> None:
+    from algo_cli.samuel_policy_engine import session_command_requires_approval
+
+    payload = json.loads(tools.action_search("reason auto-reflexion", limit=12))
+    row = _slash_row(payload, "/reason auto-reflexion")
+
+    assert row["requires_approval"] is any(
+        session_command_requires_approval(f"/reason auto-reflexion {choice}") for choice in ("on", "off")
+    )

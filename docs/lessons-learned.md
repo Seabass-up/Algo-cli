@@ -2007,6 +2007,36 @@ used.
 
 **Prevention:** Record why background work was skipped, not only whether it ran.
 
+## 2026-09-23: Cached Turn Denial Outlived The Authority That Produced It
+
+**Symptom and cause:** After an outside-workspace read was denied, entering `/mode yolo` (one of the recoveries the denial names) did not let the same call run in that turn. The preflight returned ALLOW, but `find_failed_attempt` still returned the turn-level denial keyed only by call signature, so the dispatcher skipped it. A `/cd` did not reproduce this for path tools because `cwd` is already part of their signature.
+
+**Repair:** Each cached turn denial now stores the authority context it was decided under: resolved workspace root, active session mode, approval mode, auto-approval and safe mode. A cached denial, including a declined approval, is reused only while that context is unchanged; otherwise the call is re-evaluated.
+
+**Verification and limits:** `tests/test_reliability_authority.py` covers deny then YOLO in the same turn (fails before the fix), deny then `/cd` into the target, an unchanged context still skipping, and a declined approval re-prompting only after the context changes. Issued grants are not in the fingerprint because baseline and YOLO grants are minted per preflight. Local test evidence; hosted CI is recorded on the pull request.
+
+**Prevention:** Bind a cached authority decision to the inputs that decided it, not only to the request.
+
+## 2026-09-23: Discovery Showed Broken Examples And Hid Blocked Matches
+
+**Symptom and cause:** Review of the discovery fix found that commands with required arguments were shown as executable examples without those arguments, `/google gmail-draft` was missing, documents were tokenized without the punctuation normalization used for queries, and a policy-filtered match was reported as no match.
+
+**Repair:** Commands with required arguments show a usage template and their required arguments instead of an example; `gmail-draft` is indexed with draft vocabulary and still requires approval; documents are normalized like queries; policy-blocked matches are reported with their reason. Approval flags are computed per command, and alternatives such as `status|query TERM|reindex` are parsed as alternatives.
+
+**Verification and limits:** Tests cover each case, including `x.com` queries and a protected-policy email query. Local test evidence; hosted CI is recorded on the pull request.
+
+**Prevention:** Discovery output is an instruction to the model; every example it shows must be executable as written.
+
+## 2026-09-23: Embed-Pass Status Described A Different Embedding Contract
+
+**Symptom and cause:** After switching embedding model or dimensions, harness status still reported the previous contract's last embed pass.
+
+**Repair:** Each recorded pass stores its model, dimensions and backend identity, and status labels a pass recorded for another contract as stale; an unverifiable identity is not treated as a mismatch.
+
+**Verification and limits:** Tests cover a contract switch and the unknown-identity case. Local test evidence; hosted CI is recorded on the pull request.
+
+**Prevention:** Status records must carry the configuration they describe.
+
 ## Repair Log Checklist
 
 - Date and component.

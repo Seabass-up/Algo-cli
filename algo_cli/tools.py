@@ -3105,6 +3105,8 @@ def _slash_command_groups() -> dict[str, list[str]]:
             "/google calendar-list [--max N] [--time-min RFC3339] [--time-max RFC3339]",
             "/google gmail-list [query] [--max N] [--label LABEL]",
             "/google gmail-get MESSAGE_ID",
+            "/google gmail-draft --to EMAIL --subject SUBJECT [--html-file PATH | --text-file PATH | BODY...] "
+            "[--cc EMAIL] [--bcc EMAIL]",
         ],
         "chatgpt": [
             "algo-cli config setup chatgpt",
@@ -3166,6 +3168,8 @@ _SLASH_GROUP_DISCOVERY_TERMS: dict[str, tuple[str, ...]] = {
 # Per-command vocabulary for action_search. Group-wide terms would give every
 # /google command the same email words, letting Drive/Docs rows crowd Gmail out.
 _SLASH_COMMAND_DISCOVERY_TERMS: dict[str, tuple[str, ...]] = {
+    # Matched by first prefix, so the draft entry must precede the generic Gmail one.
+    "/google gmail-draft": ("gmail", "email", "mail", "message", "draft", "drafts", "compose", "write"),
     "/google gmail": ("gmail", "email", "mail", "inbox", "messages"),
     "/google drive": ("drive", "files", "folder"),
     "/google docs": ("docs", "document"),
@@ -5162,7 +5166,7 @@ def action_search(query: str, limit: int = 6, cfg: Any = None) -> str:
                 "safe_retry": None,
             }
         actions.append({"name": name, "schema": wire_schema, "policy": policy})
-    slash_commands = _slash_command_candidates(normalized_query, bounded_limit, cfg)
+    slash_commands, blocked_slash_commands = _slash_command_candidates(normalized_query, bounded_limit, cfg)
     next_steps: list[str] = []
     if actions:
         next_steps.append(
@@ -5173,7 +5177,14 @@ def action_search(query: str, limit: int = 6, cfg: Any = None) -> str:
             "Run a listed slash command with session_command(command=...); it is not composable in action_program "
             "and still follows session-command approval and setup requirements."
         )
-    if not candidates and not slash_commands:
+    if blocked_slash_commands and not slash_commands:
+        reasons = sorted({row["reason"] for row in blocked_slash_commands})
+        next_steps.append(
+            "Relevant slash commands matched but the current runtime policy refuses them: "
+            + " ".join(reasons)
+            + " Report this policy block to the user; do not retry discovery or work around it."
+        )
+    if not candidates and not slash_commands and not blocked_slash_commands:
         # The runtime ceiling admits no composable action at all; that is a
         # policy state, distinct from a query that matched nothing.
         next_steps.append(
@@ -5194,7 +5205,10 @@ def action_search(query: str, limit: int = 6, cfg: Any = None) -> str:
             "actions": actions,
             "slash_command_count": len(slash_commands),
             "slash_commands": slash_commands,
-            "match": "found" if actions or slash_commands else "none",
+            "policy_blocked_slash_commands": blocked_slash_commands,
+            "match": (
+                "found" if actions or slash_commands else "policy_blocked" if blocked_slash_commands else "none"
+            ),
             "next": " ".join(next_steps),
         },
         ensure_ascii=False,
@@ -5203,15 +5217,67 @@ def action_search(query: str, limit: int = 6, cfg: Any = None) -> str:
 
 
 _SLASH_PLACEHOLDER_RE = re.compile(r"^(?:\[.*|--.*|.*\|.*|[A-Z][A-Z0-9_]*)$")
+_SLASH_REQUIRED_VALUE_RE = re.compile(r"^(?:[A-Z][A-Z0-9_]*(?:\.\.\.)?|[^|]+\|.+)$")
+_SLASH_PLACEHOLDER_TOKEN_RE = re.compile(r"^[A-Z][A-Z0-9_]*(?:\.\.\.)?$")
 
 
-def _slash_base_command(template: str) -> str:
+def _slash_invocation(template: str) -> tuple[str, list[str]]:
+    """Split a /command template into its command name and required arguments.
+
+    Bracketed text is optional and parenthesized text is commentary; the
+    remaining placeholders, choices, and ``--flag VALUE`` pairs are required.
+    """
+
+    tokens = template.split()
+    index = 0
     parts: list[str] = []
-    for token in template.split():
-        if parts and _SLASH_PLACEHOLDER_RE.match(token):
+    while index < len(tokens):
+        if parts and _SLASH_PLACEHOLDER_RE.match(tokens[index]):
             break
-        parts.append(token)
-    return " ".join(parts)
+        parts.append(tokens[index])
+        index += 1
+    required: list[str] = []
+    brackets = parens = 0
+    pending_flag = open_choice = False
+    for token in tokens[index:]:
+        top_level = brackets == 0 and parens == 0 and not token.startswith(("[", "("))
+        brackets = max(0, brackets + token.count("[") - token.count("]"))
+        parens = max(0, parens + token.count("(") - token.count(")"))
+        if not top_level:
+            open_choice = False
+            continue
+        if token.startswith("--"):
+            required.append(token)
+            pending_flag = True
+            open_choice = False
+        elif _SLASH_REQUIRED_VALUE_RE.match(token):
+            if pending_flag:
+                required[-1] = f"{required[-1]} {token}"
+            elif open_choice and "|" in token:
+                # "status|query TERM|reindex" is one choice whose "query TERM" alternative spans a space.
+                required[-1] = f"{required[-1]} {token}"
+            elif token not in required:
+                required.append(token)
+            open_choice = not pending_flag and "|" in token
+            pending_flag = False
+        else:
+            open_choice = False
+    return " ".join(parts), required
+
+
+_SLASH_VARIANT_LIMIT = 64
+
+
+def _slash_concrete_variants(base: str, required: list[str]) -> list[str] | None:
+    """Expand required choices into concrete command lines; None when too many to classify."""
+
+    variants = [base]
+    for argument in required:
+        choices = [argument] if argument.startswith("--") else [part.strip() for part in argument.split("|")]
+        variants = [f"{variant} {choice}" for variant in variants for choice in choices if choice]
+        if len(variants) > _SLASH_VARIANT_LIMIT:
+            return None
+    return variants
 
 
 def _session_command_in_active_ceiling(cfg: Any) -> bool:
@@ -5230,18 +5296,23 @@ def _session_command_in_active_ceiling(cfg: Any) -> bool:
     return authorization.allowed_actions == authorization_for_actions(tuple(TOOL_MAP)).allowed_actions
 
 
-def _slash_command_candidates(query: str, limit: int, cfg: Any) -> list[dict[str, Any]]:
-    """Rank /command templates from available_actions as session_command candidates."""
+def _slash_command_candidates(query: str, limit: int, cfg: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Rank /command templates as session_command candidates.
+
+    Returns runnable candidates and, separately, relevant commands that the
+    active runtime policy refuses, so a policy block is not reported as no-match.
+    """
 
     if not _session_command_in_active_ceiling(cfg):
-        return []
+        return [], []
     from .irene_memory_path_policy import protected_tool_policy_error
     from .samuel_policy_engine import session_command_requires_approval
     from .tool_context import rank_texts_for_prompt
 
-    entries: list[tuple[str, str]] = []
+    groups = _slash_command_groups()
+    entries: list[tuple[str, str, str, list[str]]] = []
     documents: list[str] = []
-    for group, items in _slash_command_groups().items():
+    for group, items in groups.items():
         group_terms = _SLASH_GROUP_DISCOVERY_TERMS.get(group, ())
         for item in items:
             if item.startswith("/"):
@@ -5250,31 +5321,67 @@ def _slash_command_candidates(query: str, limit: int, cfg: Any) -> list[dict[str
                     None,
                 )
                 terms = " ".join(command_terms if command_terms is not None else group_terms)
-                entries.append((group, item))
-                documents.append(f"{group} {item} {terms}")
+                # Index the command name and required arguments only; long optional
+                # flag lists (gmail-draft) otherwise dilute BM25 length normalization.
+                base, required = _slash_invocation(item)
+                entries.append((group, item, base, required))
+                documents.append(" ".join((group, base, *required, terms)))
     candidates: list[dict[str, Any]] = []
+    blocked: list[dict[str, Any]] = []
     for index in rank_texts_for_prompt(query, documents):
-        group, template = entries[index]
-        base = _slash_base_command(template)
-        # Fail closed: a runtime policy that refuses the base command hides it.
-        if cfg is not None and protected_tool_policy_error("session_command", {"command": base}, cfg) is not None:
-            continue
-        setup = [item for item in _slash_command_groups()[group] if not item.startswith("/")]
-        candidates.append(
-            {
-                "kind": "slash_command",
-                "group": group,
-                "command": template,
-                "via": "session_command",
-                "example": {"name": "session_command", "arguments": {"command": base}},
-                # Classified for the example only; other arguments are classified when run.
-                "example_requires_approval": session_command_requires_approval(base),
-                "setup": setup,
-            }
-        )
         if len(candidates) >= limit:
             break
-    return candidates
+        group, template, base, required = entries[index]
+        refusal = protected_tool_policy_error("session_command", {"command": base}, cfg) if cfg is not None else None
+        if refusal is not None:
+            # Fail closed: never offer a refused command as runnable, but say why it was withheld.
+            if len(blocked) < limit:
+                blocked.append(
+                    {
+                        "kind": "slash_command",
+                        "group": group,
+                        "command": template,
+                        "via": "session_command",
+                        "status": "policy_blocked",
+                        "reason": refusal,
+                    }
+                )
+            continue
+        row: dict[str, Any] = {
+            "kind": "slash_command",
+            "group": group,
+            "command": template,
+            "via": "session_command",
+            "usage": template,
+            "required_arguments": required,
+        }
+        if required:
+            # The bare command name would be rejected by its handler. Report approval
+            # if any concrete choice needs it (fail closed when there are too many to
+            # classify); the exact command is classified again when run.
+            variants = _slash_concrete_variants(base, required)
+            row["requires_approval"] = variants is None or any(
+                session_command_requires_approval(command) for command in (base, *variants)
+            )
+            runnable = [
+                command
+                for command in variants or ()
+                if not any(token.startswith("--") or _SLASH_PLACEHOLDER_TOKEN_RE.match(token) for token in command.split())
+            ]
+            if runnable:
+                # Prefer a read-only choice so discovery keeps a safe runnable example.
+                example = next(
+                    (command for command in runnable if not session_command_requires_approval(command)), runnable[0]
+                )
+                row["example"] = {"name": "session_command", "arguments": {"command": example}}
+                row["example_requires_approval"] = session_command_requires_approval(example)
+        else:
+            row["example"] = {"name": "session_command", "arguments": {"command": base}}
+            # Classified for the example only; other arguments are classified when run.
+            row["example_requires_approval"] = session_command_requires_approval(base)
+        row["setup"] = [item for item in groups[group] if not item.startswith("/")]
+        candidates.append(row)
+    return candidates, blocked
 
 
 def action_program(plan: dict, cfg: Any = None) -> str:

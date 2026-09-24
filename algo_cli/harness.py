@@ -2664,8 +2664,15 @@ def record_embed_pass(
     embedded: int = 0,
     pending: int | None = None,
     selected_by_priority: dict[str, int] | None = None,
+    model: str | None = None,
+    dimensions: EmbeddingDimensions = "unbound",
+    embedding_identity: str | None = "unbound",
 ) -> None:
-    """Persist the latest embed-pass outcome so stats can explain pending records."""
+    """Persist the latest embed-pass outcome so stats can explain pending records.
+
+    Passing `model` binds the pass to its embedding contract so status can tell
+    a pass for the active contract from one recorded before a model switch.
+    """
     if outcome not in _EMBED_PASS_OUTCOMES:
         raise ValueError(f"unknown embed pass outcome: {outcome}")
     payload: dict[str, Any] = {
@@ -2678,6 +2685,8 @@ def record_embed_pass(
         payload["pending"] = int(pending)
     if selected_by_priority is not None:
         payload["selected_by_priority"] = {str(key): int(value) for key, value in selected_by_priority.items()}
+    if model is not None:
+        payload["contract"] = {"model": str(model), "dimensions": dimensions, "identity": embedding_identity}
     try:
         _embed_pass_path().parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_json(_embed_pass_path(), payload)
@@ -2696,6 +2705,57 @@ def last_embed_pass() -> dict[str, Any] | None:
     return value
 
 
+def _embed_pass_contract_status(
+    last_pass: dict[str, Any], model: str, dimensions: EmbeddingDimensions, embedding_identity: str | None
+) -> str:
+    contract = last_pass.get("contract")
+    if not isinstance(contract, dict):
+        return "unrecorded"
+    if contract.get("model") != model:
+        return "different"
+    # An unbound active field matches anything, mirroring _embedding_matches.
+    if dimensions != "unbound":
+        stored = contract.get("dimensions")
+        if type(stored) is not type(dimensions) or stored != dimensions:
+            return "different"
+    if embedding_identity != "unbound":
+        stored_identity = contract.get("identity")
+        # None means the identity probe was unavailable, which is not evidence of a different contract.
+        if embedding_identity is None or stored_identity is None:
+            return "current" if embedding_identity == stored_identity else "unverified"
+        if stored_identity != embedding_identity:
+            return "different"
+    return "current"
+
+
+def _bind_last_embed_pass(embeddings: dict[str, Any]) -> None:
+    last_pass = last_embed_pass()
+    embeddings["last_pass"] = last_pass
+    if last_pass is None:
+        return
+    status = _embed_pass_contract_status(
+        last_pass,
+        str(embeddings.get("active_model") or ""),
+        embeddings.get("requested_dimensions", "unbound"),
+        embeddings.get("requested_identity", "unbound"),
+    )
+    last_pass["contract_status"] = status
+    if status == "different":
+        # Never present another contract's pass as the explanation for current coverage.
+        embeddings["last_pass"] = None
+        embeddings["stale_last_pass"] = last_pass
+
+
+def _describe_stale_embed_pass(stale_pass: dict[str, Any]) -> str:
+    contract = stale_pass.get("contract")
+    model = contract.get("model") if isinstance(contract, dict) else None
+    when = str(stale_pass.get("timestamp") or "unknown time")
+    return (
+        f"last embed pass was recorded for a different embedding contract (model {model or 'unknown'}, {when}); "
+        "none recorded yet for the current contract"
+    )
+
+
 def _describe_embed_pass(last_pass: dict[str, Any]) -> str:
     outcome = str(last_pass.get("outcome") or "")
     raw_reason = str(last_pass.get("reason") or "")
@@ -2707,6 +2767,8 @@ def _describe_embed_pass(last_pass: dict[str, Any]) -> str:
         text = "completed"
     else:
         text = f"{outcome}: {reason}" if reason else outcome
+    if last_pass.get("contract_status") == "unverified":
+        return f"last embed pass {text} ({when}; embedding identity unverified)"
     return f"last embed pass {text} ({when})"
 
 
@@ -2760,8 +2822,11 @@ def _index_quality_summary(records: list[dict[str, Any]], embeddings: dict[str, 
                     f"{int(embeddings.get('high_value_total') or 0)} embedded)"
                 )
             last_pass = embeddings.get("last_pass")
+            stale_pass = embeddings.get("stale_last_pass")
             if isinstance(last_pass, dict):
                 details.append(_describe_embed_pass(last_pass))
+            elif isinstance(stale_pass, dict):
+                details.append(_describe_stale_embed_pass(stale_pass))
             prefix = "; ".join(details) + ". " if details else ""
             recommendations.append(
                 f"{prefix}Run /harness embed or wait for the next chat turn to complete embeddings."
@@ -2813,7 +2878,7 @@ def stats(
     # Recompute this cheap summary so indexes written before value-aware queue
     # telemetry immediately expose current priority coverage in /harness status.
     embeddings = embedding_summary(index, model=model, dimensions=dimensions, embedding_identity=embedding_identity)
-    embeddings["last_pass"] = last_embed_pass()
+    _bind_last_embed_pass(embeddings)
     try:
         from .evals.session_distribution import summarize_session_distribution
 
@@ -3221,9 +3286,14 @@ def _embed_index_records_unlocked(
     if not all_pending:
         priority = _embedding_priority_progress(records, model, dimensions, embedding_identity)
         if records:
-            record_embed_pass("ready", "ready", pending=0)
+            record_embed_pass(
+                "ready", "ready", pending=0, model=model, dimensions=dimensions, embedding_identity=embedding_identity
+            )
         else:
-            record_embed_pass("skipped", "empty_index", pending=0)
+            record_embed_pass(
+                "skipped", "empty_index", pending=0, model=model, dimensions=dimensions,
+                embedding_identity=embedding_identity,
+            )
         return {
             "embedded": 0,
             "selected": 0,
@@ -3368,6 +3438,9 @@ def _embed_index_records_unlocked(
             embedded=embedded,
             pending=sum(remaining_by_priority.values()),
             selected_by_priority=dict(selected_by_priority),
+            model=model,
+            dimensions=dimensions,
+            embedding_identity=embedding_identity,
         )
         return {
             "embedded": embedded,
@@ -3400,6 +3473,9 @@ def _embed_index_records_unlocked(
         embedded=embedded,
         pending=sum(remaining_by_priority.values()),
         selected_by_priority=dict(selected_by_priority),
+        model=model,
+        dimensions=dimensions,
+        embedding_identity=embedding_identity,
     )
     result = {
         "embedded": embedded,

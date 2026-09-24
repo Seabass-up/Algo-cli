@@ -177,6 +177,119 @@ def test_repeated_policy_denial_says_do_not_retry_only_within_a_turn(tmp_path) -
     end_tool_turn(cfg)
 
 
+def _read_dispatcher(cfg, target, invoked: list[str]):
+    # Keeps the real approval path: a baseline read must pass without any prompt.
+    deps = james_dispatch.default_dispatch_dependencies()
+
+    def invoke(name, _args, _cfg):
+        invoked.append(name)
+        return "contents"
+
+    deps.invoke = invoke
+    return lambda: james_dispatch.dispatch_action("read_file", {"path": str(target)}, cfg, dependencies=deps, render=False)
+
+
+def test_cached_outside_workspace_denial_is_rechecked_after_cd_into_the_target(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("builtins.input", lambda *_args: (_ for _ in ()).throw(AssertionError("prompted")))
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    other = tmp_path / "docs"
+    other.mkdir()
+    target = other / "GUIDE.md"
+    target.write_text("guide", encoding="utf-8")
+    cfg = Config(cwd=str(workspace))
+    invoked: list[str] = []
+    dispatch = _read_dispatcher(cfg, target, invoked)
+
+    begin_tool_turn(cfg)
+    try:
+        first = dispatch()
+        assert first.status == "denied"
+        assert invoked == []
+
+        # The advertised recovery: the user approves /cd into the target directory.
+        cfg.cwd = str(other)
+        second = dispatch()
+        assert second.status == "worked", second.result
+        assert invoked == ["read_file"]
+        signature = tool_attempt_signature("read_file", second.preflight.signature_args)
+        assert turn_denial(cfg, signature) is None
+    finally:
+        end_tool_turn(cfg)
+
+
+def test_cached_outside_workspace_denial_is_rechecked_after_user_enters_yolo(tmp_path, monkeypatch) -> None:
+    from algo_cli import session_mode
+
+    monkeypatch.setattr("builtins.input", lambda *_args: (_ for _ in ()).throw(AssertionError("prompted")))
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    target = tmp_path / "docs" / "GUIDE.md"
+    target.parent.mkdir()
+    target.write_text("guide", encoding="utf-8")
+    cfg = Config(cwd=str(workspace))
+    invoked: list[str] = []
+    dispatch = _read_dispatcher(cfg, target, invoked)
+
+    begin_tool_turn(cfg)
+    try:
+        first = dispatch()
+        assert first.status == "denied"
+        assert "/mode yolo" in first.result
+
+        # The other advertised recovery keeps cwd, so the call signature is unchanged.
+        session_mode.select_mode(cfg, "yolo", user_initiated=True)
+        second = dispatch()
+        assert second.status == "worked", second.result
+        assert invoked == ["read_file"]
+    finally:
+        end_tool_turn(cfg)
+
+
+def test_cached_denial_is_still_skipped_when_authority_context_is_unchanged(tmp_path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    target = tmp_path / "docs" / "GUIDE.md"
+    cfg = Config(cwd=str(workspace))
+    invoked: list[str] = []
+    dispatch = _read_dispatcher(cfg, target, invoked)
+
+    begin_tool_turn(cfg)
+    try:
+        first = dispatch()
+        second = dispatch()
+    finally:
+        end_tool_turn(cfg)
+
+    assert first.status == "denied"
+    assert first.result.startswith("Blocked by runtime authority:")
+    assert second.status in {"denied", "skipped"}
+    assert "Skipped repeated denied action" in second.result
+    assert invoked == []
+
+
+def test_approval_declined_call_reprompts_in_turn_only_after_authority_context_changes(tmp_path) -> None:
+    cfg = Config(cwd=str(tmp_path))
+    approvals: list[str] = []
+    dispatch = _dispatch_with_approver(cfg, approvals, answer=False)
+
+    begin_tool_turn(cfg)
+    try:
+        assert dispatch().status == "denied"
+        assert dispatch().status == "skipped"
+        assert approvals == ["run_shell"]
+
+        # A session-mode switch changes the authority context without changing the call signature.
+        assert cfg.session_mode != "execute"
+        cfg.session_mode = "execute"
+        assert dispatch().status == "denied"
+        assert approvals == ["run_shell", "run_shell"]
+        assert dispatch().status == "skipped"
+        assert approvals == ["run_shell", "run_shell"]
+    finally:
+        end_tool_turn(cfg)
+
+
 def test_repeated_denied_call_beside_approved_reads_trips_the_stall_guard(monkeypatch, tmp_path) -> None:
     approvals: list[str] = []
 
