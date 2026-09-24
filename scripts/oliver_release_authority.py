@@ -73,7 +73,7 @@ _TAG_RE = re.compile(
     r"^v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})"
     r"(?:\.post[1-9][0-9]{0,3})?$"
 )
-_SOURCE_VERSION_RE = re.compile(r'^__version__ = "([^"\n]*)"$', re.MULTILINE)
+_SOURCE_VERSION_RE = re.compile(r'^__version__ = "([^"\r\n]*)"\r?$', re.MULTILINE)
 _INTEGER_RE = re.compile(r"^(?:0|[1-9][0-9]{0,15})$")
 _GITHUB_TIMESTAMP_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 _RFC3339_TIMESTAMP_RE = re.compile(

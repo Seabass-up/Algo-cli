@@ -380,6 +380,13 @@ def test_source_release_tag_rejects_ambiguous_or_noncanonical_versions(
         AUTHORITY.source_release_tag()
 
 
+def test_source_release_tag_reads_a_crlf_checkout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    root = _source_root(tmp_path, "")
+    (root / "algo_cli" / "__init__.py").write_bytes(b'"""Algo CLI."""\r\n\r\n__version__ = "0.21.0"\r\n')
+    monkeypatch.setattr(AUTHORITY, "ROOT", root)
+    assert AUTHORITY.source_release_tag() == "v0.21.0"
+
+
 @pytest.mark.parametrize("version", ["0.21.0", "1.0.0.post2"])
 def test_source_release_tag_follows_a_version_bump(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, version: str) -> None:
     monkeypatch.setattr(AUTHORITY, "ROOT", _source_root(tmp_path, f'__version__ = "{version}"\n'))
