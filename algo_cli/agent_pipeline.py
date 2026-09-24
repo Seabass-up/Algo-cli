@@ -22,6 +22,7 @@ from . import agent_blocks
 from . import agent_context
 from . import agent_run_journal
 from . import agent_threads
+from . import cancellation
 from . import spawn_budget
 from . import git_evidence
 from . import execution_guardrails
@@ -241,9 +242,10 @@ def _agent_execution_scope():
 
 
 def _raise_if_team_cancelled(cfg: Config) -> None:
-    cancellation = getattr(cfg, "_algo_team_cancellation", None)
-    if cancellation is not None and cancellation.is_set():
-        raise KeyboardInterrupt("Agent team cancelled")
+    # The ambient token is the team member's child token (or the pipeline's turn token).
+    token = cancellation.current_token()
+    if token is not None:
+        token.raise_if_cancelled()
 
 
 @contextmanager
@@ -1804,6 +1806,7 @@ def _finish_thread_record(
 
 
 @delegated_scope()
+@cancellation.scoped_turn
 def run_agent_pipeline(
     task: str,
     cfg: Config,
@@ -2941,7 +2944,8 @@ def run_agent_team(
         f"({', '.join(selected_roles)})."
     )
 
-    team_cancellation = threading.Event()
+    parent_token = cancellation.current_token()
+    team_token = parent_token.child("team") if parent_token is not None else cancellation.CancelToken("team")
     team_status_lock = threading.Lock()
 
     def run_specialist(role: str) -> agent_blocks.AgentBlock:
@@ -2954,7 +2958,6 @@ def run_agent_team(
         member_cfg.messages = []
         member_cfg.session_summary = ""
         member_cfg.attempt_ledger = []
-        setattr(member_cfg, "_algo_team_cancellation", team_cancellation)
         setattr(member_cfg, "_algo_team_status_lock", team_status_lock)
         block = agent_blocks.AgentBlock(
             role=role,
@@ -2964,7 +2967,8 @@ def run_agent_team(
         )
         try:
             member_client = create_client(member_cfg)
-            with _agent_execution_scope():
+            # Pool threads start without the caller's context; each member binds its own child token.
+            with _agent_execution_scope(), cancellation.bind(team_token.child(role)):
                 return _run_contract_bound_specialist(
                     task=task,
                     route=route,
@@ -3001,7 +3005,7 @@ def run_agent_team(
             interrupted = True
             # Set first so a repeated Ctrl+C cannot skip cancellation; then wait out any
             # in-flight specialist status write so none lands after the cancelled records.
-            team_cancellation.set()
+            team_token.cancel(cancellation.TEAM_CANCELLED)
             status_locked = False
             try:
                 status_locked = team_status_lock.acquire(timeout=TEAM_CANCEL_GRACE_SECONDS)

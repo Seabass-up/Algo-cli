@@ -418,10 +418,16 @@ def run_oneshot(
             error_class="policy",
             message="Continuum-protected auxiliary state could not be prepared safely.",
         )
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as exc:
+        from .cancellation import ApprovalCancelled
+
         status = "failed"
-        status_reason = "interrupted"
-        sink.error(error_class="internal", message="KeyboardInterrupt")
+        if isinstance(exc, ApprovalCancelled):
+            status_reason = "approval_cancelled"
+            sink.error(error_class="internal", message="ApprovalCancelled")
+        else:
+            status_reason = "interrupted"
+            sink.error(error_class="internal", message="KeyboardInterrupt")
     except Exception as exc:
         status = "failed"
         status_reason = f"{type(exc).__name__}: {exc}"

@@ -47,6 +47,7 @@ from .config import (
 )
 from . import agent_blocks  # noqa: F401 — tests patch main.agent_blocks
 from . import agent_context
+from . import cancellation
 from . import git_evidence  # noqa: F401 — tests patch main.git_evidence
 from . import harness
 from . import identity
@@ -2352,6 +2353,12 @@ def _drain_interrupted_batch(
     """Collect finished results within a bounded grace; unfinished slots stay None."""
 
     cancellation.cancel("keyboard_interrupt")
+    from .cancellation import KEYBOARD_INTERRUPT, current_token
+
+    turn_token = current_token()
+    if turn_token is not None:
+        # Workers run in copies of this context, so they observe the same token.
+        turn_token.cancel(KEYBOARD_INTERRUPT)
     for future in future_to_index:
         future.cancel()
     try:
@@ -3245,6 +3252,8 @@ GENERATION_INTERRUPTED_MARKER = "\n\n[response interrupted by user]"
 
 
 def generation_interrupted_message(exc: BaseException) -> str:
+    if isinstance(exc, cancellation.ApprovalCancelled):
+        return "Approval cancelled. The pending action was not approved or run."
     if getattr(exc, "partial_output_kept", False):
         return "Generation interrupted. Partial response kept in the conversation."
     if getattr(exc, "no_response_text", False):
@@ -3303,13 +3312,15 @@ def agent_loop(
             build_status_toolbar(cfg), build_prompt_style(theme_colors(cfg.theme)),
         ))
     try:
-        _agent_loop_body(
-            client,
-            cfg,
-            user_message,
-            _receipt_key_store=_receipt_key_store,
-            _receipt_anchor_store=_receipt_anchor_store,
-        )
+        # One cancel token per user turn; tools, dispatch, approvals and sub-agents read it.
+        with cancellation.turn_scope("turn"):
+            _agent_loop_body(
+                client,
+                cfg,
+                user_message,
+                _receipt_key_store=_receipt_key_store,
+                _receipt_anchor_store=_receipt_anchor_store,
+            )
     finally:
         if show_sticky_status:
             sticky_status.stop()
@@ -4023,7 +4034,10 @@ def _agent_loop_body(
                     options=chat_options,
                 )
 
+                turn_token = cancellation.current_token()
                 for chunk in stream:
+                    if turn_token is not None:
+                        turn_token.raise_if_cancelled()
                     if status is not None:
                         status.stop()
                         status = None
@@ -4445,7 +4459,7 @@ def _agent_loop_body(
             loop_state.finish_tool_batch()
             if batch_cancellation.cancelled:
                 loop_state.cancel("user interrupted tool dispatch")
-                raise KeyboardInterrupt
+                raise cancellation.interruption_for(batch_cancellation.reason_code)
             no_progress_tool_rounds = 0 if batch_has_execution else no_progress_tool_rounds + 1
             for blocked_key in batch_blocked:
                 blocked_action_counts[blocked_key] = blocked_action_counts.get(blocked_key, 0) + 1

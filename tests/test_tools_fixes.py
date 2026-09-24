@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from algo_cli import nathan_runtime, search_execution, tools
+from algo_cli import cancellation, nathan_runtime, search_execution, tools
 from algo_cli.config import Config
 
 
@@ -311,9 +311,13 @@ def test_run_tool_passes_only_the_team_cancellation_event(tmp_path):
     )
     assert nathan_runtime.run_tool("write_file", {"path": "a.txt", "content": "x"}, cfg).startswith("Wrote ")
 
-    setattr(cfg, "_algo_team_cancellation", cancelled)
-    assert nathan_runtime.run_tool("write_file", {"path": "b.txt", "content": "x"}, cfg) == tools.TEAM_CANCELLED_WRITE
-    assert "agent team was cancelled" in nathan_runtime.run_tool("run_shell", {"command": "touch marker"}, cfg)
+    team_member = cancellation.CancelToken("team").child("scout")
+    team_member.parent.cancel(cancellation.TEAM_CANCELLED)
+    with cancellation.bind(team_member):
+        assert nathan_runtime.run_tool("write_file", {"path": "b.txt", "content": "x"}, cfg) == (
+            tools.TEAM_CANCELLED_WRITE
+        )
+        assert "agent team was cancelled" in nathan_runtime.run_tool("run_shell", {"command": "touch marker"}, cfg)
     assert not (tmp_path / "b.txt").exists() and not (tmp_path / "marker").exists()
 
 
