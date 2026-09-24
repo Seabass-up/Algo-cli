@@ -1297,17 +1297,14 @@ def handle_command(
             m.console.print("Available themes: " + ", ".join(display.available_themes()))
         else:
             try:
-                cfg.theme = m.set_theme(arg)
+                m.apply_theme(cfg, session, arg)
                 cfg.save()
-                if session is not None:
-                    try:
-                        session.style = m.build_prompt_style(m.theme_colors(cfg.theme))
-                    except Exception:
-                        pass
-                    m.invalidate_prompt_toolbar(session)
                 m.show_info(f"Theme set to {cfg.theme}")
             except ValueError as exc:
                 m.show_error(f"{exc}. Available themes: {', '.join(display.available_themes())}")
+        profile_note = display.color_profile_note()
+        if profile_note:
+            m.show_info(profile_note)
     elif command == "/cd":
         from .workspace_resolver import parse_path_arg
 
@@ -1597,6 +1594,8 @@ def handle_command(
                 workspace=yolo_workspace,
                 previous=yolo_previous,
             )
+        # Rebuild session.style too, or the footer keeps the previous theme's bars.
+        m.apply_theme(cfg, session)
         client = m.create_client(cfg)
         m.show_info("Reloaded config, tools, and harness index.")
         m.show_info(
