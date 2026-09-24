@@ -1,9 +1,7 @@
 # 0.20.1 Release Scope
 
-State: prepared release candidate. Publication requires exact-source local and
-hosted qualification, an immutable `v0.20.1` tag, protected release-authority
-approval, exact artifact verification, public registry verification, and clean
-install and predecessor-upgrade checks.
+State: published on 2026-09-23 from the immutable `v0.20.1` tag through the
+protected release workflow with trusted PyPI publishing.
 
 ## Included Scope
 
@@ -40,7 +38,33 @@ install and predecessor-upgrade checks.
 
 ## Publication Receipt
 
-Not yet published. Record the exact source and publisher revisions, CI and
-release workflow runs, artifact sizes and SHA-256 digests, GitHub immutable
-release state, PyPI index state, and public install/upgrade results here only
-after each result is observed.
+- Source: tag `v0.20.1` -> merge commit
+  `2fae0bfbf915af0cd204ad81e171d499333efc82` (PR #69), which is also the
+  publisher revision. Push CI run
+  [35914889350](https://github.com/Seabass-up/Algo-cli/actions/runs/35914889350)
+  succeeded on that commit, including Boron public-browser qualification and
+  attestation.
+- Release run
+  [35917346731](https://github.com/Seabass-up/Algo-cli/actions/runs/35917346731)
+  uploaded both distributions to PyPI, then failed its immediate visibility
+  query with `release_pypi_missing` after six observations. The files became
+  visible shortly afterward. This failure remains recorded as failed.
+- Recovery run
+  [35919389045](https://github.com/Seabass-up/Algo-cli/actions/runs/35919389045)
+  took the `draft-exact` path, observed the exact PyPI file set, skipped
+  re-upload, revalidated policy, and published the immutable GitHub release at
+  2026-09-23T21:18:51Z. The post-publication policy drift check passed.
+
+| File | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `algo_cli_runtime-0.20.1-py3-none-any.whl` | 1317884 | `5c897032c12cf2be568059e3c3ecf70681e25615358f01cfe82d50da9fd260cd` |
+| `algo_cli_runtime-0.20.1.tar.gz` | 1188889 | `bbeaba8ab33b5d2ad65aecad0e0e9c319e7f742f5fad2ada461a67b1a62608ba` |
+
+The PyPI files are non-yanked and byte-identical to the GitHub release assets.
+A clean `pip install algo-cli-runtime==0.20.1` in an isolated Python 3.12
+environment reported `Algo CLI v0.20.1`. The downloaded wheel and sdist passed
+`check_public_release.py --artifacts-only`. In push CI run 35914889350 the
+installed-wheel jobs on Linux, macOS and Windows upgraded from public `0.20.0`
+(recorded `baseline_version` 0.20.0 with the published wheel digest) through
+pip, pipx, pipx with the uv backend, uv, and a pip-free `uv pip` environment
+without changing user state. Their workflow step labels still name 0.18.0.
