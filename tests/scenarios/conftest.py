@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from scenarios.scenario_harness import REAL_ALGO_DIR, SCENARIO_METRICS, ScenarioRunner, format_metrics_table
+from scenarios.scenario_harness import (
+    REAL_ALGO_DIR,
+    SCENARIO_METRICS,
+    ExternalCallGuard,
+    ScenarioRunner,
+    format_metrics_table,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -38,11 +44,22 @@ def _scenario_isolation(monkeypatch, tmp_path):
     assert not Path(config_module.CONFIG_DIR).resolve().is_relative_to(REAL_ALGO_DIR)
 
 
+@pytest.fixture(autouse=True)
+def external_guard(monkeypatch):
+    """Fail any scenario that reaches xurl, Google, TypeSafe, Ollama web or the network."""
+    guard = ExternalCallGuard()
+    guard.install(monkeypatch)
+    yield guard
+    guard.assert_clean()
+
+
 @pytest.fixture
-def scenario(monkeypatch, tmp_path, request) -> ScenarioRunner:
+def scenario(monkeypatch, tmp_path, request, external_guard) -> ScenarioRunner:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    return ScenarioRunner(monkeypatch, workspace, request.node.name)
+    runner = ScenarioRunner(monkeypatch, workspace, request.node.name, guard=external_guard)
+    yield runner
+    runner.close()
 
 
 def pytest_terminal_summary(terminalreporter):

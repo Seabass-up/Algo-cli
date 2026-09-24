@@ -12,6 +12,25 @@ temporary directory, and `conftest.py` here redirects `HOME`/`USERPROFILE`, bloc
 keychain receipt stores, and checks before and after each test that the config directory is
 outside the real one. `Config.save()` is recorded, not written.
 
+Every tool invoker is replaced by one recorder: `main.run_tool`, the dispatcher's trusted
+adapter invoker (`x_account_post`, `x_account_reply`, `x_account_post_action`) and the `/agent`
+pipeline's dispatch. Only names in `real_tools` reach a real tool body. As a second line of
+defence, the autouse `external_guard` fixture blocks and records any call to `xurl`, the
+TypeSafe/Jev companion, `urllib.request.urlopen` (Google Workspace), the Ollama web client, a
+TCP socket connect made in the test process, or any child-process launch, and fails the test at
+teardown if one happened. The socket check cannot see a child process's own sockets, so a real
+`run_shell` (curl, `git push`, the `xurl` CLI) is blocked at launch instead. The one exception is
+an argv-list `git` local read (`rev-parse`, `status`, `diff`, `ls-files`, `log`, `show`), which the
+pipeline's workspace evidence uses. The runtime may catch the blocked call and report a failed
+tool, so the teardown check is what fails the test. `scenario.allow_external("process")` (or
+`"xurl"`, `"network"`, ...) opts a single test out for a named target; only the guard's own
+opt-in test does.
+
+Each `run()` / `run_agent()` first undoes the previous run's patches, so several runs in one
+test are independent (different `real_tools`, fakes and approval callbacks). Run patches go
+through the test's `monkeypatch`, so a test may re-patch a runner-owned attribute after a run and
+teardown still restores the original.
+
 ## Running
 
 ```bash
@@ -61,7 +80,10 @@ def test_scenario_my_case(scenario):
 
 `scenario.run_agent(rounds, task=..., pipeline_name="review")` runs a full pipeline. Each block
 takes model rounds in order, and `result.pipeline` and `result.thread` hold the outcome and the
-persisted thread record.
+persisted thread record. It takes the same `tools=`, `real_tools=` and `approve=` options as
+`run()` (default approval: the runtime's own, observed). Block tool calls appear in
+`result.invocations`, their typed outcomes in `result.events`, and every block's messages, in run
+order, in `result.messages`, so waste and history-pairing metrics cover pipelines too.
 
 ## What a result exposes
 
