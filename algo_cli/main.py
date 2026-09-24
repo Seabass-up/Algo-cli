@@ -129,11 +129,14 @@ from .dorothy_perf_telemetry import (
 from .nathan_runtime import (
     MAX_COMPLETION_RECOVERY_ROUNDS,
     ask_approval,
+    begin_tool_turn,
     completion_recovery_prompt,
+    end_tool_turn,
     reflection_checkpoint,
     run_tool,
     show_typed_tool_result,
     run_args_preview as _run_args_preview,
+    tool_attempt_signature,
     tool_result_message,
     tool_runtime_args,
 )
@@ -3026,6 +3029,8 @@ def ensure_harness_index(cfg: Config, local_names: list[str] | None = None, *, m
     if matching == total:
         return True
     if not host_is_local(cfg.host) or not ollama_server_ready(cfg.host):
+        skip_reason = "non_local_host" if not host_is_local(cfg.host) else "ollama_unreachable"
+        harness.record_embed_pass("skipped", skip_reason, pending=total - matching)
         return matching > 0
     # Auto-pull the embed model if it isn't present locally.
     if local_names is None:
@@ -3040,6 +3045,7 @@ def ensure_harness_index(cfg: Config, local_names: list[str] | None = None, *, m
             matching, total = harness.embedded_count(active_model, dimensions=dimensions, embedding_identity=embedding_identity)
         except Exception as exc:
             show_info(f"Could not auto-pull {active_model}: {exc}. RAG disabled until model is available.")
+            harness.record_embed_pass("skipped", "model_pull_failed", pending=total - matching)
             return matching > 0
     pending = total - matching
     # If switching backends/models leaves the index stale, surface that before
@@ -3672,6 +3678,11 @@ def _agent_loop_body(
     completion_nudged = False
     completion_recovery_rounds = 0
     no_progress_tool_rounds = 0
+    # Progress is counted per action: an identical call blocked repeatedly stalls
+    # the turn even when other calls in the same batch execute.
+    blocked_action_counts: dict[str, int] = {}
+    blocked_boundary_sent = False
+    begin_tool_turn(cfg)
     turn_text_received = False
     next_round_trigger = "initial_plan"
     tool_ms_since_previous_round = 0.0
@@ -4269,6 +4280,7 @@ def _agent_loop_body(
             dependencies = _main_dispatch_dependencies()
             next_round_trigger = "tool_result_requires_interpretation"
             batch_has_execution = False
+            batch_blocked: dict[str, str] = {}
             batch_cancellation = DispatchCancellation()
 
             def dispatch_in_batch(
@@ -4310,6 +4322,12 @@ def _agent_loop_body(
                 batch_has_execution = batch_has_execution or dispatched.outcome.invoked or dispatched.status == "worked"
                 if dispatched.status == "denied":
                     next_round_trigger = "policy_or_approval"
+                if not dispatched.outcome.invoked and dispatched.status in {"denied", "skipped"}:
+                    try:
+                        blocked_key = tool_attempt_signature(name, dispatched.preflight.signature_args)
+                    except Exception:
+                        blocked_key = f"name:{name}"
+                    batch_blocked[blocked_key] = name
                 tool_ms_since_previous_round += dispatched.duration_ms
                 show_typed_tool_result(
                     name,
@@ -4423,6 +4441,11 @@ def _agent_loop_body(
                 loop_state.cancel("user interrupted tool dispatch")
                 raise KeyboardInterrupt
             no_progress_tool_rounds = 0 if batch_has_execution else no_progress_tool_rounds + 1
+            for blocked_key in batch_blocked:
+                blocked_action_counts[blocked_key] = blocked_action_counts.get(blocked_key, 0) + 1
+            stalled_actions = sorted(
+                {batch_blocked[key] for key in batch_blocked if blocked_action_counts[key] >= 3}
+            )
             if no_progress_tool_rounds >= 3:
                 final_content = ""
                 show_error(
@@ -4430,7 +4453,30 @@ def _agent_loop_body(
                     "Review the approval or policy blocker before continuing; no task completion is claimed."
                 )
                 break
+            if stalled_actions:
+                final_content = ""
+                show_error(
+                    f"Tool progress stopped: {', '.join(stalled_actions)} was blocked 3 times in this turn "
+                    "without executing. Review the approval or policy blocker before continuing; "
+                    "no task completion is claimed."
+                )
+                break
+            if no_progress_tool_rounds != 1 and batch_blocked and not blocked_boundary_sent:
+                blocked_boundary_sent = True
+                cfg.messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "[Internal recovery boundary] Some requested actions were blocked before execution: "
+                            f"{', '.join(sorted(set(batch_blocked.values())))}. Each result states whether the "
+                            "blocker is resolvable in this session. Do not repeat blocked actions or vary their "
+                            "spelling to bypass approval. Choose a permitted alternative that advances the task, "
+                            "or report the blocker."
+                        ),
+                    }
+                )
             if no_progress_tool_rounds == 1:
+                blocked_boundary_sent = True
                 cfg.messages.append(
                     {
                         "role": "user",
@@ -4448,6 +4494,7 @@ def _agent_loop_body(
                     reflection_checkpoint(client, cfg, persisted_user_message, reflection_interval)
                 tool_calls_since_reflection -= reflection_interval
     finally:
+        end_tool_turn(cfg)
         try:
             execution_guardrails.end_execution_scope(execution_scope)
         except execution_guardrails.ExecutionGuardrailError as exc:

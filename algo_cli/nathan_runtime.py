@@ -48,6 +48,7 @@ from .irene_privacy_views import (
 )
 from .samuel_policy import RuntimeToolPolicyDecision, evaluate_runtime_tool_policy
 from .samuel_policy_engine import (
+    PolicyDisposition,
     resolve_action,
     session_command_requires_approval,  # noqa: F401 - compatibility re-export
 )
@@ -88,6 +89,7 @@ _BASELINE_ACTIONS = frozenset(
         "harness_scorecard",
         "harness_search",
         "harness_stats",
+        "jev_kernel_status",
         "list_directory",
         "model_show",
         "plugins_discover",
@@ -181,6 +183,40 @@ _OPAQUE_JSON_RESULT_TOOLS = frozenset({"harness_read", "read_file", "read_pdf", 
 _STRUCTURED_ERROR_STATUSES = frozenset(
     {"cancelled", "canceled", "denied", "error", "failed", "failure", "timed_out", "timeout"}
 )
+
+
+DenialKind = Literal["intentional_policy", "setup_gap", "user_declined", "approval_unavailable"]
+_APPROVAL_DENIAL_PREFIXES: dict[str, DenialKind] = {
+    "This operation was not approved": "user_declined",
+    "Approval is unavailable in this noninteractive run": "approval_unavailable",
+}
+
+
+@dataclass(frozen=True)
+class DenialExplanation:
+    """Typed reason a call was denied and whether this session can clear it."""
+
+    action: str
+    target: str
+    missing_scope: str
+    kind: DenialKind
+    resolvable_in_session: bool
+    recovery: str
+
+    def text(self) -> str:
+        nature = {
+            "intentional_policy": "This is intentional containment policy, not a setup error",
+            "setup_gap": "This is a runtime configuration gap, not a user decision",
+            "user_declined": "The user declined this exact action",
+            "approval_unavailable": "This run cannot ask for approval",
+        }[self.kind]
+        resolvable = (
+            "yes, by the user (the model cannot grant it)" if self.resolvable_in_session else "no"
+        )
+        return (
+            f"{self.action} on {self.target} was denied: {self.missing_scope}. {nature}. "
+            f"Resolvable in this session: {resolvable}. Recovery: {self.recovery}"
+        )
 
 
 @dataclass(frozen=True)
@@ -321,6 +357,98 @@ def _approval_mode(cfg: Config) -> str:
     return approval_mode_for_config(cfg)
 
 
+def explain_missing_grant(cfg: Config, action: ResolvedAction) -> DenialExplanation:
+    """Name the launch-time baseline condition a no-confirmation action failed."""
+
+    from .session_mode import active_mode
+
+    no_retry = "Do not retry the call; use a permitted alternative or report the blocker."
+    setup_recovery = f"Not resolvable in this session; the runtime baseline must be updated in a release. {no_retry}"
+
+    def setup_gap(missing: str) -> DenialExplanation:
+        return DenialExplanation(action.name, action.target, missing, "setup_gap", False, setup_recovery)
+
+    if action.name not in _BASELINE_ACTIONS:
+        return setup_gap(
+            "this no-confirmation action is not in the runtime baseline allowlist, and actions "
+            "without a confirmation step can never be approved by prompt"
+        )
+    if action.effect_class is not EffectClass.OBSERVE:
+        return setup_gap(f"baseline actions must be observations, not {action.effect_class.value}")
+    if action.target_scope not in _BASELINE_TARGET_SCOPES:
+        return setup_gap(f"target scope {action.target_scope.value} is outside the runtime baseline scopes")
+    if not _BASELINE_CAPABILITIES.contains(CapabilityMask(action.capability_mask)):
+        return setup_gap("the requested capabilities exceed the runtime baseline read/model/memory ceiling")
+    session = authority_session_for(cfg)
+    if action.target_scope is TargetScope.WORKSPACE and not session._workspace_target_allowed(action.target):
+        yolo = active_mode(cfg) == "yolo"
+        return DenialExplanation(
+            action.name,
+            action.target,
+            f"the read-only target is outside the session workspace {session.workspace_root}",
+            "intentional_policy",
+            not yolo,
+            (
+                "The user can run /cd to that directory, start Algo CLI from the target workspace, "
+                "or enter /mode yolo, which allows ordinary reads outside the working directory. "
+                f"{no_retry}"
+                if not yolo
+                else f"YOLO does not admit this target. {no_retry}"
+            ),
+        )
+    return setup_gap("no launch-time baseline grant was available for this target")
+
+
+def begin_tool_turn(cfg: Config) -> None:
+    """Start a per-turn record of denied calls so identical repeats are not re-asked."""
+
+    with _ATTEMPT_LEDGER_LOCK:
+        setattr(cfg, "_nathan_turn_denials", {})
+
+
+def end_tool_turn(cfg: Config) -> None:
+    with _ATTEMPT_LEDGER_LOCK:
+        if hasattr(cfg, "_nathan_turn_denials"):
+            delattr(cfg, "_nathan_turn_denials")
+
+
+def _turn_denials(cfg: Config) -> dict[str, tuple[str, DenialExplanation | None]] | None:
+    denials = getattr(cfg, "_nathan_turn_denials", None)
+    return denials if isinstance(denials, dict) else None
+
+
+def _register_turn_denial(
+    cfg: Config, signature: str, reason: str, explanation: DenialExplanation | None
+) -> tuple[str, DenialExplanation | None] | None:
+    """Record a denial for this turn and return any earlier identical denial."""
+
+    with _ATTEMPT_LEDGER_LOCK:
+        denials = _turn_denials(cfg)
+        if denials is None:
+            return None
+        prior = denials.get(signature)
+        if prior is None:
+            denials[signature] = (summarize_tool_result(reason, 300), explanation)
+        return prior
+
+
+def turn_denial(cfg: Config, signature: str) -> DenialExplanation | None:
+    """Return the typed explanation for a call already denied in this turn."""
+
+    with _ATTEMPT_LEDGER_LOCK:
+        denials = _turn_denials(cfg)
+        entry = denials.get(signature) if denials is not None else None
+    return entry[1] if entry is not None else None
+
+
+def _repeated_denial_text(reason: str) -> str:
+    return (
+        f"Skipped repeated denied action (blocked earlier in this turn: {reason}). "
+        "It cannot be resolved in this session by retrying. Do not retry; "
+        "use a permitted alternative or report the blocker."
+    )
+
+
 def _prepared_grant(
     cfg: Config,
     action: ResolvedAction,
@@ -394,6 +522,8 @@ class RuntimeToolPreflight:
     guardrail_allowed: bool = True
     guardrail_reasons: tuple[str, ...] = ()
     queue_position: int | None = None
+    denial: DenialExplanation | None = None
+    repeated_denial: bool = False
 
     @property
     def allowed(self) -> bool:
@@ -429,7 +559,17 @@ class RuntimeToolPreflight:
         else:
             reasons = [*self.policy.reasons, *self.guardrail_reasons]
         reason = "; ".join(reasons) or "runtime authority rejected the call"
+        if self.repeated_denial:
+            return _repeated_denial_text(reason)
+        if self.denial is not None:
+            reason = reason.rstrip(".")
         return f"Blocked by runtime authority: {reason}."
+
+    @property
+    def resolvable_in_session(self) -> bool | None:
+        """Typed resolvability of a policy denial; None when no explanation applies."""
+
+        return self.denial.resolvable_in_session if self.denial is not None else None
 
 
 def tool_runtime_args(name: str, args: dict[str, Any], cfg: Config) -> dict[str, Any]:
@@ -681,21 +821,45 @@ def preflight_runtime_tool(
                     read_decision = execution_guardrails.read_before_edit_decision(effective_path)
                     if not read_decision.allowed:
                         guardrail_reasons.append(read_decision.reason)
+    policy = evaluate_runtime_tool_policy(
+        name,
+        signature_args,
+        safe_mode=bool(getattr(cfg, "safe_mode", True)),
+        cwd=cfg.cwd,
+        grant=grant,
+        now=now,
+        auto_approve=_approval_mode(cfg) == "auto" or bool(cfg.auto_approve_active),
+    )
+    denial: DenialExplanation | None = None
+    repeated_denial = False
+    if (
+        not ceiling_reason
+        and policy.disposition is PolicyDisposition.DENY
+        and policy.fired_rules == ("scoped_authority",)
+        and grant is None
+        and action.confirmation_mode is ConfirmationMode.NONE
+        and not action.target.endswith(":unresolved")
+    ):
+        denial = explain_missing_grant(cfg, action)
+        policy = replace(policy, reasons=(denial.text(),))
+    if not ceiling_reason and policy.disposition is PolicyDisposition.DENY and _turn_denials(cfg) is not None:
+        try:
+            signature = tool_attempt_signature(name, signature_args)
+        except Exception:
+            signature = ""
+        if signature:
+            repeated_denial = (
+                _register_turn_denial(cfg, signature, "; ".join(policy.reasons), denial) is not None
+            )
     preflight = RuntimeToolPreflight(
         signature_args=signature_args,
         runtime_hint=runtime_hint,
-        policy=evaluate_runtime_tool_policy(
-            name,
-            signature_args,
-            safe_mode=bool(getattr(cfg, "safe_mode", True)),
-            cwd=cfg.cwd,
-            grant=grant,
-            now=now,
-            auto_approve=_approval_mode(cfg) == "auto" or bool(cfg.auto_approve_active),
-        ),
+        policy=policy,
         guardrail_allowed=not guardrail_reasons,
         guardrail_reasons=tuple(guardrail_reasons),
         queue_position=queue_position,
+        denial=denial,
+        repeated_denial=repeated_denial,
     )
     record_perf_event(
         "qos",
@@ -1104,10 +1268,21 @@ def _find_failed_attempt_unlocked(cfg: Config, signature: str) -> dict[str, Any]
 
 
 def find_failed_attempt(cfg: Config, signature: str) -> dict[str, Any] | None:
-    """Read the bounded attempt ledger consistently across parallel observations."""
+    """Read the bounded attempt ledger consistently across parallel observations.
+
+    A call denied earlier in the current turn is returned as a synthetic,
+    never-persisted entry so the dispatcher skips it without a second prompt.
+    """
 
     with _ATTEMPT_LEDGER_LOCK:
-        return _find_failed_attempt_unlocked(cfg, signature)
+        found = _find_failed_attempt_unlocked(cfg, signature)
+        if found is not None:
+            return found
+        denials = _turn_denials(cfg)
+        prior = denials.get(signature) if denials is not None else None
+    if prior is None:
+        return None
+    return {"signature": signature, "status": "denied", "summary": _repeated_denial_text(prior[0])}
 
 
 def summarize_tool_result(result: str, limit: int = 140) -> str:
@@ -1340,6 +1515,27 @@ def _record_tool_attempt_unlocked(
             for item in cfg.attempt_ledger
             if item.get("status") not in {"failed", "skipped"} or _is_nonretryable_attempt(item)
         ]
+    if status == "denied" and _turn_denials(cfg) is not None:
+        for prefix, kind in _APPROVAL_DENIAL_PREFIXES.items():
+            if str(result).startswith(prefix):
+                try:
+                    denied_target = resolve_action(name, args, cwd=cfg.cwd).target
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    denied_target = "unresolved"
+                _register_turn_denial(
+                    cfg,
+                    signature,
+                    summarize_tool_result(result, 300),
+                    DenialExplanation(
+                        name,
+                        denied_target,
+                        "the required approval was not granted",
+                        kind,
+                        False,
+                        "Not resolvable by retrying in this turn. Use a permitted alternative or report the blocker.",
+                    ),
+                )
+                break
     if status in {"skipped", "denied"}:
         prior = _find_failed_attempt_unlocked(cfg, signature)
         if prior is not None and _is_nonretryable_attempt(prior):

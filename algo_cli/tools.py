@@ -3012,17 +3012,8 @@ def intelligence_runtime_snapshot() -> dict[str, Any]:
     }
 
 
-def available_actions(topic: str | None = None, cfg: Config | None = None) -> str:
-    """Show the CLI's available commands, model-callable tools, and internal harness stats.
-
-    Use this before answering questions like "what can you do?", "what actions are available?",
-    "what tools do you have?", or "what internal knowledge can you search?"
-
-    Args:
-        topic: Optional focus area such as files, shell, web, memory, harness, verification, or models.
-    """
-    focus = (topic or "").strip().lower()
-    commands = {
+def _slash_command_groups() -> dict[str, list[str]]:
+    return {
         "model": [
             "/model [NAME]",
             "/models",
@@ -3162,6 +3153,38 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
             "/reload",
         ],
     }
+
+
+# Domain words for slash-command groups whose command text does not contain the
+# words users say, e.g. "check my email" for /google gmail-list.
+_SLASH_GROUP_DISCOVERY_TERMS: dict[str, tuple[str, ...]] = {
+    "google": ("gmail", "email", "mail", "inbox", "messages", "drive", "docs", "sheets", "calendar", "workspace"),
+    "xai": ("grok", "x.com", "twitter"),
+    "multimodal": ("image", "embedding", "vision"),
+    "documents": ("pdf", "document"),
+}
+# Per-command vocabulary for action_search. Group-wide terms would give every
+# /google command the same email words, letting Drive/Docs rows crowd Gmail out.
+_SLASH_COMMAND_DISCOVERY_TERMS: dict[str, tuple[str, ...]] = {
+    "/google gmail": ("gmail", "email", "mail", "inbox", "messages"),
+    "/google drive": ("drive", "files", "folder"),
+    "/google docs": ("docs", "document"),
+    "/google sheets": ("sheets", "spreadsheet"),
+    "/google calendar": ("calendar", "events", "schedule", "meetings"),
+}
+
+
+def available_actions(topic: str | None = None, cfg: Config | None = None) -> str:
+    """Show the CLI's available commands, model-callable tools, and internal harness stats.
+
+    Use this before answering questions like "what can you do?", "what actions are available?",
+    "what tools do you have?", or "what internal knowledge can you search?"
+
+    Args:
+        topic: Optional focus area such as files, shell, web, memory, harness, verification, or models.
+    """
+    focus = (topic or "").strip().lower()
+    commands = _slash_command_groups()
     tool_groups = {
         "files": [
             "read_file",
@@ -3305,22 +3328,53 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
         },
     }
     if focus:
+        from .tool_context import document_terms, specific_query_terms
+
         slash_focus = focus in {"slash", "slashes", "command", "commands", "session-command", "session_command"}
         reason_focus = focus in {"reason", "reasoning", "reason-engine", "reasoning-engine"}
+        topic_terms = specific_query_terms(focus)
+
+        def group_matches(key: str, items: list[str], terms: tuple[str, ...] = ()) -> bool:
+            # Exact substring keeps single-word topics such as "pdf" working;
+            # term overlap lets "check my email" reach /google gmail-list.
+            if focus in key or any(focus in item.lower() for item in items):
+                return True
+            return bool(topic_terms & document_terms(" ".join((key, *items, *terms))))
+
         matching: dict[str, Any] = {
             "commands": commands
             if slash_focus
             else {
                 key: value
                 for key, value in commands.items()
-                if reason_focus and key == "reasoning" or focus in key or any(focus in item.lower() for item in value)
+                if reason_focus and key == "reasoning"
+                or group_matches(key, value, _SLASH_GROUP_DISCOVERY_TERMS.get(key, ()))
             },
             "model_callable_tools": {
                 key: value
                 for key, value in tool_groups.items()
-                if slash_focus and key == "session" or focus in key or any(focus in item.lower() for item in value)
+                if slash_focus and key == "session" or group_matches(key, value)
             },
         }
+        special_focus = slash_focus or reason_focus or focus in {"intel", "intelligence", "intelagence", "kernel", "kernels"}
+        if not special_focus and not matching["commands"] and not matching["model_callable_tools"]:
+            # A topic that matched nothing returns a compact no-match result
+            # instead of the full catalog, so the model cannot mistake the
+            # unfiltered dump for relevant capabilities.
+            return json.dumps(
+                {
+                    "topic": focus,
+                    "focused": {"match": "none", "commands": {}, "model_callable_tools": {}},
+                    "topics": sorted({*commands, *tool_groups}),
+                    "next": (
+                        "No command group or model-callable tool matched this topic. This is a no-match "
+                        "result, not proof the capability is unsupported. Try one of the listed topics, "
+                        "action_search(query), or available_actions() without a topic."
+                    ),
+                },
+                indent=2,
+            )
+        matching["match"] = "matched"
         if slash_focus:
             matching["when_to_use"] = slash_guidance
         if reason_focus:
@@ -3618,6 +3672,9 @@ def session_command(command: str, cfg: Any = None) -> str:
     - /temp N, /ctx N, /toolmax N, /thinkevery N — model parameters
     - /diff, /changes — git/agent activity
     - /skills, /intuition, /icl, /reflex on|off|status — knowledge/loop controls
+    - /google gmail-list [query] [--max N], /google gmail-get MESSAGE_ID — read-only Gmail (email, inbox)
+    - /google drive-list, drive-search, docs-get, sheets-values, calendar-list — read-only Google Workspace;
+      requires `algo-cli config setup google` and Google login first
     - /theme NAME, /embed, /vision, /pdf, /reload
 
     Args:
@@ -5052,7 +5109,9 @@ def action_search(query: str, limit: int = 6, cfg: Any = None) -> str:
     Use this when the small visible tool set does not contain a needed action.
     Discovery does not bypass runtime policy or approval. Execution still goes
     through action_program, ActionSpec policy, runtime guardrails, and per-action
-    approvals within the active runtime-owned capability ceiling.
+    approvals within the active runtime-owned capability ceiling. Matching slash
+    commands (for example /google gmail-list for email) are listed separately and
+    run through session_command, not action_program.
 
     Args:
         query: Capability or operation to find, such as "render a PDF" or "store a credential".
@@ -5103,22 +5162,119 @@ def action_search(query: str, limit: int = 6, cfg: Any = None) -> str:
                 "safe_retry": None,
             }
         actions.append({"name": name, "schema": wire_schema, "policy": policy})
+    slash_commands = _slash_command_candidates(normalized_query, bounded_limit, cfg)
+    next_steps: list[str] = []
+    if actions:
+        next_steps.append(
+            "Call action_program with a bounded typed plan; discovery does not bypass runtime policy or approval."
+        )
+    if slash_commands:
+        next_steps.append(
+            "Run a listed slash command with session_command(command=...); it is not composable in action_program "
+            "and still follows session-command approval and setup requirements."
+        )
+    if not candidates and not slash_commands:
+        # The runtime ceiling admits no composable action at all; that is a
+        # policy state, distinct from a query that matched nothing.
+        next_steps.append(
+            "No composable actions are available within the current runtime policy. "
+            "Report the unavailable capability; do not keep retrying discovery."
+        )
+    elif not next_steps:
+        next_steps.append(
+            "No relevant model-callable action or slash command matched this query. This is a no-match result, "
+            "not proof the capability is unsupported; check available_actions(topic) or ask the user before "
+            "concluding it cannot be done. Do not keep retrying discovery with the same words."
+        )
     return json.dumps(
         {
             "status": "ok",
             "query": normalized_query,
             "count": len(actions),
             "actions": actions,
-            "next": (
-                "Call action_program with a bounded typed plan; discovery does not bypass runtime policy or approval."
-                if actions else
-                "No composable actions are available within the current runtime policy. "
-                "Report the unavailable capability; do not keep retrying discovery."
-            ),
+            "slash_command_count": len(slash_commands),
+            "slash_commands": slash_commands,
+            "match": "found" if actions or slash_commands else "none",
+            "next": " ".join(next_steps),
         },
         ensure_ascii=False,
         separators=(",", ":"),
     )
+
+
+_SLASH_PLACEHOLDER_RE = re.compile(r"^(?:\[.*|--.*|.*\|.*|[A-Z][A-Z0-9_]*)$")
+
+
+def _slash_base_command(template: str) -> str:
+    parts: list[str] = []
+    for token in template.split():
+        if parts and _SLASH_PLACEHOLDER_RE.match(token):
+            break
+        parts.append(token)
+    return " ".join(parts)
+
+
+def _session_command_in_active_ceiling(cfg: Any) -> bool:
+    # session_command is never composable, so ProgramAuthorization strips it and
+    # cannot say whether the active tool set includes it. Only ordinary chat binds
+    # the full registered ceiling; a narrower Agent Block ceiling fails closed.
+    if "session_command" not in TOOL_MAP:
+        return False
+    if cfg is None:
+        return True
+    from .nathan_program_runtime import ProgramAuthorization, authorization_for_actions
+
+    authorization = getattr(cfg, "_algo_program_authorization", None)
+    if not isinstance(authorization, ProgramAuthorization):
+        return False
+    return authorization.allowed_actions == authorization_for_actions(tuple(TOOL_MAP)).allowed_actions
+
+
+def _slash_command_candidates(query: str, limit: int, cfg: Any) -> list[dict[str, Any]]:
+    """Rank /command templates from available_actions as session_command candidates."""
+
+    if not _session_command_in_active_ceiling(cfg):
+        return []
+    from .irene_memory_path_policy import protected_tool_policy_error
+    from .samuel_policy_engine import session_command_requires_approval
+    from .tool_context import rank_texts_for_prompt
+
+    entries: list[tuple[str, str]] = []
+    documents: list[str] = []
+    for group, items in _slash_command_groups().items():
+        group_terms = _SLASH_GROUP_DISCOVERY_TERMS.get(group, ())
+        for item in items:
+            if item.startswith("/"):
+                command_terms = next(
+                    (terms for prefix, terms in _SLASH_COMMAND_DISCOVERY_TERMS.items() if item.startswith(prefix)),
+                    None,
+                )
+                terms = " ".join(command_terms if command_terms is not None else group_terms)
+                entries.append((group, item))
+                documents.append(f"{group} {item} {terms}")
+    candidates: list[dict[str, Any]] = []
+    for index in rank_texts_for_prompt(query, documents):
+        group, template = entries[index]
+        base = _slash_base_command(template)
+        # Fail closed: a runtime policy that refuses the base command hides it.
+        if cfg is not None and protected_tool_policy_error("session_command", {"command": base}, cfg) is not None:
+            continue
+        setup = [item for item in _slash_command_groups()[group] if not item.startswith("/")]
+        candidates.append(
+            {
+                "kind": "slash_command",
+                "group": group,
+                "command": template,
+                "via": "session_command",
+                "example": {"name": "session_command", "arguments": {"command": base}},
+                # Classified for the example only; other arguments are classified when run.
+                "example_requires_approval": session_command_requires_approval(base),
+                "setup": setup,
+            }
+        )
+        if len(candidates) >= limit:
+            break
+    return candidates
 
 
 def action_program(plan: dict, cfg: Any = None) -> str:
