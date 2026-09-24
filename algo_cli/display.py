@@ -21,12 +21,14 @@ from rich.align import Align
 from rich.console import Capture, Console, ConsoleDimensions
 from rich.console import Group
 from rich.live import Live
-from rich.markdown import Markdown
 from rich.panel import Panel
 from rich import box
 from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
+
+from algo_cli.ui import tokens as _ui_tokens
+from algo_cli.ui.markdown import ThemedMarkdown
 
 from algo_cli.animations import (
     AIState,
@@ -56,121 +58,10 @@ DEFAULT_THEME_NAME = (
 ).strip().lower() or "tokyo-night"
 
 
-def _theme(styles: dict[str, str]) -> Theme:
-    return Theme(styles)
+# Generated from algo_cli.ui.tokens so Rich, prompt_toolkit and the tests share one table.
+THEME_COLORS: dict[str, dict[str, str]] = {name: palette.colors() for name, palette in _ui_tokens.PALETTES.items()}
 
-
-THEME_COLORS: dict[str, dict[str, str]] = {
-    "tokyo-night": {
-        "primary": "#7aa2f7",
-        "secondary": "#bb9af7",
-        "accent": "#2ac3de",
-        "surface": "#111827",
-        "surface_alt": "#0f172a",
-        "border": "#1f2a44",
-        "border_accent": "#3b4b72",
-        "text": "#e5e9f0",
-        "muted": "#7b88a8",
-        "success": "#9ece6a",
-        "warning": "#e0af68",
-        "error": "#f7768e",
-        "info": "#7dcfff",
-    },
-    "catppuccin-mocha": {
-        "primary": "#89b4fa",
-        "secondary": "#cba6f7",
-        "accent": "#94e2d5",
-        "surface": "#11111b",
-        "surface_alt": "#1e1e2e",
-        "border": "#313244",
-        "border_accent": "#45475a",
-        "text": "#cdd6f4",
-        "muted": "#6c7086",
-        "success": "#a6e3a1",
-        "warning": "#f9e2af",
-        "error": "#f38ba8",
-        "info": "#89dceb",
-    },
-    "dracula": {
-        "primary": "#bd93f9",
-        "secondary": "#ff79c6",
-        "accent": "#8be9fd",
-        "surface": "#282a36",
-        "surface_alt": "#1e1f29",
-        "border": "#44475a",
-        "border_accent": "#6272a4",
-        "text": "#f8f8f2",
-        "muted": "#6272a4",
-        "success": "#50fa7b",
-        "warning": "#f1fa8c",
-        "error": "#ff5555",
-        "info": "#8be9fd",
-    },
-    "nord": {
-        "primary": "#88c0d0",
-        "secondary": "#b48ead",
-        "accent": "#81a1c1",
-        "surface": "#2e3440",
-        "surface_alt": "#3b4252",
-        "border": "#4c566a",
-        "border_accent": "#5e81ac",
-        "text": "#eceff4",
-        "muted": "#81a1c1",
-        "success": "#a3be8c",
-        "warning": "#ebcb8b",
-        "error": "#bf616a",
-        "info": "#8fbcbb",
-    },
-    "gruvbox": {
-        "primary": "#83a598",
-        "secondary": "#d3869b",
-        "accent": "#8ec07c",
-        "surface": "#282828",
-        "surface_alt": "#3c3836",
-        "border": "#504945",
-        "border_accent": "#665c54",
-        "text": "#ebdbb2",
-        "muted": "#928374",
-        "success": "#b8bb26",
-        "warning": "#fabd2f",
-        "error": "#fb4934",
-        "info": "#83a598",
-    },
-    # Brand theme matching the Redeye mark: bold red on near-black,
-    # high contrast, minimal mid-tones.
-    "redeye": {
-        "primary": "#e22b2b",
-        "secondary": "#ff6b6b",
-        "accent": "#ff3b3b",
-        "surface": "#0a0a0a",
-        "surface_alt": "#111111",
-        "border": "#2a1212",
-        "border_accent": "#7a1f1f",
-        "text": "#f2f2f2",
-        "muted": "#8a7070",
-        "success": "#6fcf6f",
-        "warning": "#ffb347",
-        "error": "#ff2e2e",
-        "info": "#ff8a8a",
-    },
-    "dolphie": {
-        "primary": "#bbc8e8",
-        "secondary": "#91abec",
-        "accent": "#8f9fc1",
-        "surface": "#0f1525",
-        "surface_alt": "#0a0e1b",
-        "border": "#1b233a",
-        "border_accent": "#32416a",
-        "text": "#e9e9e9",
-        "muted": "#5e6b87",
-        "success": "#54efae",
-        "warning": "#f0e357",
-        "error": "#f05757",
-        "info": "#8f9fc1",
-    },
-}
-
-THEME_MAP: dict[str, Theme] = {name: _theme(colors) for name, colors in THEME_COLORS.items()}
+THEME_MAP: dict[str, Theme] = {name: _ui_tokens.rich_theme(palette) for name, palette in _ui_tokens.PALETTES.items()}
 
 _base_theme_name = DEFAULT_THEME_NAME if DEFAULT_THEME_NAME in THEME_MAP else "tokyo-night"
 _active_theme_name = _base_theme_name
@@ -294,6 +185,11 @@ def model_wait_status(model: str, *, local: bool) -> Any:
     )
 
 
+def themed_markdown(text: str) -> ThemedMarkdown:
+    """Markdown in the active theme: Rich built-ins recoloured, code on its style's own readable panel."""
+    return ThemedMarkdown(text, code_theme=_ui_tokens.code_theme(_active_theme_name))
+
+
 def available_themes() -> list[str]:
     return sorted(THEME_MAP)
 
@@ -351,16 +247,16 @@ def _banner_flow_line() -> Text:
     line = Text()
     for index, (label, style) in enumerate(
         (
-            ("understand", "secondary"),
-            ("route", "primary"),
-            ("act", "accent"),
-            ("verify", "success"),
-            ("remember", "secondary"),
+            ("understand", "emph.secondary"),
+            ("route", "emph.primary"),
+            ("act", "emph.accent"),
+            ("verify", "emph.success"),
+            ("remember", "emph.secondary"),
         )
     ):
         if index:
             line.append("  →  ", style="muted")
-        line.append(label, style=f"bold {style}")
+        line.append(label, style=style)
     return line
 
 
@@ -369,7 +265,7 @@ def _banner_body_layout() -> Group:
     capabilities.add_column(width=10, style="muted", no_wrap=True)
     capabilities.add_column(ratio=1, style="text")
     for label, detail in _BANNER_CAPABILITIES:
-        capabilities.add_row(Text(label, style="bold secondary"), detail)
+        capabilities.add_row(Text(label, style="subheading"), detail)
     return Group(
         Text(_PRODUCT_TAGLINE, style="text"),
         Text(""),
@@ -384,20 +280,20 @@ def _print_algo_logo() -> None:
         console.print(
             Align.center(
                 Text.assemble(
-                    ("ALGO", "bold primary"),
+                    ("ALGO", "brand.logo"),
                     (" / ", "muted"),
-                    ("CLI", "bold secondary"),
+                    ("CLI", "brand.logo.alt"),
                 )
             )
         )
         return
     for line in _ALGO_CLI_LOGO:
-        console.print(Align.center(Text(line.rstrip(), style="bold primary")))
+        console.print(Align.center(Text(line.rstrip(), style="brand.logo")))
 
 
 def render_opening_banner(*, version: str | None = None) -> Panel:
     version_line = version or _CLI_VERSION
-    panel_title = f"[bold primary]Algo CLI[/] [muted]v{version_line}[/] [muted]·[/] [accent]agent runtime[/]"
+    panel_title = f"[brand.logo]Algo CLI[/] [muted]v{version_line}[/] [muted]·[/] [accent]agent runtime[/]"
     return Panel(
         _banner_body_layout(),
         title=panel_title,
@@ -566,7 +462,7 @@ def _render_inspector_panel(
 
     session_box = _kv_table(
         [
-            ("Current model", _plain(cfg.model, "bold primary")),
+            ("Current model", _plain(cfg.model, "model.name")),
             ("Mode", _plain("cloud" if cfg.cloud else "local", "text")),
             ("System prompt", _plain((cfg.system.splitlines()[0] if cfg.system else "").strip() or "default", "text")),
             (
@@ -673,7 +569,7 @@ def show_session_overview(
         header_status: Any = _kv_table(
             [
                 ("Connected", _plain(execution_label, "text")),
-                ("Model", _plain(model, "bold primary")),
+                ("Model", _plain(model, "model.name")),
                 ("Mode", _plain(mode_label, "info")),
                 ("Context", _plain(context_line, "text")),
                 (
@@ -732,7 +628,7 @@ def show_session_overview(
         )
     header = Panel(
         Group(
-            Text("Runtime Overview", style="bold primary"),
+            Text("Runtime Overview", style="heading"),
             Text("Model, context, safety, and agent activity at a glance.", style="muted"),
             header_status,
         ),
@@ -794,11 +690,11 @@ def show_session_overview(
     console.print(layout)
     console.print(
         Panel(
-            "[bold primary]Work[/]: /agent TASK  /route TASK  /changes  /diff\n"
-            "[bold primary]Git[/]: /worktree status  /ship status\n"
-            "[bold primary]Context[/]: /status  /context  /harness  /hsearch  /memories\n"
-            "[bold primary]Safety[/]: /doctor  /safe  /auto  /policy\n"
-            "[bold primary]Setup[/]: /model  /models  /theme  /reload  /actions",
+            "[heading]Work[/]: /agent TASK  /route TASK  /changes  /diff\n"
+            "[heading]Git[/]: /worktree status  /ship status\n"
+            "[heading]Context[/]: /status  /context  /harness  /hsearch  /memories\n"
+            "[heading]Safety[/]: /doctor  /safe  /auto  /policy\n"
+            "[heading]Setup[/]: /model  /models  /theme  /reload  /actions",
             title="Quick Actions",
             border_style="border",
             box=box.ROUNDED,
@@ -887,7 +783,7 @@ def show_recalled_context(blocks: list[dict[str, Any]]) -> None:
         content = _short_value(block.get("content", ""), 180)
         lines.append(
             Text.assemble(
-                (f"[{block_type}]", "bold secondary"), " ", (block_id, "muted"), " ", (f"({score:.2f})", "info")
+                (f"[{block_type}]", "subheading"), " ", (block_id, "muted"), " ", (f"({score:.2f})", "info")
             )
         )
         if content:
@@ -1109,7 +1005,7 @@ def _agent_block_title(
 def _render_structured_sections(sections: dict[str, list[str]]) -> Group:
     blocks: list[Any] = []
     for title, bullets in sections.items():
-        blocks.append(Text(title, style="bold primary"))
+        blocks.append(Text(title, style="heading"))
         for item in bullets[:16]:
             blocks.append(Text(f"  • {item}", style="text"))
         if len(bullets) > 16:
@@ -1155,13 +1051,13 @@ def _render_agent_block_body(
         return body, dump_path, dump_receipt
 
     if preview_limit is None:
-        return Markdown(text), dump_path, dump_receipt
+        return themed_markdown(text), dump_path, dump_receipt
     if len(text) <= preview_limit:
-        return Markdown(text), dump_path, dump_receipt
+        return themed_markdown(text), dump_path, dump_receipt
     preview = _short_value(text, preview_limit)
     return (
         Group(
-            Markdown(preview),
+            themed_markdown(preview),
             Text(
                 f"Preview ({preview_limit} chars). Set ALGO_CLI_AGENT_PREVIEW=0 for full panel text.",
                 style="muted",
@@ -1311,7 +1207,7 @@ def show_agent_block_complete(
 def show_agent_recovery_start(role: str, reason: str, retry_iterations: int) -> None:
     console.print(
         Panel(
-            Markdown(
+            themed_markdown(
                 f"**Reason:** {reason}\n\n"
                 f"**Recovery:** one tool-free replan, then one focused retry "
                 f"with at most {retry_iterations} iterations."
@@ -1326,7 +1222,7 @@ def show_agent_recovery_start(role: str, reason: str, retry_iterations: int) -> 
 def show_agent_pipeline_complete(output: str, *, block_count: int, duration_ms: float) -> None:
     console.print(
         Panel(
-            Markdown(output.strip() or "(no final output produced)"),
+            themed_markdown(output.strip() or "(no final output produced)"),
             title=f"Pipeline complete - {block_count} blocks - {duration_ms / 1000:.1f}s",
             border_style="success",
             box=box.ROUNDED,
@@ -1366,7 +1262,7 @@ def _thinking_tail(text: str, budget: int) -> str:
 
 def _thinking_renderable(text: str, *, final: bool = False) -> Panel:
     token_count = _estimated_tokens(text)
-    body = Text(style="secondary italic")
+    body = Text(style="thinking")
     if len(text) <= _THINKING_VISIBLE_CHARS:
         body.append(text or "Thinking...")
     elif final:
@@ -1457,7 +1353,7 @@ def show_response(text: str) -> None:
         _json_sink.content(text)
         return
     if text.strip():
-        console.print(Markdown(text))
+        console.print(themed_markdown(text))
         console.print()
 
 
@@ -1473,7 +1369,7 @@ def start_streaming_response() -> None:
     _stream_buffer = ""
     _stream_pending = ""
     _last_render_time = 0.0
-    _stream_live = Live(Markdown(""), console=console, auto_refresh=False, transient=False)
+    _stream_live = Live(themed_markdown(""), console=console, auto_refresh=False, transient=False)
     _stream_live.start()
 
 
@@ -1497,7 +1393,7 @@ def show_stream_text(text: str) -> None:
         _stream_buffer += _stream_pending
         _stream_pending = ""
         _last_render_time = now
-        _stream_live.update(Markdown(_stream_buffer), refresh=True)
+        _stream_live.update(themed_markdown(_stream_buffer), refresh=True)
 
 
 def finish_streaming_response() -> None:
@@ -1508,7 +1404,7 @@ def finish_streaming_response() -> None:
         if _stream_pending:
             _stream_buffer += _stream_pending
             _stream_pending = ""
-        _stream_live.update(Markdown(_stream_buffer or ""), refresh=True)
+        _stream_live.update(themed_markdown(_stream_buffer or ""), refresh=True)
         _stream_live.stop()
         _stream_live = None
         _stream_buffer = ""
@@ -1524,7 +1420,7 @@ def show_error(msg: str, *, error_class: str | None = None, hint: str | None = N
         _json_sink.error(error_class="internal", message=msg)
         return
     label = f" Error ({error_class}): " if error_class else " Error: "
-    marker = Text.assemble(glyph(AIState.ERROR), (label, "bold error"), (msg, "text"))
+    marker = Text.assemble(glyph(AIState.ERROR), (label, "notice.error"), (msg, "text"))
     if hint:
         marker.append(f" — {hint}", style="muted")
     console.print(marker)
@@ -1616,7 +1512,7 @@ def show_help(topic: str = "") -> None:
     intro = Text.assemble(
         ("Ask naturally for ordinary work. ", "text"),
         ("Slash commands control the runtime and session.\n", "muted"),
-        ("Start here  ", "bold secondary"),
+        ("Start here  ", "subheading"),
         ("/status", "primary"),
         ("  ·  ", "muted"),
         ("/agent TASK", "primary"),
