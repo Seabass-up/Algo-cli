@@ -30,7 +30,7 @@ DISTINCT_DELTA_E = 20.0
 
 
 def _worst_ratio(fg: str, bg: str) -> float:
-    # prompt_toolkit paints the footer at 8-bit depth by default, so check what it emits too.
+    # A 256-colour profile quantises both colours of a painted surface (footer, rprompt, menu).
     return min(
         contrast.contrast(fg, bg),
         contrast.contrast(contrast.quantize_256(fg), contrast.quantize_256(bg)),
@@ -57,20 +57,33 @@ def test_text_semantic_and_border_colours_meet_floors(name):
 
 
 @pytest.mark.parametrize("name", THEMES)
-def test_footer_and_rprompt_chips_meet_floor_on_their_bars(name):
+def test_footer_and_rprompt_chips_meet_floor_on_their_painted_bar(name):
     colors = tokens.PALETTES[name].colors()
     style = PromptStyle.from_dict(tokens.prompt_toolkit_styles(colors))
     footer_classes = [key for key in tokens.prompt_toolkit_styles(colors) if key.startswith("footer.")]
     assert footer_classes
     failures = {}
-    for bar_class, bar_key in (("bottom-toolbar", "surface_alt"), ("rprompt", "surface")):
+    for bar_class in ("bottom-toolbar", "rprompt"):
         for footer_class in footer_classes:
             attrs = style.get_attrs_for_style_str(f"class:{bar_class} class:{footer_class}")
-            assert attrs.bgcolor == colors[bar_key].lstrip("#")
+            # The terminal background is unknown, so near-white chips need their own bar.
+            assert attrs.bgcolor == colors["surface"].lstrip("#"), (bar_class, footer_class)
             ratio = _worst_ratio("#" + attrs.color, "#" + attrs.bgcolor)
             if ratio < FOOTER_FLOOR:
                 failures[f"{bar_class}/{footer_class}"] = round(ratio, 2)
     assert failures == {}
+
+
+@pytest.mark.parametrize("name", THEMES)
+def test_footer_text_reads_on_a_light_terminal(name):
+    """Regression: an unpainted footer measured 1.07-1.45:1 on macOS Terminal's white profile."""
+    colors = tokens.PALETTES[name].colors()
+    style = PromptStyle.from_dict(tokens.prompt_toolkit_styles(colors))
+    for footer_class in ("footer.model", "footer.text", "footer.muted"):
+        attrs = style.get_attrs_for_style_str(f"class:bottom-toolbar class:{footer_class}")
+        # The bar, not the terminal's white, is what the chip is read against.
+        assert attrs.bgcolor, footer_class
+        assert _worst_ratio("#" + attrs.color, "#" + attrs.bgcolor) >= FOOTER_FLOOR, footer_class
 
 
 @pytest.mark.parametrize("name", THEMES)

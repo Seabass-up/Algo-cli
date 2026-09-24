@@ -30,8 +30,10 @@ def restore_theme():
     display.set_theme(original)
 
 
-def _toolbar_bg(session: _FakeSession) -> str:
-    return session.style.get_attrs_for_style_str("class:bottom-toolbar").bgcolor
+def _toolbar_chip(session: _FakeSession, name: str) -> str:
+    attrs = session.style.get_attrs_for_style_str("class:bottom-toolbar class:footer.danger")
+    assert attrs.bgcolor == tokens.PALETTES[name].surface.lstrip("#")  # the theme's own painted bar
+    return attrs.color
 
 
 def test_apply_theme_switches_rich_and_prompt_style_together():
@@ -43,7 +45,7 @@ def test_apply_theme_switches_rich_and_prompt_style_together():
     assert cfg.theme == "nord"
     assert display.current_theme_name() == "nord"
     assert display.console.get_style("primary").color.triplet.hex == tokens.PALETTES["nord"].primary
-    assert _toolbar_bg(session) == tokens.PALETTES["nord"].surface_alt.lstrip("#")
+    assert _toolbar_chip(session, "nord") == tokens.PALETTES["nord"].error.lstrip("#")
     assert session.app.invalidations == 1
 
 
@@ -67,7 +69,7 @@ def test_theme_command_rebuilds_session_style(monkeypatch):
 
     assert handled is True
     assert cfg.theme == "gruvbox"
-    assert _toolbar_bg(session) == tokens.PALETTES["gruvbox"].surface_alt.lstrip("#")
+    assert _toolbar_chip(session, "gruvbox") == tokens.PALETTES["gruvbox"].error.lstrip("#")
 
 
 def test_reload_rebuilds_session_style_for_the_reloaded_theme(monkeypatch):
@@ -84,5 +86,5 @@ def test_reload_rebuilds_session_style_for_the_reloaded_theme(monkeypatch):
     assert handled is True
     assert cfg.theme == "redeye"
     assert display.current_theme_name() == "redeye"
-    # Before apply_theme, /reload left the previous theme's bar colours on the footer.
-    assert _toolbar_bg(session) == tokens.PALETTES["redeye"].surface_alt.lstrip("#")
+    # Before apply_theme, /reload left the previous theme's colours on the footer.
+    assert _toolbar_chip(session, "redeye") == tokens.PALETTES["redeye"].error.lstrip("#")

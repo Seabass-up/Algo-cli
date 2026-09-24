@@ -327,6 +327,7 @@ Config is stored in `~/.algo_cli/` by default (data from `~/.ollama_cli` is auto
 | `ALGO_CLI_ENV_FILE` | Override runtime env file path (`env` is preferred; `.env` is supported as a fallback) |
 | `ALGO_CLI_MODEL` | Default model |
 | `ALGO_CLI_THEME` | Default theme (`tokyo-night`, `catppuccin-mocha`, `dracula`, `nord`, `gruvbox`, `dolphie`, `redeye`) |
+| `NO_COLOR`, `COLORTERM`, `TERM`, `FORCE_COLOR` | Colour depth, detected once for the whole UI: `NO_COLOR` or `TERM=dumb` renders with bold, dim and reverse only; `COLORTERM=truecolor` gives 24-bit, `*-256color` 256 colours, and `FORCE_COLOR=1/2/3` raises (never lowers) the depth; any other terminal uses a 16-colour ANSI palette in which every theme shares one map that keeps success, warning, error and info distinct |
 | `ALGO_CLI_GATEWAY_URL` | Go gateway URL |
 | `ALGO_CLI_HARNESS_INDEXER` | Optional Rust harness indexer binary |
 | `OPENAI_OAUTH_CLIENT_ID` | Optional override for the bundled ChatGPT/Codex browser OAuth client |

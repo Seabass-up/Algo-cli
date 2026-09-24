@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.markdown import CodeBlock, Markdown, MarkdownElement
 from rich.style import Style
-from rich.syntax import PygmentsSyntaxTheme, Syntax, TokenType
+from rich.syntax import RICH_SYNTAX_THEMES, ANSISyntaxTheme, PygmentsSyntaxTheme, SyntaxTheme, Syntax, TokenType
 
 from algo_cli.ui.contrast import lift_to_floor
 
@@ -37,6 +37,27 @@ class ReadableSyntaxTheme(PygmentsSyntaxTheme):
         return style
 
 
+# Rich's ANSI syntax themes paint no background, which leaves fenced code set apart from
+# prose only by an indent. The 16-colour profile paints a named-slot panel instead.
+_ANSI_CODE_PANELS = {"ansi_dark": "bright_black", "ansi_light": "white"}
+
+
+class PanelledAnsiSyntaxTheme(ANSISyntaxTheme):
+    """Rich's ANSI token map on a painted 16-colour panel."""
+
+    def __init__(self, theme: str) -> None:
+        super().__init__(RICH_SYNTAX_THEMES[theme])
+        self._background_style = Style(bgcolor=_ANSI_CODE_PANELS[theme])
+
+
+def code_syntax_theme(theme: str) -> SyntaxTheme:
+    if theme in _ANSI_CODE_PANELS:
+        return PanelledAnsiSyntaxTheme(theme)
+    if theme in RICH_SYNTAX_THEMES:
+        return Syntax.get_theme(theme)
+    return ReadableSyntaxTheme(theme)
+
+
 class ThemedCodeBlock(CodeBlock):
     """Fenced code on the Pygments style's own painted background.
 
@@ -50,7 +71,7 @@ class ThemedCodeBlock(CodeBlock):
         yield Syntax(
             code,
             self.lexer_name,
-            theme=ReadableSyntaxTheme(self.theme),
+            theme=code_syntax_theme(self.theme),
             word_wrap=True,
             padding=1,
         )

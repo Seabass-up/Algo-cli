@@ -1302,6 +1302,9 @@ def handle_command(
                 m.show_info(f"Theme set to {cfg.theme}")
             except ValueError as exc:
                 m.show_error(f"{exc}. Available themes: {', '.join(display.available_themes())}")
+        profile_note = display.color_profile_note()
+        if profile_note:
+            m.show_info(profile_note)
     elif command == "/cd":
         from .workspace_resolver import parse_path_arg
 

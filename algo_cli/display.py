@@ -28,6 +28,12 @@ from rich.text import Text
 from rich.theme import Theme
 
 from algo_cli.ui import tokens as _ui_tokens
+from algo_cli.ui.detect import (
+    ColorProfile,
+    detect_color_profile,
+    prompt_color_depth as _profile_color_depth,
+    rich_color_system,
+)
 from algo_cli.ui.markdown import ThemedMarkdown
 
 from algo_cli.animations import (
@@ -79,7 +85,118 @@ class RuntimeConsole(Console):
         return size
 
 
-console = RuntimeConsole(theme=THEME_MAP[_base_theme_name])
+# Rich, the prompt_toolkit session and the sticky footer all render at this depth, so
+# the body and the chrome can no longer disagree. The import-time value is provisional:
+# main() calls refresh_color_profile() once the env file is loaded and Windows VT is on.
+COLOR_PROFILE: ColorProfile = detect_color_profile()
+_PROFILE_THEMES: dict[_ui_tokens.Palette, Theme] = {}
+
+
+def make_console(profile: ColorProfile | None, **kwargs: Any) -> RuntimeConsole:
+    """A RuntimeConsole at ``profile``'s depth; ``None`` leaves colour detection to Rich."""
+    if profile is None:
+        return RuntimeConsole(**kwargs)
+    return RuntimeConsole(
+        color_system=rich_color_system(profile),  # type: ignore[arg-type]
+        no_color=profile is ColorProfile.NONE,
+        **kwargs,
+    )
+
+
+def _rich_theme_for(name: str, profile: ColorProfile) -> Theme:
+    palette = _ui_tokens.palette_for(name, profile)
+    if palette is _ui_tokens.PALETTES.get(name):
+        return THEME_MAP[name]
+    theme = _PROFILE_THEMES.get(palette)
+    if theme is None:
+        theme = _PROFILE_THEMES[palette] = _ui_tokens.rich_theme(palette)
+    return theme
+
+
+def _terminal_takes_profile(probe: Console) -> bool:
+    # Only a terminal takes the detected profile; piped output stays as Rich decides
+    # (uncoloured) and keeps the hex theme tokens. Rich's color_system is None both for
+    # pipes and for TERM=dumb/unknown terminals, so it cannot tell them apart.
+    return probe.is_terminal
+
+
+_probe_console = RuntimeConsole()
+_profile_active = _terminal_takes_profile(_probe_console)
+_legacy_windows = _probe_console.legacy_windows
+del _probe_console
+
+
+def active_color_profile() -> ColorProfile:
+    """The profile tokens render with: the detected one on a terminal, else the hex theme's."""
+    return COLOR_PROFILE if _profile_active else ColorProfile.TRUECOLOR
+
+
+def _build_console() -> RuntimeConsole:
+    theme = _rich_theme_for(_base_theme_name, active_color_profile())
+    if _profile_active and not _legacy_windows:
+        return make_console(COLOR_PROFILE, theme=theme)
+    return RuntimeConsole(theme=theme)
+
+
+console = _build_console()
+_base_layer_pushed = False  # refresh_color_profile() pushed the base theme at a re-detected profile
+
+
+def refresh_color_profile() -> ColorProfile:
+    """Re-detect the profile and reconfigure the shared console in place.
+
+    Detection at import runs before main() loads ``~/.algo_cli/env`` (NO_COLOR, COLORTERM,
+    FORCE_COLOR) and before ``_force_utf8_console`` enables VT on Windows consoles. Other
+    modules hold ``console`` by reference, so it is updated rather than replaced. The
+    prompt session and sticky footer read ``active_color_profile()`` when they render.
+    """
+    global COLOR_PROFILE, _profile_active, _legacy_windows, _theme_pushed, _base_layer_pushed
+
+    COLOR_PROFILE = detect_color_profile()
+    probe = RuntimeConsole()
+    _profile_active = _terminal_takes_profile(probe)
+    _legacy_windows = probe.legacy_windows
+    reference = _build_console()
+    console.legacy_windows = reference.legacy_windows
+    console._color_system = reference._color_system
+    console.no_color = reference.no_color
+    if _theme_pushed:
+        console.pop_theme()
+        _theme_pushed = False
+    if _base_layer_pushed:
+        console.pop_theme()
+    console.push_theme(_rich_theme_for(_base_theme_name, active_color_profile()))
+    _base_layer_pushed = True
+    if _active_theme_name != _base_theme_name:
+        console.push_theme(_rich_theme_for(_active_theme_name, active_color_profile()))
+        _theme_pushed = True
+    return COLOR_PROFILE
+
+
+def prompt_color_depth() -> Any:
+    """prompt_toolkit ColorDepth matching the Rich console, for PromptSession and sticky_status."""
+    return _profile_color_depth(active_color_profile())
+
+
+def profile_colors(colors: dict[str, str]) -> dict[str, str]:
+    """``colors`` as the active profile renders them: ANSI slots at 16 colours, attributes when colour is off."""
+    profile = active_color_profile()
+    if profile in {ColorProfile.TRUECOLOR, ColorProfile.ANSI256}:
+        return dict(colors)
+    return _ui_tokens.palette_for("", profile).colors()
+
+
+
+def color_profile_note() -> str | None:
+    """Why /theme may look unchanged: 16-colour and colour-off terminals ignore the hex palettes."""
+    profile = active_color_profile()
+    if profile is ColorProfile.ANSI16:
+        return "16-colour terminal: every theme renders with the ansi-dark palette (set COLORTERM=truecolor if supported)."
+    if profile is ColorProfile.NONE:
+        return "Colour is off (NO_COLOR or TERM=dumb): themes render with bold, dim and reverse only."
+    return None
+
+
 register_spinners()  # make algo-* state spinners available to console.status
 _stream_live: Live | None = None
 _stream_buffer = ""
@@ -187,7 +304,8 @@ def model_wait_status(model: str, *, local: bool) -> Any:
 
 def themed_markdown(text: str) -> ThemedMarkdown:
     """Markdown in the active theme: Rich built-ins recoloured, code on its style's own readable panel."""
-    return ThemedMarkdown(text, code_theme=_ui_tokens.code_theme(_active_theme_name))
+    palette = _ui_tokens.palette_for(_active_theme_name, active_color_profile())
+    return ThemedMarkdown(text, code_theme=palette.code_theme)
 
 
 def available_themes() -> list[str]:
@@ -212,7 +330,7 @@ def set_theme(name: str) -> str:
         console.pop_theme()
         _theme_pushed = False
     if candidate != _base_theme_name:
-        console.push_theme(THEME_MAP[candidate])
+        console.push_theme(_rich_theme_for(candidate, active_color_profile()))
         _theme_pushed = True
     _active_theme_name = candidate
     return candidate

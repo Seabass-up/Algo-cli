@@ -1947,6 +1947,32 @@ used.
 
 **Prevention:** Treat credential locator names as private data, not only the secrets.
 
+## 2026-09-23: Unpainted Footer Vanished On Light Terminals And Colour Profile Edge Cases
+
+**Symptom:** After the colour-profile slice, the footer and rprompt text (near-white in all seven dark themes) measured 1.07-1.45:1 on a white terminal background, which is macOS Terminal's default profile (`TERM=xterm-256color`, detected as 256 colours). At 16 colours the completion menu painted `bg:default`, so unselected entries sat unpainted over the scrollback, and fenced code under Rich's `ansi_dark` theme had no panel. On `TERM=dumb` or `TERM=unknown` terminals the UI rendered at truecolor, and `FORCE_COLOR=1` in a truecolor terminal dropped the UI to 16 colours.
+
+**Cause:** Removing the bar background assumed the terminal background equals `Palette.bg`, and the contrast gate measured against that assumption. The ANSI palettes set `surface_alt="default"`. `display._profile_active` used Rich's `color_system is not None`, which is also `None` for dumb and unknown terminals, not only for pipes. `detect_color_profile` returned the `FORCE_COLOR` level before checking `COLORTERM` and `TERM`.
+
+**Repair:** `tokens.prompt_toolkit_styles` paints the footer and rprompt on `surface` whenever it is a hex colour; the 16-colour palettes keep `surface="default"` (their `default` text reads on any background) and set `surface_alt="blue"`, with the menu text on `ansiwhite`/`ansigray`. `ui.markdown.PanelledAnsiSyntaxTheme` paints Rich's ANSI token map on `bright_black` (`ansi_light`: `white`). `display._terminal_takes_profile` uses `Console.is_terminal`. `FORCE_COLOR` is now a minimum over the terminal's own detection, as in supports-color.
+
+**Verification:** New regressions in `tests/ui/test_ui_color_profile.py` (every visible footer and rprompt character painted at 256 and truecolor for every theme; ANSI and mono footers unpainted; 16-colour menu entries all painted with blue 44 and the selection on 104; 16-colour code lines inside a 100 panel while prose stays unpainted; `FORCE_COLOR` matrix rows; `_terminal_takes_profile` under `TERM=dumb`; a pseudo-terminal subprocess that reports `none`/`DEPTH_1_BIT` for `TERM=dumb` and `ansi16`/`DEPTH_4_BIT` for `TERM=unknown`). The contrast gate measures chips against their painted bar with both colours quantised. Local offline pytest only; no live terminal matrix was run.
+
+**Prevention:** Never measure unpainted text against an assumed terminal background: either paint the surface or use the terminal's `default` colour. Tell pipes from terminals with `is_terminal`, not with the detected colour system.
+
+## 2026-09-23: Footer Drew A Black Slab And Chrome Rendered At A Different Colour Depth From The Body
+
+**Issue:** The bottom toolbar and rprompt painted `surface_alt`/`surface` backgrounds that read as a black block on any terminal whose background differed from the palette's. Rich picked its own colour depth (truecolor) while prompt_toolkit and `sticky_status` used `ColorDepth.from_env()` (8-bit by default), so body and footer colours disagreed. On 16-colour terminals Rich's quantisation of the hex palettes merged meanings: tokyo-night success and warning, catppuccin-mocha success and error, and nord success, error and info all landed on the same ANSI slot.
+
+**Cause:** Two independent depth detections, painted bar backgrounds in `tokens.prompt_toolkit_styles`, and no palette designed for 16 colours or for `NO_COLOR`.
+
+**Repair:** `algo_cli/ui/detect.py` detects one `ColorProfile` from the environment. `display.py` builds the console at that profile when stdout is a terminal and exposes `prompt_color_depth()` for `PromptSession` and `sticky_status`. `tokens.palette_for()` maps 16-colour terminals to `ansi-dark` (named slots with distinct hues for success, warning, error and info; `ansi-light` is defined for the appearance slice) and colour-off terminals to the attribute-only `MONO` palette, with the safety badges reversed. The footer and rprompt no longer set a background. `/theme` explains when the terminal's profile overrides the hex palettes.
+
+**Verification:** `tests/ui/test_ui_color_profile.py` covers the detection matrix, Rich and prompt_toolkit emitting the same SGR encoding per profile, the sticky footer's depth, no background codes in the footer or rprompt for every theme and profile, distinct 16-colour meanings per theme after rendering, and no colour codes in the mono profile. The existing contrast gate now measures footer chips against the terminal background with only the foreground quantised. Local offline pytest only; no live terminal matrix was run.
+
+**Prevention:** Configure every renderer from `display.active_color_profile()` instead of letting a library guess. When a test renders the same Rich `Style` at several colour systems in one process, give each run its own colour: Rich caches the SGR string on the interned `Style` regardless of colour system, so a 16-colour render otherwise leaks into a later truecolor one.
+
+**Remaining limits:** The unpainted footer was reverted for hex palettes in the entry above. `PROMPT_TOOLKIT_COLOR_DEPTH` no longer overrides the session depth. Light palettes and appearance detection are the next slice.
+
 ## 2026-09-23: Theme Styles Were Silently Dropped And Assistant Output Ignored The Theme
 
 **Symptom and cause:** The logo, banner title, error label, thinking text and section headings rendered unstyled in every theme. They used compound styles such as `"bold primary"`; Rich 15 cannot parse a theme name inside a compound style and drops the whole style without an error. Assistant Markdown used Rich defaults and a painted Monokai code block, several footer chips measured below 3:1 on their own bar (dracula muted 2.70, nord error 2.15 after 8-bit quantisation), the completion menu kept prompt_toolkit's light-grey defaults, redeye used red for brand, error and info alike, and `/reload` left the previous theme's footer style in place.
@@ -1968,6 +1994,30 @@ used.
 **Verification:** `tests/ui/test_ui_code_blocks.py` checks every token of every theme's code style against the floor. It also renders `diff` and Python fences in all seven themes and checks that each glyph has a painted background and meets 4.5:1 on it. The new tests fail against the previous renderer and also against a painted but unlifted renderer. These are local test results only.
 
 **Prevention:** Any colour drawn by a third-party style belongs in the contrast gate, together with the background it is actually drawn on.
+
+## 2026-09-23: Colour Profile Ignored The Env File And Late Windows VT Enablement
+
+**Symptom (PR #74 review):** `NO_COLOR`, `COLORTERM` or `FORCE_COLOR` set in `~/.algo_cli/env` or `ALGO_CLI_ENV_FILE` had no effect on colour depth. A Windows console whose VT mode `_force_utf8_console` enabled at startup stayed at ANSI16.
+
+**Confirmed cause:** `display.COLOR_PROFILE` and the shared Rich console were fixed when the module was imported. That happened before `main()` ran `_force_utf8_console()` and `load_runtime_env(override=True)`.
+
+**Repair:** `display.refresh_color_profile()` runs detection again and re-probes the terminal and `legacy_windows`. It then updates the shared console in place, because other modules hold it by reference: it sets `legacy_windows`, the colour system and `no_color`, and pushes the base and active themes again at the new profile. `main()` calls it immediately after `load_runtime_env`. The prompt session and sticky footer already read `active_color_profile()` when they render, and they are created after that call. Import-time detection still gives tests and one-shot runs a safe provisional value.
+
+**Verification:** `tests/ui/test_ui_startup_profile.py` runs `main()` with an env file that sets `NO_COLOR=1` and checks the NONE profile, a 1-bit prompt depth and `console.no_color`. Another test simulates enabling VT after import and expects ANSI16 to become truecolor, and a third checks that the active theme is re-applied. All three fail against the previous source. These are local test results; no Windows console was exercised.
+
+**Prevention:** Anything derived from the environment must be read after startup environment setup, or refreshed at that point.
+
+## 2026-09-23: Mono Prompt Style Used "dim", Which Older prompt_toolkit 3.0.x Rejects
+
+**Symptom (PR #74 review):** The colour-off prompt_toolkit style set `dim`. The dependency floor is `prompt-toolkit>=3.0`, and on older versions in that range `Style.from_dict` raises. The PromptSession style and the sticky footer are then silently lost.
+
+**Confirmed cause:** Wheels checked locally show that `Style.from_dict({"x": "dim"})` fails with "Wrong color format 'dim'" in 3.0.0, 3.0.36, 3.0.43, 3.0.47, 3.0.48, 3.0.50 and 3.0.51, and first succeeds in 3.0.52 (the locked version). `bold`, `italic`, `underline`, `reverse`, `noreverse` and `hidden` parse in all of those versions.
+
+**Repair:** In the mono prompt_toolkit map, `dim` is replaced with `italic` (muted text and completion meta) and plain text (separators). The dependency floor is unchanged.
+
+**Verification:** New tests in `tests/ui/test_ui_startup_profile.py` restrict every prompt_toolkit style string, for every palette and profile, to the attributes that 3.0.0 through 3.0.51 accept. They fail against the previous tokens. The Rich-side mono tokens still use `dim`, which Rich supports.
+
+**Prevention:** A prompt_toolkit style attribute must parse at the declared dependency floor, not only at the locked version.
 
 ## Repair Log Checklist
 
