@@ -1947,6 +1947,26 @@ used.
 
 **Prevention:** Treat credential locator names as private data, not only the secrets.
 
+## 2026-09-24: Agent Block Model Errors Were Reported As Journal Corruption
+
+**Symptom and cause:** An end-to-end `/agent` scenario whose first (review) block hit a provider error recorded the block as `completion_check_error` with "journal event sequence is invalid: verifier ran before recorded work settled"; a Ctrl+C in the same block turned `cancelled` into `failed`. Blocks that can mutate run a post-block mutation audit in `run_agent_block`'s `finally`, and that audit's journal verifier refuses to run while the aborted model round is still open. Its failure overwrote the block's original status and cause. The final block has no mutation audit, so unit tests of that path passed.
+
+**Repair:** A completion-check failure now marks a block failed only if the block has not already failed or been cancelled; the original `model_error` or `interrupted` cause is kept. A completion-check failure on an otherwise complete block still fails it.
+
+**Verification and limits:** `tests/scenarios/test_scenario_agent_pipeline.py` fails without the repair and passes with it; `tests/test_pipeline_fixes.py` covers both the kept causes and the unchanged failing check. Local test evidence only. Still unresolved: the run journal has no event for an aborted model round, so `run_finished` is rejected ("run finished with an active block") and the thread's error names journal finalization, and a cancelled pipeline is reported `failed`. Two strict xfail scenarios track this.
+
+**Prevention:** Cleanup code in `finally` must not overwrite a failure that is already propagating. Whole-interaction scenarios (`tests/scenarios/`) now run blocks with mutation-capable tool sets, which unit tests of single blocks did not.
+
+## 2026-09-24: Completion-Check Errors On Failed Blocks Were Dropped
+
+**Symptom and cause:** The previous repair kept a failed or cancelled block's original cause but discarded the completion-check exception entirely. `completion_error` was built and then never read, so a genuine post-block audit failure (git snapshot, protected-memory evidence, or `run_journal.verifier_result`) left no trace on the block.
+
+**Repair:** When the block has already failed or been cancelled, the completion-check error is appended to `verification_warning` (joined with `; ` after any existing warning). `status`, `status_code` and `status_reason` still keep the original cause, and a failing check on an otherwise complete block still fails it with `completion_check_error`. No guard changed: the block stays failed or cancelled, and recovery still requires status `partial`.
+
+**Verification:** `tests/test_pipeline_fixes.py` (kept cause plus recorded warning for model errors and Ctrl+C, and appending to an existing warning) and `tests/scenarios/test_scenario_agent_pipeline.py` fail without the repair and pass with it. Local test evidence only.
+
+**Prevention:** When one failure takes priority over another, record the lower-priority one as evidence rather than dropping it. Tests should check that it is still there.
+
 ## Repair Log Checklist
 
 - Date and component.

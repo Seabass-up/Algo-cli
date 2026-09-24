@@ -560,3 +560,83 @@ def test_all_letter_thread_id_before_task_words_resumes_only_on_exact_match(monk
         agent_pipeline.execute_agent_command("resume deadbeef finish the checks", Config(), object())
 
     assert set(resolved) == {"deadbeef"}
+
+
+class _RaisingClient:
+    def __init__(self, exc: BaseException):
+        self.exc = exc
+
+    def chat(self, **_kwargs):
+        raise self.exc
+
+
+def _broken_completion_check(_block):
+    raise RuntimeError("verifier ran before recorded work settled")
+
+
+@pytest.mark.parametrize(
+    "exc,status,status_code",
+    [(ConnectionError("ollama is down"), "failed", "model_error"), (KeyboardInterrupt(), "cancelled", "interrupted")],
+)
+def test_completion_check_failure_keeps_the_original_block_failure(monkeypatch, exc, status, status_code):
+    _quiet(monkeypatch)
+    block = agent_blocks.AgentBlock(role="review", prompt="p", allowed_tools=agent_blocks.NO_TOOLS)
+
+    with pytest.raises(type(exc)):
+        agent_pipeline.run_agent_block(
+            block,
+            task="review",
+            completed=[],
+            cfg=Config(),
+            client=_RaisingClient(exc),
+            completion_check=_broken_completion_check,
+        )
+
+    assert (block.status, block.status_code) == (status, status_code)
+    assert "Completion check failed" not in block.status_reason
+    # The audit failure is kept as evidence instead of being dropped.
+    assert block.verification_warning == (
+        "Completion check failed: RuntimeError: verifier ran before recorded work settled"
+    )
+
+
+def test_completion_check_failure_appends_to_an_existing_warning(monkeypatch):
+    _quiet(monkeypatch)
+    block = agent_blocks.AgentBlock(role="review", prompt="p", allowed_tools=agent_blocks.NO_TOOLS)
+
+    def warn_then_break(checked):
+        checked.verification_warning = "git snapshot unavailable"
+        raise RuntimeError("protected memory evidence unreadable")
+
+    with pytest.raises(ConnectionError):
+        agent_pipeline.run_agent_block(
+            block,
+            task="review",
+            completed=[],
+            cfg=Config(),
+            client=_RaisingClient(ConnectionError("ollama is down")),
+            completion_check=warn_then_break,
+        )
+
+    assert block.status_code == "model_error"
+    assert block.verification_warning == (
+        "git snapshot unavailable; Completion check failed: RuntimeError: protected memory evidence unreadable"
+    )
+
+
+def test_completion_check_failure_still_fails_an_otherwise_complete_block(monkeypatch):
+    _quiet(monkeypatch)
+
+    class Answer:
+        def chat(self, **_kwargs):
+            return iter([{"message": {"content": "## Block Output\nreviewed"}}])
+
+    block = agent_blocks.AgentBlock(role="review", prompt="p", allowed_tools=agent_blocks.NO_TOOLS)
+
+    agent_pipeline.run_agent_block(
+        block, task="review", completed=[], cfg=Config(), client=Answer(), completion_check=_broken_completion_check
+    )
+
+    assert block.status == "failed"
+    assert block.status_code == "completion_check_error"
+    assert "verifier ran before recorded work settled" in block.status_reason
