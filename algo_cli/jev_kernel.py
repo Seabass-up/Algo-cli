@@ -19,6 +19,8 @@ MAX_RESPONSE_BYTES = 128_000
 TIMEOUT_SECONDS = 20
 MODES = frozenset({"lint", "review", "run", "followup"})
 RESULT_SCHEMA = "jev.question-contract-result.v1"
+CAPABILITY = "advisory_judgments_only"
+NOT_FOR = ("browser_control", "email_access", "action_execution")
 
 
 class JevKernelError(RuntimeError):
@@ -35,6 +37,8 @@ def _failure(code: str) -> dict[str, Any]:
     return {
         "ok": False,
         "advisory_only": True,
+        "capability": CAPABILITY,
+        "not_for": list(NOT_FOR),
         "error": code,
         "answers": {},
         "fallback": "continue_with_existing_workflow",
@@ -205,7 +209,8 @@ def kernel_status(cfg: Any) -> dict[str, Any]:
         if probe.get("schema_version") != RESULT_SCHEMA or probe.get("status") != "invalid_contract":
             raise JevKernelError("jev_contract_unavailable")
         return {
-            "ok": True, "advisory_only": True, "model": MODEL,
+            "ok": True, "advisory_only": True, "capability": CAPABILITY, "not_for": list(NOT_FOR),
+            "model": MODEL,
             "enabled": getattr(cfg, "jev_kernel_enabled", False) is True,
             "contract_schema": "jev.question-contract.v1",
             "api_connectivity": "not_probed_by_status",
@@ -253,12 +258,19 @@ def question_contract(
 
 
 def jev_kernel_status(cfg: Any = None) -> str:
-    """Inspect Jev companion readiness locally; this makes no provider call."""
+    """Inspect Jev companion readiness locally; this makes no provider call.
+
+    Advisory judgments only; cannot browse, read email or execute actions (use
+    cobalt_* browser tools or /google Gmail read/drafts after OAuth).
+    """
     return json.dumps(kernel_status(cfg), ensure_ascii=False)
 
 
 def jev_question_contract(contract: dict, mode: str = "lint", parent: dict | None = None, cfg: Any = None) -> str:
     """Use Jev for bounded advisory classification, review, routing or claim judgments.
+
+    Jev only returns typed judgments; it cannot browse, read email or execute
+    actions (use cobalt_* browser tools or /google Gmail read/drafts after OAuth).
 
     Supply jev.question-contract.v1: goal, decision_use, state, source_revision,
     items keyed by ID. Each item has answer_shape (yes_no/single_choice/ordinal),
@@ -268,7 +280,7 @@ def jev_question_contract(contract: dict, mode: str = "lint", parent: dict | Non
     choice_coverage; open Choices require no_match. Missing evidence stays unknown.
     Default lint is local. Review/run/followup send the supplied packet to TypeSafe.
     Never include credentials, bulk private history or entire memory stores.
-    Jev does not execute actions, authorize work, or verify real-world completion.
+    Jev does not authorize work or verify real-world completion.
     Retain unresolved statuses and use normal tools to check consequential claims.
     """
     return json.dumps(question_contract(cfg, contract, mode, parent), ensure_ascii=False)

@@ -1400,6 +1400,14 @@ def _first_doc_line(obj: Any, fallback: str) -> str:
     return first or fallback
 
 
+# Discovery vocabulary only; policy still comes from policy_for_action. Gmail,
+# Drive, and Calendar are reachable solely as /google slash commands, so
+# session_command must answer to their domain words.
+_GENERATED_TOOL_DISCOVERY_TAGS: dict[str, tuple[str, ...]] = {
+    "session_command": ("slash", "google", "gmail", "email", "mail", "inbox", "drive", "calendar"),
+}
+
+
 def _generated_tool_spec(name: str, fn: Any) -> ActionSpec:
     policy = policy_for_action(name)
     memory_tool = name.startswith("memory_")
@@ -1429,7 +1437,7 @@ def _generated_tool_spec(name: str, fn: Any) -> ActionSpec:
         (
             ("continuum", "memory", "curated-runtime", "tool")
             if memory_tool
-            else ("curated-runtime", "runtime", "tool")
+            else ("curated-runtime", "runtime", "tool", *_GENERATED_TOOL_DISCOVERY_TAGS.get(name, ()))
             if policy.curated
             else ("unclassified", "runtime", "tool")
         ),

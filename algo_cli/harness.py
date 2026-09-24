@@ -28,7 +28,7 @@ except ImportError:
     _np = None  # type: ignore[assignment]
     _NUMPY = False
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Literal
 
@@ -2641,6 +2641,137 @@ def _runtime_capability_coverage(records: list[dict[str, Any]]) -> dict[str, Any
     }
 
 
+_EMBED_PASS_OUTCOMES = frozenset({"ready", "partial", "skipped", "failed"})
+_EMBED_PASS_REASON_LIMIT = 200
+_EMBED_PASS_REASON_TEXT = {
+    "non_local_host": "host not local",
+    "ollama_unreachable": "Ollama host unreachable",
+    "model_pull_failed": "embed model could not be pulled",
+    "max_records_reached": "per-turn cap reached",
+    "empty_index": "index is empty",
+}
+
+
+def _embed_pass_path() -> Path:
+    # Derived at call time so a repointed INDEX_PATH keeps the sidecar beside it.
+    return INDEX_PATH.with_name("harness_embed_last_pass.json")
+
+
+def record_embed_pass(
+    outcome: str,
+    reason: str = "",
+    *,
+    embedded: int = 0,
+    pending: int | None = None,
+    selected_by_priority: dict[str, int] | None = None,
+    model: str | None = None,
+    dimensions: EmbeddingDimensions = "unbound",
+    embedding_identity: str | None = "unbound",
+) -> None:
+    """Persist the latest embed-pass outcome so stats can explain pending records.
+
+    Passing `model` binds the pass to its embedding contract so status can tell
+    a pass for the active contract from one recorded before a model switch.
+    """
+    if outcome not in _EMBED_PASS_OUTCOMES:
+        raise ValueError(f"unknown embed pass outcome: {outcome}")
+    payload: dict[str, Any] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "outcome": outcome,
+        "reason": " ".join(str(reason).split())[:_EMBED_PASS_REASON_LIMIT],
+        "embedded": int(embedded),
+    }
+    if pending is not None:
+        payload["pending"] = int(pending)
+    if selected_by_priority is not None:
+        payload["selected_by_priority"] = {str(key): int(value) for key, value in selected_by_priority.items()}
+    if model is not None:
+        payload["contract"] = {"model": str(model), "dimensions": dimensions, "identity": embedding_identity}
+    try:
+        _embed_pass_path().parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(_embed_pass_path(), payload)
+    except OSError:
+        pass
+
+
+def last_embed_pass() -> dict[str, Any] | None:
+    """Return the persisted last embed-pass outcome, or None when absent or malformed."""
+    try:
+        value = json.loads(_embed_pass_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(value, dict) or value.get("outcome") not in _EMBED_PASS_OUTCOMES:
+        return None
+    return value
+
+
+def _embed_pass_contract_status(
+    last_pass: dict[str, Any], model: str, dimensions: EmbeddingDimensions, embedding_identity: str | None
+) -> str:
+    contract = last_pass.get("contract")
+    if not isinstance(contract, dict):
+        return "unrecorded"
+    if contract.get("model") != model:
+        return "different"
+    # An unbound active field matches anything, mirroring _embedding_matches.
+    if dimensions != "unbound":
+        stored = contract.get("dimensions")
+        if type(stored) is not type(dimensions) or stored != dimensions:
+            return "different"
+    if embedding_identity != "unbound":
+        stored_identity = contract.get("identity")
+        # None means the identity probe was unavailable, which is not evidence of a different contract.
+        if embedding_identity is None or stored_identity is None:
+            return "current" if embedding_identity == stored_identity else "unverified"
+        if stored_identity != embedding_identity:
+            return "different"
+    return "current"
+
+
+def _bind_last_embed_pass(embeddings: dict[str, Any]) -> None:
+    last_pass = last_embed_pass()
+    embeddings["last_pass"] = last_pass
+    if last_pass is None:
+        return
+    status = _embed_pass_contract_status(
+        last_pass,
+        str(embeddings.get("active_model") or ""),
+        embeddings.get("requested_dimensions", "unbound"),
+        embeddings.get("requested_identity", "unbound"),
+    )
+    last_pass["contract_status"] = status
+    if status == "different":
+        # Never present another contract's pass as the explanation for current coverage.
+        embeddings["last_pass"] = None
+        embeddings["stale_last_pass"] = last_pass
+
+
+def _describe_stale_embed_pass(stale_pass: dict[str, Any]) -> str:
+    contract = stale_pass.get("contract")
+    model = contract.get("model") if isinstance(contract, dict) else None
+    when = str(stale_pass.get("timestamp") or "unknown time")
+    return (
+        f"last embed pass was recorded for a different embedding contract (model {model or 'unknown'}, {when}); "
+        "none recorded yet for the current contract"
+    )
+
+
+def _describe_embed_pass(last_pass: dict[str, Any]) -> str:
+    outcome = str(last_pass.get("outcome") or "")
+    raw_reason = str(last_pass.get("reason") or "")
+    reason = _EMBED_PASS_REASON_TEXT.get(raw_reason, raw_reason)
+    when = str(last_pass.get("timestamp") or "unknown time")
+    if outcome == "partial":
+        text = f"embedded {int(last_pass.get('embedded') or 0)}, {reason or 'more pending'}"
+    elif outcome == "ready":
+        text = "completed"
+    else:
+        text = f"{outcome}: {reason}" if reason else outcome
+    if last_pass.get("contract_status") == "unverified":
+        return f"last embed pass {text} ({when}; embedding identity unverified)"
+    return f"last embed pass {text} ({when})"
+
+
 def _index_quality_summary(records: list[dict[str, Any]], embeddings: dict[str, Any]) -> dict[str, Any]:
     total = len(records)
     project_specific = sum(1 for record in records if str(record.get("harness", "")) == "algo-cli")
@@ -2683,7 +2814,23 @@ def _index_quality_summary(records: list[dict[str, Any]], embeddings: dict[str, 
         status = "ready"
         if not embedding_complete:
             status = "degraded"
-            recommendations.append("Run /harness embed or wait for the next chat turn to complete embeddings.")
+            details: list[str] = []
+            high_value_pending = int(embeddings.get("high_value_pending") or 0)
+            if high_value_pending > 0:
+                details.append(
+                    f"High-value tiers pending ({int(embeddings.get('high_value_embedded') or 0)}/"
+                    f"{int(embeddings.get('high_value_total') or 0)} embedded)"
+                )
+            last_pass = embeddings.get("last_pass")
+            stale_pass = embeddings.get("stale_last_pass")
+            if isinstance(last_pass, dict):
+                details.append(_describe_embed_pass(last_pass))
+            elif isinstance(stale_pass, dict):
+                details.append(_describe_stale_embed_pass(stale_pass))
+            prefix = "; ".join(details) + ". " if details else ""
+            recommendations.append(
+                f"{prefix}Run /harness embed or wait for the next chat turn to complete embeddings."
+            )
         if extension_share > 0.7:
             status = "degraded"
             recommendations.append("Add or prioritize project-specific wiki/memory records to reduce extension noise.")
@@ -2714,6 +2861,7 @@ def _index_quality_summary(records: list[dict[str, Any]], embeddings: dict[str, 
         "runtime_capability_records": runtime_capability_records,
         "runtime_capability_coverage": capability_coverage,
         "embedding_complete": embedding_complete,
+        "last_embed_pass": embeddings.get("last_pass"),
         "recommendations": recommendations,
     }
 
@@ -2730,6 +2878,7 @@ def stats(
     # Recompute this cheap summary so indexes written before value-aware queue
     # telemetry immediately expose current priority coverage in /harness status.
     embeddings = embedding_summary(index, model=model, dimensions=dimensions, embedding_identity=embedding_identity)
+    _bind_last_embed_pass(embeddings)
     try:
         from .evals.session_distribution import summarize_session_distribution
 
@@ -3136,6 +3285,15 @@ def _embed_index_records_unlocked(
     all_pending.sort(key=lambda index: _embedding_priority_sort_key(records[index]))
     if not all_pending:
         priority = _embedding_priority_progress(records, model, dimensions, embedding_identity)
+        if records:
+            record_embed_pass(
+                "ready", "ready", pending=0, model=model, dimensions=dimensions, embedding_identity=embedding_identity
+            )
+        else:
+            record_embed_pass(
+                "skipped", "empty_index", pending=0, model=model, dimensions=dimensions,
+                embedding_identity=embedding_identity,
+            )
         return {
             "embedded": 0,
             "selected": 0,
@@ -3274,6 +3432,16 @@ def _embed_index_records_unlocked(
         except OSError:
             _set_index_cache(None)
             reason = "index_write_error"
+        record_embed_pass(
+            "failed",
+            reason,
+            embedded=embedded,
+            pending=sum(remaining_by_priority.values()),
+            selected_by_priority=dict(selected_by_priority),
+            model=model,
+            dimensions=dimensions,
+            embedding_identity=embedding_identity,
+        )
         return {
             "embedded": embedded,
             "total": len(records),
@@ -3299,6 +3467,16 @@ def _embed_index_records_unlocked(
             }
         )
     ready = remaining_after_cap == 0
+    record_embed_pass(
+        "ready" if ready else "partial",
+        "ready" if ready else "max_records_reached",
+        embedded=embedded,
+        pending=sum(remaining_by_priority.values()),
+        selected_by_priority=dict(selected_by_priority),
+        model=model,
+        dimensions=dimensions,
+        embedding_identity=embedding_identity,
+    )
     result = {
         "embedded": embedded,
         "total": len(records),
