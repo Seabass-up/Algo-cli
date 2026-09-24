@@ -179,6 +179,22 @@ def personal_catalog() -> Path:
     return _PERSONAL_CATALOG
 
 
+@pytest.fixture
+def recording_console():
+    """Factory for host-independent recording consoles; see tests/_consoles.py."""
+    from _consoles import recording_console as factory
+
+    return factory
+
+
+@pytest.fixture
+def simulated_windows(monkeypatch):
+    """Rich sees a legacy-Windows cp1252 console; `.patch(module)` gives a module Windows os/sys."""
+    from _consoles import SimulatedWindows
+
+    return SimulatedWindows(monkeypatch).activate()
+
+
 @pytest.fixture(params=("utf-8", "cp1252"), ids=("utf8-default", "windows-cp1252-default"))
 def text_default_encoding(monkeypatch, request):
     """Exercise opted-in text readers under both common host defaults."""

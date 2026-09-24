@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from rich.console import Console
 from rich.panel import Panel
 
+from _consoles import recording_console
 from algo_cli import display
 
 
 def _capture(monkeypatch, fn, *args, **kwargs) -> str:
-    recorder = Console(record=True, width=120, color_system=None, theme=display.THEME_MAP[display.current_theme_name()])
+    recorder = recording_console(width=120, color_system=None, theme=display.THEME_MAP[display.current_theme_name()])
     monkeypatch.setattr(display, "console", recorder)
     fn(*args, **kwargs)
     return recorder.export_text()
@@ -137,7 +137,7 @@ _HOSTILE = "failed at [/tmp/x] with d[key] and [Errno 2]"
 
 
 def _wide_capture(monkeypatch, fn, *args, **kwargs) -> str:
-    recorder = Console(record=True, width=400, color_system=None, theme=display.THEME_MAP[display.current_theme_name()])
+    recorder = recording_console(width=400, color_system=None, theme=display.THEME_MAP[display.current_theme_name()])
     monkeypatch.setattr(display, "console", recorder)
     fn(*args, **kwargs)
     return recorder.export_text()
@@ -253,7 +253,7 @@ def test_show_help_keeps_usage_brackets(monkeypatch):
 
 def test_session_overview_keeps_runtime_values_literal(monkeypatch):
     for width in (90, 160):
-        recorder = Console(record=True, width=width, color_system=None, theme=display.THEME_MAP["tokyo-night"])
+        recorder = recording_console(width=width, color_system=None, theme=display.THEME_MAP["tokyo-night"])
         monkeypatch.setattr(display, "console", recorder)
         display.show_session_overview(
             model="m[/x]",

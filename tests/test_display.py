@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import stat
 
-from rich.console import Console
 from rich.panel import Panel
 
+from _consoles import recording_console
 from algo_cli import display
 from algo_cli.grace_memory_receipts import ElsieReceiptAuthority, ElsieReceiptError
 from algo_cli.grace_key_store import StaticKeyStore
@@ -38,7 +38,7 @@ class _FakeLive:
 
 
 def test_render_opening_banner_has_algo_branding():
-    console = Console(record=True, width=120, theme=display.THEME_MAP["tokyo-night"])
+    console = recording_console(width=120, theme=display.THEME_MAP["tokyo-night"])
     console.print(display.render_opening_banner(version="9.9.9"))
     rendered = console.export_text()
     assert "Algo CLI" in rendered
@@ -52,7 +52,7 @@ def test_render_opening_banner_has_algo_branding():
 
 
 def test_render_opening_banner_fits_narrow_terminal():
-    console = Console(record=True, width=72, theme=display.THEME_MAP["tokyo-night"])
+    console = recording_console(width=72, theme=display.THEME_MAP["tokyo-night"])
     console.print(display.render_opening_banner(version="9.9.9"))
 
     rendered = console.export_text()
@@ -63,7 +63,7 @@ def test_render_opening_banner_fits_narrow_terminal():
 
 
 def test_show_banner_skips_json_mode(monkeypatch):
-    console = Console(record=True, width=120, theme=display.THEME_MAP["tokyo-night"])
+    console = recording_console(width=120, theme=display.THEME_MAP["tokyo-night"])
     monkeypatch.setattr(display, "console", console)
     monkeypatch.setattr(display, "json_mode_active", lambda: True)
     display.show_banner()
@@ -71,7 +71,7 @@ def test_show_banner_skips_json_mode(monkeypatch):
 
 
 def test_show_banner_prints_block_logo(monkeypatch):
-    console = Console(record=True, width=120, theme=display.THEME_MAP["tokyo-night"])
+    console = recording_console(width=120, theme=display.THEME_MAP["tokyo-night"])
     monkeypatch.setattr(display, "console", console)
     monkeypatch.setattr(display, "json_mode_active", lambda: False)
     display.show_banner()
@@ -82,7 +82,7 @@ def test_show_banner_prints_block_logo(monkeypatch):
 
 
 def test_help_leads_with_natural_language_guidance(monkeypatch):
-    console = Console(record=True, width=100, theme=display.THEME_MAP["tokyo-night"])
+    console = recording_console(width=100, theme=display.THEME_MAP["tokyo-night"])
     monkeypatch.setattr(display, "console", console)
 
     display.show_help()
@@ -95,7 +95,7 @@ def test_help_leads_with_natural_language_guidance(monkeypatch):
 
 
 def test_runtime_overview_stacks_cleanly_on_standard_terminal(monkeypatch):
-    console = Console(record=True, width=80, theme=display.THEME_MAP["tokyo-night"])
+    console = recording_console(width=80, theme=display.THEME_MAP["tokyo-night"])
     monkeypatch.setattr(display, "console", console)
 
     display.show_session_overview(
@@ -173,7 +173,7 @@ def test_agent_preview_char_limit_zero_means_full(monkeypatch):
 
 
 def test_agent_block_completion_structured_plan(monkeypatch):
-    console = Console(record=True, width=120, theme=display.THEME_MAP["tokyo-night"])
+    console = recording_console(width=120, theme=display.THEME_MAP["tokyo-night"])
     monkeypatch.setattr(display, "console", console)
     monkeypatch.setenv("ALGO_CLI_AGENT_PREVIEW", "2000")
 
@@ -193,7 +193,7 @@ def test_agent_block_completion_structured_plan(monkeypatch):
 
 
 def test_agent_block_completion_renders_status_reason(monkeypatch):
-    console = Console(record=True, width=120, theme=display.THEME_MAP["tokyo-night"])
+    console = recording_console(width=120, theme=display.THEME_MAP["tokyo-night"])
     monkeypatch.setattr(display, "console", console)
 
     display.show_agent_block_complete(
@@ -209,7 +209,7 @@ def test_agent_block_completion_renders_status_reason(monkeypatch):
 
 
 def test_agent_block_completion_renders_verification_warning(monkeypatch):
-    console = Console(record=True, width=120, theme=display.THEME_MAP["tokyo-night"])
+    console = recording_console(width=120, theme=display.THEME_MAP["tokyo-night"])
     monkeypatch.setattr(display, "console", console)
 
     display.show_agent_block_complete(
@@ -232,7 +232,7 @@ def test_protected_agent_block_omits_dump_and_purges_legacy_file(
     config_dir,
 ) -> None:
     monkeypatch.setattr(display, "CONFIG_DIR", config_dir)
-    console = Console(record=True, width=140, theme=display.THEME_MAP["tokyo-night"])
+    console = recording_console(width=140, theme=display.THEME_MAP["tokyo-night"])
     monkeypatch.setattr(display, "console", console)
     legacy = config_dir / "last-block-plan.md"
     legacy.write_text("SECRET_LEGACY_BLOCK_CANARY", encoding="utf-8")
@@ -266,7 +266,7 @@ def test_protected_agent_block_missing_key_never_falls_back_to_plaintext_dump(
             raise ElsieReceiptError("missing persistent key")
 
     monkeypatch.setattr(display, "CONFIG_DIR", config_dir)
-    console = Console(record=True, width=140, theme=display.THEME_MAP["tokyo-night"])
+    console = recording_console(width=140, theme=display.THEME_MAP["tokyo-night"])
     monkeypatch.setattr(display, "console", console)
 
     display.show_agent_block_complete(
@@ -313,7 +313,7 @@ def test_protected_agent_display_missing_key_never_calls_create(
         raise ElsieReceiptError("missing existing key")
 
     monkeypatch.setattr(display, "CONFIG_DIR", config_dir)
-    console = Console(record=True, width=140, theme=display.THEME_MAP["tokyo-night"])
+    console = recording_console(width=140, theme=display.THEME_MAP["tokyo-night"])
     monkeypatch.setattr(display, "console", console)
     monkeypatch.setattr(
         display.ElsieReceiptAuthority,
@@ -340,7 +340,7 @@ def test_protected_agent_display_missing_key_never_calls_create(
 
 
 def test_agent_recovery_start_renders_reason_and_budget(monkeypatch):
-    console = Console(record=True, width=120, theme=display.THEME_MAP["tokyo-night"])
+    console = recording_console(width=120, theme=display.THEME_MAP["tokyo-night"])
     monkeypatch.setattr(display, "console", console)
 
     display.show_agent_recovery_start("implement", "No verified write.", 8)

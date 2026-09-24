@@ -318,6 +318,10 @@ The test suite runs fully offline — every model call (embedders, crystallizer 
 - `clean_state` (autouse) wipes the temp config dir and clears all module-level caches (`identity._CACHE`, `identity._LESSONS_INDEX`, `harness._INDEX_CACHE`) around every test.
 - `make_fake_embed(dims)` returns a deterministic keyword-biased embedder for retrieval tests.
 
+**Platform parity (macOS must catch Windows-runner failures):**
+- Build recording Rich consoles with `recording_console(...)` (`from _consoles import recording_console`, or the fixture of the same name); it pins `file`, `legacy_windows`, terminal, colour system, width and environment. `tests/test_console_pinning_guard.py` fails on any recording or exported Rich console (including `RuntimeConsole`, aliased imports, local subclasses and `record` passed through `**` spreads) unless it passes a real `file=` (not None or `sys.stdout`) and a literal bool `legacy_windows=`; exports count only for the console they are called on.
+- Cover Windows-only branches with the `simulated_windows` fixture: Rich sees a legacy cp1252 console, and `simulated_windows.patch(module)` gives that module a Windows `os.name`/`sys.platform` (plus cp1252 `sys.stdout`). Never monkeypatch the real `os.name` or `sys.platform`; pathlib and subprocess read them too.
+
 ---
 
 ## Code Style Conventions

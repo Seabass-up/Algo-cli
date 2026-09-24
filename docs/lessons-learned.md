@@ -1947,6 +1947,26 @@ used.
 
 **Prevention:** Treat credential locator names as private data, not only the secrets.
 
+## 2026-09-24: Windows-Only Test Failures Could Not Be Reproduced On macOS
+
+**Symptom and cause:** Two test-only failures appeared only on the hosted Windows runner. Recording Rich consoles detected legacy Windows and a cp1252 stdout, so Rich substituted ASCII box glyphs; a rebuilt console inherited Rich's legacy-Windows probe and lost its colour system. Both came from consoles that let Rich probe the host, and macOS never takes those branches.
+
+**Repair:** `tests/_consoles.py` adds `recording_console(...)`, which pins file, legacy_windows, terminal, colour system, width and environment, and `SimulatedWindows` (fixture `simulated_windows`), which makes Rich see a legacy cp1252 console and gives chosen modules a Windows `os`/`sys` view without touching the real modules. The recording consoles in `tests/test_display.py` and `tests/test_display_fixes.py` now use the helper. `tests/test_console_pinning_guard.py` fails on any unpinned recording console, with an allow-list that may only shrink.
+
+**Verification and limits:** `tests/test_simulated_windows.py` reproduces the ASCII substitution on macOS with an unpinned recorder, shows the helper is immune, and covers the Windows branches of the search-fallback glob case folding, `force_utf8`, `_force_utf8_console` VT enabling, sticky-status VT detection and the gateway `.exe` path. Local macOS test evidence only; the simulation uses fake Win32 console APIs, so hosted Windows CI is still the authority for real console behaviour.
+
+**Prevention:** New recording consoles must use the helper (the guard enforces this); Windows-only branches get a `simulated_windows` test rather than a real `os.name`/`sys.platform` patch.
+
+## 2026-09-24: Console Pinning Guard Misjudged Unrelated Exports And Pin Values
+
+**Symptom and cause:** The recording-console guard decided "exported" once per scope, so a non-recording `Console(...)` at module level, or in the same function as an unrelated `recording_console().export_text()`, was reported. It also checked only that `file` and `legacy_windows` keywords were present, and matched only the literal name `Console`, so `legacy_windows=None, file=None`, `display.RuntimeConsole(record=True)`, `from rich.console import Console as C` and `Console(**{'record': True})` all passed while still letting Rich probe the host.
+
+**Repair:** `tests/test_console_pinning_guard.py` now scans each function scope without descending into nested functions, and links an export to the console it is called on (the assigned name or attribute, a `with ... as` target, or a chained call). Console classes include `RuntimeConsole`, import aliases, simple assignment aliases and subclasses defined in the scanned file. `record` is read from keywords and literal `**{...}`/`**dict(...)` spreads; an opaque `**kwargs` counts as possibly recording. A pin requires a `file=` that is not None or the host `sys` stream and a literal bool `legacy_windows=`.
+
+**Verification and limits:** The guard's parametrized cases cover each reported false positive and false negative plus the pinned and unrelated-fake counterparts; the scan of `tests/` still reports only the deliberate reproduction. Local macOS evidence only. The check is static: consoles built in one function and exported in another, or constructed through `functools.partial`, are not linked.
+
+**Prevention:** Guard rules that judge a construction must bind evidence to that construction (its own arguments and its own binding), not to anything else in the enclosing scope.
+
 ## Repair Log Checklist
 
 - Date and component.
