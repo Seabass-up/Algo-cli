@@ -604,7 +604,13 @@ def _config_backup_time(name: str) -> datetime | None:
     match = _CONFIG_BACKUP_RE.fullmatch(name)
     if match is None:
         return None
-    return datetime.strptime(match.group(1), _CONFIG_BACKUP_TIME_FORMAT).replace(tzinfo=timezone.utc)
+    try:
+        stamp = datetime.strptime(match.group(1), _CONFIG_BACKUP_TIME_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        # Digits that are not a real instant: not a backup this code wrote.
+        return None
+    # No real clock writes year 9999; treating it as foreign keeps "newest + 1 µs" from overflowing.
+    return stamp if stamp.year < 9999 else None
 
 
 def _next_config_backup_path(retained: list[Path]) -> Path:
@@ -630,7 +636,7 @@ def _rotating_config_backups() -> list[Path]:
         return []
     found = []
     for entry in entries:
-        if _CONFIG_BACKUP_RE.fullmatch(entry.name) and entry.is_file(follow_symlinks=False):
+        if _config_backup_time(entry.name) is not None and entry.is_file(follow_symlinks=False):
             found.append(Path(entry.path))
     return sorted(found, key=lambda item: item.name)
 
@@ -710,20 +716,20 @@ def list_config_backups() -> list[dict[str, Any]]:
         return []
     backups: list[dict[str, Any]] = []
     for entry in entries:
-        rotating = _CONFIG_BACKUP_RE.fullmatch(entry.name)
-        if not (rotating or _CONFIG_REPAIR_BACKUP_RE.fullmatch(entry.name)):
+        stamped = _config_backup_time(entry.name)
+        if not (stamped or _CONFIG_REPAIR_BACKUP_RE.fullmatch(entry.name)):
             continue
         if not entry.is_file(follow_symlinks=False):
             continue
         information = entry.stat(follow_symlinks=False)
-        created = _config_backup_time(entry.name) or datetime.fromtimestamp(information.st_mtime, tz=timezone.utc)
+        created = stamped or datetime.fromtimestamp(information.st_mtime, tz=timezone.utc)
         backups.append(
             {
                 "name": entry.name,
                 "path": Path(entry.path),
                 "created": created,
                 "size": information.st_size,
-                "kind": "rotating" if rotating else "memory-repair",
+                "kind": "rotating" if stamped else "memory-repair",
             }
         )
     return sorted(backups, key=lambda item: item["created"], reverse=True)
@@ -735,7 +741,7 @@ def restore_config_backup(name: str) -> dict[str, Any]:
     if (
         not isinstance(name, str)
         or os.path.basename(name) != name
-        or not (_CONFIG_BACKUP_RE.fullmatch(name) or _CONFIG_REPAIR_BACKUP_RE.fullmatch(name))
+        or not (_config_backup_time(name) is not None or _CONFIG_REPAIR_BACKUP_RE.fullmatch(name))
     ):
         raise ValueError("Pass a backup name exactly as `algo-cli config restore --list` shows it.")
     source = CONFIG_DIR / name
@@ -747,6 +753,9 @@ def restore_config_backup(name: str) -> dict[str, Any]:
             raise ValueError("The selected backup is not a valid JSON configuration.") from exc
         if not isinstance(document, dict):
             raise ValueError("The selected backup is not a valid JSON configuration.")
+        # Memory-repair backups are exact copies and may still hold session
+        # state; a restore must never bring back a summary the user cleared.
+        payload = _config_backup_payload(payload)
         previous = _backup_config_before_write(payload)
         _atomic_write_bytes(CONFIG_FILE, payload)
     return {

@@ -2131,6 +2131,30 @@ used.
 
 **Prevention:** When adding persistent history for a file, check which of its fields a user can clear or delete, and keep them out of the history.
 
+## 2026-09-24: Restoring A Memory-Repair Backup Brought Back Cleared Session State
+
+**Symptom:** `algo-cli config restore config.json.before-continuum-<digest>.bak` wrote the old `session_summary` and `attempt_ledger` back into `config.json`, even after the user had cleared them.
+
+**Confirmed cause:** `repair_memory_configuration()` keeps an exact copy of the pre-repair file for audit, and its identity check compares those exact bytes. `restore_config_backup` wrote the selected backup's bytes unchanged, so the session blanking that rotating backups get never applied to this kind.
+
+**Repair:** `restore_config_backup` passes every payload through `_config_backup_payload` before writing, so a restore blanks `session_summary` and `attempt_ledger` and keeps every other key. The returned size and SHA-256 describe the bytes actually written. The memory-repair backup file itself stays exact, because the audit contract and the existing test `test_explicit_memory_config_repair_preserves_unrelated_values_and_exact_backup` require that; its session text therefore stays on disk until the user removes that file.
+
+**Verification:** `test_restoring_memory_repair_backup_does_not_resurrect_cleared_session_state` in `tests/test_config_safety.py` fails without the change and passes with it. Local macOS evidence only.
+
+**Prevention:** Apply one restore-time rule to every backup kind rather than relying on each writer to sanitize.
+
+## 2026-09-24: A Backup Name With An Impossible Timestamp Blocked Config Saves
+
+**Symptom:** A regular file named like `config.json.bak.99999999T999999999999Z` made `algo-cli config restore --list` crash and made every `Config.save()` raise `ValueError`.
+
+**Confirmed cause:** `_CONFIG_BACKUP_RE` accepts any 8+12 digits, and `_config_backup_time` passed them straight to `datetime.strptime`. The name sorted last among rotating backups, so `_next_config_backup_path` parsed it on every save.
+
+**Repair:** `_config_backup_time` returns `None` for digits that are not a real instant. Every enumeration (`_rotating_config_backups`, `list_config_backups`, `restore_config_backup` name validation) now counts a name as a rotating backup only when its timestamp parses, so such a file is never listed, rotated, deleted or restored. Review then found that a valid but maximal stamp (`99991231T235959999999Z`) overflowed when the next name added a microsecond; stamps in year 9999 are now treated as foreign too.
+
+**Verification:** `test_backup_name_with_unparsable_timestamp_is_not_a_backup` and `test_backup_name_at_the_end_of_time_does_not_block_saves` fail without the change and pass with it; they cover listing, the CLI listing, repeated saves past the rotation limit and restore refusal. Local macOS evidence only.
+
+**Prevention:** When a filename pattern is parsed further, make the parser the single test for membership instead of the regex alone.
+
 ## Repair Log Checklist
 
 - Date and component.

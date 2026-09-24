@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -364,3 +365,71 @@ def test_repl_config_restore_lists_but_refuses_live_restore(monkeypatch) -> None
 
     assert calls == [["restore", "--list"]]
     assert errors and "algo-cli config restore NAME" in errors[0]
+
+
+def test_restoring_memory_repair_backup_does_not_resurrect_cleared_session_state() -> None:
+    config.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    ledger_entry = {"tool": "run_shell", "summary": "LEDGER-SECRET"}
+    config.CONFIG_FILE.write_text(
+        json.dumps(
+            {
+                "d057_enabled": True,
+                "model": "keep-me",
+                "session_summary": "SUMMARY-SECRET",
+                "attempt_ledger": [ledger_entry],
+            },
+            indent=2,
+        )
+    )
+    repair_backup = config.repair_memory_configuration()["backup_path"]
+    current = json.loads(config.CONFIG_FILE.read_text())
+    current.update(session_summary="", attempt_ledger=[])
+    config.CONFIG_FILE.write_text(json.dumps(current, indent=2))
+
+    result = config.restore_config_backup(repair_backup.name)
+
+    restored = config.CONFIG_FILE.read_bytes()
+    assert b"SUMMARY-SECRET" not in restored and b"LEDGER-SECRET" not in restored
+    assert json.loads(restored) == {
+        "d057_enabled": True,
+        "model": "keep-me",
+        "session_summary": "",
+        "attempt_ledger": [],
+    }
+    assert result["size"] == len(restored)
+    assert result["sha256"] == hashlib.sha256(restored).hexdigest()
+
+
+INVALID_STAMP_BACKUP = "config.json.bak.99999999T999999999999Z"
+
+
+def test_backup_name_with_unparsable_timestamp_is_not_a_backup() -> None:
+    _save("model-a")
+    bogus = config.CONFIG_DIR / INVALID_STAMP_BACKUP
+    bogus.write_text('{"model": "bogus"}')
+    assert config._config_backup_time(bogus.name) is None
+
+    assert bogus.name not in {item["name"] for item in config.list_config_backups()}
+    for index in range(config.CONFIG_BACKUP_KEEP + 2):
+        _save(f"model-{index}")
+    assert Config.load().model == f"model-{config.CONFIG_BACKUP_KEEP + 1}"
+    assert bogus.read_text() == '{"model": "bogus"}'
+    assert bogus not in config._rotating_config_backups()
+    with pytest.raises(ValueError):
+        config.restore_config_backup(bogus.name)
+    with cli_config.console.capture() as captured:
+        assert cli_config.run(["restore", "--list"], interactive=False) == 0
+    assert bogus.name not in captured.get()
+
+
+def test_backup_name_at_the_end_of_time_does_not_block_saves() -> None:
+    _save("model-a")
+    far = config.CONFIG_DIR / f"{config.CONFIG_FILE.name}.bak.99991231T235959999999Z"
+    far.write_text('{"model": "far"}')
+    assert config._config_backup_time(far.name) is None
+
+    for index in range(3):
+        _save(f"model-{index}")
+    assert Config.load().model == "model-2"
+    assert far.read_text() == '{"model": "far"}'
+    assert far not in config._rotating_config_backups()
