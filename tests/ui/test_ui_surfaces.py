@@ -7,6 +7,8 @@ the logo, banner title, error label and thinking text rendered with no style.
 
 from __future__ import annotations
 
+import io
+
 import pytest
 from pygments.styles import get_style_by_name
 from rich.console import Console
@@ -37,10 +39,14 @@ print("hi")
 @pytest.fixture
 def recorder(monkeypatch):
     def make(name: str, width: int = 120) -> Console:
+        # Pin UTF-8, non-legacy output: on Windows runners Rich otherwise swaps box
+        # glyphs for ASCII, and these tests assert theme styling, not platform fallback.
         console = Console(
+            file=io.StringIO(),
             record=True,
             width=width,
             force_terminal=True,
+            legacy_windows=False,
             color_system="truecolor",
             theme=display.THEME_MAP[name],
         )
