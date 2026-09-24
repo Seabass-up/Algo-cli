@@ -218,7 +218,10 @@ A run is "substantive" if it used more than 2 tool calls.
 
 ### `display.py` — Rich Terminal Display
 
-- Themes: `tokyo-night` (default), `catppuccin-mocha`, `dracula`, `nord`, `gruvbox`, `dolphie`.
+- Themes: `tokyo-night` (default), `catppuccin-mocha`, `dracula`, `nord`, `gruvbox`, `dolphie`, `redeye`.
+- Theme tokens live in `algo_cli/ui/tokens.py`: one palette table generates `THEME_COLORS`, `THEME_MAP` (base colours, semantic tokens and Rich built-in overrides) and the prompt_toolkit footer/completion style. Call sites use named tokens that carry their attributes (`heading`, `brand.logo`, `notice.error`, `thinking`), never compound styles like `"bold primary"`, which Rich 15 silently drops. `tests/ui/` enforces completeness, contrast floors and the style lint.
+- Assistant Markdown goes through `display.themed_markdown()` (per-theme `code_theme`; fenced code keeps the style's own painted panel and `ui.markdown.ReadableSyntaxTheme` lifts every token to 4.5:1 on it). `main.apply_theme()` is the single switch used by `/theme` and `/reload`.
+- One `ui.detect.ColorProfile` (`none`/`ansi16`/`ansi256`/`truecolor`, from `NO_COLOR`, `TERM`, `FORCE_COLOR`, `COLORTERM` and the Windows console) is detected once in `display.py` and drives the Rich console's `color_system`, `PromptSession(color_depth=...)` and `sticky_status`. `tokens.palette_for()` swaps in `ANSI_PALETTES["ansi-dark"]` at 16 colours and the attribute-only `MONO` palette when colour is off. `FORCE_COLOR` levels are a minimum, never a cap. Piped output keeps the hex tokens; a terminal Rich cannot colour (`TERM=dumb`) still takes the detected profile. Hex palettes paint the footer and rprompt on `surface` because their near-white text cannot rely on the terminal's background; the 16-colour palettes leave the bar unpainted (`default` text) but paint the completion menu ANSI blue and fenced code on a `bright_black` panel.
 - All display goes through the singleton `console = Console(theme=...)`.
 - Theme switching uses `console.push_theme()` / `console.pop_theme()`.
 - Streaming responses use `rich.live.Live` with `Markdown` rendering at 12 fps.

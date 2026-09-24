@@ -324,7 +324,7 @@ def resolve_action(
 
 
 def _target_for(name: str, args: dict[str, Any], *, cwd: str, target_scope: TargetScope) -> str:
-    if name in {"jev_question_contract", "jev_kernel_status"}:
+    if name == "jev_question_contract":
         return "provider:typesafe:jev"
     path_keys = _WORKSPACE_PATH_ARGUMENTS.get(name, ())
     for key in path_keys:
@@ -388,7 +388,11 @@ def evaluate_action(
             ConfirmationMode.ACTION_TIME,
         }:
             return PolicyDecision(PolicyDisposition.CONFIRM, "a scoped capability grant is required", action)
-        return PolicyDecision(PolicyDisposition.DENY, "no scoped capability grant authorizes the action", action)
+        return PolicyDecision(
+            PolicyDisposition.DENY,
+            f"no scoped capability grant authorizes {action.name} on {action.target}",
+            action,
+        )
 
     if action.confirmation_mode is ConfirmationMode.HANDOFF_REQUIRED:
         return PolicyDecision(

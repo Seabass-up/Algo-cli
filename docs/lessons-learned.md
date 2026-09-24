@@ -1947,6 +1947,168 @@ used.
 
 **Prevention:** Treat credential locator names as private data, not only the secrets.
 
+## 2026-09-23: Jev Readiness Check Was Denied In Every Mode
+
+**Symptom and cause:** `jev_kernel_status` was curated as a no-approval read but scoped to PROVIDER and missing from the baseline actions, so it had no path to a grant: users could not approve it and yolo did not allow it.
+
+**Repair:** It is scoped as a local RUNTIME read (it never contacts TypeSafe) and added to the baseline actions. `jev_question_contract` stays approval-gated.
+
+**Verification and limits:** Tests cover the status call in interactive, auto and yolo modes and the unchanged contract gating. Local test evidence; hosted CI is recorded on the pull request.
+
+**Prevention:** Every action declared as needing no approval must have a reachable grant; test that registry claims match runtime policy.
+
+## 2026-09-23: Denials Did Not Say What Was Blocked Or How To Recover
+
+**Symptom and cause:** Every missing-grant denial showed the same generic reason, with no target, missing scope, intent, or recovery step.
+
+**Repair:** Missing-grant denials carry a typed explanation naming the action, target and missing scope, whether the block is intended policy or a setup gap, whether it is resolvable in this session, and the recovery step (for example `/cd`, starting from the target workspace, or `/mode yolo` for out-of-workspace reads).
+
+**Verification and limits:** Tests assert the explanation fields for each denial kind. Local test evidence; hosted CI is recorded on the pull request.
+
+**Prevention:** Every refusal should tell the operator what to change, without weakening the guard.
+
+## 2026-09-23: Repeated Denied Calls Were Retried And Re-Prompted
+
+**Symptom and cause:** Denied outcomes were recorded as never having run, so identical denied calls were dispatched again, and in interactive mode the user was asked again; the stall guard counted batches, so a denied call repeated next to successful reads never tripped it.
+
+**Repair:** An identical denied call is skipped for the rest of the turn with a clear do-not-retry result and no new prompt. Blocked calls are counted per action and the run stops after three identical blocks, with a one-time recovery note when a batch mixes executed and blocked calls. Blocks last one turn only.
+
+**Verification and limits:** Tests cover same-turn skipping, cross-turn retry, no second prompt, and the per-action stall stop. Local test evidence; hosted CI is recorded on the pull request.
+
+**Prevention:** Count progress per action, and treat a denial as an outcome the next attempt must respect.
+
+## 2026-09-23: Capability Search Missed Email And Returned Unrelated Tools
+
+**Symptom and cause:** Gmail exists only as `/google` slash commands, which `action_search` never indexed; no vocabulary linked email to gmail; generic verbs such as read matched file tools; and an empty result said the capability was unavailable.
+
+**Repair:** Slash-command capability groups are search candidates, email/mail/inbox expand to gmail/google, a relevance floor ignores generic verbs alone, and empty results say no match rather than unavailable. `available_actions` matches topic tokens and reports `match: none`.
+
+**Verification and limits:** Tests reproduce 'check my email', 'read my email messages' and ordinary file-read prompts, including the default result limit. Local test evidence; hosted CI is recorded on the pull request.
+
+**Prevention:** Search every surface a user can invoke, and distinguish no match from not supported.
+
+## 2026-09-23: Jev Tool Text Did Not Say Jev Only Advises
+
+**Symptom and cause:** The Jev status and contract tools described companion readiness but not that Jev returns advisory judgments only, so the model offered Jev for browsing or email.
+
+**Repair:** The Jev tool descriptions state that it returns typed judgments and cannot browse, read mail or act, and name the executable routes, worded so they do not attract email searches.
+
+**Verification and limits:** Tests check the wording and that email searches do not rank Jev tools. Local test evidence; hosted CI is recorded on the pull request.
+
+**Prevention:** Tool descriptions must state what a tool cannot do when a nearby request would tempt its use.
+
+## 2026-09-23: Embedding Backlog Had No Visible Cause
+
+**Symptom and cause:** High-value harness records sat pending with no record of why the last embed pass did not run; the scheduler order was verified correct.
+
+**Repair:** The last embed pass outcome and reason (ready, partial, failed, skipped because the host is not local or Ollama is unreachable) are persisted and shown in harness stats and the index quality recommendation.
+
+**Verification and limits:** Tests cover each recorded outcome and the recommendation text. Local test evidence; hosted CI is recorded on the pull request.
+
+**Prevention:** Record why background work was skipped, not only whether it ran.
+
+## 2026-09-23: Cached Turn Denial Outlived The Authority That Produced It
+
+**Symptom and cause:** After an outside-workspace read was denied, entering `/mode yolo` (one of the recoveries the denial names) did not let the same call run in that turn. The preflight returned ALLOW, but `find_failed_attempt` still returned the turn-level denial keyed only by call signature, so the dispatcher skipped it. A `/cd` did not reproduce this for path tools because `cwd` is already part of their signature.
+
+**Repair:** Each cached turn denial now stores the authority context it was decided under: resolved workspace root, active session mode, approval mode, auto-approval and safe mode. A cached denial, including a declined approval, is reused only while that context is unchanged; otherwise the call is re-evaluated.
+
+**Verification and limits:** `tests/test_reliability_authority.py` covers deny then YOLO in the same turn (fails before the fix), deny then `/cd` into the target, an unchanged context still skipping, and a declined approval re-prompting only after the context changes. Issued grants are not in the fingerprint because baseline and YOLO grants are minted per preflight. Local test evidence; hosted CI is recorded on the pull request.
+
+**Prevention:** Bind a cached authority decision to the inputs that decided it, not only to the request.
+
+## 2026-09-23: Discovery Showed Broken Examples And Hid Blocked Matches
+
+**Symptom and cause:** Review of the discovery fix found that commands with required arguments were shown as executable examples without those arguments, `/google gmail-draft` was missing, documents were tokenized without the punctuation normalization used for queries, and a policy-filtered match was reported as no match.
+
+**Repair:** Commands with required arguments show a usage template and their required arguments instead of an example; `gmail-draft` is indexed with draft vocabulary and still requires approval; documents are normalized like queries; policy-blocked matches are reported with their reason. Approval flags are computed per command, and alternatives such as `status|query TERM|reindex` are parsed as alternatives.
+
+**Verification and limits:** Tests cover each case, including `x.com` queries and a protected-policy email query. Local test evidence; hosted CI is recorded on the pull request.
+
+**Prevention:** Discovery output is an instruction to the model; every example it shows must be executable as written.
+
+## 2026-09-23: Embed-Pass Status Described A Different Embedding Contract
+
+**Symptom and cause:** After switching embedding model or dimensions, harness status still reported the previous contract's last embed pass.
+
+**Repair:** Each recorded pass stores its model, dimensions and backend identity, and status labels a pass recorded for another contract as stale; an unverifiable identity is not treated as a mismatch.
+
+**Verification and limits:** Tests cover a contract switch and the unknown-identity case. Local test evidence; hosted CI is recorded on the pull request.
+
+**Prevention:** Status records must carry the configuration they describe.
+
+## 2026-09-23: Unpainted Footer Vanished On Light Terminals And Colour Profile Edge Cases
+
+**Symptom:** After the colour-profile slice, the footer and rprompt text (near-white in all seven dark themes) measured 1.07-1.45:1 on a white terminal background, which is macOS Terminal's default profile (`TERM=xterm-256color`, detected as 256 colours). At 16 colours the completion menu painted `bg:default`, so unselected entries sat unpainted over the scrollback, and fenced code under Rich's `ansi_dark` theme had no panel. On `TERM=dumb` or `TERM=unknown` terminals the UI rendered at truecolor, and `FORCE_COLOR=1` in a truecolor terminal dropped the UI to 16 colours.
+
+**Cause:** Removing the bar background assumed the terminal background equals `Palette.bg`, and the contrast gate measured against that assumption. The ANSI palettes set `surface_alt="default"`. `display._profile_active` used Rich's `color_system is not None`, which is also `None` for dumb and unknown terminals, not only for pipes. `detect_color_profile` returned the `FORCE_COLOR` level before checking `COLORTERM` and `TERM`.
+
+**Repair:** `tokens.prompt_toolkit_styles` paints the footer and rprompt on `surface` whenever it is a hex colour; the 16-colour palettes keep `surface="default"` (their `default` text reads on any background) and set `surface_alt="blue"`, with the menu text on `ansiwhite`/`ansigray`. `ui.markdown.PanelledAnsiSyntaxTheme` paints Rich's ANSI token map on `bright_black` (`ansi_light`: `white`). `display._terminal_takes_profile` uses `Console.is_terminal`. `FORCE_COLOR` is now a minimum over the terminal's own detection, as in supports-color.
+
+**Verification:** New regressions in `tests/ui/test_ui_color_profile.py` (every visible footer and rprompt character painted at 256 and truecolor for every theme; ANSI and mono footers unpainted; 16-colour menu entries all painted with blue 44 and the selection on 104; 16-colour code lines inside a 100 panel while prose stays unpainted; `FORCE_COLOR` matrix rows; `_terminal_takes_profile` under `TERM=dumb`; a pseudo-terminal subprocess that reports `none`/`DEPTH_1_BIT` for `TERM=dumb` and `ansi16`/`DEPTH_4_BIT` for `TERM=unknown`). The contrast gate measures chips against their painted bar with both colours quantised. Local offline pytest only; no live terminal matrix was run.
+
+**Prevention:** Never measure unpainted text against an assumed terminal background: either paint the surface or use the terminal's `default` colour. Tell pipes from terminals with `is_terminal`, not with the detected colour system.
+
+## 2026-09-23: Footer Drew A Black Slab And Chrome Rendered At A Different Colour Depth From The Body
+
+**Issue:** The bottom toolbar and rprompt painted `surface_alt`/`surface` backgrounds that read as a black block on any terminal whose background differed from the palette's. Rich picked its own colour depth (truecolor) while prompt_toolkit and `sticky_status` used `ColorDepth.from_env()` (8-bit by default), so body and footer colours disagreed. On 16-colour terminals Rich's quantisation of the hex palettes merged meanings: tokyo-night success and warning, catppuccin-mocha success and error, and nord success, error and info all landed on the same ANSI slot.
+
+**Cause:** Two independent depth detections, painted bar backgrounds in `tokens.prompt_toolkit_styles`, and no palette designed for 16 colours or for `NO_COLOR`.
+
+**Repair:** `algo_cli/ui/detect.py` detects one `ColorProfile` from the environment. `display.py` builds the console at that profile when stdout is a terminal and exposes `prompt_color_depth()` for `PromptSession` and `sticky_status`. `tokens.palette_for()` maps 16-colour terminals to `ansi-dark` (named slots with distinct hues for success, warning, error and info; `ansi-light` is defined for the appearance slice) and colour-off terminals to the attribute-only `MONO` palette, with the safety badges reversed. The footer and rprompt no longer set a background. `/theme` explains when the terminal's profile overrides the hex palettes.
+
+**Verification:** `tests/ui/test_ui_color_profile.py` covers the detection matrix, Rich and prompt_toolkit emitting the same SGR encoding per profile, the sticky footer's depth, no background codes in the footer or rprompt for every theme and profile, distinct 16-colour meanings per theme after rendering, and no colour codes in the mono profile. The existing contrast gate now measures footer chips against the terminal background with only the foreground quantised. Local offline pytest only; no live terminal matrix was run.
+
+**Prevention:** Configure every renderer from `display.active_color_profile()` instead of letting a library guess. When a test renders the same Rich `Style` at several colour systems in one process, give each run its own colour: Rich caches the SGR string on the interned `Style` regardless of colour system, so a 16-colour render otherwise leaks into a later truecolor one.
+
+**Remaining limits:** The unpainted footer was reverted for hex palettes in the entry above. `PROMPT_TOOLKIT_COLOR_DEPTH` no longer overrides the session depth. Light palettes and appearance detection are the next slice.
+
+## 2026-09-23: Theme Styles Were Silently Dropped And Assistant Output Ignored The Theme
+
+**Symptom and cause:** The logo, banner title, error label, thinking text and section headings rendered unstyled in every theme. They used compound styles such as `"bold primary"`; Rich 15 cannot parse a theme name inside a compound style and drops the whole style without an error. Assistant Markdown used Rich defaults and a painted Monokai code block, several footer chips measured below 3:1 on their own bar (dracula muted 2.70, nord error 2.15 after 8-bit quantisation), the completion menu kept prompt_toolkit's light-grey defaults, redeye used red for brand, error and info alike, and `/reload` left the previous theme's footer style in place.
+
+**Repair:** `algo_cli/ui/tokens.py` holds one palette table per theme and generates `display.THEME_COLORS`, `display.THEME_MAP` and the prompt_toolkit style. Semantic tokens carry their attributes (`brand.logo`, `heading`, `notice.error`, `thinking`), and 30 compound call sites now use them. Rich built-ins (`markdown.*`, `repr.*`, `rule.line`, `status.spinner`, `table.header`, `prompt.*`) are overridden per theme, and `display.themed_markdown()` uses a per-theme Pygments style. Footer chips are prompt_toolkit classes from the same table, and `main.apply_theme()` serves both `/theme` and `/reload`. Palettes were tuned to the contrast floors, identical tokens were split, and redeye error and info moved off red.
+
+**Verification and limits:** `tests/ui/` checks that every theme defines every token and that each token parses. It also checks contrast floors against each palette's assumed dark background (text 7:1, muted and semantic colours 4.5:1, borders 3:1, footer chips 4.5:1 on their bars in truecolor and 8-bit), pairwise ΔE2000 of at least 20 between success, warning, error and brand, a lint that bans compound theme styles with a shrinking allow-list for raw colours, recorded renders of the banner, logo, error, thinking and Markdown in all seven themes, and the `/theme` and `/reload` style rebuild. These are local test results. Light terminals, 16-colour quantisation, and the colour-depth mismatch between Rich and prompt_toolkit remain open for later slices.
+
+**Prevention:** Never compose attributes with a theme name at a call site. Add a token that carries the attributes, and let the lint and the completeness test keep the table whole.
+
+## 2026-09-23: Themed Code Blocks Lost Their Panel And Some Tokens Fell Below Readable Contrast
+
+**Symptom:** After the theme-token slice, fenced code blocks drew with `Syntax(background_color="default")`. On a light terminal the dark-theme token colours measured 1.07 to 2.4:1. The gruvbox `diff` lines were `#282828` on `#282828`, because the default background also replaced the red and green token backgrounds. dracula `Generic.Deleted` `#8b080b` measured 1.45:1, and nord comments `#616e87` measured 2.43:1.
+
+**Confirmed cause:** Unpainting the panel put code-theme colours, which assume a dark background, on whatever background the terminal uses, and removed per-token backgrounds. The dracula and nord Pygments styles also ship tokens below any text floor, and the contrast gate never checked code-theme tokens.
+
+**Repair:** `ThemedCodeBlock` paints the Pygments style's own background again. `ui.markdown.ReadableSyntaxTheme` moves any token colour below 4.5:1 against its effective background (token background, else the panel) toward white or black with `contrast.lift_to_floor`. Inline code and all other Markdown stay unpainted.
+
+**Verification:** `tests/ui/test_ui_code_blocks.py` checks every token of every theme's code style against the floor. It also renders `diff` and Python fences in all seven themes and checks that each glyph has a painted background and meets 4.5:1 on it. The new tests fail against the previous renderer and also against a painted but unlifted renderer. These are local test results only.
+
+**Prevention:** Any colour drawn by a third-party style belongs in the contrast gate, together with the background it is actually drawn on.
+
+## 2026-09-23: Colour Profile Ignored The Env File And Late Windows VT Enablement
+
+**Symptom (PR #74 review):** `NO_COLOR`, `COLORTERM` or `FORCE_COLOR` set in `~/.algo_cli/env` or `ALGO_CLI_ENV_FILE` had no effect on colour depth. A Windows console whose VT mode `_force_utf8_console` enabled at startup stayed at ANSI16.
+
+**Confirmed cause:** `display.COLOR_PROFILE` and the shared Rich console were fixed when the module was imported. That happened before `main()` ran `_force_utf8_console()` and `load_runtime_env(override=True)`.
+
+**Repair:** `display.refresh_color_profile()` runs detection again and re-probes the terminal and `legacy_windows`. It then updates the shared console in place, because other modules hold it by reference: it sets `legacy_windows`, the colour system and `no_color`, and pushes the base and active themes again at the new profile. `main()` calls it immediately after `load_runtime_env`. The prompt session and sticky footer already read `active_color_profile()` when they render, and they are created after that call. Import-time detection still gives tests and one-shot runs a safe provisional value.
+
+**Verification:** `tests/ui/test_ui_startup_profile.py` runs `main()` with an env file that sets `NO_COLOR=1` and checks the NONE profile, a 1-bit prompt depth and `console.no_color`. Another test simulates enabling VT after import and expects ANSI16 to become truecolor, and a third checks that the active theme is re-applied. All three fail against the previous source. These are local test results; no Windows console was exercised.
+
+**Prevention:** Anything derived from the environment must be read after startup environment setup, or refreshed at that point.
+
+## 2026-09-23: Mono Prompt Style Used "dim", Which Older prompt_toolkit 3.0.x Rejects
+
+**Symptom (PR #74 review):** The colour-off prompt_toolkit style set `dim`. The dependency floor is `prompt-toolkit>=3.0`, and on older versions in that range `Style.from_dict` raises. The PromptSession style and the sticky footer are then silently lost.
+
+**Confirmed cause:** Wheels checked locally show that `Style.from_dict({"x": "dim"})` fails with "Wrong color format 'dim'" in 3.0.0, 3.0.36, 3.0.43, 3.0.47, 3.0.48, 3.0.50 and 3.0.51, and first succeeds in 3.0.52 (the locked version). `bold`, `italic`, `underline`, `reverse`, `noreverse` and `hidden` parse in all of those versions.
+
+**Repair:** In the mono prompt_toolkit map, `dim` is replaced with `italic` (muted text and completion meta) and plain text (separators). The dependency floor is unchanged.
+
+**Verification:** New tests in `tests/ui/test_ui_startup_profile.py` restrict every prompt_toolkit style string, for every palette and profile, to the attributes that 3.0.0 through 3.0.51 accept. They fail against the previous tokens. The Rich-side mono tokens still use `dim`, which Rich supports.
+
+**Prevention:** A prompt_toolkit style attribute must parse at the declared dependency floor, not only at the locked version.
+
 ## 2026-09-24: Agent Block Model Errors Were Reported As Journal Corruption
 
 **Symptom and cause:** An end-to-end `/agent` scenario whose first (review) block hit a provider error recorded the block as `completion_check_error` with "journal event sequence is invalid: verifier ran before recorded work settled"; a Ctrl+C in the same block turned `cancelled` into `failed`. Blocks that can mutate run a post-block mutation audit in `run_agent_block`'s `finally`, and that audit's journal verifier refuses to run while the aborted model round is still open. Its failure overwrote the block's original status and cause. The final block has no mutation audit, so unit tests of that path passed.
