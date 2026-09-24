@@ -113,6 +113,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/theme", "Switch visual theme"),
     ("/info", "Show configuration"),
     ("/actions", "Browse commands, tools, and capabilities"),
+    ("/capabilities", "Show capability readiness: supported, configured, allowed, verified"),
     ("/doctor", "Show provider, dependency, ICL, and safety readiness"),
     ("/selfcheck", "Audit harness, slash/action wiring, kernels, and retrieval readiness"),
     ("/reload", "Reload configuration, tools, and harness state"),
@@ -172,7 +173,7 @@ COMMAND_GROUPS: dict[str, tuple[str, ...]] = {
         "/lesson", "/lessons", "/skills", "/intuition", "/intelligence", "/intel",
         "/intelagence", "/kernel", "/icl", "/code-rag",
     ),
-    "harness": ("/harness", "/hsearch", "/hread", "/hs", "/hr", "/actions"),
+    "harness": ("/harness", "/hsearch", "/hread", "/hs", "/hr", "/actions", "/capabilities"),
     "integrations": ("/config", "/google", "/x-account", "/plugins", "/credentials", "/url-scheme"),
     "media": ("/vision", "/pdf"),
 }
@@ -1529,6 +1530,20 @@ def handle_command(
         from .tools import available_actions
 
         m.console.print(available_actions(arg or None, cfg=cfg))
+    elif command == "/capabilities":
+        from .capability_readiness import all_readiness, capability_status_payload, render_capability_table
+
+        if arg:
+            payload = capability_status_payload(arg, cfg)
+            records = payload.get("capabilities") or [
+                {"capability": name, **record} for name, record in payload.get("tools", {}).items()
+            ]
+        else:
+            records = all_readiness(cfg)
+        if not records:
+            m.show_info(f"No tracked capability matches {arg!r}. Run /capabilities for all.")
+        else:
+            m.console.print(render_capability_table(records))
     elif command == "/doctor":
         from .action_registry import build_doctor_report, render_doctor
 

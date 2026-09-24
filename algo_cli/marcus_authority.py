@@ -316,6 +316,7 @@ CURATED_TOOL_POLICIES: dict[str, CuratedActionPolicy] = {
         estimated_cost=4.0,
     ),
     "action_search": _read(target=TargetScope.RUNTIME),
+    "capability_status": _read(target=TargetScope.RUNTIME),
     "append_lesson": _local(
         Capability.MEMORY,
         data=(DataClass.USER_PROFILE, DataClass.SENSITIVE),

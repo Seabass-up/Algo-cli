@@ -3151,6 +3151,7 @@ def _slash_command_groups() -> dict[str, list[str]]:
             "/hsearch QUERY",
             "/hread RECORD_ID",
             "/actions",
+            "/capabilities [TOPIC]",
             "/selfcheck",
             "/reload",
         ],
@@ -3251,6 +3252,7 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
         "multimodal": ["embed_text", "vision_describe"],
         "harness": [
             "available_actions",
+            "capability_status",
             "harness_stats",
             "harness_scorecard",
             "harness_competitive_rating",
@@ -3310,7 +3312,10 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
     from .oliver_slash_dispatch import SLASH_COMMAND_ALIASES, SLASH_COMMANDS
     from .kernels.manifest import kernel_runtime_snapshot
 
+    from .capability_readiness import READINESS_GUIDANCE, all_readiness, compact, matching_capabilities
+
     stats = _harness_stats_for_config(cfg)
+    readiness = {record["capability"]: compact(record) for record in all_readiness(cfg)}
 
     intelligence_runtime = intelligence_runtime_snapshot()
     kernel_runtime = kernel_runtime_snapshot()
@@ -3318,6 +3323,8 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
         "topic": focus or "all",
         "commands": commands,
         "model_callable_tools": tool_groups,
+        "capability_readiness": readiness,
+        "readiness_guidance": READINESS_GUIDANCE,
         "slash_command_guidance": slash_guidance,
         "reasoning_mode_guidance": reasoning_guidance,
         "verification_layer": verification_layer,
@@ -3379,6 +3386,17 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
                 indent=2,
             )
         matching["match"] = "matched"
+        focused_readiness = {
+            key: readiness[key]
+            for key in (
+                *matching_capabilities(focus),
+                *(group for group in (*matching["commands"], *matching["model_callable_tools"]) if group in readiness),
+            )
+            if key in readiness
+        }
+        if focused_readiness:
+            matching["capability_readiness"] = focused_readiness
+            matching["readiness_guidance"] = READINESS_GUIDANCE
         if slash_focus:
             matching["when_to_use"] = slash_guidance
         if reason_focus:
@@ -3409,6 +3427,7 @@ def session_slash(command: str) -> str:
 _SESSION_OUTPUT_COMMANDS = frozenset(
     {
         "/actions",
+        "/capabilities",
         "/changes",
         "/chatgpt-status",
         "/credentials",
@@ -5107,6 +5126,27 @@ def url_scheme_parse(url: str) -> str:
     return json.dumps(result, indent=2, sort_keys=True)
 
 
+def capability_status(topic: str = "", cfg: Any = None) -> str:
+    """Report whether a capability will work in this session before offering it.
+
+    Local read only: no network, no prompts. For each tracked capability
+    (google/gmail, browser, jev, xai, x_account, web, embeddings, harness) or an
+    exact tool name, returns supported, configured, allowed_in_session, and
+    verified (last success this session), plus a reason and next_step when not
+    ready.
+
+    Args:
+        topic: Capability, alias, or tool name such as "gmail", "browser", or "web_search"; empty for all.
+    """
+    from .capability_readiness import capability_status_payload
+
+    try:
+        payload = capability_status_payload(topic, cfg)
+    except Exception as exc:
+        payload = {"topic": str(topic or ""), "match": "error", "error": type(exc).__name__}
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
 def action_search(query: str, limit: int = 6, cfg: Any = None) -> str:
     """Discover relevant deferred actions and return their exact schemas.
 
@@ -5123,6 +5163,7 @@ def action_search(query: str, limit: int = 6, cfg: Any = None) -> str:
     """
 
     from .action_registry import get_action_spec
+    from .capability_readiness import READINESS_GUIDANCE, slash_readiness, tool_readiness
     from .irene_memory_path_policy import GLOBALLY_DISABLED_PROTECTED_ACTIONS, protected_tool_policy_error
     from .nathan_program_runtime import ProgramAuthorization, authorization_for_actions
     from .tool_context import rank_tools_for_prompt
@@ -5165,8 +5206,14 @@ def action_search(query: str, limit: int = 6, cfg: Any = None) -> str:
                 "requires_approval": None,
                 "safe_retry": None,
             }
-        actions.append({"name": name, "schema": wire_schema, "policy": policy})
+        actions.append(
+            {"name": name, "schema": wire_schema, "policy": policy, "readiness": tool_readiness(name, cfg)}
+        )
     slash_commands, blocked_slash_commands = _slash_command_candidates(normalized_query, bounded_limit, cfg)
+    for row in slash_commands:
+        # Classify the runnable example, else the command name with its subcommand, never the bare group.
+        example = row.get("example", {}).get("arguments", {}).get("command")
+        row["readiness"] = slash_readiness(str(example or _slash_invocation(row["command"])[0]), cfg)
     next_steps: list[str] = []
     if actions:
         next_steps.append(
@@ -5210,6 +5257,7 @@ def action_search(query: str, limit: int = 6, cfg: Any = None) -> str:
                 "found" if actions or slash_commands else "policy_blocked" if blocked_slash_commands else "none"
             ),
             "next": " ".join(next_steps),
+            "readiness_guidance": READINESS_GUIDANCE,
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -5495,6 +5543,7 @@ ALL_TOOLS = [
     _hide_cfg_param(action_search),
     _hide_cfg_param(action_program),
     _hide_cfg_param(available_actions),
+    _hide_cfg_param(capability_status),
     session_slash,
     _hide_cfg_param(session_command),
     _hide_cfg_param(harness_refresh),

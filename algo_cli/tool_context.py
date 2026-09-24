@@ -75,7 +75,7 @@ _CLASS_TO_TOOLS: dict[str, frozenset[str]] = {
         }
     ),
     "knowledge_graph": frozenset({"query_knowledge_graph", "reindex_knowledge_graph", "write_knowledge_graph_note"}),
-    "session": frozenset({"available_actions", "session_slash", "session_command"}),
+    "session": frozenset({"available_actions", "capability_status", "session_slash", "session_command"}),
     "plugins": frozenset({"plugins_discover", "plugins_load"}),
     "credentials": frozenset({"credential_helpers_get", "credential_helpers_store"}),
     "social": frozenset(

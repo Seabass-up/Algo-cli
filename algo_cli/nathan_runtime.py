@@ -80,6 +80,7 @@ _BASELINE_ACTIONS = frozenset(
         "action_search",
         "available_actions",
         "capability_mask_describe",
+        "capability_status",
         "extensions_manifest_build",
         "find_unique_anchor",
         "git_diff",
@@ -273,6 +274,7 @@ class RuntimeAuthoritySession:
         now: float,
         maximum_action_count: int = 1,
         ttl_seconds: float = _INTERACTIVE_GRANT_SECONDS,
+        register: bool = True,
     ) -> ConsentGrant:
         if maximum_action_count <= 0 or ttl_seconds <= 0:
             raise ValueError("runtime grants require a positive count and lifetime")
@@ -286,6 +288,9 @@ class RuntimeAuthoritySession:
             issued_at=now,
             source=source,
         )
+        if not register:
+            # A readiness probe sees the grant it would receive but never stores or consumes one.
+            return grant
         with self._lock:
             self._grants[grant.grant_id] = grant
             self._remaining[grant.grant_id] = maximum_action_count
@@ -482,6 +487,7 @@ def _prepared_grant(
     action: ResolvedAction,
     *,
     now: float,
+    register: bool = True,
 ) -> ConsentGrant | None:
     from .session_mode import active_mode
 
@@ -491,6 +497,7 @@ def _prepared_grant(
         # Each in-flight observation owns one use; overlapping reads must not share it.
         return session.issue(
             action,
+            register=register,
             source="runtime-baseline",
             now=now,
             ttl_seconds=_BASELINE_GRANT_SECONDS,
@@ -508,6 +515,7 @@ def _prepared_grant(
         # Owner activation permits ordinary observations beyond cwd, not writes.
         return session.issue(
             action,
+            register=register,
             source="user-yolo-preapproval",
             now=now,
             maximum_action_count=1,
@@ -521,6 +529,7 @@ def _prepared_grant(
             # Activation is explicit user consent; each preflight owns one use.
             return session.issue(
                 action,
+                register=register,
                 source="user-yolo-preapproval",
                 now=now,
                 maximum_action_count=1,
@@ -533,6 +542,7 @@ def _prepared_grant(
     if action.confirmation_mode is ConfirmationMode.SESSION_PREAPPROVAL and auto_preapproved:
         return session.issue(
             action,
+            register=register,
             source="user-yolo-preapproval" if yolo else "trusted-auto-preapproval",
             now=now,
             maximum_action_count=1 if yolo else _SESSION_GRANT_ACTIONS,
@@ -721,8 +731,18 @@ def _mode_tool_error(name: str, args: dict[str, Any], cfg: Config) -> str | None
     return None
 
 
-def _pre_dispatch_tool_error(name: str, args: dict[str, Any], cfg: Config) -> str | None:
-    """Reject known unavailable operations before approval or effect dispatch."""
+def _pre_dispatch_tool_error(
+    name: str,
+    args: dict[str, Any],
+    cfg: Config,
+    *,
+    probe_services: bool = True,
+) -> str | None:
+    """Reject known unavailable operations before approval or effect dispatch.
+
+    ``probe_services=False`` keeps the policy checks but skips live service
+    probes, so readiness reporting never makes a network request.
+    """
     from .irene_memory_path_policy import UNQUALIFIED_BROWSER_ACTIONS, protected_tool_policy_error
     from .continuum_memory import ContinuumMemoryError, selected
 
@@ -773,7 +793,7 @@ def _pre_dispatch_tool_error(name: str, args: dict[str, Any], cfg: Config) -> st
                 error = _pre_dispatch_tool_error(step.action, tool_runtime_args(step.action, step.args(), cfg), cfg)
                 if error is not None:
                     return f"Program step {step.step_id} was not dispatched: {error}"
-    if name in UNQUALIFIED_BROWSER_ACTIONS:
+    if name in UNQUALIFIED_BROWSER_ACTIONS and probe_services:
         return tools_module._browser_guard()
     return None
 
@@ -907,6 +927,71 @@ def preflight_runtime_tool(
         guardrail_reasons=list(preflight.guardrail_reasons),
     )
     return preflight
+
+
+@dataclass(frozen=True)
+class SessionPolicyReadiness:
+    """Whether the live session policy would admit a call, decided without dispatching it."""
+
+    state: Literal["allowed", "needs_approval", "blocked", "per_call"]
+    reason: str = ""
+    next_step: str = ""
+
+
+def session_policy_readiness(name: str, args: dict[str, Any], cfg: Config) -> SessionPolicyReadiness:
+    """Evaluate the preflight policy for a call without executing it.
+
+    Unlike ``preflight_runtime_tool`` this issues no grant, registers no turn
+    denial, records no telemetry, and makes no service probe.
+    """
+
+    no_workaround = "Report this to the user; do not retry or work around it."
+    signature_args = tool_runtime_args(name, args, cfg)
+    action = resolve_action(name, signature_args, cwd=cfg.cwd)
+    if action.effect_class is EffectClass.UNCLASSIFIED:
+        return SessionPolicyReadiness("blocked", "the action has no runtime policy classification", no_workaround)
+    if action.target.endswith(":unresolved"):
+        return SessionPolicyReadiness(
+            "per_call", "policy depends on the exact call target and is decided when the call is made"
+        )
+    admission_error = _pre_dispatch_tool_error(name, signature_args, cfg, probe_services=False)
+    if admission_error is not None:
+        return SessionPolicyReadiness("blocked", admission_error.removeprefix("Error: "), no_workaround)
+    now = time.time()
+    grant = _prepared_grant(cfg, action, now=now, register=False)
+    policy = evaluate_runtime_tool_policy(
+        name,
+        signature_args,
+        safe_mode=bool(getattr(cfg, "safe_mode", True)),
+        cwd=cfg.cwd,
+        grant=grant,
+        now=now,
+        auto_approve=_approval_mode(cfg) == "auto" or bool(cfg.auto_approve_active),
+    )
+    if policy.disposition is PolicyDisposition.ALLOW:
+        return SessionPolicyReadiness("allowed")
+    if policy.disposition is PolicyDisposition.CONFIRM:
+        if _approval_mode(cfg) == "never":
+            return SessionPolicyReadiness(
+                "blocked",
+                "the call needs user approval and this run cannot ask for approval",
+                "Tell the user it needs an interactive session where they can approve it.",
+            )
+        return SessionPolicyReadiness(
+            "needs_approval",
+            f"the user must approve it when called ({action.confirmation_mode.value.replace('_', ' ')})",
+            "Tell the user it will ask for approval before offering it.",
+        )
+    if (
+        policy.disposition is PolicyDisposition.DENY
+        and policy.fired_rules == ("scoped_authority",)
+        and grant is None
+        and action.confirmation_mode is ConfirmationMode.NONE
+    ):
+        denial = explain_missing_grant(cfg, action)
+        return SessionPolicyReadiness("blocked", denial.missing_scope, denial.recovery)
+    reason = "; ".join(policy.reasons) or f"runtime policy disposition {policy.disposition.value}"
+    return SessionPolicyReadiness("blocked", reason, no_workaround)
 
 
 def ask_approval(
@@ -1090,6 +1175,7 @@ def run_tool(name: str, args: dict[str, Any], cfg: Config) -> str:
         "harness_stats",
         "harness_refresh",
         "available_actions",
+        "capability_status",
         "harness_read",
         "harness_scorecard",
         "harness_competitive_rating",
@@ -1604,6 +1690,10 @@ def _record_tool_attempt_unlocked(
             )
             if program_digests:
                 entry["target_digests"] = list(program_digests)
+    if worked:
+        from .capability_readiness import record_verified
+
+        record_verified(cfg, name, args, at=entry["timestamp"])
     cfg.attempt_ledger.append(entry)
     barriers = _retry_barrier_indices(cfg)
     recent = [index for index in range(len(cfg.attempt_ledger)) if index not in barriers]
