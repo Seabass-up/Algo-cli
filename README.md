@@ -87,6 +87,8 @@ Signed-in local Ollama can run `:cloud` models without `OLLAMA_API_KEY`. `OLLAMA
 
 Runtime environment values can be stored in `~/.algo_cli/env` — the CLI loads them automatically. `algo-cli config` shows safe provider status, and `algo-cli config setup PROVIDER` writes only the selected setting with private file permissions. Point to a different file with `ALGO_CLI_ENV_FILE`. Legacy `~/.ollama_cli` locations are supported as migration aliases.
 
+Every rewrite of `config.json` first keeps the previous version as `config.json.bak.<UTC timestamp>` (owner-only, identical versions stored once, newest five kept). Backups hold settings only: the conversation summary and attempt ledger are blanked in each copy, so `/clear` and `/context clear` leave no copy of the cleared summary and a restore cannot bring it back. `algo-cli config restore --list` shows them with times and sizes, and `algo-cli config restore NAME` restores one after backing up the current file. Run the restore after exiting Algo CLI so an open session does not overwrite it.
+
 ### Provider setup
 
 Keep account setup outside the interactive slash palette:

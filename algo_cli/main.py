@@ -1119,6 +1119,10 @@ def run_config_command(arg: str = "") -> None:
     except ValueError as exc:
         show_error(f"Invalid /config arguments: {exc}")
         return
+    if argv[:1] == ["restore"] and any(not item.startswith("-") for item in argv[1:]):
+        # This session would overwrite the restored file with its in-memory settings.
+        show_error("Exit Algo CLI, then run `algo-cli config restore NAME`; `/config restore --list` works here.")
+        return
     cli_config.run(argv)
 
 

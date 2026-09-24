@@ -58,6 +58,13 @@ def build_parser() -> argparse.ArgumentParser:
     jev = subparsers.add_parser("jev", help="Configure the advisory Jev question-contract companion.")
     jev.add_argument("action", choices=("status", "enable", "disable"))
     jev.add_argument("--cli", help="Absolute path to the installed jev-workflows executable.")
+    restore = subparsers.add_parser(
+        "restore",
+        help="List automatic config.json backups or restore one (the current file is backed up first).",
+    )
+    restore_choice = restore.add_mutually_exclusive_group()
+    restore_choice.add_argument("--list", action="store_true", help="List backups with UTC timestamps and sizes.")
+    restore_choice.add_argument("backup", nargs="?", help="Backup name exactly as --list shows it.")
     return parser
 
 
@@ -460,6 +467,37 @@ def _run_jev(action: str, cli: str | None) -> int:
     return 0
 
 
+def _run_restore(backup: str | None) -> int:
+    from .config import CONFIG_FILE, list_config_backups, restore_config_backup
+
+    if backup is None:
+        backups = list_config_backups()
+        if not backups:
+            console.print(f"No config backups found beside {CONFIG_FILE}.", markup=False)
+            return 0
+        console.print(f"Config backups beside {CONFIG_FILE} (newest first):", markup=False)
+        for item in backups:
+            created = item["created"].strftime("%Y-%m-%d %H:%M:%S UTC")
+            console.print(f"  {item['name']}  {created}  {item['size']} bytes  [{item['kind']}]", markup=False)
+        console.print("Restore one with `algo-cli config restore NAME`.", markup=False)
+        return 0
+    try:
+        result = restore_config_backup(backup)
+    except ValueError as exc:
+        console.print(str(exc), markup=False)
+        return 2
+    except FileNotFoundError:
+        console.print(f"No config backup named {backup}; run `algo-cli config restore --list`.", markup=False)
+        return 1
+    except (OSError, RuntimeError):
+        console.print("Config restore failed safely; config.json was not replaced.", markup=False)
+        return 1
+    console.print(f"Restored config.json from {result['restored']} ({result['size']} bytes).", markup=False)
+    if result["previous_backup"] is not None:
+        console.print(f"Previous configuration retained at {result['previous_backup']}.", markup=False)
+    return 0
+
+
 def run(
     argv: Sequence[str] | None = None,
     *,
@@ -505,5 +543,7 @@ def run(
         return _run_memory(namespace.action)
     if namespace.command == "jev":
         return _run_jev(namespace.action, namespace.cli)
+    if namespace.command == "restore":
+        return _run_restore(namespace.backup)
     parser.error(f"Unsupported config command: {namespace.command}")
     return 2

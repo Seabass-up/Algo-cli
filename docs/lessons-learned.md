@@ -1947,6 +1947,28 @@ used.
 
 **Prevention:** Treat credential locator names as private data, not only the secrets.
 
+## 2026-09-24: A Scratch Test Overwrote The Real config.json
+
+**Symptom and cause:** A scratch test that reused a test helper outside the `tests/conftest.py` isolation ran `Config.save()` against the real `~/.algo_cli`, replacing `config.json` with defaults. `Config.save()` kept no prior version, and recovery depended on an old, unrelated backup.
+
+**Repair:** Before `Config.save()` or `repair_memory_configuration()` replaces `config.json`, the current file is kept as `config.json.bak.<UTC timestamp>`: written atomically with 0600 permissions, skipped when identical to a kept backup or to the new content, and rotated to the newest five. Links named like backups are never read, counted or removed. Under pytest, every config writer that goes through `_ensure_private_config_parent`, plus legacy migration writes, refuses any target that resolves inside the account's real `~/.algo_cli` or `~/.ollama_cli`. The account home comes from the password database, so changing `HOME` in a test does not hide the real directory. `algo-cli config restore [--list | NAME]` lists and restores backups after backing up the current file. In the REPL, `/config restore` only lists backups, because an open session would overwrite a restore.
+
+**Verification and limits:** `tests/test_config_safety.py` covers rotation, deduplication, permissions, links, a clock that stops or runs backwards, the guard (real home, legacy home, symlinked alias, `HOME` redirection, outside pytest), the restore round trip and the CLI. The full offline suite passes except the two known stale hardening receipts. This is local macOS evidence only. The Windows DACL path for backups uses the existing private-write helper but has not been run on Windows, so it stays pinned for hosted CI. The guard works only when pytest is running or already imported; a plain Python script with no isolation is still unguarded, and the rotating backups are its recovery path.
+
+**Prevention:** Keep recoverable history for any persistent-state rewrite. Tests should fail loudly when they reach real user state, not rely only on fixture discipline.
+
+## 2026-09-24: Config Backups Kept A Cleared Session Summary
+
+**Symptom:** After `/clear` or `/context clear`, the summary text and attempt ledger the user had just cleared were still on disk in `config.json.bak.<timestamp>`, and `algo-cli config restore` could bring them back. Before rotating backups, the atomic overwrite removed them.
+
+**Confirmed cause:** `_backup_config_before_write` copied the whole previous `config.json`, including `session_summary` (stored as written when Continuum is disabled) and `attempt_ledger`, before `Config.save()` wrote the cleared state.
+
+**Repair:** Backups now hold settings only. `_config_backup_payload` blanks `session_summary` and `attempt_ledger` in the retained copy; a file with those fields already empty is kept byte for byte, and an unparseable file is kept verbatim because recovering it is the purpose of the backup. Deduplication works on the retained bytes, so saves that change only the summary share one settings backup.
+
+**Verification:** An isolated scratch repro (HOME and `ALGO_CLI_CONFIG_DIR` in the session scratchpad) no longer finds the summary text in any backup after the clear. New tests in `tests/test_config_safety.py` cover the `/clear` sequence including restore, the blanking of the summary and ledger while settings stay, summary-only saves, and corrupt files. Three of them fail with the blanking removed. Local macOS evidence only; the full offline suite passes except the two known stale hardening receipts.
+
+**Prevention:** When adding persistent history for a file, check which of its fields a user can clear or delete, and keep them out of the history.
+
 ## Repair Log Checklist
 
 - Date and component.
