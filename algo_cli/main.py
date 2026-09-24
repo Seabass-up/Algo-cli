@@ -2312,6 +2312,7 @@ READ_ONLY_TOOLS = frozenset(
         "harness_stats",
         "available_actions",
         "action_search",
+        "capability_status",
         "memory_get",
         "memory_read",
         "memory_search",

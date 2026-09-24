@@ -67,6 +67,7 @@ _SLASH_ALIASES = {
 _SAFE_SESSION_COMMANDS = frozenset(
     {
         "/actions",
+        "/capabilities",
         "/changes",
         "/chatgpt-status",
         "/credentials",

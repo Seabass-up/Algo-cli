@@ -160,7 +160,8 @@ All tools are in `ALL_TOOLS` (list) and `TOOL_MAP` (name → fn dict). Each func
 | `update_user_profile` | Overwrites `USER.md`; requires approval |
 | `embed_text` | Tries Go gateway first, falls back to direct Ollama |
 | `vision_describe` | Passes image to a local vision model via Ollama |
-| `available_actions` | Returns JSON of all commands, tool groups, harness stats |
+| `available_actions` | Returns JSON of all commands, tool groups, harness stats, capability readiness |
+| `capability_status` | Local readiness per capability (supported/configured/allowed_in_session/verified); baseline-granted, no network |
 | `harness_refresh/stats/search/read` | Delegate to `harness.py` |
 
 **Safe-mode deny list** (`DENY_COMMAND_RE`): `rm`, `del`, `erase`, `rd`, `rmdir`, `format`, `diskpart`, `shutdown`, `restart-computer`, `stop-computer`, `git reset`, `git checkout`, `Remove-Item`.

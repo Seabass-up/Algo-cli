@@ -2109,6 +2109,42 @@ used.
 
 **Prevention:** A prompt_toolkit style attribute must parse at the declared dependency floor, not only at the locked version.
 
+## 2026-09-24: Discovery Offered Routes That Were Not Ready
+
+**Symptom:** `action_search` and `available_actions` found capabilities but could not say whether they would work. The model offered Gmail before Google OAuth existed and proposed Jev for browsing, which it cannot do.
+
+**Confirmed cause:** Discovery reported existence and static policy metadata only. Nothing combined local setup state, the live session policy and in-session success into one answer, so the model could not tell a present-but-unusable route from a usable one.
+
+**Repair:** `algo_cli/capability_readiness.py` reports four fields for Google (`/google`), the cobalt_* browser, Jev, xAI, X account (xurl), web tools, embeddings and the harness. `supported` means the code is present in this build. `configured` uses local checks only: Google `auth_status()`, the Jev companion path and its enabled flag, `XAI_API_KEY`, xurl on PATH, `OLLAMA_API_KEY`, the embedding model and the harness index file. The browser service is reported as `unconfirmed` because checking it would need a request. `allowed_in_session` comes from the new `nathan_runtime.session_policy_readiness`. It applies the same admission, grant and policy rules as preflight, but builds any grant without registering it, skips service probes, records no telemetry or turn denials, and honours an Agent Block ceiling. `verified` is set in `_record_tool_attempt_unlocked` only for invoked `worked` outcomes; it is stored in memory on the Config object and never persisted. Every not-ready state includes a reason and the exact next step. Readiness now appears on `action_search` rows, in `available_actions` (all capabilities, plus focused-topic readiness), through the new baseline-granted `capability_status(topic)` tool and in a read-only `/capabilities` table. Discovery guidance tells the model to check readiness before it offers a route, and says that Jev only ranks supplied options.
+
+**Verification:** `tests/test_capability_readiness.py` covers the Gmail states (not configured, signed out, configured and ready, blocked by protected-memory policy, blocked by an Agent Block ceiling, and draft needing approval). It also covers each capability's states with fakes, blocking when a run cannot ask for approval, failed checks that are reported rather than raised, and the absence of grants, ledger entries, turn denials and network connections. Other tests check that `capability_status` is baseline-granted and never prompts, and that the readiness fields and guidance appear in discovery. `verified` stays unset after failed or denied outcomes, after a bare `/google` and after a failed x_search that ran through the scripted agent runtime; it is set after a successful web_search on that same path. These are local offline test results.
+
+**Prevention:** When a capability is added, give it a `CapabilitySpec` with a local configured check. Readiness must never call `preflight_runtime_tool`, because that issues grants and records denials; use `session_policy_readiness`.
+
+## 2026-09-24: X Account Drafts Marked Unauthenticated xurl As Verified
+
+**Symptom:** With an unauthenticated xurl on PATH, `x_account_status` failed but a successful `x_account_draft_post` set `capability:x_account` to verified. The overall status became `verified`, so the guidance would have let the model offer posting.
+
+**Confirmed cause:** `record_verified` mapped every tool in the capability's tool list to the capability. `x_account_draft_post` and `x_account_draft_reply` only build a local intent URL and never contact X.
+
+**Repair:** `CapabilitySpec.offline_tools` lists tools that succeed without contacting the service. They still set their own `tool:` stamp but never the capability stamp. The X account drafts are listed there. The slash side uses the same rule (next entry): `/x-account draft-post`, `draft-reply` and `help` do not verify the capability.
+
+**Verification:** `test_x_account_local_draft_does_not_verify_an_unauthenticated_account` reproduces the probe with a fake xurl that exits 1. The status call is classified `failed`, the drafts `worked`, and the capability stays unverified. Further tests cover the slash drafts and help, and check that `x_account_status` and `/x-account status` successes still verify. The new tests failed against the previous logic. These are local offline test results.
+
+**Prevention:** When adding a tool to a capability, decide whether its success proves the service works. If it does not, add it to `offline_tools`.
+
+## 2026-09-24: /google help Marked Google As Verified Before Any API Call
+
+**Symptom:** When the token file looked refreshable but the refresh failed, `/google help` (classified `worked`) changed Google readiness from `ready` to `verified`. That told the model Gmail and Drive calls had already worked this session.
+
+**Confirmed cause:** `_slash_capability` excluded only a bare one-token group command. `/google help`, `--help`, `-h` and unknown subcommands have two tokens, but `run_google` handles help before authenticating, and it rejects unknown subcommands without making a call.
+
+**Repair:** `CapabilitySpec.verifying_subcommands` is now an allowlist of subcommands that reach the service. For Google these are the drive, docs, sheets, calendar and gmail subcommands. For X account they are `status`, `post`, `reply` and the confirmed post actions. Any other subcommand, and the bare group, leaves the capability unverified. `/harness` keeps its bare-command rule.
+
+**Verification:** `test_google_help_does_not_verify_when_token_refresh_fails` covers help, `--help`, `-h`, `HELP` and an unknown subcommand with `get_valid_token` returning None. `test_google_help_through_session_command_leaves_readiness_ready` runs the real `session_command` for `/google help` and `/google gmail-list`. A drift test checks that each allowlisted subcommand is a real branch of `run_google` or `run_x_account`. These tests failed before the fix. These are local offline test results.
+
+**Prevention:** When adding a subcommand to `/google` or `/x-account`, add it to `verifying_subcommands` only if it contacts the service. The drift test catches allowlist names that do not exist.
+
 ## Repair Log Checklist
 
 - Date and component.
