@@ -2109,6 +2109,18 @@ used.
 
 **Prevention:** A prompt_toolkit style attribute must parse at the declared dependency floor, not only at the locked version.
 
+## 2026-09-24: Colour Codes Let A Token Past Session Command Redaction
+
+**Symptom:** With `FORCE_COLOR` set, as in many developer shells and CI jobs, a `/google` error returned to the model through `session_command` contained `access_token=<value>` unredacted, while the Bearer token was redacted. The released v0.20.1 is affected.
+
+**Confirmed cause:** The captured Rich output kept its colour codes. The secret pattern began with a word boundary, and the code ending in `m` directly before `access_token=` removed that boundary, so the value was never matched. Tests passed in CI because CI does not set `FORCE_COLOR`; the M8 focused suite exposed it in a shell that does.
+
+**Repair:** `_captured_session_result` strips ANSI/VT sequences (7-bit and C1 CSI, OSC with BEL or ST, other escapes including charset designations) and stray control characters before redaction, and the secret and Bearer patterns no longer depend on a leading word boundary. `tests/conftest.py` clears host colour variables before `algo_cli` is imported so the suite renders the same in every terminal.
+
+**Verification:** A forced-colour `session_command` regression test and a parametrized escape-sequence test fail before the change and pass after it; the full suite passes with and without `FORCE_COLOR=3`. Local macOS evidence; hosted CI is recorded on the pull request.
+
+**Prevention:** Anything returned to a model is plain text first and redacted second; test redaction against decorated input, not only clean strings.
+
 ## Repair Log Checklist
 
 - Date and component.
