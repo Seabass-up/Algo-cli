@@ -4,6 +4,63 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.20.2] - 2026-09-25
+
+A patch release. It closes a secret-redaction gap in captured session command
+output, refreshes the managed-browser security pin, and carries the
+runtime-reliability and terminal-theme work merged since 0.20.1.
+
+### Security
+
+- Strip terminal control sequences from captured `session_command` output
+  before redaction. With `FORCE_COLOR` set, a color code directly before
+  `access_token=` defeated the secret pattern's word boundary, and a `/google`
+  error reached the model with the token unredacted; 0.20.1 is affected. The
+  secret and Bearer patterns no longer depend on a leading word boundary.
+
+### Fixed
+
+- `jev_kernel_status` had no reachable grant in any mode; it is now a local
+  runtime read in the baseline set. `jev_question_contract` stays
+  approval-gated.
+- Missing-grant denials name the action, target and missing scope, say whether
+  the denial is policy or a setup gap, and give the recovery step.
+- An identical denied call is not retried within the turn and gets no second
+  approval prompt; three identical blocks stop the run.
+- `action_search` indexes slash-command capabilities such as
+  `/google gmail-list`, maps email, mail and inbox to Gmail, and reports
+  "no match" instead of "unavailable". `available_actions(topic)` matches the
+  same way.
+- Harness stats and the index-quality recommendation explain why the last
+  embedding pass did not run.
+- Rich cannot resolve compound styles such as `bold primary`, so about thirty
+  surfaces (logo, banner, error label, thinking text, headings) rendered
+  unstyled and several footer chips failed contrast. Every style is now a
+  named token with contrast floors, and `/reload` no longer leaves the footer
+  on the previous theme.
+
+### Changed
+
+- One color profile (truecolor, 256, 16 or mono) is detected once from
+  `COLORTERM`, `TERM`, `NO_COLOR`, `FORCE_COLOR` and the Windows console and
+  applied to output, prompt and footer together. 16-color terminals keep
+  success, warning, error and info distinct; `NO_COLOR` and `TERM=dumb` use
+  bold, dim and reverse only; `FORCE_COLOR` raises the detected depth.
+- Assistant Markdown and code blocks follow the active theme instead of Rich's
+  defaults. All seven themes, including `redeye`, are documented.
+- Jev tool text states that Jev returns advisory judgments only and names the
+  routes that can browse, read mail or act.
+- Refresh the Boron managed-browser pin to Chrome `154.0.8037.57` with its
+  package checksum, release timestamp, regenerated dpkg lock and coupled
+  fixtures, keeping the 72-hour security-update limit.
+- The predecessor upgrade smoke baseline moves to public `0.20.1`.
+
+### Release Limits
+
+- M8 retains five blocked external-browser metrics and M9 retains thirteen
+  blocked requirements. No external-browser or model-quality qualification is
+  claimed from local deterministic evidence.
+
 ## [0.20.1] - 2026-09-23
 
 A patch release from a whole-codebase bug hunt. Candidate issues were

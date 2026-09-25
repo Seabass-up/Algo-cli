@@ -23,7 +23,7 @@ assert SPEC and SPEC.loader
 AUTHORITY = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = AUTHORITY
 SPEC.loader.exec_module(AUTHORITY)
-TAG = "v0.20.1"
+TAG = "v0.20.2"
 RELEASE_ID = 432100001
 PUBLISHER = "a" * 40
 SOURCE = PUBLISHER
