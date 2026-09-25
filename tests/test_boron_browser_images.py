@@ -373,7 +373,7 @@ def test_dockerfiles_pin_base_downloads_users_and_narrow_copy_surface() -> None:
     assert "ARG LIBNSS3_TOOLS_VERSION=2:3.87.1-1+deb12u2" in browser
     assert "libnss3-tools=${LIBNSS3_TOOLS_VERSION}" in browser
     assert "ARG DPKG_LOCK_ENTRIES=228" in browser
-    assert ("ARG DPKG_LOCK_SHA256=8b33f574a394cc249f5546a8f3c089aea2ab0d1c372d190acc74c7443381f52d") in browser
+    assert ("ARG DPKG_LOCK_SHA256=ff1b017fb2b738b25d594d6472fcce443a7a5a2857f4d3304fab1b3d75c2166f") in browser
     assert "ARG DPKG_LOCK_ENTRIES=122" in broker
     assert ("ARG DPKG_LOCK_SHA256=945e9057beb01efbdcf89ca6ba002f260eb6bda40f5d535337e7ca7dc6eed640") in broker
     assert "boron_browser_wrapper.py" in browser
