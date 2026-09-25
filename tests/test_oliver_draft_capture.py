@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import importlib.util
@@ -7,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import textwrap
 import time
@@ -23,7 +25,8 @@ assert SPEC and SPEC.loader
 AUTHORITY = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = AUTHORITY
 SPEC.loader.exec_module(AUTHORITY)
-TAG = "v0.20.1"
+SOURCE_VERSION_FILE = (ROOT / "algo_cli/__init__.py").read_text(encoding="utf-8")
+TAG = "v" + re.findall(r'^__version__ = "([^"\n]*)"$', SOURCE_VERSION_FILE, re.MULTILINE)[0]
 RELEASE_ID = 432100001
 PUBLISHER = "a" * 40
 SOURCE = PUBLISHER
@@ -45,6 +48,12 @@ def document(*, populated: bool = False, release_id: int = RELEASE_ID) -> dict[s
             "draft": True, "prerelease": False, "immutable": False, "published_at": None, "assets": rows}
 
 
+def contents(text: str = SOURCE_VERSION_FILE) -> dict[str, Any]:
+    encoded = base64.b64encode(text.encode()).decode()
+    return {"type": "file", "path": "algo_cli/__init__.py", "encoding": "base64",
+            "content": "\n".join(encoded[i:i + 60] for i in range(0, len(encoded), 60))}
+
+
 class Response(io.BytesIO):
     status = 200
 
@@ -53,7 +62,7 @@ def execute(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, phase: str = "initial",
     release: dict[str, Any] | None = None, listing: Any = None, drift: bool = False,
     redirect: str | None = None, corrupt: bool = False, status: int | None = None,
-    environment: dict[str, str] | None = None,
+    environment: dict[str, str] | None = None, version_file: Any = None,
 ) -> tuple[dict[str, Any], list[urllib.request.Request]]:
     release = document() if release is None else release
     listing = [release] if listing is None else listing
@@ -87,6 +96,8 @@ def execute(
             if status is not None:
                 raise urllib.error.HTTPError(url, status, "private-canary", {}, None)
             endpoint = url.removeprefix(prefix)
+            if endpoint == f"contents/algo_cli/__init__.py?ref={values['GITHUB_SHA']}":
+                return Response(json.dumps(contents() if version_file is None else version_file).encode())
             if endpoint == "releases?per_page=100":
                 return Response(json.dumps(listing).encode())
             if endpoint == f"releases/{detail_id}":
@@ -121,7 +132,8 @@ def test_exact_capture_preserves_identity_and_only_gets(
     assert receipt["phase"] == phase and receipt["run_id"] == "99" and receipt["run_attempt"] == "1"
     expected = AUTHORITY.expected_release_assets(TAG) if phase == "initial" and populated else set()
     assert {p.name for p in (tmp_path / "draft-capture/assets").iterdir()} == expected
-    assert len(calls) == 3 + len(expected)
+    assert len(calls) == 4 + len(expected)
+    assert calls[0].full_url == f"https://api.github.com/repos/Seabass-up/Algo-cli/contents/algo_cli/__init__.py?ref={PUBLISHER}"
 
 
 @pytest.mark.parametrize("change", [
@@ -300,3 +312,82 @@ def test_capture_is_gated_no_checkout_no_execution_of_downloaded_bytes() -> None
     assert "class NoRedirect" in workflow
     assert "release-assets.githubusercontent.com" in workflow
     assert "phase == 'initial'" in workflow
+
+
+def test_capture_tag_and_asset_names_follow_source_version() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert re.search(r"\d+\.\d+\.\d+", program().split("tag_grammar", 1)[1].split("version_endpoint", 1)[0]) is None
+    assert re.search(r"algo_cli_runtime-\d", workflow) is None and re.search(r"'v\d+\.\d+", workflow) is None
+    assert AUTHORITY.source_release_tag() == TAG
+
+
+@pytest.mark.parametrize("version_file", [
+    contents(SOURCE_VERSION_FILE.replace(TAG[1:], "9.9.9")),
+    contents(SOURCE_VERSION_FILE + '__version__ = "' + TAG[1:] + '"\n'),
+    contents(SOURCE_VERSION_FILE.replace('__version__ = "', "__version__ = '").replace(TAG[1:] + '"', TAG[1:] + "'")),
+    contents("no version here\n"),
+    {**contents(), "type": "dir"}, {**contents(), "path": "other/__init__.py"}, {**contents(), "encoding": "none"},
+    {**contents(), "content": "@@not-base64@@"}, {**contents(), "content": None}, [contents()],
+])
+def test_capture_rejects_tag_not_equal_to_dispatched_source_version(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, version_file: Any,
+) -> None:
+    with pytest.raises(SystemExit, match="release_draft_capture"):
+        execute(monkeypatch, tmp_path, version_file=version_file)
+    assert not (tmp_path / "draft-capture/snapshot.json").exists()
+
+
+@pytest.mark.parametrize("tag", ["v9.9.9", "0.20.1", "v0.20.1.dev1", "v0.20.1+local", "v00.1.0", ""])
+def test_capture_rejects_tags_other_than_the_source_version(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tag: str,
+) -> None:
+    with pytest.raises(SystemExit, match="release_draft_capture"):
+        execute(monkeypatch, tmp_path, environment={"RELEASE_TAG": tag})
+
+
+def test_capture_reads_version_only_at_the_dispatched_revision(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    other = "c" * 40
+    receipt, calls = execute(monkeypatch, tmp_path, environment={"GITHUB_SHA": other})
+    assert receipt["publisher"] == other
+    assert calls[0].full_url.endswith(f"contents/algo_cli/__init__.py?ref={other}")
+
+
+def _source_root(tmp_path: Path, text: str) -> Path:
+    package = tmp_path / "source" / "algo_cli"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(text, encoding="utf-8")
+    return tmp_path / "source"
+
+
+def test_draft_snapshot_binds_tag_to_checkout_version(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    receipt, _ = execute(monkeypatch, tmp_path)
+    monkeypatch.setattr(AUTHORITY, "ROOT", _source_root(tmp_path, SOURCE_VERSION_FILE.replace(TAG[1:], "9.9.9")))
+    with pytest.raises(AUTHORITY.ReleaseAuthorityRejected, match="release_draft_snapshot"):
+        AUTHORITY.draft_snapshot_api(receipt, environment=os.environ, api_get=lambda _: pytest.fail("unexpected API"))
+
+
+@pytest.mark.parametrize("text", [
+    "", "no version\n", '__version__ = "0.20.1"\n__version__ = "0.20.1"\n', '__version__ = "0.20.1.dev1"\n',
+    "__version__ = '0.20.1'\n", '__version__ = "v0.20.1"\n', '__version__ = "0.20.1+local"\n',
+])
+def test_source_release_tag_rejects_ambiguous_or_noncanonical_versions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, text: str,
+) -> None:
+    monkeypatch.setattr(AUTHORITY, "ROOT", _source_root(tmp_path, text))
+    with pytest.raises(AUTHORITY.ReleaseAuthorityRejected, match="release_source_version"):
+        AUTHORITY.source_release_tag()
+
+
+def test_source_release_tag_reads_a_crlf_checkout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    root = _source_root(tmp_path, "")
+    (root / "algo_cli" / "__init__.py").write_bytes(b'"""Algo CLI."""\r\n\r\n__version__ = "0.21.0"\r\n')
+    monkeypatch.setattr(AUTHORITY, "ROOT", root)
+    assert AUTHORITY.source_release_tag() == "v0.21.0"
+
+
+@pytest.mark.parametrize("version", ["0.21.0", "1.0.0.post2"])
+def test_source_release_tag_follows_a_version_bump(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, version: str) -> None:
+    monkeypatch.setattr(AUTHORITY, "ROOT", _source_root(tmp_path, f'__version__ = "{version}"\n'))
+    assert AUTHORITY.source_release_tag() == "v" + version

@@ -14,7 +14,7 @@ import re
 import subprocess
 import sys
 import textwrap
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -1262,6 +1262,7 @@ def test_pypi_visibility_wait_retries_only_absent_or_partial_exact_state(
             fetch=fetch,
             visibility_retry_delays=(1.0, 2.0),
             sleep=sleeps.append,
+            monotonic=lambda: 0.0,
         )
         == "exact"
     )
@@ -1271,7 +1272,9 @@ def test_pypi_visibility_wait_retries_only_absent_or_partial_exact_state(
     assert events == (
         {
             "attempt": 1,
+            "deadline_seconds": SCRIPT.PYPI_VISIBILITY_DEADLINE_SECONDS,
             "delay_seconds": 1.0,
+            "elapsed_seconds": 0.0,
             "max_observations": 3,
             "reason_code": "release_pypi_visibility_pending",
             "state": "absent",
@@ -1279,7 +1282,9 @@ def test_pypi_visibility_wait_retries_only_absent_or_partial_exact_state(
         },
         {
             "attempt": 2,
+            "deadline_seconds": SCRIPT.PYPI_VISIBILITY_DEADLINE_SECONDS,
             "delay_seconds": 2.0,
+            "elapsed_seconds": 0.0,
             "max_observations": 3,
             "reason_code": "release_pypi_visibility_pending",
             "state": "partial-exact",
@@ -1333,6 +1338,116 @@ def test_pypi_visibility_wait_is_bounded_and_never_retries_conflicts(tmp_path: P
         )
     assert fetch_count == 1
     assert sleeps == []
+
+
+def test_pypi_visibility_backoff_is_exponential_capped_and_bounded() -> None:
+    delays = SCRIPT.PYPI_VISIBILITY_RETRY_DELAYS
+    assert delays[:5] == (1.0, 2.0, 4.0, 8.0, 15.0)
+    assert all(later >= earlier for earlier, later in zip(delays, delays[1:]))
+    assert max(delays) == 30.0
+    assert 240.0 <= sum(delays) <= SCRIPT.PYPI_VISIBILITY_DEADLINE_SECONDS <= 300.0
+    workflow = (ROOT / ".github/workflows/oliver-release.yml").read_text(encoding="utf-8")
+    verify = workflow.split("  pypi-verify:\n", 1)[1].split("\n  repository-policy-final:\n", 1)[0]
+    timeout = int(re.search(r"^    timeout-minutes: (\d+)$", verify, re.MULTILINE).group(1))
+    # Deadline plus one final 20-second request plus job setup must fit inside the job limit.
+    assert timeout * 60 >= SCRIPT.PYPI_VISIBILITY_DEADLINE_SECONDS + 20 + 120
+    assert timeout <= 10
+    assert "environment:" not in verify and "contents: read" in verify and "id-token" not in verify
+
+
+def test_pypi_visibility_wait_uses_the_full_default_schedule_until_exhaustion(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    _write_distributions(dist)
+    clock = [0.0]
+    sleeps: list[float] = []
+    fetches: list[str] = []
+
+    def sleep(delay: float) -> None:
+        sleeps.append(delay)
+        clock[0] += delay
+
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_pypi_missing"):
+        SCRIPT.verify_pypi_state(
+            tag=TAG, directory=dist, require_present=True, fetch=lambda url: fetches.append(url) or b"",
+            visibility_retry_delays=SCRIPT.PYPI_VISIBILITY_RETRY_DELAYS, sleep=sleep, monotonic=lambda: clock[0],
+        )
+    assert tuple(sleeps) == SCRIPT.PYPI_VISIBILITY_RETRY_DELAYS
+    assert len(fetches) == len(SCRIPT.PYPI_VISIBILITY_RETRY_DELAYS) + 1
+    assert clock[0] <= SCRIPT.PYPI_VISIBILITY_DEADLINE_SECONDS
+
+
+def test_pypi_visibility_wait_converges_late_within_the_extended_window(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    exact = _pypi_document(_write_distributions(dist))
+    clock = [0.0]
+    # The v0.19.1.post1 and v0.20.1 failures were still invisible after the old ~30s schedule.
+    responses = iter([b""] * 9 + [exact])
+
+    def sleep(delay: float) -> None:
+        clock[0] += delay
+
+    assert SCRIPT.verify_pypi_state(
+        tag=TAG, directory=dist, require_present=True, fetch=lambda _url: next(responses),
+        visibility_retry_delays=SCRIPT.PYPI_VISIBILITY_RETRY_DELAYS, sleep=sleep, monotonic=lambda: clock[0],
+    ) == "exact"
+    assert clock[0] > 30.0
+
+
+def test_pypi_visibility_wait_stops_at_the_wall_clock_deadline(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    _write_distributions(dist)
+    clock = [0.0]
+    sleeps: list[float] = []
+
+    def slow_fetch(_url: str) -> bytes:
+        clock[0] += 20.0  # every request consumes its full socket timeout
+        return b""
+
+    def sleep(delay: float) -> None:
+        sleeps.append(delay)
+        clock[0] += delay
+
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match="release_pypi_missing"):
+        SCRIPT.verify_pypi_state(
+            tag=TAG, directory=dist, require_present=True, fetch=slow_fetch,
+            visibility_retry_delays=SCRIPT.PYPI_VISIBILITY_RETRY_DELAYS, sleep=sleep, monotonic=lambda: clock[0],
+        )
+    assert clock[0] <= SCRIPT.PYPI_VISIBILITY_DEADLINE_SECONDS + 20.0
+    assert len(sleeps) < len(SCRIPT.PYPI_VISIBILITY_RETRY_DELAYS)
+
+
+@pytest.mark.parametrize("mutate,reason", [
+    (lambda document: document["urls"][0]["digests"].update(sha256="0" * 64), "release_pypi_digest"),
+    (lambda document: document["info"].update(version="9.9.9"), "release_pypi_identity"),
+    (lambda document: document["urls"][0].update(yanked=True), "release_pypi_file"),
+    (lambda document: document.pop("urls"), "release_pypi_shape"),
+])
+def test_pypi_extended_wait_never_retries_conflicts_after_absence(
+    tmp_path: Path, mutate: Callable[[dict[str, Any]], Any], reason: str,
+) -> None:
+    dist = tmp_path / "dist"
+    document = json.loads(_pypi_document(_write_distributions(dist)))
+    mutate(document)
+    responses = iter([b"", b"", json.dumps(document).encode()])
+    sleeps: list[float] = []
+    with pytest.raises(SCRIPT.ReleaseAuthorityRejected, match=reason):
+        SCRIPT.verify_pypi_state(
+            tag=TAG, directory=dist, require_present=True, fetch=lambda _url: next(responses),
+            visibility_retry_delays=SCRIPT.PYPI_VISIBILITY_RETRY_DELAYS, sleep=sleeps.append,
+            monotonic=lambda: 0.0,
+        )
+    assert sleeps == [1.0, 2.0]
+
+
+def test_pypi_cli_waits_only_with_the_bounded_schedule(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(SCRIPT, "_require_release_platform", lambda: None)
+    monkeypatch.setattr(SCRIPT, "verify_pypi_state", lambda **kwargs: calls.append(kwargs) or "exact")
+    base = ["pypi", "--tag", TAG, "--dist", str(tmp_path), "--require-present"]
+    assert SCRIPT.main(base + ["--wait-for-visibility"]) == 0
+    assert SCRIPT.main(base) == 0
+    assert calls[0]["visibility_retry_delays"] == SCRIPT.PYPI_VISIBILITY_RETRY_DELAYS
+    assert calls[1]["visibility_retry_delays"] == ()
 
 
 def test_pypi_visibility_wait_requires_post_publish_mode(
@@ -2680,3 +2795,9 @@ def test_exact_post_publish_validator_rejects_tag_move(tmp_path: Path) -> None:
     moved = validate("f" * 40)
     assert moved.returncode != 0
     assert "published release authority changed" in moved.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the release reader's POSIX flags exist only off Windows")
+def test_release_reader_keeps_every_posix_hardening_flag():
+    required = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW
+    assert SCRIPT._READ_REGULAR_FLAGS & required == required

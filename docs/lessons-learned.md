@@ -2121,6 +2121,38 @@ used.
 
 **Prevention:** Anything returned to a model is redacted, normalized to plain text, and redacted again; test redaction against decorated and malformed input, not only clean strings.
 
+## 2026-09-24: Each Release Required Hand-Edited Tag Bindings
+
+**Symptom:** Every release preparation (for example commit `5ad1255`) hand-edited
+the tag in `draft_snapshot_api`, the tag and two distribution filenames in the
+draft-capture child, and matching test constants. The upgrade-smoke CI labels
+still said "Upgrade public 0.18.0" while the pinned baseline was 0.20.0.
+
+**Cause:** The bindings were written as literals rather than derived from the
+single version source, `algo_cli/__init__.py`. Labels repeated a value that
+only `BASELINE_VERSION` should own.
+
+**Repair:** `source_release_tag()` reads the checkout's `__version__` (one exact
+`__version__ = "..."` line matching the release tag grammar, else
+`release_source_version`) and `draft_snapshot_api` binds to it. The capture
+child now reads `algo_cli/__init__.py` at exactly `GITHUB_SHA` through one fixed
+contents GET before any release request, requires the dispatched tag to equal
+`v` plus that version, and derives the two filenames. No checkout, extra
+permission, environment, or action pin was added. Test constants derive from
+the source. Smoke labels now say "pinned public predecessor". The historical
+`v0.19.1.post1` recovery identity and the `v0.19.0` block stay fixed.
+
+**Verification:** Local tests in `tests/test_oliver_draft_capture.py` cover
+mismatched, duplicated, single-quoted, malformed, non-file, wrong-path and
+non-base64 version files, off-grammar tags, the revision-bound request, a
+snapshot rejected when the checkout version differs, and version bumps.
+Existing capture, authority, packager and smoke tests pass. Hosted
+qualification of the changed workflows is still pending.
+
+**Prevention:** A version bump should touch only `__version__`, release notes
+and the pinned predecessor. Tests fail if a version literal returns to the
+capture program or the upgrade labels.
+
 ## Repair Log Checklist
 
 - Date and component.
