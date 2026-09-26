@@ -458,6 +458,59 @@ def test_team_trailing_roles_without_value_is_usage_error():
     )
 
 
+@pytest.mark.parametrize(
+    "arg",
+    [
+        '--roles="planner, critic" Review code',
+        "--roles='planner, critic' Review code",
+        '--roles "planner, critic" Review code',
+        'Review code --roles="planner, critic"',
+        'Review code --roles "planner, critic"',
+    ],
+)
+def test_team_quoted_roles_value_with_space_is_accepted(arg):
+    assert agent_pipeline.parse_agent_team_invocation(arg) == (["planner", "critic"], "Review code", "")
+
+
+@pytest.mark.parametrize(
+    "arg",
+    [
+        'Explain "tool --roles alpha,beta behavior"',
+        "Explain 'tool --roles=alpha,beta behavior'",
+        'Explain "the --roles flag" in detail',
+        'Explain "tool --roles alpha,beta behavior" --roles planner,critic',
+    ],
+)
+def test_team_roles_inside_quoted_task_text_is_kept_verbatim(arg):
+    roles, task, error = agent_pipeline.parse_agent_team_invocation(arg)
+
+    assert error == ""
+    expected_roles = ["planner", "critic"] if arg.endswith("--roles planner,critic") else []
+    expected_task = arg.removesuffix(" --roles planner,critic")
+    assert (roles, task) == (expected_roles, expected_task)
+
+
+@pytest.mark.parametrize(
+    "arg, expected_task",
+    [
+        ("Review the user's auth flow --roles planner,critic", "Review the user's auth flow"),
+        ("Review it's a 'quoted' thing --roles planner,critic", "Review it's a 'quoted' thing"),
+        ('Replace "foo bar" with "baz" --roles=planner,critic', 'Replace "foo bar" with "baz"'),
+        ("--roles planner,critic Don't break the user's \"quoted\" task", "Don't break the user's \"quoted\" task"),
+    ],
+)
+def test_team_roles_outside_quotes_survive_apostrophes_and_inner_quotes(arg, expected_task):
+    assert agent_pipeline.parse_agent_team_invocation(arg) == (["planner", "critic"], expected_task, "")
+
+
+def test_pipeline_flag_accepts_quoted_value_after_equals():
+    assert agent_pipeline.parse_agent_invocation_checked('--pipeline="code change" Fix the user\'s login bug') == (
+        "code change",
+        "Fix the user's login bug",
+        "",
+    )
+
+
 _HEX_WORDS = ["a", "be", "add", "ace", "bad", "bed", "bee", "cab", "dad", "dead", "face", "cafe", "beef", "decade"]
 _HEX_WORDS += ["facade", "defaced"]
 
