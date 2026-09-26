@@ -4385,6 +4385,15 @@
           "timestamp": "2026-09-26T20:53:41Z",
           "scope": "source digest sha256:33c76e76380a0680e3e29b632090db7a0ffc1a882fca5a437b0e45dab08bc04a binds the candidate for the v0.20.2 review fixes above 9fd58d0: local Jev lint runtime target with baseline access, quote-aware /agent team option parsing, and terminal-status ordering in agent_threads.update_thread; Chrome pin 154.0.8037.57 and the 72h lag gate unchanged; frozen installed-source parity passed before execution",
           "limitations": "This is current local evidence, not an exact release commit, hosted platform qualification, external-browser completion, signed native lifecycle, live model qualification or public delivery; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "uv run --frozen --no-editable --extra dev --extra supply-chain python -B scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:01ed428ce0c3f216bcdf4db7a56b387e959dd5705ed5c71ce25d35e67bf466bc",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-26T21:17:37Z",
+          "scope": "source digest sha256:caba98e0d90c3f3190fe41cd1c86606e042a00a59007ccff59b5b49a72e3bae1 binds the candidate for PR #83 review follow-ups: finish_turn refuses to finish a cancelled thread as another status, word-final closing quotes in /agent team option spans, and the Jev smoke no longer claims an unmeasured provider-call count; runtime otherwise as in the preceding rows; frozen installed-source parity passed before execution",
+          "limitations": "This is current local evidence, not an exact release commit, hosted platform qualification, external-browser completion, signed native lifecycle, live model qualification or public delivery; HARD-080 remains in progress"
         }
       ]
     },
@@ -7092,6 +7101,24 @@
           "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics; public_claim_eligible is false",
           "timestamp": "2026-09-26T20:53:41Z",
           "scope": "source digest sha256:33c76e76380a0680e3e29b632090db7a0ffc1a882fca5a437b0e45dab08bc04a binds five local efficiency repetitions and the installed current-source focused suite",
+          "limitations": "Local synthetic efficiency does not qualify live model quality, cross-harness superiority, external browsers, hosted platforms, release publication or YOLO effectiveness; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "uv run --frozen --no-editable --extra dev --extra supply-chain python -B scripts/nathan_agent_runtime_qualification.py --refresh --quiet; hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:2fbb35ee6036386c6b6eb8091a25cdf181e5d043832ecdb91ea91f5f17cba856",
+          "result": "status pass: 17 correctness probes and 31 deterministic workloads pass with zero policy escapes, duplicate mutations or unverified completions; public_claim_eligible is false",
+          "timestamp": "2026-09-26T21:15:18Z",
+          "scope": "source digest sha256:e488b87f299235c6053d8b6af8ddbc40ad7ac259fbfa2af498e96876ba33db1f and report digest sha256:fe64a67a0ee358ebf4b1c96e889692ba70057ac014134f5e4471750247564e88 bind the candidate for PR #83 review follow-ups: finish_turn refuses to finish a cancelled thread as another status, word-final closing quotes in /agent team option spans, and the Jev smoke no longer claims an unmeasured provider-call count; runtime otherwise as in the preceding rows",
+          "limitations": "Model-free local fixtures do not establish live model or provider behavior, comparative performance, hosted platform qualification, production service isolation or public delivery; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json efficiency and focused matrix executed by scripts/henry_m8_qualification.py",
+          "digest": "sha256:01ed428ce0c3f216bcdf4db7a56b387e959dd5705ed5c71ce25d35e67bf466bc",
+          "result": "status blocked: 9 source-bound local metrics pass, 5 external browser metrics remain blocked, 0 failed or not-verified metrics; public_claim_eligible is false",
+          "timestamp": "2026-09-26T21:17:37Z",
+          "scope": "source digest sha256:caba98e0d90c3f3190fe41cd1c86606e042a00a59007ccff59b5b49a72e3bae1 binds five local efficiency repetitions and the installed current-source focused suite",
           "limitations": "Local synthetic efficiency does not qualify live model quality, cross-harness superiority, external browsers, hosted platforms, release publication or YOLO effectiveness; HARD-081 remains in progress"
         }
       ]

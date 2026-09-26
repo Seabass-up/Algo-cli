@@ -79,7 +79,10 @@ def main() -> int:
             "status": status_body, "lint_status": lint_body["status"],
             "unapproved_paid_run": "denied_without_invocation",
             "caller_ceiling": "denied_without_invocation",
-            "provider_inference_calls": 0,
+            # Only the operations this smoke sent are known; the companion's own network
+            # behavior is not observed here, so no provider-call count is claimed.
+            "companion_operations_requested": ["status", "lint"],
+            "provider_calls_observed": "not_measured",
         }, sort_keys=True))
     return 0
 

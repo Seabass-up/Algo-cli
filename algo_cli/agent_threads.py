@@ -1605,6 +1605,12 @@ def finish_turn(
         for record in records:
             if record["id"] != thread_id:
                 continue
+            # Cancellation wins: a specialist that was inside its final write when the team
+            # was cancelled must not finish the record as complete, partial or failed later.
+            if record.get("status") == "cancelled" and status != "cancelled":
+                raise ValueError(
+                    f"Agent thread '{thread_id}' is already cancelled; it cannot be finished as {status}."
+                )
             record_protected = protected or record.get("protected_memory_authority") is True
             if record_protected and authority is None:
                 raise ElsieReceiptError("protected agent thread receipt authority is unavailable")

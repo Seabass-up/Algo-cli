@@ -86,6 +86,23 @@ def test_terminal_thread_status_is_not_replaced_by_late_in_progress_write(tmp_pa
     assert agent_threads.begin_turn(record["id"], "Again", path=path)["status"] == "running"
 
 
+def test_cancelled_thread_cannot_be_finished_as_another_terminal_status(tmp_path):
+    path = tmp_path / "threads.json"
+    record = agent_threads.create_thread("Review auth", pipeline="specialist", path=path)
+    agent_threads.begin_turn(record["id"], "Review auth", path=path)
+    agent_threads.finish_turn(record["id"], status="cancelled", error="detached", path=path)
+    for late in ("complete", "partial", "failed"):
+        with pytest.raises(ValueError, match="already cancelled"):
+            agent_threads.finish_turn(record["id"], status=late, output="late", path=path)
+    stored = agent_threads.resolve_thread(record["id"], path=path)
+    assert stored["status"] == "cancelled" and stored["error"] == "detached" and stored["output"] == ""
+    # Re-finishing as cancelled and a sanctioned restart both remain allowed.
+    agent_threads.finish_turn(record["id"], status="cancelled", error="detached again", path=path)
+    agent_threads.begin_turn(record["id"], "Review auth", path=path)
+    agent_threads.finish_turn(record["id"], status="complete", output="done", path=path)
+    assert agent_threads.resolve_thread(record["id"], path=path)["status"] == "complete"
+
+
 def test_child_thread_is_linked_to_parent(tmp_path):
     path = tmp_path / "threads.json"
     parent = agent_threads.create_thread("Parent task", path=path)

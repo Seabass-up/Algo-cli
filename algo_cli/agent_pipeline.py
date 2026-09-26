@@ -1148,7 +1148,7 @@ def default_team_roles(route: task_router.TaskRoute) -> list[str]:
 
 
 _OPTION_TOKEN_RE = re.compile(r"""\s*(--[\w-]+=(?:"[^"]*"|'[^']*')|"[^"]*"|'[^']*'|\S+)""")
-_QUOTED_SPAN_RE = re.compile(r"""(?<!\S)(?:"[^"]*"|'[^']*')""")
+_QUOTED_SPAN_RE = re.compile(r"""(?<!\S)(?:"[^"]*"|'[^']*')(?!\S)""")
 _THREAD_REF_RE = re.compile(r"[0-9a-fA-F]{1,64}")
 _TRAILING_ROLES_RE = re.compile(r"""(?<!\S)--roles(?:=|\s+)("[^"]*"|'[^']*'|\S+)(?!\S)""")
 _BARE_ROLES_RE = re.compile(r"(?<!\S)--roles=?(?!\S)")
@@ -1191,8 +1191,9 @@ def _next_token(text: str) -> tuple[str, str]:
 def _search_outside_quotes(pattern: re.Pattern[str], text: str) -> re.Match[str] | None:
     """Find `pattern` where it is an option, not task content inside a quoted span.
 
-    A quoted span starts at a word-initial quote (so apostrophes in "user's" never open one)
-    and ends at the next matching quote; an unclosed quote does not open a span.
+    A quoted span starts at a word-initial quote and ends at the next matching quote that is
+    word-final, so apostrophes inside words ("user's") and leading elisions ("'90s", "'tis")
+    never open or close one; an unclosed quote does not open a span.
     """
     spans = [match.span() for match in _QUOTED_SPAN_RE.finditer(text)]
     for match in pattern.finditer(text):
