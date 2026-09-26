@@ -261,6 +261,9 @@ def resolve_action(
     verification = policy.verification
     compensation_action = policy.compensation_action
     if name == "jev_question_contract" and args.get("mode", "lint") == "lint":
+        # Local validation must not borrow or create provider inference authority.
+        target = "runtime:jev:lint"
+        target_scope = TargetScope.RUNTIME
         capabilities = Capability.READ.value
         confirmation_mode = ConfirmationMode.NONE
         idempotency = IdempotencyClass.PURE

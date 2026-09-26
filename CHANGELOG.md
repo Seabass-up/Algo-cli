@@ -23,6 +23,11 @@ runtime-reliability and terminal-theme work merged since 0.20.1.
 - `jev_kernel_status` had no reachable grant in any mode; it is now a local
   runtime read in the baseline set. `jev_question_contract` stays
   approval-gated.
+- `jev_question_contract` in its default `lint` mode resolved to the provider
+  target and was denied as a setup gap that no approval could resolve. Local
+  lint now resolves to a runtime target with baseline access; `review`, `run`
+  and `followup` keep provider scope, data-egress capability and session
+  approval.
 - Missing-grant denials name the action, target and missing scope, say whether
   the denial is policy or a setup gap, and give the recovery step.
 - An identical denied call is not retried within the turn and gets no second
