@@ -61,6 +61,31 @@ def test_thread_lifecycle_and_prefix_resolution(tmp_path):
     assert "Verified output" in agent_threads.context_handoff(finished)
 
 
+def test_terminal_thread_status_is_not_replaced_by_late_in_progress_write(tmp_path):
+    path = tmp_path / "threads.json"
+    record = agent_threads.create_thread("Inspect the runtime", pipeline="specialist", path=path)
+    agent_threads.begin_turn(record["id"], "Inspect the runtime", path=path)
+    agent_threads.finish_turn(record["id"], status="cancelled", error="Team run cancelled.", path=path)
+
+    for late_status in ("running", "queued"):
+        with pytest.raises(ValueError, match="already cancelled"):
+            agent_threads.update_thread(
+                record["id"],
+                status=late_status,
+                blocks=[{"role": "critic", "status": "complete"}],
+                path=path,
+            )
+
+    reloaded = agent_threads.resolve_thread(record["id"], path=path)
+    assert reloaded["status"] == "cancelled"
+    assert reloaded["error"] == "Team run cancelled."
+    assert reloaded["blocks"] == []
+    # Metadata refreshes that leave the status alone still land on a finished record.
+    assert agent_threads.update_thread(record["id"], title="Renamed", path=path)["status"] == "cancelled"
+    # A new turn is the sanctioned way back to running.
+    assert agent_threads.begin_turn(record["id"], "Again", path=path)["status"] == "running"
+
+
 def test_child_thread_is_linked_to_parent(tmp_path):
     path = tmp_path / "threads.json"
     parent = agent_threads.create_thread("Parent task", path=path)

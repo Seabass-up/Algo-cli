@@ -32,6 +32,7 @@ MAX_THREAD_OUTPUT_CHARS = 12_000
 MAX_BLOCK_CONTEXT_CHARS = 3_000
 MAX_THREAD_STORE_BYTES = 16 * 1024 * 1024
 _VALID_STATUSES = frozenset({"queued", "running", "complete", "partial", "failed", "cancelled"})
+_TERMINAL_STATUSES = _VALID_STATUSES - {"queued", "running"}
 _CONTENT_RECEIPT_RE = re.compile(r"hmac-sha256:[0-9a-f]{64}\Z")
 
 
@@ -1389,6 +1390,17 @@ def update_thread(
             record_protected = protected or record.get("protected_memory_authority") is True
             if record_protected and authority is None:
                 raise ElsieReceiptError("protected agent thread receipt authority is unavailable")
+            # A finished record only leaves its terminal status through begin_turn. A late
+            # in-progress write (a specialist whose cancellation check passed before the team
+            # marked it cancelled) must not revive it, whatever the lock timing was.
+            if (
+                changes.get("status") in {"queued", "running"}
+                and record.get("status") in _TERMINAL_STATUSES
+            ):
+                raise ValueError(
+                    f"Agent thread '{thread_id}' is already {record['status']}; "
+                    f"it cannot be moved back to {changes['status']}."
+                )
             for key, value in changes.items():
                 if key == "output":
                     cleaned = _clean_text(value, MAX_THREAD_OUTPUT_CHARS)
@@ -1583,7 +1595,7 @@ def finish_turn(
     receipt_authority: ElsieReceiptAuthority | None = None,
     anchor_store: Any | None = None,
 ) -> dict[str, Any]:
-    if status not in _VALID_STATUSES - {"queued", "running"}:
+    if status not in _TERMINAL_STATUSES:
         raise ValueError(f"Invalid terminal agent thread status: {status}")
 
     def finish(

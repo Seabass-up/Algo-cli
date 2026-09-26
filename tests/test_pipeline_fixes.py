@@ -318,6 +318,57 @@ def test_late_specialist_cannot_overwrite_cancelled_thread_status(monkeypatch):
     assert _child_statuses(result) == ["cancelled", "cancelled"]
 
 
+def test_specialist_paused_inside_locked_status_write_cannot_revive_cancelled_thread(monkeypatch):
+    cfg = Config()
+    _quiet(monkeypatch)
+    monkeypatch.setattr(agent_pipeline, "create_client", lambda _cfg: object())
+    monkeypatch.setattr(agent_pipeline, "TEAM_CANCEL_GRACE_SECONDS", 0.2)
+    started = {role: threading.Event() for role in ("scout", "critic")}
+    in_locked_write = threading.Event()
+    release = threading.Event()
+    real_capture = agent_pipeline._capture_thread_workspace
+
+    def paused_capture(capture_cfg, block=None):
+        # The critic's post-block "running" write captures its workspace while holding the
+        # team status lock, after the cancellation check that guards the write already passed.
+        if block is not None and block.role == "critic" and not in_locked_write.is_set():
+            in_locked_write.set()
+            assert release.wait(timeout=30)
+        return real_capture(capture_cfg, block)
+
+    def finishing_run_block(block, **kwargs):
+        block.status = "complete"
+        block.output = "## Block Output\nevidence"
+        started[block.role].set()
+        if block.role == "scout":
+            while True:
+                agent_pipeline._raise_if_team_cancelled(kwargs["cfg"])
+                time.sleep(0.01)
+
+    def interrupted_as_completed(_futures):
+        for event in started.values():
+            assert event.wait(timeout=10)
+        assert in_locked_write.wait(timeout=10)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(agent_pipeline, "_capture_thread_workspace", paused_capture)
+    monkeypatch.setattr(agent_pipeline, "run_agent_block", finishing_run_block)
+    monkeypatch.setattr(agent_pipeline, "as_completed", interrupted_as_completed)
+
+    try:
+        # The lock wait times out while the critic holds it; both records are still cancelled.
+        result = agent_pipeline.run_agent_team("Review auth", cfg, object(), roles=["scout", "critic"])
+        assert result.status == "cancelled"
+        assert "detached: critic." in result.error
+        assert _child_statuses(result) == ["cancelled", "cancelled"]
+    finally:
+        release.set()
+    _join_team_workers()
+
+    # The released write must not move the cancelled critic record back to running.
+    assert _child_statuses(result) == ["cancelled", "cancelled"]
+
+
 @pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="needs POSIX signal delivery to the main thread")
 def test_second_ctrl_c_during_status_lock_wait_still_cancels_specialists(monkeypatch):
     cfg = Config()
