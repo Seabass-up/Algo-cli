@@ -4,7 +4,7 @@ description: How Algo CLI discovers, stores, and sends local context.
 status: active
 updated: 2026-09-21
 last_reviewed: 2026-09-21
-runtime_version: "Algo CLI v0.20.1 development"
+runtime_version: "Algo CLI v0.20.2 development"
 verification_status: "local repair candidate; release qualification pending"
 tags: [privacy, harness, cloud, context, consent]
 ---

@@ -35,7 +35,7 @@ GIT_OBJECT_TIMEOUT_SECONDS = 15
 GIT_EXECUTABLE = Path("/usr/bin/git")
 HOSTED_REPOSITORY = "Seabass-up/Algo-cli"
 HOSTED_REPOSITORY_ID = "1297752684"
-CHROME_VERSION = "153.0.8010.52"
+CHROME_VERSION = "154.0.8037.57"
 BORON_MAX_SECURITY_LAG_MS = 72 * 60 * 60 * 1000
 HOSTED_LIMITATION = (
     "Repeated isolated public GET evidence only; it does not prove broad-site "

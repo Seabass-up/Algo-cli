@@ -30,13 +30,13 @@ from scripts.oliver_smoke_wheel_install import (  # noqa: E402
 )
 
 
-BASELINE_VERSION = "0.20.0"
+BASELINE_VERSION = "0.20.1"
 BASELINE_URL = (
-    "https://files.pythonhosted.org/packages/af/d9/aca9e98f89aaa99142eface781b6221239542b8e378aa10be070b1b04009/"
-    "algo_cli_runtime-0.20.0-py3-none-any.whl"
+    "https://files.pythonhosted.org/packages/90/f0/15ab38b13ff4b71d209428b001edb74368d9a46a392bd92cb8a782c23379/"
+    "algo_cli_runtime-0.20.1-py3-none-any.whl"
 )
-BASELINE_SHA256 = "dfd8f45d944bc0ea0e0645121f24be34d3ace54ff7c13497ee304815cc6fb3f1"
-BASELINE_SIZE = 1_304_126
+BASELINE_SHA256 = "5c897032c12cf2be568059e3c3ecf70681e25615358f01cfe82d50da9fd260cd"
+BASELINE_SIZE = 1_317_884
 WHEEL_PACKAGES = frozenset({"algo_cli", "ollama_cli"})
 EXCLUDED_MODULES = frozenset(
     {

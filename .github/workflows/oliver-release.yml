@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing non-prerelease draft release tag (for example v0.20.1)
+        description: Existing non-prerelease draft release tag (for example v0.20.2)
         required: true
         type: string
 
