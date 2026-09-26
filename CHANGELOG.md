@@ -28,6 +28,12 @@ runtime-reliability and terminal-theme work merged since 0.20.1.
   lint now resolves to a runtime target with baseline access; `review`, `run`
   and `followup` keep provider scope, data-egress capability and session
   approval.
+- `/agent team` options are parsed with quote awareness: `--roles="planner, critic"`
+  is accepted, and `--roles` inside quoted task text stays part of the task
+  instead of selecting specialists or being removed.
+- A team specialist that was already inside its locked status write when the run
+  was cancelled can no longer move its thread back to `running`: the thread store
+  refuses in-progress writes over a terminal status.
 - Missing-grant denials name the action, target and missing scope, say whether
   the denial is policy or a setup gap, and give the recovery step.
 - An identical denied call is not retried within the turn and gets no second
