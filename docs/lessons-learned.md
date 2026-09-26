@@ -2121,6 +2121,18 @@ used.
 
 **Prevention:** Anything returned to a model is redacted, normalized to plain text, and redacted again; test redaction against decorated and malformed input, not only clean strings.
 
+## 2026-09-26: A Cancelled Team Specialist Could Return To Running After The Lock Wait Timed Out
+
+**Symptom:** After Ctrl+C on an Agent team run, `/agent threads` could show a specialist as `running` although it had stopped. Both child records were `cancelled` when the handler returned; one became `running` afterwards.
+
+**Confirmed cause:** `_team_status_write` checks the cancellation event once, right after acquiring the team status lock, and the specialist's post-block `running` write captures its workspace while holding that lock. The cancellation handler waits at most `TEAM_CANCEL_GRACE_SECONDS` for the lock and then marks every child `cancelled` regardless of whether it got it. A specialist already inside the protected write had passed its check before cancellation was set, so its `running` write landed on top of the cancelled record once it resumed. The existing regression test paused just before the lock and could not see this ordering.
+
+**Repair:** `agent_threads.update_thread` refuses (ValueError) to move a record whose stored status is terminal (`complete`, `partial`, `failed`, `cancelled`) back to `queued` or `running`; `begin_turn` remains the only way a finished thread starts again. Every pipeline caller already handles ValueError on that path. The lock and the cancellation checks are unchanged.
+
+**Verification:** `tests/test_pipeline_fixes.py::test_specialist_paused_inside_locked_status_write_cannot_revive_cancelled_thread` holds a specialist inside the locked write, lets the grace period expire, releases it and joins the workers; it failed with `['cancelled', 'running']` before the change and passes after it. `tests/test_agent_threads.py::test_terminal_thread_status_is_not_replaced_by_late_in_progress_write` covers the store boundary directly. Focused suites (`test_agent_pipeline.py`, `test_agent_threads.py`, `test_agent_run_journal.py`, `test_pipeline_fixes.py`) and ruff pass, apart from `test_run_agent_block_nudges_then_completes_only_after_verifier`, which fails identically on the untouched release candidate in this environment and does not touch the thread store.
+
+**Prevention:** Enforce terminal-state ordering where the record is written, not only in the callers' lock protocol; a lock wait with a timeout is not a guarantee that no writer remains inside.
+
 ## Repair Log Checklist
 
 - Date and component.

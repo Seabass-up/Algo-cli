@@ -1147,7 +1147,8 @@ def default_team_roles(route: task_router.TaskRoute) -> list[str]:
     return ["planner", "analyst", "critic"]
 
 
-_OPTION_TOKEN_RE = re.compile(r"""\s*("[^"]*"|'[^']*'|\S+)""")
+_OPTION_TOKEN_RE = re.compile(r"""\s*(--[\w-]+=(?:"[^"]*"|'[^']*')|"[^"]*"|'[^']*'|\S+)""")
+_QUOTED_SPAN_RE = re.compile(r"""(?<!\S)(?:"[^"]*"|'[^']*')(?!\S)""")
 _THREAD_REF_RE = re.compile(r"[0-9a-fA-F]{1,64}")
 _TRAILING_ROLES_RE = re.compile(r"""(?<!\S)--roles(?:=|\s+)("[^"]*"|'[^']*'|\S+)(?!\S)""")
 _BARE_ROLES_RE = re.compile(r"(?<!\S)--roles=?(?!\S)")
@@ -1187,6 +1188,20 @@ def _next_token(text: str) -> tuple[str, str]:
     return _unquote(match.group(1)), text[match.end() :].strip()
 
 
+def _search_outside_quotes(pattern: re.Pattern[str], text: str) -> re.Match[str] | None:
+    """Find `pattern` where it is an option, not task content inside a quoted span.
+
+    A quoted span starts at a word-initial quote and ends at the next matching quote that is
+    word-final, so apostrophes inside words ("user's") and leading elisions ("'90s", "'tis")
+    never open or close one; an unclosed quote does not open a span.
+    """
+    spans = [match.span() for match in _QUOTED_SPAN_RE.finditer(text)]
+    for match in pattern.finditer(text):
+        if not any(start <= match.start() < end for start, end in spans):
+            return match
+    return None
+
+
 def parse_agent_team_invocation(arg: str) -> tuple[list[str], str, str]:
     """Parse the portion after `/agent team`."""
 
@@ -1206,12 +1221,12 @@ def parse_agent_team_invocation(arg: str) -> tuple[list[str], str, str]:
         roles = [_normalize_team_role(item) for item in raw_roles.split(",")]
         if not all(roles):
             return [], "", "Team roles must be short names using letters, numbers, '-' or '_'."
-    while match := _TRAILING_ROLES_RE.search(rest):
+    while match := _search_outside_quotes(_TRAILING_ROLES_RE, rest):
         roles = [_normalize_team_role(item) for item in _unquote(match.group(1)).split(",")]
         if not all(roles):
             return [], "", "Team roles must be short names using letters, numbers, '-' or '_'."
         rest = f"{rest[: match.start()].rstrip()} {rest[match.end() :].lstrip()}".strip()
-    if _BARE_ROLES_RE.search(rest):
+    if _search_outside_quotes(_BARE_ROLES_RE, rest):
         return [], "", AGENT_TEAM_USAGE
     task = _unquote(rest).strip()
     if not task:

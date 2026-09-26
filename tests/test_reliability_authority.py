@@ -80,17 +80,15 @@ def test_outside_workspace_read_denial_names_target_scope_and_recovery(tmp_path)
     assert "no scoped capability grant authorizes the action" not in text
 
 
-def test_uncurated_no_confirmation_action_is_reported_as_setup_gap(tmp_path) -> None:
+def test_local_lint_is_baseline_allowed_and_provider_scope_is_a_setup_gap(tmp_path) -> None:
     cfg = Config(cwd=str(tmp_path))
-    # Lint mode is a no-confirmation read outside the runtime baseline.
+    # Default (lint) mode is a local no-confirmation read inside the runtime baseline.
     preflight = preflight_runtime_tool("jev_question_contract", {"contract": {}}, cfg)
 
-    assert preflight.policy.disposition is PolicyDisposition.DENY
-    assert preflight.denial is not None
-    assert preflight.denial.kind == "setup_gap"
-    assert preflight.resolvable_in_session is False
-    assert "not in the runtime baseline allowlist" in preflight.blocked_result
-    assert "Resolvable in this session: no" in preflight.blocked_result
+    assert preflight.policy.disposition is PolicyDisposition.ALLOW
+    assert preflight.denial is None
+    assert preflight.policy.action.target == "runtime:jev:lint"
+    assert preflight.policy.action.target_scope is TargetScope.RUNTIME
 
     status = resolve_action("jev_kernel_status", {}, cwd=cfg.cwd)
     provider_scoped = explain_missing_grant(cfg, replace(status, target_scope=TargetScope.PROVIDER))

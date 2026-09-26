@@ -90,6 +90,7 @@ _BASELINE_ACTIONS = frozenset(
         "harness_search",
         "harness_stats",
         "jev_kernel_status",
+        "jev_question_contract",
         "list_directory",
         "model_show",
         "plugins_discover",

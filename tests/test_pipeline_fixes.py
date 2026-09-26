@@ -318,6 +318,110 @@ def test_late_specialist_cannot_overwrite_cancelled_thread_status(monkeypatch):
     assert _child_statuses(result) == ["cancelled", "cancelled"]
 
 
+def test_specialist_paused_inside_locked_status_write_cannot_revive_cancelled_thread(monkeypatch):
+    cfg = Config()
+    _quiet(monkeypatch)
+    monkeypatch.setattr(agent_pipeline, "create_client", lambda _cfg: object())
+    monkeypatch.setattr(agent_pipeline, "TEAM_CANCEL_GRACE_SECONDS", 0.2)
+    started = {role: threading.Event() for role in ("scout", "critic")}
+    in_locked_write = threading.Event()
+    release = threading.Event()
+    real_capture = agent_pipeline._capture_thread_workspace
+
+    def paused_capture(capture_cfg, block=None):
+        # The critic's post-block "running" write captures its workspace while holding the
+        # team status lock, after the cancellation check that guards the write already passed.
+        if block is not None and block.role == "critic" and not in_locked_write.is_set():
+            in_locked_write.set()
+            assert release.wait(timeout=30)
+        return real_capture(capture_cfg, block)
+
+    def finishing_run_block(block, **kwargs):
+        block.status = "complete"
+        block.output = "## Block Output\nevidence"
+        started[block.role].set()
+        if block.role == "scout":
+            while True:
+                agent_pipeline._raise_if_team_cancelled(kwargs["cfg"])
+                time.sleep(0.01)
+
+    def interrupted_as_completed(_futures):
+        for event in started.values():
+            assert event.wait(timeout=10)
+        assert in_locked_write.wait(timeout=10)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(agent_pipeline, "_capture_thread_workspace", paused_capture)
+    monkeypatch.setattr(agent_pipeline, "run_agent_block", finishing_run_block)
+    monkeypatch.setattr(agent_pipeline, "as_completed", interrupted_as_completed)
+
+    try:
+        # The lock wait times out while the critic holds it; both records are still cancelled.
+        result = agent_pipeline.run_agent_team("Review auth", cfg, object(), roles=["scout", "critic"])
+        assert result.status == "cancelled"
+        assert "detached: critic." in result.error
+        assert _child_statuses(result) == ["cancelled", "cancelled"]
+    finally:
+        release.set()
+    _join_team_workers()
+
+    # The released write must not move the cancelled critic record back to running.
+    assert _child_statuses(result) == ["cancelled", "cancelled"]
+
+
+def test_specialist_paused_inside_final_locked_write_cannot_finish_cancelled_thread(monkeypatch):
+    cfg = Config()
+    _quiet(monkeypatch)
+    monkeypatch.setattr(agent_pipeline, "create_client", lambda _cfg: object())
+    monkeypatch.setattr(agent_pipeline, "TEAM_CANCEL_GRACE_SECONDS", 0.2)
+    started = {role: threading.Event() for role in ("scout", "critic")}
+    in_final_write = threading.Event()
+    release = threading.Event()
+    real_capture = agent_pipeline._capture_thread_workspace
+    critic_captures = 0
+
+    def paused_capture(capture_cfg, block=None):
+        nonlocal critic_captures
+        # The critic's second capture belongs to its final locked write, right before
+        # _finish_thread_record would persist the terminal status.
+        if block is not None and block.role == "critic":
+            critic_captures += 1
+            if critic_captures == 2 and not in_final_write.is_set():
+                in_final_write.set()
+                assert release.wait(timeout=30)
+        return real_capture(capture_cfg, block)
+
+    def finishing_run_block(block, **kwargs):
+        block.status = "complete"
+        block.output = "## Block Output\nevidence"
+        started[block.role].set()
+        if block.role == "scout":
+            while True:
+                agent_pipeline._raise_if_team_cancelled(kwargs["cfg"])
+                time.sleep(0.01)
+
+    def interrupted_as_completed(_futures):
+        for event in started.values():
+            assert event.wait(timeout=10)
+        assert in_final_write.wait(timeout=10)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(agent_pipeline, "_capture_thread_workspace", paused_capture)
+    monkeypatch.setattr(agent_pipeline, "run_agent_block", finishing_run_block)
+    monkeypatch.setattr(agent_pipeline, "as_completed", interrupted_as_completed)
+
+    try:
+        result = agent_pipeline.run_agent_team("Review auth", cfg, object(), roles=["scout", "critic"])
+        assert result.status == "cancelled"
+        assert _child_statuses(result) == ["cancelled", "cancelled"]
+    finally:
+        release.set()
+    _join_team_workers()
+
+    # The released final write must not finish the cancelled critic record as complete.
+    assert _child_statuses(result) == ["cancelled", "cancelled"]
+
+
 @pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="needs POSIX signal delivery to the main thread")
 def test_second_ctrl_c_during_status_lock_wait_still_cancels_specialists(monkeypatch):
     cfg = Config()
@@ -455,6 +559,61 @@ def test_team_trailing_roles_without_value_is_usage_error():
         [],
         "",
         agent_pipeline.AGENT_TEAM_USAGE,
+    )
+
+
+@pytest.mark.parametrize(
+    "arg",
+    [
+        '--roles="planner, critic" Review code',
+        "--roles='planner, critic' Review code",
+        '--roles "planner, critic" Review code',
+        'Review code --roles="planner, critic"',
+        'Review code --roles "planner, critic"',
+    ],
+)
+def test_team_quoted_roles_value_with_space_is_accepted(arg):
+    assert agent_pipeline.parse_agent_team_invocation(arg) == (["planner", "critic"], "Review code", "")
+
+
+@pytest.mark.parametrize(
+    "arg",
+    [
+        'Explain "tool --roles alpha,beta behavior"',
+        "Explain 'tool --roles=alpha,beta behavior'",
+        'Explain "the --roles flag" in detail',
+        'Explain "tool --roles alpha,beta behavior" --roles planner,critic',
+    ],
+)
+def test_team_roles_inside_quoted_task_text_is_kept_verbatim(arg):
+    roles, task, error = agent_pipeline.parse_agent_team_invocation(arg)
+
+    assert error == ""
+    expected_roles = ["planner", "critic"] if arg.endswith("--roles planner,critic") else []
+    expected_task = arg.removesuffix(" --roles planner,critic")
+    assert (roles, task) == (expected_roles, expected_task)
+
+
+@pytest.mark.parametrize(
+    "arg, expected_task",
+    [
+        ("Review the user's auth flow --roles planner,critic", "Review the user's auth flow"),
+        ("Review it's a 'quoted' thing --roles planner,critic", "Review it's a 'quoted' thing"),
+        ('Replace "foo bar" with "baz" --roles=planner,critic', 'Replace "foo bar" with "baz"'),
+        ("--roles planner,critic Don't break the user's \"quoted\" task", "Don't break the user's \"quoted\" task"),
+        ("Review '90s auth --roles planner,critic and user's flow", "Review '90s auth and user's flow"),
+        ("'tis the season to refactor --roles planner,critic", "'tis the season to refactor"),
+    ],
+)
+def test_team_roles_outside_quotes_survive_apostrophes_and_inner_quotes(arg, expected_task):
+    assert agent_pipeline.parse_agent_team_invocation(arg) == (["planner", "critic"], expected_task, "")
+
+
+def test_pipeline_flag_accepts_quoted_value_after_equals():
+    assert agent_pipeline.parse_agent_invocation_checked('--pipeline="code change" Fix the user\'s login bug') == (
+        "code change",
+        "Fix the user's login bug",
+        "",
     )
 
 
