@@ -1,0 +1,101 @@
+"""Exercise real loopback sockets without launching OAuth or using credentials."""
+
+from contextlib import contextmanager
+import socket
+import threading
+import time
+
+import pytest
+
+from algo_cli import chatgpt_auth, google_workspace_auth
+
+
+@contextmanager
+def capture_session(provider, timeout=1.0):
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    results = []
+
+    def capture():
+        try:
+            results.append(provider.run_loopback_capture(redirect_port=port, timeout=timeout))
+        except Exception as exc:
+            results.append(exc)
+
+    worker = threading.Thread(target=capture, daemon=True)
+    worker.start()
+    try:
+        yield port, worker, results
+    finally:
+        worker.join(4)
+        assert not worker.is_alive(), "callback worker did not terminate"
+
+
+def connect(port):
+    deadline = time.monotonic() + 2
+    while True:
+        try:
+            return socket.create_connection(("127.0.0.1", port), timeout=3)
+        except ConnectionRefusedError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
+
+
+def force_timer_expiry(monkeypatch, provider):
+    setup = provider._CallbackHandler.setup
+
+    def delayed_inactivity_timeout(handler):
+        setup(handler)
+        handler.connection.settimeout(5)
+
+    monkeypatch.setattr(provider._CallbackHandler, "setup", delayed_inactivity_timeout)
+
+
+@pytest.mark.parametrize("provider", [chatgpt_auth, google_workspace_auth], ids=["chatgpt", "google"])
+@pytest.mark.parametrize("partial", [b"", b"GET /callback HTTP/1.1\r\nHost:"], ids=["silent", "headers"])
+def test_incomplete_callback_cannot_exceed_deadline(monkeypatch, provider, partial):
+    force_timer_expiry(monkeypatch, provider)
+    with capture_session(provider) as (port, worker, results), connect(port) as client:
+        if partial:
+            client.sendall(partial)
+        worker.join(1.8)
+        assert not worker.is_alive()
+        if provider is chatgpt_auth:
+            assert results == [{}]
+        else:
+            assert len(results) == 1 and isinstance(results[0], RuntimeError)
+            assert "Timed out" in str(results[0])
+
+
+@pytest.mark.parametrize("provider", [chatgpt_auth, google_workspace_auth], ids=["chatgpt", "google"])
+def test_progress_does_not_reset_callback_deadline(provider):
+    with capture_session(provider) as (port, worker, _), connect(port) as client:
+        end = time.monotonic() + 1.8
+        while worker.is_alive() and time.monotonic() < end:
+            try:
+                client.sendall(b"G")
+            except OSError:
+                break
+            time.sleep(0.05)
+        worker.join(0.2)
+        assert not worker.is_alive()
+
+
+@pytest.mark.parametrize("provider", [chatgpt_auth, google_workspace_auth], ids=["chatgpt", "google"])
+def test_valid_callback_survives_an_idle_connection(monkeypatch, provider):
+    force_timer_expiry(monkeypatch, provider)
+    with capture_session(provider, timeout=3) as (port, worker, results), connect(port) as idle:
+        idle.sendall(b"GET /callback HTTP/1.1\r\nHost:")
+        with connect(port) as callback:
+            callback.sendall(
+                b"GET /callback?code=fixture-code&state=fixture-state HTTP/1.1\r\nHost: localhost\r\n\r\n"
+            )
+            response = b""
+            while chunk := callback.recv(4096):
+                response += chunk
+        worker.join(1)
+        assert not worker.is_alive()
+        assert b"200 OK" in response and b"login complete" in response
+        assert results == [{"code": "fixture-code", "state": "fixture-state"}]

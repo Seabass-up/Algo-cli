@@ -1,8 +1,8 @@
 ---
 title: Continuum Memory
 category: memory
-updated: 2026-09-21
-last_reviewed: 2026-09-21
+updated: 2026-10-07
+last_reviewed: 2026-10-07
 ---
 
 # Continuum Memory
@@ -43,12 +43,22 @@ Retired keys are discarded when a valid explicit Continuum configuration is save
 
 ## Operations and limitations
 
-The fifteen `memory_*` tools expose the native verification, status, evidence,
-typed state, context, revocation, conflict resolution and handoff operations.
+The sixteen `memory_*` tools expose the native verification, status, evidence,
+typed state, context, project applicability, revocation, conflict resolution and handoff operations.
 Every call binds its scope. Writes use expected revisions and stable request IDs;
 an uncertain write requires reconciliation, not a blind retry. `/remember` and
 `append_lesson` write to Algo's existing private Continuum fact record and verify
 the resulting revision. No plaintext shadow is created.
+
+`memory_set_applicability` requires an explicitly reviewed content revision,
+project IDs (or explicit `null` for global applicability), a reason and scope.
+Updating an existing declaration also requires its current `expected_revision`.
+This is an approved memory mutation, not a read or an access-control grant.
+Algo verifies the declaration and unchanged content revision through native
+`explain` before reporting success. A transport failure or mismatched readback
+remains an unknown outcome requiring reconciliation, including after a replay.
+Older native installations that lack this operation must be upgraded separately;
+Algo never substitutes another store or changes applicability implicitly.
 
 Encryption at rest is not isolation from a hostile process running as the same
 OS user. The protected-root policy denies raw access through typed file, Git,

@@ -306,7 +306,7 @@ Legacy `OLLAMA_CLI_HARNESS_INDEXER` is still accepted as a fallback.
 
 ### Go Gateway (optional)
 
-Exposes the harness index over localhost for bridge integrations:
+Provides local embedding helpers and an opt-in authenticated harness-index API:
 
 ```bash
 cd harness-gateway
@@ -314,6 +314,15 @@ go run . -addr 127.0.0.1:8765
 ```
 
 Endpoints: `GET /healthz`, `GET /harness/stats`, `GET /harness/search`, `POST /supplemental/embed`
+
+Index search and statistics are disabled unless `ALGO_CLI_GATEWAY_TOKEN` is set
+in the gateway process environment. Use a cryptographically generated URL-safe
+token of at least 32 characters (for example, `secrets.token_urlsafe(32)`), and
+send it as a single `Authorization: Bearer <token>` header. Query-string tokens
+are not accepted. Missing or malformed server configuration returns 503;
+missing or invalid caller credentials return 401. Do not put the token in a
+URL, shell argument, repository, or shared log. Health checks and the existing
+loopback-only embedding helpers do not require this index credential.
 
 Override: `ALGO_CLI_GATEWAY_URL`, `ALGO_CLI_GATEWAY_BIN` (legacy `OLLAMA_CLI_*` names are still accepted).
 

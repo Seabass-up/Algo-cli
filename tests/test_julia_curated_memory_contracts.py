@@ -211,7 +211,10 @@ def test_reviewed_wiki_docs_expose_runtime_and_evidence_boundaries() -> None:
 
     assert "Encryption at rest is not isolation" in memory
     assert "continuum_enabled" in memory and "continuum_memory.py" in memory
-    assert "fifteen `memory_*` tools" in memory
+    assert "sixteen `memory_*` tools" in memory
+    assert "`memory_set_applicability`" in memory
+    assert "unchanged content revision" in memory and "`explain`" in memory
+    assert "unknown outcome requiring reconciliation" in memory
     assert "explicit" in memory and "shared" in memory and "private" in memory
     assert "no plaintext" in memory.lower()
     assert "Unit tests alone do not qualify an installed service" in memory

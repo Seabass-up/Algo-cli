@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -50,7 +51,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid local Ollama endpoint: %v", err)
 	}
-	mux := newGatewayMux(*indexPath, validatedOllama, loopbackHTTPClient())
+	mux := newGatewayMux(*indexPath, validatedOllama, loopbackHTTPClient(), os.Getenv("ALGO_CLI_GATEWAY_TOKEN"))
 
 	log.Printf("harness-gateway listening on http://%s", *addr)
 	server := &http.Server{
@@ -65,7 +66,7 @@ func main() {
 	log.Fatal(server.ListenAndServe())
 }
 
-func newGatewayMux(indexPath string, ollamaHost string, client *http.Client) http.Handler {
+func newGatewayMux(indexPath string, ollamaHost string, client *http.Client, indexToken string) http.Handler {
 	client = noRedirectHTTPClient(client)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -75,6 +76,9 @@ func newGatewayMux(indexPath string, ollamaHost string, client *http.Client) htt
 		writeJSON(w, map[string]interface{}{"ok": true, "service": "harness-gateway"})
 	})
 	mux.HandleFunc("/harness/stats", func(w http.ResponseWriter, r *http.Request) {
+		if !requireIndexAuthorization(w, r, indexToken) {
+			return
+		}
 		if !requireMethod(w, r, http.MethodGet) {
 			return
 		}
@@ -86,6 +90,9 @@ func newGatewayMux(indexPath string, ollamaHost string, client *http.Client) htt
 		writeJSON(w, stats(index))
 	})
 	mux.HandleFunc("/harness/search", func(w http.ResponseWriter, r *http.Request) {
+		if !requireIndexAuthorization(w, r, indexToken) {
+			return
+		}
 		if !requireMethod(w, r, http.MethodGet) {
 			return
 		}
@@ -129,6 +136,27 @@ func newGatewayMux(indexPath string, ollamaHost string, client *http.Client) htt
 		proxyOllamaJSON(w, r, client, ollamaHost, "/api/tags")
 	})
 	return mux
+}
+
+func requireIndexAuthorization(w http.ResponseWriter, r *http.Request, token string) bool {
+	w.Header().Set("Cache-Control", "no-store")
+	if len(token) < 32 || len(token) > 512 || strings.IndexFunc(token, func(ch rune) bool {
+		return !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_')
+	}) >= 0 {
+		writeGatewayError(w, http.StatusServiceUnavailable, "index_auth_unconfigured")
+		return false
+	}
+	values := r.Header.Values("Authorization")
+	if len(values) == 1 {
+		scheme, credential, found := strings.Cut(values[0], " ")
+		if found && strings.EqualFold(scheme, "Bearer") &&
+			subtle.ConstantTimeCompare([]byte(credential), []byte(token)) == 1 {
+			return true
+		}
+	}
+	w.Header().Set("WWW-Authenticate", "Bearer")
+	writeGatewayError(w, http.StatusUnauthorized, "index_auth_required")
+	return false
 }
 
 func noRedirectHTTPClient(client *http.Client) *http.Client {

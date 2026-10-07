@@ -86,6 +86,8 @@ jobs:
           algo_cli/ada_control_journal.py
           algo_cli/ada_credential_registry.py
           algo_cli/continuum_tools.py
+          algo_cli/oauth_loopback.py
+          algo_cli/tool_schema.py
           algo_cli/protected_memory_preflight.py
           algo_cli/ada_uninstall_recovery.py
           algo_cli/austin_install_finalizer.py

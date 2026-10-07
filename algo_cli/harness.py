@@ -15,6 +15,7 @@ import os
 import re
 import stat
 import subprocess
+import tempfile
 import time
 from collections import OrderedDict
 from contextlib import contextmanager, nullcontext
@@ -268,7 +269,7 @@ def _metadata_only_json(path: Path) -> bool:
     return (
         name.endswith((".mcp.json", ".app.json"))
         or name in {".codex-remote-plugin-install.json", "openclaw.json", "installs.json"}
-        or (name == "plugin.json" and path.parent.name == ".codex-plugin")
+        or (name == "plugin.json" and path.parent.name.lower() == ".codex-plugin")
     )
 
 
@@ -392,25 +393,28 @@ def build_index_with_rust(previous: dict[str, Any] | None = None) -> dict[str, A
     try:
         indexer_env = os.environ.copy()
         indexer_env["ALGO_CLI_REPO_DIR"] = str(ALGO_CLI_REPO_DIR)
-        proc = subprocess.run(
-            [str(binary), "--output", str(INDEX_PATH)],
-            cwd=str(Path(__file__).resolve().parents[1]),
-            env=indexer_env,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            timeout=45,
-            check=False,
-        )
+        # Older configured binaries must not publish raw records to the shared index.
+        with tempfile.TemporaryDirectory(prefix="harness-native-", dir=CONFIG_DIR) as staging:
+            output = Path(staging) / "index.json"
+            proc = subprocess.run(
+                [str(binary), "--output", str(output)],
+                cwd=str(Path(__file__).resolve().parents[1]),
+                env=indexer_env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=45,
+                check=False,
+            )
+            if proc.returncode != 0:
+                return None
+            new_index = json.loads(output.read_text(encoding="utf-8"))
     except Exception:
         return None
-    if proc.returncode != 0 or not INDEX_PATH.exists():
+    if not isinstance(new_index, dict) or not isinstance(new_index.get("records"), list):
         return None
-    try:
-        new_index = json.loads(INDEX_PATH.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return None
+    new_index = _normalize_index_records(new_index)
     # Graft embeddings from the previous index so Rust cold-start doesn't lose
     # all embedding work. Only graft when the underlying file is unchanged
     # (matching size + mtime) â€” otherwise the embedding would describe stale content.
@@ -426,6 +430,7 @@ def build_index_with_rust(previous: dict[str, Any] | None = None) -> dict[str, A
                     prior
                     and int(prior.get("file_size", -1)) == int(record.get("file_size", -2))
                     and int(prior.get("file_mtime_ns", -1)) == int(record.get("file_mtime_ns", -2))
+                    and _record_text_for_embed(prior) == _record_text_for_embed(record)
                 ):
                     _copy_record_embedding(prior, record)
         new_index["embeddings"] = embedding_summary({**previous, "records": new_index.get("records", [])})
@@ -1078,6 +1083,44 @@ def _normalize_reviewed_algo_record(record: dict[str, Any]) -> dict[str, Any]:
     return updated
 
 
+def _normalize_record_privacy(record: dict[str, Any]) -> dict[str, Any]:
+    paths = [Path(str(record.get(key) or "").replace("\\", "/")) for key in ("path", "relative_path")]
+    metadata_path = next((path for path in paths if _metadata_only_json(path)), None)
+    if metadata_path is not None and record.get("content_policy") != "metadata-only-v1":
+        # Legacy bodies may be truncated or escaped: do not try to recover safe JSON from them.
+        updated = {key: record[key] for key in (
+            "id", "harness", "kind", "path", "relative_path", "updated", "file_size", "file_mtime_ns",
+        ) if key in record}
+        text = f"{metadata_path.name} metadata"
+        updated.update(
+            title=metadata_path.stem, description="", tags=[], links=[], status="",
+            summary=text, index_text=text, heading_text="", content_policy="metadata-only-fallback-v1",
+            search_text=" ".join(str(updated.get(key, "")) for key in (
+                "id", "harness", "kind", "relative_path",
+            )).lower() + " " + text.lower(),
+        )
+        # Keep vectors only when every non-vector field already matches the safe projection.
+        if {key: value for key, value in record.items() if key not in _EMBEDDING_FIELDS} == updated:
+            updated.update({key: record[key] for key in _EMBEDDING_FIELDS if key in record})
+        return updated
+
+    def redact(value: Any) -> Any:
+        if isinstance(value, str):
+            return redact_sensitive_text(value)
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        if isinstance(value, dict):
+            return {key: redact(item) for key, item in value.items()}
+        return value
+
+    updated = {key: value if key in {"id", "path", "relative_path"} else redact(value)
+               for key, value in record.items()}
+    if updated != record:
+        for field in _EMBEDDING_FIELDS:
+            updated.pop(field, None)
+    return updated
+
+
 def _normalize_index_records(index: dict[str, Any]) -> dict[str, Any]:
     records = index.get("records", [])
     if not isinstance(records, list) or not records:
@@ -1089,7 +1132,7 @@ def _normalize_index_records(index: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(record, dict):
             normalized.append(record)
             continue
-        normalized_record = _normalize_reviewed_algo_record(record)
+        normalized_record = _normalize_reviewed_algo_record(_normalize_record_privacy(record))
         normalized.append(normalized_record)
         if normalized_record != record:
             changed = True
@@ -1174,6 +1217,8 @@ def make_record(root: SourceRoot, path: Path, *, stat_result: Any | None = None,
         "heading_text": heading_text,
         "search_text": search_text,
     }
+    if _metadata_only_json(path):
+        record["content_policy"] = "metadata-only-v1"
     return _normalize_reviewed_algo_record(record)
 
 
@@ -1719,7 +1764,7 @@ def build_index(previous: dict[str, Any] | None = None) -> dict[str, Any]:
     all_roots = all_source_roots()
     if not all_roots and previous:
         prior_records = [
-            _normalize_reviewed_algo_record(record)
+            _normalize_reviewed_algo_record(_normalize_record_privacy(record))
             for record in (previous.get("records", []) or [])
             if isinstance(record, dict)
         ]
@@ -1767,6 +1812,7 @@ def build_index(previous: dict[str, Any] | None = None) -> dict[str, Any]:
                 and prior.get("index_text")
                 and "status" in prior
                 and str(prior.get("kind", "")) == kind
+                and (not _metadata_only_json(path) or prior.get("content_policy") == "metadata-only-v1")
             ):
                 records.append(_normalize_reviewed_algo_record(prior))
                 reused_records += 1

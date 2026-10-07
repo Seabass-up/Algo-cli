@@ -26,8 +26,13 @@ for (const consumer of ["next", "miniflare"]) {
     const dependencyRequire = createRequire(require.resolve(consumer));
     const sharp = dependencyRequire("sharp");
     const semver = createRequire(dependencyRequire.resolve("sharp"))("semver");
-    assert.ok(semver.gte(sharp.versions.sharp, "0.35.4"), `affected sharp ${sharp.versions.sharp}`);
+    assert.ok(semver.gte(sharp.versions.sharp, "0.35.5"), `affected sharp ${sharp.versions.sharp}`);
     assert.ok(semver.gte(sharp.versions.heif, "1.23.2"), `affected libheif ${sharp.versions.heif}`);
+    assert.ok(semver.gte(sharp.versions.rsvg, "2.63.2"), `affected librsvg ${sharp.versions.rsvg}`);
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6"><rect width="8" height="6" fill="red"/></svg>');
+    const decodedSvg = await sharp(svg).png().toBuffer({ resolveWithObject: true });
+    assert.equal(decodedSvg.info.width, 8);
+    assert.equal(decodedSvg.info.height, 6);
     const input = await sharp({
       create: { width: 8, height: 6, channels: 3, background: { r: 32, g: 96, b: 160 } },
     }).avif().toBuffer();

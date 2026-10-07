@@ -43,6 +43,7 @@ _EXPLICIT_MEMORY_WRITE_ACTIONS = frozenset(
         "memory_remember",
         "memory_revoke",
         "memory_resolve",
+        "memory_set_applicability",
         "memory_handoff",
     }
 )

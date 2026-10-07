@@ -27,6 +27,10 @@ def serialized_tool_schemas(
         if isinstance(item, dict):
             payload.append(item)
             continue
+        native_schema = _native_tool_schema(item)
+        if native_schema is not None:
+            payload.append(native_schema)
+            continue
         if convert_function_to_tool is None:
             continue
         try:
@@ -36,6 +40,40 @@ def serialized_tool_schemas(
             # must describe the request that can actually be emitted.
             continue
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _native_tool_schema(tool: Callable[..., Any]) -> dict[str, Any] | None:
+    from .continuum_tools import memory_set_applicability
+
+    if tool is not memory_set_applicability:
+        return None
+    # The SDK removes required nullable fields; this native contract requires an explicit choice.
+    return {"type": "function", "function": {
+        "name": "memory_set_applicability",
+        "description": memory_set_applicability.__doc__,
+        "parameters": {
+            "type": "object", "additionalProperties": False,
+            "required": ["memory_id", "memory_revision", "projects", "reason", "scope"],
+            "properties": {
+                "memory_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                "memory_revision": {"type": "integer", "minimum": 1},
+                "projects": {"type": ["array", "null"], "minItems": 1, "maxItems": 16,
+                             "uniqueItems": True,
+                             "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"}},
+                "reason": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "scope": {"type": "string", "enum": ["shared", "private"]},
+                "expected_revision": {"type": "integer", "minimum": 0},
+                "request_id": {"type": "string", "minLength": 1, "maxLength": 256},
+            },
+        },
+    }}
+
+
+def provider_tools(tools: Sequence[Callable[..., Any] | dict[str, Any]]) -> list[Any]:
+    """Keep native schemas intact through providers that otherwise introspect callables."""
+    if any(callable(tool) and _native_tool_schema(tool) is not None for tool in tools):
+        return json.loads(serialized_tool_schemas(tools))
+    return list(tools)
 
 
 def estimate_tool_schema_tokens(

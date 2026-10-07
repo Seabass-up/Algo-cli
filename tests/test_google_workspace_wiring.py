@@ -133,11 +133,15 @@ def test_google_redirect_port_configuration_fails_safe(monkeypatch):
 
 
 def test_google_loopback_capture_uses_fresh_handler_state(monkeypatch):
+    from algo_cli import oauth_loopback
+    import time
+
     handlers: list[type] = []
 
     class _Server:
-        def __init__(self, _address, handler) -> None:
+        def __init__(self, _address, handler, *, timeout) -> None:
             self.handler = handler
+            self.deadline = time.monotonic() + timeout
             handlers.append(handler)
 
         def handle_request(self) -> None:
@@ -147,7 +151,7 @@ def test_google_loopback_capture_uses_fresh_handler_state(monkeypatch):
         def server_close(self) -> None:
             return
 
-    monkeypatch.setattr(google_workspace_auth.http.server, "HTTPServer", _Server)
+    monkeypatch.setattr(oauth_loopback, "CallbackHTTPServer", _Server)
 
     first = google_workspace_auth.run_loopback_capture(redirect_port=56251, timeout=1)
     second = google_workspace_auth.run_loopback_capture(redirect_port=56252, timeout=1)

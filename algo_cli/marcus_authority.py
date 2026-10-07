@@ -356,6 +356,7 @@ CURATED_TOOL_POLICIES: dict[str, CuratedActionPolicy] = {
             "memory_capture",
             "memory_remember",
             "memory_resolve",
+            "memory_set_applicability",
             "memory_handoff",
         )
     },

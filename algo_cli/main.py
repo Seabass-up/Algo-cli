@@ -158,7 +158,7 @@ from .arthur_outcomes import OutcomeStatus
 from .marcus_authority import ConfirmationMode, EffectClass, IdempotencyClass
 from .samuel_policy_engine import resolve_action
 from .tool_context import select_tools_for_prompt
-from .tool_schema import estimate_tool_schema_tokens
+from .tool_schema import estimate_tool_schema_tokens, provider_tools
 from .oliver_slash_dispatch import (
     SLASH_COMMANDS,
     SlashCommandCompleter,
@@ -4016,7 +4016,7 @@ def _agent_loop_body(
                 stream = client.chat(
                     model=cfg.model,
                     messages=request_messages,
-                    tools=[] if finalization_turn else active_tools,
+                    tools=[] if finalization_turn else provider_tools(active_tools),
                     stream=True,
                     think=_think,
                     keep_alive=cfg.keep_alive,

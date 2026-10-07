@@ -74,6 +74,7 @@ from .nathan_runtime import (
     summarize_tool_result,
 )
 from .samuel_policy_engine import resolve_action
+from .tool_schema import provider_tools
 
 TOOL_MAP = tools_module.TOOL_MAP
 logger = logging.getLogger(__name__)
@@ -667,7 +668,7 @@ def run_agent_block(
                 stream = block_client.chat(
                     model=block_model,
                     messages=request_messages,
-                    tools=round_tools,
+                    tools=provider_tools(round_tools),
                     stream=True,
                     think=cfg.show_thinking,
                     keep_alive=cfg.keep_alive,

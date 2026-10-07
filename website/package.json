@@ -5,7 +5,7 @@
   "allowScripts": {
     "esbuild@0.28.1": true,
     "fsevents@2.3.3": true,
-    "sharp@0.35.4": true,
+    "sharp@0.35.5": true,
     "unrs-resolver@1.11.1": true,
     "workerd@1.20260804.1": true
   },
@@ -23,7 +23,7 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },
   "dependencies": {
-    "next": "16.3.4",
+    "next": "16.3.8",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
@@ -36,7 +36,7 @@
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.26",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.3.4",
+    "eslint-config-next": "16.3.8",
     "postcss": "8.5.23",
     "react-server-dom-webpack": "19.2.8",
     "tailwindcss": "4.2.1",
@@ -47,7 +47,8 @@
   },
   "overrides": {
     "postcss": "8.5.23",
-    "sharp": "0.35.4"
+    "sharp": "0.35.5",
+    "undici": "7.29.1"
   },
   "type": "module"
 }

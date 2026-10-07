@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 
 
@@ -20,6 +21,7 @@ CONTINUUM_TOOL_NAMES = (
     "memory_validate_context",
     "memory_revoke",
     "memory_resolve",
+    "memory_set_applicability",
     "memory_explain",
     "memory_history",
     "memory_handoff",
@@ -38,7 +40,7 @@ CONTINUUM_READ_ONLY_TOOLS = frozenset(
     }
 )
 CONTINUUM_MUTATION_TOOLS = frozenset(CONTINUUM_TOOL_NAMES) - CONTINUUM_READ_ONLY_TOOLS
-_REQUEST_ID_OPERATIONS = frozenset({"capture", "remember", "revoke", "resolve", "handoff"})
+_REQUEST_ID_OPERATIONS = frozenset({"capture", "remember", "revoke", "resolve", "set_applicability", "handoff"})
 _DEFINITE_REFUSALS = frozenset(
     {
         "budget",
@@ -146,6 +148,38 @@ def _mutation_postcondition(
         }
     if operation in {"capture", "remember", "handoff"}:
         return _record_postcondition(cfg, operation, result, scope=scope)
+    if operation == "set_applicability":
+        memory_id = payload["memory_id"]
+        memory_revision = payload["memory_revision"]
+        projects = None if payload["projects"] is None else sorted(payload["projects"])
+        declaration_id = "@applicability:" + hashlib.sha256(memory_id.encode("utf-8")).hexdigest()
+        revision = result.get("revision")
+        if (
+            type(revision) is not int or revision < 1
+            or result.get("id") != declaration_id
+            or result.get("memory_id") != memory_id
+            or type(result.get("memory_revision")) is not int
+            or result["memory_revision"] != memory_revision
+            or result.get("projects") != projects
+        ):
+            return None
+        observed = invoke_continuum(cfg, "explain", {"memory_id": memory_id}, scope=scope)
+        expected_applicability = {
+            "projects": projects,
+            "state": "reviewed_global" if projects is None else "reviewed_projects",
+            "declaration_id": declaration_id,
+            "declaration_revision": revision,
+        }
+        if (
+            observed.get("ok") is not True or observed.get("id") != memory_id
+            or type(observed.get("revision")) is not int or observed["revision"] != memory_revision
+            or observed.get("status") != {"decision": "PRESENT", "usable": True}
+            or observed.get("project_applicability") != expected_applicability
+            or type(observed.get("project_applicability", {}).get("declaration_revision")) is not int
+        ):
+            return None
+        return {"operation": operation, "scope": scope, "record_id": memory_id,
+                "memory_revision": memory_revision, **expected_applicability}
     if operation == "revoke":
         memory_id = result.get("id")
         revision = result.get("revision")
@@ -457,6 +491,40 @@ def memory_explain(memory_id: str, scope: str, cfg: Any = None) -> str:
     return _call("explain", {"memory_id": memory_id}, scope, cfg)
 
 
+def memory_set_applicability(
+    memory_id: str,
+    memory_revision: int,
+    projects: list[str] | None,
+    reason: str,
+    scope: str,
+    expected_revision: int = 0,
+    request_id: str | None = None,
+    cfg: Any = None,
+) -> str:
+    """Review project applicability for an exact Continuum revision; not an access grant."""
+    if (
+        type(memory_id) is not str or not memory_id or len(memory_id) > 256
+        or memory_id.startswith("@applicability:")
+        or type(memory_revision) is not int or memory_revision < 1
+        or type(expected_revision) is not int or expected_revision < 0
+        or type(reason) is not str or not reason.strip() or len(reason) > 2048
+        or (projects is not None and (
+            type(projects) is not list or not 1 <= len(projects) <= 16
+            or any(type(project) is not str or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", project)
+                   for project in projects)
+            or len(set(projects)) != len(projects)
+        ))
+    ):
+        return _canonical_json(_failure(
+            operation="set_applicability", mutates=True, error="input", decision="REFUSE_INPUT",
+            message="Applicability requires exact revisions, canonical projects, and a review reason.",
+        ))
+    return _call("set_applicability", {
+        "memory_id": memory_id, "memory_revision": memory_revision, "projects": projects,
+        "reason": reason, "expected_revision": expected_revision, "request_id": request_id,
+    }, scope, cfg)
+
+
 def memory_history(memory_id: str, scope: str, limit: int = 20, cfg: Any = None) -> str:
     """Read metadata-only Continuum revision history for one memory ID."""
     return _call("history", {"memory_id": memory_id, "limit": limit}, scope, cfg)
@@ -499,6 +567,7 @@ CONTINUUM_TOOLS = (
     memory_validate_context,
     memory_revoke,
     memory_resolve,
+    memory_set_applicability,
     memory_explain,
     memory_history,
     memory_handoff,

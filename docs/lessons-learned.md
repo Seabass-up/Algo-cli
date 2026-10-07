@@ -8,6 +8,111 @@ The [changelog](../CHANGELOG.md) and [release history](henry-release-0.19.1.md)
 retain the earlier reliability, model-discovery, Echo, Windows, and browser
 qualification repairs; this log adds the verified release-closeout lessons.
 
+## 2026-10-07: Native Index Privacy, Local Index Authentication, And OAuth Deadlines
+
+**Symptoms and causes:** Optional Rust indexing treated connector configuration
+as document text, unlike Python's metadata-only projection; cached body copies
+and embeddings could survive a fresh producer fix. The optional Go index API
+trusted loopback reachability instead of authenticating its caller. Both OAuth
+callback listeners bounded accept waits but not accepted-client reads.
+
+**Repairs:** Render connector files as metadata before native publication, stage
+older native binary output privately, normalize legacy cached records before
+retrieval, and invalidate embeddings derived from removed content. Preserve
+Python-generated plugin/MCP metadata. Require an explicitly configured bearer
+credential for gateway index search/statistics while retaining local embedding
+helpers. Share a monotonic OAuth deadline and per-connection timeout plus timer
+so silent and byte-drip clients cannot monopolize either login listener.
+
+**Verification so far:** The new silent-client tests failed for both providers
+before the repair. OAuth deadline/auth suites then passed (62 passed, 3 skipped).
+Harness privacy/retrieval suites passed (240 tests), including legacy records,
+older native executables, canonical publication, restarted caches and embedding
+invalidation. `cargo test --manifest-path harness-indexer/Cargo.toml --locked
+--offline` passed 8 tests; `go test ./...` in `harness-gateway` passed, including
+missing/wrong/duplicate credentials, malformed configuration and authenticated
+search. Full local CI is recorded below after execution, not inferred here.
+
+**Prevention and limits:** Enforce privacy at producer, persistence and cache
+boundaries; never equate localhost with owner identity or an inactivity timeout
+with a total deadline. Synthetic fixtures contain no real credentials. These
+checks do not establish deployed exposure, hosted OS qualification or a public
+release. The separate launcher checkout is outside this repair scope.
+
+**Review follow-up:** Independent candidate review reproduced a mixed-case
+`.CODEX-PLUGIN` classifier bypass and repeated loss of already-safe native
+embeddings. Match directory casing conservatively in both producers; retain
+vectors only when every non-vector field equals the safe canonical projection.
+Regression coverage includes fresh/legacy mixed-case records, public tool reads,
+tampered fallback records, cache reload and restart with zero repeat embedding.
+
+**Full-suite follow-up:** A complete run exposed a timer-expiry race in the new
+Google partial-header regression. Python's HTTP parser accepts EOF as the end
+of headers; timer shutdown could therefore mark an incomplete request complete
+and discard a legitimate queued callback. A deterministic timer-only control
+reproduced both errors (2 failed, 6 passed). The shared request handler now checks
+the per-connection deadline after parsing and before dispatching either callback.
+The corrected auth/native-memory run passed 93 tests with 3 skips. CI explicitly
+checks the new OAuth and schema helpers; all 79 selected mypy files pass.
+Retain the first failure and exercise both inactivity timeout and absolute timer
+expiry rather than relying on which one wins a scheduling race.
+
+## 2026-10-07: Native Continuum Applicability And Dependency Audit Drift
+
+**Symptoms and causes:** The full run exposed a 15-operation Algo catalog versus
+the separately updated 16-operation native Continuum contract. The new required,
+nullable `projects` field was also lost by SDK callable introspection. Dependency
+audits found three urllib3 advisories and 17 affected website package entries,
+including a critical Next.js advisory. Old green receipts did not cover these
+newly published advisories.
+
+**Repairs:** Wire `memory_set_applicability` through the existing scoped mutation,
+approval, receipt and reconciliation policies. Validate exact content/declaration
+revisions and canonical projects; verify native `explain` readback before reporting
+success, including replays. Preserve the required nullable field through an exact
+provider schema. No store, authority policy or retired fallback is introduced.
+Upgrade locked urllib3 to 2.8.0, Next/eslint-config-next to 16.3.8, sharp to 0.35.5,
+undici to 7.29.1 and compatible brace-expansion, fast-uri and source-map-js patches.
+
+**Verification:** Scoped native tests include an isolated real Continuum store,
+global/project declarations, unchanged content revisions, replay, conflicts,
+unknown outcomes and provider schema transport. Website clean install, build,
+eight render/security tests and lint pass; actual sharp decoders report patched
+librsvg and retain SVG/AVIF decoding. Python, Rust and Go dependency audits pass.
+The production-only website audit reports zero advisories.
+The website's build, eight tests, lint and production audit also pass under
+the CI version, Node 22.22.0, obtained from the official distribution with its
+published SHA-256 checked. Full audit still fails under that same version.
+
+**Remaining blocker:** Full `npm audit` still fails with eight high-severity
+package entries, all derived from the unpatched build/lint dependency `braces`
+([GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm)).
+The registry's latest release remains 3.0.3 and the advisory lists no patched
+version. No audit exception, forced major downgrade, replacement-parser guess,
+or public-release claim is made. An upstream patch or separately reviewed
+dependency replacement is required before this gate can pass.
+
+**Prevention:** A separately versioned native catalog must be checked through
+registration, actual provider schema, policy and verified effects, not name count
+alone. Refresh audits at delivery time and distinguish one advisory's transitive
+impact from independent vulnerabilities. A local history scan of every Git ref
+can include unrelated private branches; verify public ancestry plus the exact
+candidate in a fresh clone without deleting or rewriting those local refs.
+
+**Local closeout:** The final frozen, non-editable installed Python suite
+(`ALGO_TEST_REQUIRE_RIPGREP=1 .venv/bin/pytest tests --cov --cov-branch
+--cov-fail-under=57`) passed 7,182 tests, skipped 41 and failed zero; coverage is
+70.49%. Ruff, the CI-exact 79-file mypy contract, compilation, installed-source
+parity and public-source privacy scan pass. Rust formatting/clippy/eight tests,
+Go race/vet/70.6% coverage, Swift's 89 tests and release build, and 30 native
+forced-stop recovery trials pass. Python/Rust/Go dependency audits pass.
+The regenerated M8 report passes nine local metrics and retains five external
+browser blockers; Nathan passes 17 correctness probes and 31 workloads, and
+M9 verifies the intentionally blocked completion state. These are local,
+source-bound checks; the unchanged full website audit failure prevents a
+fully green local matrix or a release tag. Hosted qualification and public
+delivery have not been established by this receipt.
+
 ## 2026-09-13: Pre-PyPI Snapshot Expiry Misread As Asset Digest Mismatch
 
 **Issue:** Protected publisher run

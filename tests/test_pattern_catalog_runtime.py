@@ -198,8 +198,10 @@ def test_rust_index_receives_same_pattern_postprocessing(monkeypatch, tmp_path):
     monkeypatch.setattr(harness, "find_rust_indexer", lambda: tmp_path / "native-indexer")
     monkeypatch.setattr(harness, "INDEX_PATH", output)
 
-    def run(*_args, **_kwargs):
-        output.write_text(json.dumps({"records": [parent]}))
+    def run(command, **_kwargs):
+        staged = Path(command[2])
+        assert staged != output
+        staged.write_text(json.dumps({"records": [parent]}))
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(harness.subprocess, "run", run)

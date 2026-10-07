@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import http.server
 import json
 import os
 import re
@@ -34,6 +33,7 @@ import webbrowser
 from pathlib import Path
 from typing import Any
 
+from .oauth_loopback import CallbackHTTPServer, CallbackRequestHandler
 from .config import (
     CONFIG_DIR,
     _atomic_write_text,
@@ -194,7 +194,7 @@ def build_authorize_url(
     return f"{authorize_url}?{urllib.parse.urlencode(params)}"
 
 
-class _CallbackHandler(http.server.BaseHTTPRequestHandler):
+class _CallbackHandler(CallbackRequestHandler):
     received: dict[str, str] = {}
 
     def do_GET(self) -> None:  # noqa: N802
@@ -226,13 +226,11 @@ def run_loopback_capture(
         received: dict[str, str] = {}
 
     try:
-        server = http.server.HTTPServer((CHATGPT_REDIRECT_HOST, redirect_port), Handler)
+        server = CallbackHTTPServer((CHATGPT_REDIRECT_HOST, redirect_port), Handler, timeout=timeout)
     except OSError:
         return {}
-    server.timeout = 1.0
-    deadline = time.time() + timeout
     try:
-        while not Handler.received and time.time() < deadline:
+        while not Handler.received and time.monotonic() < server.deadline:
             server.handle_request()
     finally:
         server.server_close()

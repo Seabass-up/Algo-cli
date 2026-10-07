@@ -1072,7 +1072,7 @@ def test_rust_indexer_receives_exact_imported_package_boundary(monkeypatch, tmp_
     def fake_run(command, **kwargs):
         captured["command"] = command
         captured["env"] = kwargs["env"]
-        index_path.write_text(
+        Path(command[2]).write_text(
             json.dumps(
                 {
                     "generated": "1",
@@ -1100,7 +1100,10 @@ def test_rust_indexer_receives_exact_imported_package_boundary(monkeypatch, tmp_
     result = harness.build_index_with_rust()
 
     assert result is not None and result["indexer"] == "rust"
-    assert captured["command"] == [str(binary), "--output", str(index_path)]
+    assert captured["command"][:2] == [str(binary), "--output"]
+    staged = Path(captured["command"][2])
+    assert staged != index_path and staged.parent.parent == config_dir
+    assert not staged.exists() and not index_path.exists()
     assert captured["env"]["ALGO_CLI_REPO_DIR"] == str(harness.ALGO_CLI_REPO_DIR)
 
 

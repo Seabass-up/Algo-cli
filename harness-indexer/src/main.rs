@@ -503,6 +503,26 @@ fn should_skip(path: &Path) -> bool {
         .any(skip_part)
 }
 
+fn metadata_only_json(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_lowercase();
+    name.ends_with(".mcp.json")
+        || name.ends_with(".app.json")
+        || matches!(
+            name.as_str(),
+            ".codex-remote-plugin-install.json" | "openclaw.json" | "installs.json"
+        )
+        || (name == "plugin.json"
+            && path
+                .parent()
+                .and_then(Path::file_name)
+                .map(|part| part.to_string_lossy().eq_ignore_ascii_case(".codex-plugin"))
+                .unwrap_or(false))
+}
+
 fn make_record(root: &SourceRoot, path: &Path) -> io::Result<Record> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -511,7 +531,15 @@ fn make_record(root: &SourceRoot, path: &Path) -> io::Result<Record> {
             "source must be a regular non-symlink file",
         ));
     }
-    let text = read_text(path)?;
+    // Connector values are never document content, including malformed or escaped JSON.
+    let text = if metadata_only_json(path) {
+        format!(
+            "{} metadata",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        )
+    } else {
+        read_text(path)?
+    };
     let title = frontmatter_value(&text, "title")
         .or_else(|| frontmatter_value(&text, "name"))
         .or_else(|| first_heading(&text))
@@ -890,6 +918,44 @@ mod tests {
         assert_eq!(record.tags, vec!["one", "two"]);
         assert_eq!(record.links, vec!["Alpha", "Beta"]);
         assert_eq!(json_escape("a\n\"b\\c"), "a\\n\\\"b\\\\c");
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[test]
+    fn connector_configurations_never_publish_body_fields() {
+        let root_path = temporary_directory("metadata");
+        let source = root(
+            "fixture",
+            "extension",
+            root_path.clone(),
+            vec!["*.json"],
+            20,
+        );
+        for name in [
+            "openclaw.json",
+            "plugins/installs.json",
+            "OPENCLAW.JSON",
+            ".mcp.json",
+            "custom.app.json",
+            ".codex-remote-plugin-install.json",
+            ".codex-plugin/plugin.json",
+            ".CODEX-PLUGIN/plugin.json",
+            ".Codex-Plugin/PLUGIN.JSON",
+        ] {
+            let path = root_path.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                &path,
+                "{\"nested\":{\"apiKey\":\"SYNTHETIC_PRIVATE_VALUE\"},\"extra\":\"\\u0041\"}",
+            )
+            .unwrap();
+            let record = make_record(&source, &path).unwrap();
+            let output = render_index(&[], &[record]);
+            assert!(!output.contains("SYNTHETIC_PRIVATE_VALUE"), "{name}");
+            assert!(!output.contains("apiKey"), "{name}");
+            assert!(!output.contains("nested"), "{name}");
+            assert!(output.contains("metadata"));
+        }
         fs::remove_dir_all(root_path).unwrap();
     }
 
