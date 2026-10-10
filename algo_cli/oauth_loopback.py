@@ -2,6 +2,7 @@
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import socket
+from socketserver import TCPServer
 from threading import Timer
 import time
 from typing import Any
@@ -13,6 +14,12 @@ class CallbackHTTPServer(HTTPServer):
     ) -> None:
         self.deadline = time.monotonic() + max(0.0, timeout)
         super().__init__(address, handler)
+
+    def server_bind(self) -> None:
+        # Fixed loopback listeners need no reverse DNS, which can consume the deadline.
+        TCPServer.server_bind(self)
+        host, self.server_port = self.server_address[:2]
+        self.server_name = str(host)
 
     def handle_request(self) -> None:
         remaining = self.deadline - time.monotonic()

@@ -78,6 +78,20 @@ is a test-contract adaptation to the security repair, not permission relaxation.
 The prior full run remains failed; require a new complete run on the corrected
 integration commit before reporting local CI as passed.
 
+**Hosted OAuth follow-up:** macOS CI on `b4ae295` failed during loopback connection
+setup before partial-header verification. Inspection and a failing regression
+confirmed that inherited `HTTPServer.server_bind` calls `socket.getfqdn`, which
+can block before the capture loop enforces its deadline. That is a demonstrated
+setup defect and a plausible contributor to the hosted reset, not proof of its
+precise scheduler/network cause. Bind with `TCPServer.server_bind` and retain
+numeric address/port metadata without reverse DNS. Keep capture and per-connection
+deadlines unchanged; do not retry away or skip the failure. The no-DNS regression
+and OAuth checks pass locally with three preexisting platform-specific skips.
+Typing passes after explicitly normalizing the server-name metadata to text.
+Refresh affected source-bound reports and rerun complete local/hosted CI before
+claiming this successor qualified; prior hosted success/failure belongs to the
+earlier commit.
+
 ## 2026-10-09: Valid Decision Advice Is Not Semantic Verification
 
 **Symptom/cause:** The supplied Jev trial contained well-formed, confidently wrong

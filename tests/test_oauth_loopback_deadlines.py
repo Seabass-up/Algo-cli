@@ -10,6 +10,18 @@ import pytest
 from algo_cli import chatgpt_auth, google_workspace_auth
 
 
+def test_loopback_binding_does_not_spend_capture_budget_on_reverse_dns(monkeypatch):
+    from algo_cli.oauth_loopback import CallbackHTTPServer, CallbackRequestHandler
+
+    def unavailable_reverse_dns(*_args):
+        raise AssertionError("callback binding must not perform reverse DNS")
+
+    monkeypatch.setattr(socket, "getfqdn", unavailable_reverse_dns)
+    with CallbackHTTPServer(("127.0.0.1", 0), CallbackRequestHandler, timeout=1) as server:
+        assert server.server_name == "127.0.0.1"
+        assert server.server_port == server.server_address[1]
+
+
 @contextmanager
 def capture_session(provider, timeout=1.0):
     with socket.socket() as reservation:
