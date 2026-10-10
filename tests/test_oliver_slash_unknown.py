@@ -148,7 +148,7 @@ def test_lessons_status_and_reindex_do_not_touch_plaintext_under_echo(monkeypatc
     main_module.handle_command("/lessons reindex", cfg, None)
 
     assert info == ["Legacy plaintext lesson retrieval is inactive while Continuum Memory is authoritative."]
-    assert errors == ["Legacy lesson reindexing is disabled while Continuum Memory is authoritative."]
+    assert len(errors) == 1 and "retired" in errors[0]
 
 
 def test_harness_subcommand_rejects_unexpected_arguments(monkeypatch):
@@ -314,7 +314,7 @@ def test_harness_status_and_embed_are_listed_slash_commands():
     commands = {command for command, _description in slash_dispatch.SLASH_COMMANDS}
 
     assert "/harness status" in commands
-    assert "/harness embed" in commands
+    assert "/harness embed" not in commands
     assert "/harness score" in commands
     assert "/harness compare" in commands
 

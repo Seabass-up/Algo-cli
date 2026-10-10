@@ -12,15 +12,15 @@ The ActionSpec registry is the runtime source of truth for tools, slash commands
 
 Discovery uses the effective registry: explicit ActionSpecs plus the generated
 coverage records for current tool callables and slash commands. An explicit-only
-catalog is incomplete even when all of its own records have embeddings. Generated
+catalog is incomplete even when all of its own records are indexed. Generated
 records retain the existing curated or unclassified policy; indexing never invokes
 the callable or upgrades its authority.
 
 Capability records are discovery evidence, not authority. Retrieving a record never grants permission or bypasses the registry. Bounded execution still applies the live ActionSpec policy and produces normal receipts.
 
-After changing the registry, run `/harness refresh`, complete pending embeddings,
-and inspect `/harness status`. The `runtime_capability_coverage` result compares
+After changing the registry, run `/harness refresh` and inspect `/harness status`.
+Retrieval is lexical; native Continuum owns memory without an embedding pipeline.
+The `runtime_capability_coverage` result compares
 indexed IDs and policy metadata against the complete effective registry. Missing,
-unexpected, duplicate, or stale entries degrade readiness even when embedding
-coverage is complete. Indexes from the explicit-only catalog refresh automatically;
-unchanged embedding inputs retain their vectors.
+unexpected, duplicate, or stale entries degrade readiness. Indexes from the
+explicit-only catalog refresh automatically; unchanged references are reused.

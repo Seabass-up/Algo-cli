@@ -277,18 +277,6 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         requires_provider="ollama-cloud",
     ),
     _spec(
-        "query_knowledge_graph",
-        "tool",
-        "Query index-compute-lab ranked associations.",
-        "read",
-        ("icl", "knowledge-graph", "read-only"),
-        "Detects local knowledge graph readiness for grounded context.",
-        "low",
-        False,
-        False,
-        True,
-    ),
-    _spec(
         "remember",
         "tool",
         "Store a durable user fact in local memory.",
@@ -360,21 +348,6 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         True,
         True,
         True,
-    ),
-    _spec(
-        "/code-rag",
-        "slash",
-        "Show or toggle working-directory code retrieval.",
-        "harness",
-        ("code-rag", "privacy", "local-index", "toggle"),
-        "Requires explicit versioned consent before cwd snippets can enter model prompts.",
-        "medium",
-        True,
-        True,
-        True,
-        known_limitations=(
-            "When enabled, retrieved snippets join the active provider request; /code-rag off purges persisted indexes.",
-        ),
     ),
     _spec(
         "/actions",
@@ -1811,40 +1784,6 @@ def build_doctor_report(cfg: Any) -> DoctorReport:
                 "xai-api",
                 f"xai_auth import failed: {exc}",
                 "Reinstall Algo CLI; the module is required for optional xAI API commands.",
-            )
-        )
-
-    from . import index_compute_lab
-
-    root = index_compute_lab.resolve_lab_root()
-    icl_enabled = bool(getattr(cfg, "index_compute_lab_auto_inject", False))
-    if not icl_enabled:
-        findings.append(
-            DoctorFinding(
-                "ready",
-                "index-compute-lab",
-                "optional index-compute-lab context is disabled",
-                "Use /icl on only when this local source is appropriate for the selected model provider.",
-            )
-        )
-    elif not root.exists():
-        findings.append(
-            DoctorFinding(
-                "degraded",
-                "index-compute-lab",
-                f"enabled index-compute-lab root is missing: {root}",
-                "Set ALGO_CLI_INDEX_COMPUTE_LAB_ROOT or clone/build the lab.",
-            )
-        )
-    elif index_compute_lab.lab_available():
-        findings.append(DoctorFinding("ready", "index-compute-lab", "index-compute-lab graph ready"))
-    else:
-        findings.append(
-            DoctorFinding(
-                "degraded",
-                "index-compute-lab",
-                "index-compute-lab root exists but query assets are missing",
-                "Need query.py, atoms/ranked-association-map.json, and atoms/alias-table.json.",
             )
         )
 

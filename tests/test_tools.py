@@ -138,50 +138,23 @@ def test_update_user_profile_preserves_echo_disabled_compatibility(monkeypatch):
 
 
 def test_knowledge_graph_note_refuses_implicit_memory_reroute_without_plaintext_shadow(monkeypatch):
-    from algo_cli import continuum_memory
-
-    cfg = Config(continuum_enabled=True)
-    captured: dict[str, str] = {}
-    monkeypatch.setattr(
-        continuum_memory,
-        "remember_fact",
-        lambda _cfg, fact: captured.update({"fact": fact}) or True,
-    )
-    monkeypatch.setattr(
-        tools._index_compute_lab,
-        "write_graph_note",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("plaintext graph note must not be written")),
-    )
-
-    result = tool_runtime.run_tool(
-        "write_knowledge_graph_note",
-        {"title": "Alias", "body": "Use the protected name."},
-        cfg,
-    )
-
-    assert "unavailable" in result and "Continuum" in result
-    assert captured == {}
+    from algo_cli import continuum_memory, index_compute_lab
+    monkeypatch.setattr(continuum_memory, "remember_fact", lambda *a, **kw: pytest.fail("retired alias must not reroute writes"))
+    monkeypatch.setattr(index_compute_lab, "write_graph_note", lambda *a, **kw: pytest.fail("no plaintext fallback"))
+    result = tools.write_knowledge_graph_note("private", "canary", cfg=Config(continuum_enabled=True))
+    assert "retired" in result and "memory_remember" in result
+    assert "canary" not in result
+    assert "write_knowledge_graph_note" not in tools.TOOL_MAP
 
 
 def test_knowledge_graph_note_fails_closed_without_plaintext_fallback(monkeypatch):
-    from algo_cli import continuum_memory
-
-    cfg = Config(continuum_enabled=True)
-    monkeypatch.setattr(
-        continuum_memory,
-        "remember_fact",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("private")),
-    )
-    monkeypatch.setattr(
-        tools._index_compute_lab,
-        "write_graph_note",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("plaintext fallback must not run")),
-    )
-
-    result = tools.write_knowledge_graph_note("private", "canary", cfg=cfg)
-
-    assert "unavailable" in result and "Continuum" in result
+    from algo_cli import continuum_memory, index_compute_lab
+    monkeypatch.setattr(continuum_memory, "remember_fact", lambda *a, **kw: pytest.fail("retired alias must not reroute writes"))
+    monkeypatch.setattr(index_compute_lab, "write_graph_note", lambda *a, **kw: pytest.fail("no plaintext fallback"))
+    result = tools.write_knowledge_graph_note("private", "canary", cfg=Config(continuum_enabled=True))
+    assert "retired" in result and "memory_remember" in result
     assert "canary" not in result
+    assert "write_knowledge_graph_note" not in tools.TOOL_MAP
 
 
 def test_x_search_under_echo_is_current_turn_only_and_never_cached(
@@ -1003,30 +976,35 @@ def test_available_actions_points_to_reviewed_algo_doc():
 
 def test_available_actions_exposes_harness_maintenance_loop():
     payload = json.loads(tools.available_actions("harness"))
+    focused = payload["focused"]
 
-    commands = payload["commands"]["harness"]
+    commands = focused["commands"]["harness"]
     assert "/harness status" in commands
     assert "/harness refresh" in commands
-    assert "/harness embed" in commands
+    assert "/harness embed" not in commands
     assert "/harness score" in commands
     assert "/harness compare" in commands
     assert "/hsearch QUERY" in commands
     assert "/hread RECORD_ID" in commands
-    assert any("/harness status" in item and "/harness embed" in item for item in payload["slash_command_guidance"])
+    assert any("/harness status" in item and "/harness refresh" in item for item in focused["slash_command_guidance"])
     assert any(
-        "/harness status" in item and "/harness embed" in item for item in payload["model_callable_tools"]["session"]
+        "/harness status" in item and "/harness refresh" in item for item in focused["model_callable_tools"]["session"]
     )
-    assert any("harness_stats" in item and "harness_refresh" in item for item in payload["verification_layer"])
+    assert any("harness_stats" in item and "harness_refresh" in item for item in focused["verification_layer"])
+    assert "slash_registry" not in payload
+    assert "reasoning_mode_guidance" not in payload
 
 
 def test_available_actions_exposes_runtime_agent_threads():
     payload = json.loads(tools.available_actions("agent"))
+    focused = payload["focused"]
 
-    commands = payload["commands"]["agent"]
+    commands = focused["commands"]["agent"]
     assert "/agent team [--roles ROLE,ROLE[,ROLE,ROLE]] TASK" in commands
     assert "/agent threads" in commands
     assert "/agent resume THREAD [TASK]" in commands
-    assert any("2-4" in item and "read-only" in item for item in payload["slash_command_guidance"])
+    assert any("2-4" in item and "read-only" in item for item in focused["slash_command_guidance"])
+    assert "slash_registry" not in payload
 
 
 def test_plugin_tool_wrappers_serialize_and_load_discovered_manifests(monkeypatch, tmp_path):
@@ -1205,6 +1183,7 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
 
     stats_payload = {
         "record_count": 332,
+        "retrieval": {"mode": "lexical"},
         "quality": {
             "status": "ready",
             "memory_records": 3,
@@ -1262,7 +1241,7 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     monkeypatch.setattr(
         tools,
         "query_knowledge_graph",
-        lambda _query, cfg=None: "project:algo-cli  (187 edges)",
+        lambda _query, cfg=None: pytest.fail("Retired graph must not influence readiness"),
     )
     monkeypatch.setattr(
         harness_retrieval_benchmark,
@@ -1338,19 +1317,19 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
 
     payload = json.loads(tools.harness_scorecard())
 
-    assert payload["score"] == 9.5
-    assert payload["max_score"] == 10
-    assert payload["schema_version"] == 2
+    assert payload["score"] == 8.5
+    assert payload["max_score"] == 9
+    assert payload["schema_version"] == 3
     assert payload["overall_status"] == "degraded"
-    assert payload["scored_gate_count"] == 10
+    assert payload["scored_gate_count"] == 9
     assert payload["validation_errors"] == []
     statuses = {check["name"]: check["status"] for check in payload["checks"]}
     assert statuses["index integrity"] == "pass"
-    assert statuses["embedding readiness"] == "pass"
+    assert statuses["lexical reference readiness"] == "pass"
     assert statuses["project memory/wiki coverage"] == "pass"
     assert statuses["corpus signal balance"] == "pass"
     assert statuses["meta-query retrieval"] == "pass"
-    assert statuses["knowledge graph"] == "pass"
+    assert "knowledge graph" not in statuses and "embedding readiness" not in statuses
     assert statuses["action registry runtime audit"] == "pass"
     assert statuses["harness maintenance loop"] == "pass"
     assert statuses["retrieval benchmark"] == "warn"
@@ -1394,7 +1373,7 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     stats_payload["runtime_event_store"]["file_private"] = False
     unsafe_store = json.loads(tools.harness_scorecard())
     unsafe_statuses = {check["name"]: check["status"] for check in unsafe_store["checks"]}
-    assert unsafe_store["score"] == 8.5
+    assert unsafe_store["score"] == 7.5
     assert unsafe_store["overall_status"] == "blocked"
     assert unsafe_statuses["project memory/wiki coverage"] == "fail"
     stats_payload["runtime_event_store"]["file_private"] = True
@@ -1413,7 +1392,7 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     wiring_only = json.loads(tools.harness_scorecard())
 
     wiring_statuses = {check["name"]: check["status"] for check in wiring_only["checks"]}
-    assert wiring_only["score"] == 8.0
+    assert wiring_only["score"] == 7.0
     assert wiring_only["overall_status"] == "degraded"
     assert wiring_statuses["retrieval benchmark"] == "unavailable"
     assert wiring_statuses["algorithm effectiveness"] == "unavailable"
@@ -1432,7 +1411,7 @@ def test_harness_scorecard_reports_rating_file_criteria(monkeypatch):
     counterfeit_pass = json.loads(tools.harness_scorecard())
 
     counterfeit_statuses = {check["name"]: check["status"] for check in counterfeit_pass["checks"]}
-    assert counterfeit_pass["score"] == 8.0
+    assert counterfeit_pass["score"] == 7.0
     assert counterfeit_pass["overall_status"] == "blocked"
     assert counterfeit_statuses["retrieval benchmark"] == "fail"
     assert counterfeit_statuses["algorithm effectiveness"] == "fail"
@@ -1457,11 +1436,7 @@ def test_protected_harness_scorecard_never_reads_legacy_knowledge_graph(monkeypa
 
     payload = json.loads(tools.harness_scorecard(cfg=cfg))
 
-    graph_check = next(check for check in payload["checks"] if check["name"] == "knowledge graph")
-    assert graph_check["status"] == "unavailable"
-    assert "disabled under Continuum Memory" in graph_check["evidence"]
-    assert "Reindex" not in graph_check["recommendation"]
-    assert "Continuum" in graph_check["recommendation"]
+    assert all(check["name"] != "knowledge graph" for check in payload["checks"])
     assert calls == []
 
 
@@ -1751,25 +1726,9 @@ def test_unpack_embed_response_dict_and_object():
 
 
 def test_embed_text_accepts_object_response_from_current_ollama_client(monkeypatch):
-    class EmbedResponse:
-        model = "embeddinggemma"
-        embeddings = [[0.25, 0.75]]
-        total_duration = 12
-        load_duration = 3
-        prompt_eval_count = 2
-
-    class EmbedClient:
-        def embed(self, **_kwargs):
-            return EmbedResponse()
-
-    monkeypatch.setattr(tools, "gateway_embed", lambda *_args: None)
-    monkeypatch.setattr(tools, "active_ollama_client", lambda **_kwargs: EmbedClient())
-
-    payload = json.loads(tools.embed_text("hello", dimensions=2))
-
-    assert payload["model"] == "embeddinggemma"
-    assert payload["vector_count"] == 1
-    assert payload["preview"] == [0.25, 0.75]
+    monkeypatch.setattr(tools, "_open_local_gateway", lambda *a, **kw: pytest.fail("no embedding transport"))
+    assert "retired" in tools.embed_text("public", model="fixture")
+    assert "embed_text" not in tools.TOOL_MAP
 
 
 @pytest.mark.parametrize(
@@ -1792,89 +1751,23 @@ def test_gateway_functions_never_open_remote_or_ambiguous_endpoints(monkeypatch,
     monkeypatch.setattr(tools, "_open_local_gateway", fail_open)
 
     assert tools.gateway_ready(url) is False
-    assert tools.gateway_embed("hello", "embeddinggemma", True, None, url) is None
-    assert tools.gateway_embed_batch(["hello"], "embeddinggemma", True, None, url) is None
+    assert tools.gateway_embed("hello", "embeddinggemma", True, None, url)["error"] == "cli_embeddings_retired"
+    assert tools.gateway_embed_batch(["hello"], "embeddinggemma", True, None, url)["error"] == "cli_embeddings_retired"
     assert opened == []
 
 
 def test_gateway_embed_is_bounded_strict_and_uses_validated_loopback(monkeypatch):
-    opened: list[tuple[str, float, dict]] = []
-    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
-
-    class Response:
-        status = 200
-        headers = {"X-Algo-Ollama-Host": "http://localhost:11434"}
-
-        def __init__(self, raw: bytes):
-            self.raw = raw
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self, limit: int) -> bytes:
-            return self.raw[:limit]
-
-    def open_gateway(request, *, timeout):
-        opened.append((request.full_url, timeout, json.loads(request.data)))
-        return Response(b'{"model":"m1","embeddings":[[1.0,0.0]]}')
-
-    monkeypatch.setattr(tools, "_open_local_gateway", open_gateway)
-
-    result = tools.gateway_embed(
-        "hello",
-        "m1",
-        True,
-        2,
-        "http://127.0.0.1:8765",
-    )
-
-    assert result == {"model": "m1", "embeddings": [[1.0, 0.0]]}
-    assert opened == [
-        (
-            "http://127.0.0.1:8765/supplemental/embed-bound/v1",
-            60,
-            {"model": "m1", "input": "hello", "truncate": True, "dimensions": 2},
-        )
-    ]
-
-    monkeypatch.setattr(
-        tools,
-        "_open_local_gateway",
-        lambda *_args, **_kwargs: Response(b'{"model":"first","model":"second"}'),
-    )
-    assert tools.gateway_embed("hello", "m1", True, None) is None
-
-    oversized = b"{" + b"x" * tools.MAX_GATEWAY_RESPONSE_BYTES + b"}"
-    monkeypatch.setattr(
-        tools,
-        "_open_local_gateway",
-        lambda *_args, **_kwargs: Response(oversized),
-    )
-    assert tools.gateway_embed("hello", "m1", True, None) is None
+    monkeypatch.setattr(tools, "_open_local_gateway", lambda *a, **kw: pytest.fail("no embedding transport for any payload"))
+    for text in ("hello", "x" * tools.MAX_GATEWAY_REQUEST_BYTES):
+        assert tools.gateway_embed(text, "m1", True, None)["error"] == "cli_embeddings_retired"
+    assert tools.gateway_embed_batch(["x"] * (tools.MAX_GATEWAY_BATCH_ITEMS + 1), "m1", True, None)["error"] == "cli_embeddings_retired"
 
 
 def test_gateway_payload_limits_fail_closed_before_open(monkeypatch):
-    monkeypatch.setattr(
-        tools,
-        "_open_local_gateway",
-        lambda *_args, **_kwargs: pytest.fail("invalid payload reached transport"),
-    )
-
-    assert (
-        tools.gateway_embed_batch(
-            ["x"] * (tools.MAX_GATEWAY_BATCH_ITEMS + 1),
-            "m1",
-            True,
-            None,
-        )
-        is None
-    )
-    assert tools.gateway_embed("x", " m1 ", True, None) is None
-    assert tools.gateway_embed("x", "m1", True, 0) is None
-    assert tools.gateway_embed("x" * tools.MAX_GATEWAY_REQUEST_BYTES, "m1", True, None) is None
+    monkeypatch.setattr(tools, "_open_local_gateway", lambda *a, **kw: pytest.fail("no embedding transport for any payload"))
+    for text in ("hello", "x" * tools.MAX_GATEWAY_REQUEST_BYTES):
+        assert tools.gateway_embed(text, "m1", True, None)["error"] == "cli_embeddings_retired"
+    assert tools.gateway_embed_batch(["x"] * (tools.MAX_GATEWAY_BATCH_ITEMS + 1), "m1", True, None)["error"] == "cli_embeddings_retired"
 
 
 def test_local_gateway_transport_ignores_proxy_environment(monkeypatch):
@@ -2152,56 +2045,23 @@ def test_scoped_tool_runtime_env_serializes_different_values(monkeypatch):
 
 def test_query_knowledge_graph_invokes_public_cli_with_bounded_limit(tmp_path, monkeypatch):
     from algo_cli import index_compute_lab
-
-    root = tmp_path / "index-compute-lab"
-    atoms = root / "atoms"
-    atoms.mkdir(parents=True)
-    (root / "query.py").write_text("# query entrypoint\n", encoding="utf-8")
-    (atoms / "ranked-association-map.json").write_text("{}", encoding="utf-8")
-    (atoms / "alias-table.json").write_text("{}", encoding="utf-8")
-    captured: dict = {}
-
-    def fake_run(command, **kwargs):
-        captured["command"] = command
-        captured.update(kwargs)
-        return SimpleNamespace(returncode=0, stdout="person:alex-rivera\n", stderr="")
-
-    monkeypatch.setattr(index_compute_lab, "resolve_lab_root", lambda: root)
-    monkeypatch.setattr("algo_cli.index_compute_lab.subprocess.run", fake_run)
-
-    out = tools.query_knowledge_graph("what is alex about?", limit=999)
-
-    assert "person:alex-rivera" in out
-    assert captured["command"][1:] == [str(root / "query.py"), "ask", "what is alex about?", "--limit", "20"]
-    assert captured["cwd"] == root
-    assert captured["timeout"] == 20
+    monkeypatch.setattr(index_compute_lab, "run_ask", lambda *a, **kw: pytest.fail("no retired query subprocess"))
+    assert "retired" in tools.query_knowledge_graph("private query", limit=7)
+    assert "query_knowledge_graph" not in tools.TOOL_MAP
 
 
 def test_query_knowledge_graph_reports_missing_assets(tmp_path, monkeypatch):
     from algo_cli import index_compute_lab
-
-    monkeypatch.setattr(index_compute_lab, "resolve_lab_root", lambda: tmp_path)
-
-    out = tools.query_knowledge_graph("what is alex about?")
-
-    assert out.startswith("Error: index-compute-lab not ready")
+    monkeypatch.setattr(index_compute_lab, "run_ask", lambda *a, **kw: pytest.fail("no retired query subprocess"))
+    assert "retired" in tools.query_knowledge_graph("private query", limit=7)
+    assert "query_knowledge_graph" not in tools.TOOL_MAP
 
 
 def test_query_knowledge_graph_expands_harness_meta_query_when_no_canonicals(monkeypatch):
-    calls: list[str] = []
-
-    def fake_run_ask(question: str, **_kwargs) -> str:
-        calls.append(question)
-        if question == "rate your harness":
-            return "No matching canonicals."
-        return "project:algo-cli  (187 edges, 1 aggregated)"
-
-    monkeypatch.setattr(tools._index_compute_lab, "run_ask", fake_run_ask)
-
-    out = tools.query_knowledge_graph("rate your harness", limit=5)
-
-    assert "project:algo-cli" in out
-    assert calls == ["rate your harness", "Algo CLI harness self-evaluation capability audit"]
+    from algo_cli import index_compute_lab
+    monkeypatch.setattr(index_compute_lab, "run_ask", lambda *a, **kw: pytest.fail("no retired query subprocess"))
+    assert "retired" in tools.query_knowledge_graph("private query", limit=7)
+    assert "query_knowledge_graph" not in tools.TOOL_MAP
 
 
 @pytest.mark.parametrize(
@@ -2212,26 +2072,13 @@ def test_echo_authority_refuses_legacy_knowledge_graph_before_access(
     monkeypatch,
     tool_name: str,
 ) -> None:
-    cfg = Config(
-        continuum_enabled=True,
-    )
-    monkeypatch.setattr(
-        tools._index_compute_lab,
-        "run_ask",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("protected graph query reached legacy storage")),
-    )
-    monkeypatch.setattr(
-        tools._index_compute_lab,
-        "run_pipeline",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("protected graph reindex reached legacy storage")
-        ),
-    )
-
+    from algo_cli import index_compute_lab
+    monkeypatch.setattr(index_compute_lab, "run_ask", lambda *a, **kw: pytest.fail("no retired query IO"))
+    monkeypatch.setattr(index_compute_lab, "run_pipeline", lambda *a, **kw: pytest.fail("no retired reindex IO"))
+    assert tool_name not in tools.TOOL_MAP
+    fn = getattr(tools, tool_name)
     args = {"question": "private graph"} if tool_name == "query_knowledge_graph" else {}
-    result = tool_runtime.run_tool(tool_name, args, cfg)
-
-    assert "disabled while Continuum Memory" in result
+    assert "retired" in fn(**args, cfg=Config(continuum_enabled=True))
 
 
 def test_x_search_requires_auth(monkeypatch):

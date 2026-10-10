@@ -38,8 +38,19 @@ class _BoundEmbedder:
         return [[1.0] * self._dims for _ in texts]
 
 
+def _historical_stats(**kwargs):
+    # Historical diagnostics remain testable, but are no longer CLI readiness.
+    embeddings = harness.embedding_summary(harness.load_index(), **kwargs)
+    harness._bind_last_embed_pass(embeddings)
+    last_pass = embeddings.get("last_pass")
+    return {"embeddings": embeddings, "quality": {"last_embed_pass": last_pass}}
+
+
 def _pending_recommendation(stats: dict) -> str:
-    return next(item for item in stats["quality"]["recommendations"] if "/harness embed" in item)
+    block = stats["embeddings"]
+    if block.get("stale_last_pass"):
+        return harness._describe_stale_embed_pass(block["stale_last_pass"])
+    return harness._describe_embed_pass(block["last_pass"])
 
 
 def test_embed_pass_persists_its_embedding_contract() -> None:
@@ -54,7 +65,7 @@ def test_pass_for_current_contract_is_reported_as_current() -> None:
     _write_pending_index()
     harness.embed_index_records(_BoundEmbedder(_IDENTITY_A), "m", dimensions=2, max_records=1)
 
-    stats = harness.stats(model="m", dimensions=2, embedding_identity=_IDENTITY_A)
+    stats = _historical_stats(model="m", dimensions=2, embedding_identity=_IDENTITY_A)
 
     last_pass = stats["embeddings"]["last_pass"]
     assert last_pass["outcome"] == "partial"
@@ -67,7 +78,7 @@ def test_model_switch_labels_previous_contract_pass_stale() -> None:
     _write_pending_index()
     harness.embed_index_records(_BoundEmbedder(_IDENTITY_A), "m-old", dimensions=2, max_records=1)
 
-    stats = harness.stats(model="m-new", dimensions=2, embedding_identity=_IDENTITY_A)
+    stats = _historical_stats(model="m-new", dimensions=2, embedding_identity=_IDENTITY_A)
 
     assert stats["embeddings"]["last_pass"] is None
     assert stats["quality"]["last_embed_pass"] is None
@@ -83,7 +94,7 @@ def test_dimension_switch_labels_previous_contract_pass_stale() -> None:
     _write_pending_index()
     harness.embed_index_records(_BoundEmbedder(_IDENTITY_A), "m", dimensions=2, max_records=1)
 
-    stats = harness.stats(model="m", dimensions=3, embedding_identity=_IDENTITY_A)
+    stats = _historical_stats(model="m", dimensions=3, embedding_identity=_IDENTITY_A)
 
     assert stats["embeddings"]["last_pass"] is None
     assert stats["embeddings"]["stale_last_pass"]["contract"]["dimensions"] == 2
@@ -94,7 +105,7 @@ def test_identity_switch_labels_previous_contract_pass_stale() -> None:
     _write_pending_index()
     harness.embed_index_records(_BoundEmbedder(_IDENTITY_A), "m", dimensions=2, max_records=1)
 
-    stats = harness.stats(model="m", dimensions=2, embedding_identity=_IDENTITY_B)
+    stats = _historical_stats(model="m", dimensions=2, embedding_identity=_IDENTITY_B)
 
     assert stats["embeddings"]["last_pass"] is None
     assert stats["embeddings"]["stale_last_pass"]["contract"]["identity"] == _IDENTITY_A
@@ -104,7 +115,7 @@ def test_pass_without_recorded_contract_is_labeled_unrecorded() -> None:
     _write_pending_index()
     harness.record_embed_pass("skipped", "non_local_host", pending=3)
 
-    stats = harness.stats(model="m")
+    stats = _historical_stats(model="m")
 
     last_pass = stats["embeddings"]["last_pass"]
     assert last_pass["reason"] == "non_local_host"
@@ -118,7 +129,7 @@ def test_unavailable_active_identity_keeps_current_pass_outcome_visible() -> Non
         "failed", "embedding_dimension_mismatch", model="m", dimensions=2, embedding_identity=_IDENTITY_A
     )
 
-    stats = harness.stats(model="m", dimensions=2, embedding_identity=None)
+    stats = _historical_stats(model="m", dimensions=2, embedding_identity=None)
 
     last_pass = stats["embeddings"]["last_pass"]
     assert last_pass is not None
@@ -136,7 +147,7 @@ def test_pass_recorded_without_identity_is_unverified_not_different() -> None:
     _write_pending_index()
     harness.record_embed_pass("skipped", "non_local_host", model="m", dimensions=2, embedding_identity=None)
 
-    stats = harness.stats(model="m", dimensions=2, embedding_identity=_IDENTITY_A)
+    stats = _historical_stats(model="m", dimensions=2, embedding_identity=_IDENTITY_A)
 
     assert stats["embeddings"]["last_pass"]["contract_status"] == "unverified"
     assert "stale_last_pass" not in stats["embeddings"]
@@ -146,7 +157,16 @@ def test_unavailable_identity_still_reports_model_switch_as_different() -> None:
     _write_pending_index()
     harness.record_embed_pass("failed", "x", model="m-old", dimensions=2, embedding_identity=_IDENTITY_A)
 
-    stats = harness.stats(model="m-new", dimensions=2, embedding_identity=None)
+    stats = _historical_stats(model="m-new", dimensions=2, embedding_identity=None)
 
     assert stats["embeddings"]["last_pass"] is None
     assert stats["embeddings"]["stale_last_pass"]["contract_status"] == "different"
+
+
+def test_cli_status_never_recommends_historical_embedding_work():
+    _write_pending_index()
+    harness.record_embed_pass("failed", "provider_unavailable", model="old")
+    result = harness.stats()
+    assert "embeddings" not in result
+    assert result["retrieval"]["mode"] == "lexical"
+    assert all("/harness embed" not in item for item in result["quality"]["recommendations"])

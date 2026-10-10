@@ -2,9 +2,9 @@
 title: Privacy and local context
 description: How Algo CLI discovers, stores, and sends local context.
 status: active
-updated: 2026-09-21
-last_reviewed: 2026-09-21
-runtime_version: "Algo CLI v0.20.2 development"
+updated: 2026-10-09
+last_reviewed: 2026-10-09
+runtime_version: "Algo CLI v0.20.3 development"
 verification_status: "local repair candidate; release qualification pending"
 tags: [privacy, harness, cloud, context, consent]
 ---
@@ -13,7 +13,7 @@ tags: [privacy, harness, cloud, context, consent]
 
 Algo CLI starts with repository-provided documentation, skills, and files that the user creates under `~/.algo_cli`. It does not index other agent stores by default.
 
-> **Runtime check:** Privacy defaults and enabled context sources are runtime state. Run `/harness status`, `/memory-auto status`, `/icl`, and `/code-rag status` in the active Algo CLI process before describing them as enabled. A historical review does not establish the current configuration. Continuum-selected runs refuse legacy graph access and do not use plaintext continuity as another authority.
+> **Runtime check:** Inspect `/harness status` and `/memory-auto status` in the active process. Native Continuum owns memory without a CLI embedding pipeline. Echo Veil, Lab-index and vector Code RAG routes are retired, not optional fallbacks. Historical protected stores and rejection guards remain preserved.
 
 ## Always-sent model context
 
@@ -24,18 +24,18 @@ Automatic memory capture is off by default. `/memory-auto on` records explicit c
 ## Optional sources
 
 - `/harness external on` enables discovery of supported local agent stores such as Codex, Claude, OpenClaw, Mercury, and shared agent skills.
-- `/icl on` enables index-compute-lab retrieval and automatic graph context.
-- `/code-rag on` enables working-directory source indexing and relevant-snippet retrieval.
 - `/skills on` enables bounded run-history capture only when Continuum is disabled. Under Continuum authority, accepted run events are projected to keyed, content-free receipts; plaintext previews and automatic crystallization remain disabled.
 - Entries in `~/.algo_cli/harness_roots.json` are treated as explicit user-provided roots.
 
-Disable an optional source with `/harness external off`, `/icl off`, or `/code-rag off`. Changing either harness setting rebuilds the generated harness index so disabled records are removed. `/code-rag off` also purges every persisted code-index file.
+Disable external reference sources with `/harness external off`. Retired `/icl`, `/code-rag` and embedding commands refuse calls without reading or changing historical stores. Local reference lookup is lexical; it does not load an embedding model.
 
-## Working-directory code retrieval boundary
+## Retired vector retrieval
 
-- **Command boundary:** `/code-rag status` is read-only. `/code-rag on` records the current explicit consent version; a legacy saved `code_rag_enabled: true` value does not count as consent. Model-invoked `on` and `off` commands require approval.
-- **Index boundary:** when enabled outside Continuum authority, Algo CLI scans supported source files beneath the active cwd, skips hidden/build/vendor directories and secret-like filenames, rejects symlinks, hardlinks, special files, and sources that change during descriptor-bound reads, and stores chunks plus local embeddings in `~/.algo_cli/code_index/`. Continuum preflight purges this plaintext-derived index before protected work. `/code-rag off` also deletes generated index files, not source files. An ordinary copied file in the operator-selected workspace is workspace input; Algo cannot infer that its bytes were copied from a legacy memory file.
-- **Provider boundary:** embeddings are generated through local Ollama. Retrieved source snippets are then added to the active chat request, so they may leave the machine when the selected inference provider is remote.
+Code RAG, Intuition, lesson-vector rebuilds and Lab-index are not live retrieval
+routes. Legacy saved flags cannot activate them. References and native Continuum
+context may still enter model requests, so existing permissions and privacy
+constraints continue to apply. Decision-model inference is separate: a model's
+internal encoder is not a CLI memory/index embedding pipeline.
 
 ## Skill run history
 
@@ -43,7 +43,7 @@ Skill run-history capture and automatic crystallization are off by default. When
 
 When Continuum is selected, the same surface changes contract: the protected run-history store contains only domain-separated keyed receipts and structural counters, is bound to a persistent key and external monotonic head, and is validated during the protected auxiliary preflight. It never stores task, argument, result, or model-output prefixes. Crystallization is disabled because content-free receipts are not semantic training material. Unproven legacy skill files are quarantined outside the active harness root, and cached mutable skill records are removed before retrieval. `/skills off` stops future capture; it does not silently reinterpret protected receipts as plaintext history.
 
-## Echo-exclusive local path boundary
+## Protected local path boundary
 
 When Continuum is selected, model-callable `run_shell` is disabled because a free-form shell cannot prove that it avoided legacy memory. Typed read, list, search, edit, write, PDF, vision, Git, and session-path actions reject `~/.algo_cli`, `~/.ollama_cli`, legacy backups and migration residues, index-compute-lab, external agent stores, configured extra roots, and pre-existing symlink or hardlink aliases. Repository-shipped Algo contracts remain available as immutable product evidence. Legacy graph queries/reindexing, graph-note plaintext writes, Intuition, lessons indexes, x-search cache writes, and mutable external harness roots are likewise disabled or purged before a protected model turn.
 
@@ -57,8 +57,10 @@ Retrieved context becomes part of the model request. If the selected model uses 
 
 Algo CLI removes common credential forms and indexes connector/MCP JSON as metadata only. Redaction is a defense-in-depth measure, not a guarantee that arbitrary sensitive prose will be detected.
 
+Retrieved source snippets are then added to the active chat request, so they may leave the machine when the selected inference provider is remote.
+
 ## Local state
 
-Runtime configuration, generated indexes, memories, identity files, and credentials live under `~/.algo_cli` unless `ALGO_CLI_CONFIG_DIR` overrides the location. These files are not part of the source distribution. Keep the directory private and exclude it from repositories and backups that are shared publicly. Echo protects its own selected memory authority and authenticated auxiliary receipts; it does not encrypt arbitrary natural-language prompts, current-turn model context, provider requests, operator-created transcripts, crash dumps, swap, or unrelated files.
+Runtime configuration, generated indexes, memories, identity files, and credentials live under `~/.algo_cli` unless `ALGO_CLI_CONFIG_DIR` overrides the location. These files are not part of the source distribution. Keep the directory private and exclude it from repositories and backups that are shared publicly. A protected memory backend is not protection for arbitrary natural-language prompts, current-turn model context, provider requests, operator-created transcripts, crash dumps, swap, or unrelated files.
 
 Automatic memory capture is opt-in, bounded, and privacy-gated. Inspect or change it with `/memory-auto status|on|off`.

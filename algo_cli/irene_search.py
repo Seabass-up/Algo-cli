@@ -435,8 +435,15 @@ def protected_search(pattern: str, path: str, cwd: str, glob: str | None, limit:
         payload = json.dumps(request).encode("utf-8")
         if len(payload) > MAX_REQUEST_BYTES:
             raise ProtectedMemoryPathError(_UNSAFE)
+        # Isolated Python must import the parent's trusted runtime, not a second
+        # installed copy or code from the searched workspace. Keep the worker's
+        # exact runtime-root check in place.
+        bootstrap = (
+            "import runpy,sys;sys.path.insert(0," + repr(str(Path(__file__).parent.parent.resolve()))
+            + ");runpy.run_module('algo_cli.irene_search',run_name='__main__')"
+        )
         result = run_search_process(
-            [sys.executable, "-I", "-m", "algo_cli.irene_search"],
+            [sys.executable, "-I", "-c", bootstrap],
             limit=limit,
             max_bytes=tools.MAX_TOOL_RESULT - 256,
             timeout=tools.SEARCH_TIMEOUT_SECONDS,

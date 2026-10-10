@@ -68,9 +68,9 @@ DEFAULT_SOUL = """# Algo CLI - Soul
 - Format code blocks with language tags.
 
 ## Behavior
-- Use tools when they materially help. Do not narrate them.
+- Use tools when they materially help.
 - Do not run destructive commands without explicit approval.
-- After a tool call, summarize the result before the next step.
+- Do not narrate each tool call. Summarize outcomes in plain language after the work completes.
 """
 
 LEGACY_DEFAULT_IDENTITY = """# Algo CLI - Identity

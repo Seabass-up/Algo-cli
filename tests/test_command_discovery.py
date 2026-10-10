@@ -30,7 +30,7 @@ def test_initial_menu_is_small_and_ordered():
 
 def test_partial_root_does_not_expand_children_or_aliases():
     assert [item.text for item in complete("/har")] == ["/harness"]
-    assert [item.text for item in complete("/int")] == ["/intuition", "/intelligence"]
+    assert [item.text for item in complete("/int")] == ["/intelligence"]
 
 
 def test_parent_space_reveals_only_its_children():

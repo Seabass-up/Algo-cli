@@ -45,7 +45,6 @@ def _quiet(monkeypatch) -> list[str]:
         "show_agent_pipeline_complete",
         "show_info",
         "finish_thinking_block",
-        "show_recalled_context",
         "record_chat_metrics",
         "flush_perf_records",
     ):

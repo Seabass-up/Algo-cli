@@ -324,7 +324,6 @@ def _quiet_display(monkeypatch):
         "show_error",
         "show_info",
         "finish_thinking_block",
-        "show_recalled_context",
         "record_chat_metrics",
         "flush_perf_records",
     ):
@@ -768,6 +767,28 @@ def test_enforced_contract_keeps_never_mode_read_only_tools_available(
     assert block.status == "complete"
     assert dispatched == [("read_file", False)]
     assert tracker.tool_calls == 1
+
+
+@pytest.mark.parametrize("contracted", [False, True])
+def test_codex_block_partial_recovery_respects_signed_dispatch_budget(monkeypatch, tmp_path, contracted):
+    cfg = Config(cwd=str(tmp_path), model="gpt-6-astra", decision_checkpoints_enabled=False)
+    cfg._nathan_approval_mode = "never"
+    block = agent_blocks.review_pipeline()[0]
+    client = FakeClient(contents=["## Block Output\nNo executable check was performed."])
+    _quiet_display(monkeypatch)
+    kwargs = {}
+    if contracted:
+        contract = run_contract.compile_agent_run_contract(
+            task="Review a public synthetic fixture", route=task_router.route_task("Review a fixture"),
+            pipeline_name="review", blocks=[block], cfg=cfg, approval_mode="never",
+            snapshot=git_evidence.GitSnapshot(False, "not git", None, "", "", ()),
+        )
+        tracker = run_contract.RunContractTracker(contract)
+        tracker.start_block(0)
+        kwargs = {"run_contract": contract, "block_contract": contract.block(0), "contract_tracker": tracker}
+    main.run_agent_block(block, task="Review a public synthetic fixture", completed=[], cfg=cfg, client=client, **kwargs)
+    assert block.status == "complete" and len(client.calls) == 1
+    assert client.calls[0]["options"].get("recover_partial_answer", False) is (not contracted)
 
 
 def test_enforced_contract_cannot_be_weakened_by_live_policy_toggle(
@@ -1469,7 +1490,7 @@ def test_run_agent_pipeline_falls_back_from_invalid_blocks_config(monkeypatch, t
     assert any("Using built-in 'default'" in message for message in infos)
 
 
-def test_run_agent_pipeline_recalls_and_injects_intuition_context(monkeypatch):
+def test_run_agent_pipeline_does_not_recall_retired_intuition_context(monkeypatch):
     cfg = Config()
     cfg.intuition_recall_enabled = True
     client = FakeClient(
@@ -1496,12 +1517,12 @@ def test_run_agent_pipeline_recalls_and_injects_intuition_context(monkeypatch):
     _quiet_display(monkeypatch)
     monkeypatch.setattr(main, "_intuition_engine", FakeEngine())
     monkeypatch.setattr(main, "intuition_embed_fn", lambda _cfg: object())
-    monkeypatch.setattr(agent_pipeline, "show_recalled_context", lambda blocks: shown.append(blocks))
+    monkeypatch.setattr(main, "_intuition_engine_for", lambda *a: pytest.fail("no legacy memory engine"))
 
     main.run_agent_pipeline("build it", cfg, client)
 
-    assert shown[0][0]["id"] == "pattern:1"
-    assert "## Relevant Context (from memory)" in client.calls[0]["messages"][1]["content"]
+    assert shown == []
+    assert "## Relevant Context (from memory)" not in client.calls[0]["messages"][1]["content"]
 
 
 def test_run_agent_pipeline_passes_no_git_delta_to_review(monkeypatch):

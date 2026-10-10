@@ -261,4 +261,4 @@ def test_prompts_do_not_disclose_labels_or_expected_values():
             for support in alternatives
         )
     assert evaluation.protocol_cases()["schema"] == "algo-cli-documentation-answers-v2"
-    assert evaluation.protocol_digest() == "sha256:59d839e135033fd81b0c347a7fae91637346905ca4e172d0832b1e3e91061a9e"
+    assert evaluation.protocol_digest() == "sha256:370e9905a77dc0e5fe684f26d97f8d98132c618b1fbee9c8b3cde1fc33266549"

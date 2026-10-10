@@ -144,13 +144,13 @@ def test_normalize_index_records_dedupes_same_harness_relative_path():
     assert [record["id"] for record in normalized["records"]] == ["same"]
 
 
-def test_normalize_index_records_preserves_non_dict_rows():
+def test_normalize_index_records_drops_non_dict_rows():
     normalized = harness._normalize_index_records(
         {"record_count": 3, "records": ["malformed", {"id": "same", "harness": "a", "kind": "skill", "relative_path": "x"}, {"id": "same", "harness": "a", "kind": "skill", "relative_path": "x"}]}
     )
 
-    assert normalized["record_count"] == 2
-    assert normalized["records"][0] == "malformed"
+    assert normalized["record_count"] == 1
+    assert all(isinstance(row, dict) for row in normalized["records"])
 
 
 def test_score_record():
@@ -296,7 +296,7 @@ def test_capped_embedding_prioritizes_value_and_repeated_runs_finish_queue():
     progress = harness.embedding_progress("priority-model")
     assert progress["high_value_embedded"] == progress["high_value_total"] == 3
     assert progress["pending_by_priority"]["bulk_metadata"] == 3
-    status = harness.stats()["embeddings"]
+    status = harness.embedding_summary(harness.load_index())
     assert status["priority_policy"] == harness.EMBED_PRIORITY_POLICY
     assert status["embedded_by_priority"]["project_core"] == 2
     assert status["pending_by_priority"]["bulk_metadata"] == 3
@@ -667,29 +667,11 @@ def test_harness_meta_query_prefers_algo_cli_self_evaluation_over_generic_skills
 
 def test_stats_surfaces_embeddings_block():
     _write_synthetic_index()
-    embed = make_fake_embed()
-    harness.embed_index_records(embed, "fake-model")
     stats = harness.stats()
     assert stats["record_count"] == 3
-    assert stats["embeddings"]["complete"] is True
-    assert stats["record_distribution"]["session_count"] >= 1
-    assert "top_share" in stats["record_distribution"]
-    assert set(stats["retrieval_caches"]) == {
-        "bm25_ready",
-        "bm25_records",
-        "vector_matrix_ready",
-        "vector_matrix_rows",
-        "bm25_slices",
-        "vector_matrix_slices",
-    }
-    lexical_cache = stats["retrieval_caches"]["bm25_slices"]
-    matrix_cache = stats["retrieval_caches"]["vector_matrix_slices"]
-    assert lexical_cache["slices"] == matrix_cache["slices"] == 0
-    assert lexical_cache["max_slices"] == matrix_cache["max_slices"] == 8
-    assert lexical_cache["max_input_rows"] == matrix_cache["max_input_rows"] == 4096
-    assert lexical_cache["weight_unit"] == "candidate_rows"
-    assert matrix_cache["weight_unit"] == "matrix_bytes"
-    assert matrix_cache["max_weight"] == 32 * 1024 * 1024
+    assert "embeddings" not in stats
+    assert stats["retrieval"] == {"mode": "lexical", "embedding_calls": False, "memory_authority": "continuum"}
+    assert "bm25_slices" in stats["retrieval_caches"]
 
 
 def test_stats_surfaces_harness_quality_block():
@@ -761,7 +743,7 @@ def test_stats_surfaces_harness_quality_block():
     assert quality["wiki_records"] == 1
     assert quality["extension_share"] == 0.25
     assert quality["runtime_capability_records"] == 1
-    assert quality["embedding_complete"] is True
+    assert "embedding_complete" not in quality
 
 
 def test_quality_does_not_warn_about_low_project_share_for_structured_plugin_metadata():
@@ -1072,7 +1054,10 @@ def test_rust_indexer_receives_exact_imported_package_boundary(monkeypatch, tmp_
     def fake_run(command, **kwargs):
         captured["command"] = command
         captured["env"] = kwargs["env"]
-        index_path.write_text(
+        output = Path(command[2])
+        assert output != index_path
+        assert output.parent.parent == config_dir
+        output.write_text(
             json.dumps(
                 {
                     "generated": "1",
@@ -1100,7 +1085,9 @@ def test_rust_indexer_receives_exact_imported_package_boundary(monkeypatch, tmp_
     result = harness.build_index_with_rust()
 
     assert result is not None and result["indexer"] == "rust"
-    assert captured["command"] == [str(binary), "--output", str(index_path)]
+    assert captured["command"][:2] == [str(binary), "--output"]
+    assert not Path(captured["command"][2]).parent.exists()
+    assert not index_path.exists()
     assert captured["env"]["ALGO_CLI_REPO_DIR"] == str(harness.ALGO_CLI_REPO_DIR)
 
 

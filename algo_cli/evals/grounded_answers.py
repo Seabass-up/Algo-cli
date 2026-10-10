@@ -53,7 +53,7 @@ PRIVACY_CLAIMS = {
             "Retrieved source snippets are then added to the active chat request, so they may leave the machine when the selected inference provider is remote.",
         ),
     ),
-    "embeddings_are_local": (Support(PRIVACY, "embeddings are generated through local Ollama."),),
+    "cli_embeddings_are_retired": (Support(PRIVACY, "Local reference lookup is lexical; it does not load an embedding model."),),
 }
 
 CASES = (
@@ -73,13 +73,13 @@ CASES = (
     AnswerCase(
         "provider_privacy_es",
         "Se envian mis archivos locales al proveedor en la nube?",
-        {"local_context_can_leave_machine": True, "embeddings_are_local": True},
+        {"local_context_can_leave_machine": True, "cli_embeddings_are_retired": True},
         PRIVACY_CLAIMS,
     ),
     AnswerCase(
         "cloud_privacy_de",
         "Werden lokale Dateien an den Cloud-Anbieter geschickt?",
-        {"local_context_can_leave_machine": True, "embeddings_are_local": True},
+        {"local_context_can_leave_machine": True, "cli_embeddings_are_retired": True},
         PRIVACY_CLAIMS,
     ),
     AnswerCase(

@@ -45,7 +45,7 @@ def catalog_for_prompt() -> str:
         "  - /agent threads or /agent show THREAD: inspect run history; /agent resume THREAD [TASK] continues it and /agent fork THREAD [--same-worktree] TASK creates an isolated child by default.",
         "    Delegate only when work has genuinely independent angles. Keep mutations in the integration pipeline; never ask child threads to edit the same workspace.",
         "  - /kernel list: list promoted kernels available in this runtime.",
-        "  - /kernel show NAME and /kernel check [NAME]: inspect a kernel contract or validate imports/slash/action wiring without executing workloads.",
+        "  - /kernel show NAME inspects metadata. /kernel check [NAME] imports trusted modules and validates slash/action wiring; module initializers execute, but workloads are not run.",
         "Do not use slash commands for file edits; use write_file. Do not use slash commands for build/test; use run_shell.",
         "For the full command/tool catalog and focused examples, call available_actions(topic='slash').",
     ]

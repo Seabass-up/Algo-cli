@@ -57,7 +57,7 @@ def test_protected_tool_search_and_read_expose_source_verified_contract(public_c
     rendered = tools.harness_search("memory placement retention", kind="memory", limit=3, cfg=cfg)
     assert records[0]["id"] in rendered
     assert "shipped_product_documentation" in rendered
-    assert "hybrid" in rendered
+    assert "keyword-only" in rendered
     assert "PRIVATE_HOST_MEMORY_CANARY" not in rendered
     body = tools.harness_read(records[0]["id"], cfg=cfg)
     assert "User instructions and verified live files" in body
@@ -158,7 +158,7 @@ def test_alias_cannot_widen_protected_snapshot_or_bypass_kind_filter(alias_recor
 
     monkeypatch.setattr(harness, "retrieval_index", project)
     # Even a ranker returning outside or unfiltered rows cannot expand authority.
-    monkeypatch.setattr(harness, "hybrid_search", lambda *_args, **_kwargs: alias_records)
+    monkeypatch.setattr(harness, "search_index", lambda *_args, **_kwargs: alias_records)
     cfg = SimpleNamespace(continuum_enabled=True, harness_embed_model="fixture")
     output = tools.harness_search("guide", harness_name="openclaude", kind="wiki", cfg=cfg)
     returned = [line.removeprefix("- ") for line in output.splitlines() if line.startswith("- ")]
@@ -338,10 +338,10 @@ def test_tool_discloses_keyword_fallback_without_bulk_embedding(public_contracts
 def test_tool_cancellation_propagates(public_contracts, monkeypatch):
     _, _, cfg = public_contracts
 
-    def cancel(_):
+    def cancel(*args, **kwargs):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(main, "make_local_embed_fn", lambda *_args, **_kwargs: cancel)
+    monkeypatch.setattr(harness, "search_index", cancel)
     with pytest.raises(KeyboardInterrupt):
         tools.harness_search("memory", kind="memory", cfg=cfg)
 
@@ -395,7 +395,7 @@ def test_ranker_payload_cannot_override_authorized_metadata(public_contracts, mo
     _, records, cfg = public_contracts
     monkeypatch.setattr(
         harness,
-        "hybrid_search",
+        "search_index",
         lambda *_args, **_kwargs: [
             {"id": records[0]["id"], "title": "PRIVATE_HOST_MEMORY_CANARY"},
             {"id": "legacy-memory", "title": "PRIVATE_HOST_MEMORY_CANARY"},
@@ -488,8 +488,9 @@ def test_query_embedding_timeout_reaches_both_local_transports(monkeypatch):
     monkeypatch.setattr(tools, "gateway_ready", lambda: True)
     monkeypatch.setattr(tools, "gateway_embed_batch", gateway)
     monkeypatch.setattr(main, "Client", Client)
-    assert main.make_local_embed_fn(Config(), "fixture", timeout_seconds=10.0)(["query"]) == [[1.0, 0.0]]
-    assert captured == {"gateway_timeout": 10.0, "client_timeout": 10.0, "model": "fixture"}
+    with pytest.raises(RuntimeError, match="retired"):
+        main.make_local_embed_fn(Config(), "fixture", timeout_seconds=10.0)
+    assert captured == {}
 
 
 @pytest.mark.parametrize("name", ["harness_search", "harness_read", "memory_verify"])

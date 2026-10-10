@@ -31,60 +31,22 @@ class GatewayResponse:
 
 @pytest.mark.parametrize("reported_upstream", [None, "http://127.0.0.1:11434"])
 def test_factory_never_accepts_vectors_from_an_unbound_or_different_gateway(monkeypatch, reported_upstream):
-    selected = "http://127.0.0.1:22434"
-    requests = []
-    direct_hosts = []
-
-    def open_gateway(request, **_kwargs):
-        requests.append(request)
-        headers = {"X-Algo-Ollama-Host": reported_upstream} if reported_upstream else {}
-        return GatewayResponse({"embeddings": [[1.0, 0.0]]}, headers)
-
-    class Client:
-        def __init__(self, *, host, timeout, trust_env, follow_redirects):
-            direct_hosts.append(host)
-            assert timeout is None and not trust_env and not follow_redirects
-
-        def embed(self, **_kwargs):
-            return {"embeddings": [[0.0, 1.0]]}
-
-    monkeypatch.setattr(main, "Client", Client)
-    monkeypatch.setattr(tools, "gateway_ready", lambda: True)
-    monkeypatch.setattr(tools, "_open_local_gateway", open_gateway)
-    result = main.make_local_embed_fn(Config(host=selected), "fixture")(["public fixture"])
-    assert result == [[0.0, 1.0]]
-    assert direct_hosts == [selected]
-    assert all(request.full_url.endswith("/supplemental/embed-bound/v1") for request in requests)
-    assert all(request.get_header("X-algo-ollama-host") == selected for request in requests)
+    monkeypatch.setattr(main, "Client", lambda **kw: pytest.fail("retired direct transport"))
+    monkeypatch.setattr(tools, "_open_local_gateway", lambda *a, **kw: pytest.fail("retired gateway transport"))
+    with pytest.raises(RuntimeError, match="retired"):
+        main.make_local_embed_fn(Config(host="http://127.0.0.1:22434"), "fixture")
 
 
 def test_factory_uses_a_gateway_bound_to_the_selected_endpoint(monkeypatch):
-    selected = "http://127.0.0.1:22434"
-    requests = []
-
-    def open_gateway(request, **_kwargs):
-        requests.append(request)
-        return GatewayResponse({"embeddings": [[0.0, 1.0]]}, {"X-Algo-Ollama-Host": selected})
-
-    monkeypatch.setattr(main, "Client", lambda **_kwargs: pytest.fail("qualified gateway should serve the request"))
-    monkeypatch.setattr(tools, "gateway_ready", lambda: True)
-    monkeypatch.setattr(tools, "_open_local_gateway", open_gateway)
-    assert main.make_local_embed_fn(Config(host=selected), "fixture")(["public fixture"]) == [[0.0, 1.0]]
-    assert requests[0].get_header("X-algo-ollama-host") == selected
+    monkeypatch.setattr(main, "Client", lambda **kw: pytest.fail("retired direct transport"))
+    monkeypatch.setattr(tools, "_open_local_gateway", lambda *a, **kw: pytest.fail("retired gateway transport"))
+    with pytest.raises(RuntimeError, match="retired"):
+        main.make_local_embed_fn(Config(host="http://127.0.0.1:22434"), "fixture")
 
 
 def test_embed_tool_binds_the_scoped_ollama_endpoint(monkeypatch):
-    selected = "http://127.0.0.1:22434"
-    monkeypatch.setenv("OLLAMA_HOST", selected)
-    requests = []
-
-    def open_gateway(request, **_kwargs):
-        requests.append(request)
-        return GatewayResponse({"embeddings": [[1.0, 0.0]]}, {"X-Algo-Ollama-Host": selected})
-
-    monkeypatch.setattr(tools, "_open_local_gateway", open_gateway)
-    assert json.loads(tools.embed_text("public fixture", model="fixture"))["vector_count"] == 1
-    assert requests[0].get_header("X-algo-ollama-host") == selected
+    monkeypatch.setattr(tools, "_open_local_gateway", lambda *a, **kw: pytest.fail("no embedding request"))
+    assert "retired" in tools.embed_text("public fixture", model="fixture")
 
 
 @pytest.fixture
@@ -120,7 +82,7 @@ def test_provider_change_rebuilds_equal_width_vectors_and_survives_restart(publi
     assert harness.embed_index_records(_bound(IDENTITY_A), "fixture", dimensions=2)["ready"]
     assert harness.embedded_count("fixture", dimensions=2, embedding_identity=IDENTITY_B) == (0, 3)
     assert harness.embedding_progress("fixture", dimensions=2, embedding_identity=IDENTITY_B)["pending"] == 3
-    assert not harness.stats(model="fixture", dimensions=2, embedding_identity=IDENTITY_B)["embeddings"]["complete"]
+    assert not harness.embedding_summary(harness.load_index(), model="fixture", dimensions=2, embedding_identity=IDENTITY_B)["complete"]
     calls = []
     result = harness.embed_index_records(_bound(IDENTITY_B, calls), "fixture", dimensions=2)
     assert result["ready"] and result["embedded"] == 3 and len(calls) == 1
@@ -274,37 +236,16 @@ def test_untrusted_model_metadata_cannot_supply_an_identity(monkeypatch, payload
 
 @pytest.mark.parametrize("command", ["automatic", "slash"])
 def test_runtime_rebinds_same_name_after_provider_artifact_change(public_identity_index, monkeypatch, command):
-    current = [IDENTITY_A]
-    embedded = []
-
-    class Client:
-        def __init__(self, **_kwargs):
-            pass
-
-        def embed(self, **kwargs):
-            embedded.append((current[0], len(kwargs["input"])))
-            return {"embeddings": [[1.0, 0.0] for _ in kwargs["input"]]}
-
-    monkeypatch.setattr(main, "Client", Client)
-    monkeypatch.setattr(embedding_binding, "probe_ollama_identity", lambda *_args, **_kwargs: current[0])
-    monkeypatch.setattr(tools, "gateway_ready", lambda: False)
-    monkeypatch.setattr(main, "ollama_server_ready", lambda *_args: True)
-    monkeypatch.setattr(main, "local_model_names", lambda *_args: ["fixture:latest"])
-    monkeypatch.setattr(main, "show_info", lambda *_args: None)
-    cfg = Config(harness_embed_model="fixture", embed_dimensions=2, embedding_backend="local")
-
+    monkeypatch.setattr(main, "make_embed_fn", lambda *a, **kw: pytest.fail("no identity-driven embedding"))
+    cfg = Config(harness_embed_model="fixture", embed_dimensions=2)
     for identity in (IDENTITY_A, IDENTITY_B):
-        current[0] = identity
+        monkeypatch.setattr(embedding_binding, "probe_ollama_identity", lambda *a, **kw: pytest.fail("no identity probe"))
         if command == "automatic":
             assert main.ensure_harness_index(cfg)
         else:
             from algo_cli.oliver_slash_dispatch import handle_command
-
             assert handle_command("/harness embed", cfg, None)[0]
-        status = json.loads(tools.harness_stats(cfg=cfg))
-        assert status["embeddings"]["requested_identity"] == identity
-        assert status["embeddings"]["complete"]
-    assert embedded == [(IDENTITY_A, 3), (IDENTITY_B, 3)]
+        assert json.loads(tools.harness_stats(cfg=cfg))["retrieval"]["mode"] == "lexical"
 
 
 @pytest.mark.parametrize("changed", [False, True])
@@ -348,20 +289,10 @@ def test_metadata_parser_rejects_duplicates_nonfinite_and_oversized_input(monkey
 
 
 def test_direct_local_embedding_disables_proxy_and_redirect_routing(monkeypatch):
-    observed = []
-
-    class Client:
-        def __init__(self, **kwargs):
-            observed.append(kwargs)
-
-        def embed(self, **_kwargs):
-            return {"embeddings": [[1.0, 0.0]]}
-
-    monkeypatch.setattr(main, "Client", Client)
-    monkeypatch.setattr(tools, "gateway_ready", lambda: False)
-    cfg = Config(host="http://127.0.0.1:22434")
-    assert main.make_local_embed_fn(cfg, "fixture", timeout_seconds=3)(["public"])
-    assert observed == [{"host": cfg.host, "timeout": 3, "trust_env": False, "follow_redirects": False}]
+    monkeypatch.setattr(main, "Client", lambda **kw: pytest.fail("retired direct transport"))
+    monkeypatch.setattr(tools, "_open_local_gateway", lambda *a, **kw: pytest.fail("retired gateway transport"))
+    with pytest.raises(RuntimeError, match="retired"):
+        main.make_local_embed_fn(Config(host="http://127.0.0.1:22434"), "fixture")
 
 
 def test_hybrid_discards_vectors_when_the_provider_changes_after_vector_ranking(public_identity_index, monkeypatch):
@@ -408,32 +339,17 @@ def test_empty_retrieval_does_not_probe_the_provider(public_identity_index, quer
 
 def test_turn_embedding_memo_checks_provider_before_returning_a_hit(monkeypatch):
     from test_main_helpers import _patch_agent_loop_for_tool_policy_test
-
     _patch_agent_loop_for_tool_policy_test(monkeypatch)
-    current, calls = [IDENTITY_A], []
-
-    def embed(texts):
-        calls.append(list(texts))
-        return [[1.0, 0.0] for _ in texts]
-
-    fn = embedding_binding.BoundEmbedding(embed, lambda: current[0], IDENTITY_A)
-    monkeypatch.setattr(main, "make_embed_fn", lambda *_a, **_kw: (fn, "local", "fixture"))
     monkeypatch.setattr(main, "json_sink", lambda: None)
-    monkeypatch.setattr(main, "ensure_harness_index", lambda *_a: True)
-
-    class FinishedProbe(Exception):
+    monkeypatch.setattr(main, "make_embed_fn", lambda *a, **kw: pytest.fail("no embedding memo"))
+    monkeypatch.setattr(harness, "hybrid_search", lambda *a, **kw: pytest.fail("no hybrid ranker"))
+    class ReachedLexicalSearch(BaseException):
         pass
-
-    def inspect_memo(_query, shared, *_args, **_kwargs):
-        assert shared(["public"]) == shared(["public"]) == [[1.0, 0.0]]
-        assert calls == [["public"]]
-        current[0] = IDENTITY_B
-        with pytest.raises(ValueError, match="embedding_identity_unavailable_or_changed"):
-            shared(["public"])
-        raise FinishedProbe
-
-    monkeypatch.setattr(harness, "hybrid_search", inspect_memo)
-    with pytest.raises(FinishedProbe):
+    def inspect_lexical(*args, **kwargs):
+        assert "index" in kwargs
+        raise ReachedLexicalSearch
+    monkeypatch.setattr(harness, "search_index", inspect_lexical)
+    with pytest.raises(ReachedLexicalSearch):
         main.agent_loop(object(), Config(session_mode="explore", code_rag_enabled=False), "public")
 
 

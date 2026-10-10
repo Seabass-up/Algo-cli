@@ -357,6 +357,7 @@ CURATED_TOOL_POLICIES: dict[str, CuratedActionPolicy] = {
             "memory_remember",
             "memory_resolve",
             "memory_handoff",
+            "memory_set_applicability",
         )
     },
     "memory_revoke": _local(
@@ -410,6 +411,14 @@ CURATED_TOOL_POLICIES: dict[str, CuratedActionPolicy] = {
     "extensions_manifest_build": _read(target=TargetScope.PLUGIN),
     # Readiness is a local companion check that never contacts the provider.
     "jev_kernel_status": _read(target=TargetScope.RUNTIME, suppress_logs=True),
+    "decision_status": _read(target=TargetScope.RUNTIME, suppress_logs=True),
+    "decision_decide": CuratedActionPolicy(
+        EffectClass.OBSERVE, "medium", ConfirmationMode.SESSION_PREAPPROVAL,
+        (Capability.READ, Capability.MODEL, Capability.NETWORK, Capability.DATA_EGRESS),
+        (DataClass.LOCAL_CONTENT, DataClass.SENSITIVE), TargetScope.PROVIDER,
+        IdempotencyClass.NON_IDEMPOTENT, OutcomeModel.UNKNOWN_POSSIBLE,
+        VerificationRequirement.STRUCTURED_RESULT, dynamic_resolution=True, suppress_logs=True,
+    ),
     "jev_question_contract": CuratedActionPolicy(
         EffectClass.OBSERVE, "medium", ConfirmationMode.SESSION_PREAPPROVAL,
         (Capability.READ, Capability.MODEL, Capability.NETWORK, Capability.DATA_EGRESS),
@@ -656,6 +665,10 @@ CURATED_TOOL_POLICIES: dict[str, CuratedActionPolicy] = {
     "cobalt_scroll": _external(risk="low"),
     "cobalt_close": _external(risk="low"),
 }
+
+
+for _retired_tool in ("embed_text", "query_knowledge_graph", "reindex_knowledge_graph", "write_knowledge_graph_note"):
+    CURATED_TOOL_POLICIES.pop(_retired_tool, None)
 
 
 def policy_for_action(name: str) -> CuratedActionPolicy:

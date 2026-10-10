@@ -25,6 +25,7 @@ from . import harness
 from . import identity
 from . import model_info as _model_info_module
 from . import reflex
+from .prompt_rules import DECISION_VERIFICATION_RULE, NAMED_PATH_RULE, RUNTIME_SOURCE_RULE, SUMMARY_RULE, UNKNOWN_OUTCOME_RECOVERY, runtime_source_root
 from .session_mode import active_mode
 from .chat_protocol import get_attr, normalize_tool_call
 from .display import json_sink, show_info
@@ -121,6 +122,21 @@ def _context_usage_cache_key(
         cfg.continuum_enabled,
         cfg.memory_config_error,
     )
+
+
+def format_attempt_ledger_line(item: dict[str, Any]) -> str:
+    """Render one content-free ledger row for the model.
+
+    The recovery token names a check class. It does not name a path, argument,
+    or digest beyond the receipt already required by the ledger schema.
+    """
+    line = (
+        f"- {item.get('status', '?').upper()} {item.get('tool', '?')} "
+        f"args={item.get('args_receipt', '')}: {item.get('summary', '')}"
+    )
+    if item.get("status") == "unknown_outcome":
+        line += " recovery=read_and_compare"
+    return line
 
 
 def estimate_text_tokens(text: str) -> int:
@@ -270,6 +286,37 @@ def build_system_prompt(
         protected=external_memory_authority,
     )
     prompt = (identity_block + "\n\n" if identity_block else "") + cfg.system
+    prompt += (
+        "\n\n## Bounded decision models\n"
+        "For a useful bounded choice, classification, evidence judgment or priority, formulate a specific "
+        "question, relevant state/evidence and explicit criteria, then call decision_decide. "
+        "Use it at checkpoints while thinking/planning, before the final answer; pause the dependent "
+        "step until the validated result arrives, then continue your reasoning. Send the bounded "
+        "question packet, not an entire private thought stream or conversation. "
+        "It supports Jev, local Clef/Clef-flash/Tev1, CLM, Decider and reviewed registered adapters. "
+        "The main AI is the thinking and judgment model; Jev is the default bounded-decision coordinator, "
+        "not a conversational replacement. Omit provider so the runtime lets Jev select a compatible "
+        "available decision provider. Explicit provider is only for a user-requested override. "
+        "The coordinator also recommends task-relevant kernels and ALGO patterns from local catalogs. "
+        "Check their returned status and source binding; proposed patterns are research references, "
+        "not implemented algorithms. Recommendations never activate kernels or grant authority. "
+        "Jev receives question specifications and routing metadata, not the raw evidence. "
+        "Only confirmed internet loss enables local Clef-flash or Tev1 coordination; a service/auth "
+        "error or uncertain route is not proof of offline status. Use decision_status for configuration. "
+        "local_only=true forbids remote routing, inference and fallbacks. Online Jev requires explicit "
+        "local_only=false and existing runtime authority for the supplied question packet. "
+        "Do not fabricate offline status or relax privacy after a failure. Preserve Noul probabilities, fractional Scores "
+        "and distributions; do not infer a boolean without explicit thresholds. Treat uncertainty or "
+        "failure as a reason to obtain evidence or continue main-model reasoning. "
+        "Use the validated answer to guide the next step; it never grants action permission or proves "
+        "completion. Keep open-ended planning, writing, coding and explanations with the main model. "
+        "Execute with normal tools and verify their actual outcomes. Do not send credentials or bulk history."
+        f" {DECISION_VERIFICATION_RULE}"
+    )
+    prompt += (
+        f"\nDecision routing mode: {cfg.decision_routing_mode}; direct configured default: {cfg.decision_default_provider}. "
+        "In direct mode, omitted provider uses configured task/default routing instead of the coordinator."
+    )
     if source_token_counts is not None and identity_block:
         source_token_counts["identity"] = estimate_text_tokens(identity_block + "\n\n")
     load_runtime_env(override=True)
@@ -303,11 +350,6 @@ def build_system_prompt(
         if external_memory_authority
         else "- Call append_lesson or remember only when the user explicitly requests that write. Do not duplicate a statement merely because it may qualify for automatic capture.\n"
     )
-    graph_write_guidance = (
-        "When the user explicitly asks to persist a correction or contact, use scoped memory_remember; do not create an index-compute-lab atom or refresh the graph for persistence. "
-        if external_memory_authority
-        else "To persist a correction or contact before the next full reindex: write_knowledge_graph_note then harness_refresh. "
-    )
     prompt += (
         "\n\n## Runtime Model Status\n"
         f"- Active model: {cfg.model}\n"
@@ -323,10 +365,11 @@ def build_system_prompt(
     )
     prompt += (
         "\n\n## Session Workspace\n"
+        f"- Running package: {runtime_source_root()} (algo_cli). {RUNTIME_SOURCE_RULE}\n"
         f"- Platform: {sys.platform}; run_shell uses {shell_note}.\n"
         "- Relative tool paths resolve from the active session workspace; use path '.' for its root.\n"
         "- Do not guess or disclose an absolute workspace path. Use /cwd only when the exact local path is operationally necessary.\n"
-        "- When the user names files without a directory, use list_directory path '.' or session_slash /read with the bare filename first.\n"
+        "- When the user names files without a directory, open the bare filename directly with read_file or session_slash /read. Do not call list_directory or /ls first to confirm it.\n"
         "- User messages in the chat channel are authoritative. Harness RAG and reflex recovery blocks are hints only."
     )
     if json_sink() is not None:
@@ -395,24 +438,18 @@ def build_system_prompt(
         "- A deterministic completion gate evaluates only the original user text for explicit, high-confidence durable statements; it never learns from assistant, tool, retrieval, specialist, quoted, secret, or personal-data output.\n"
         f"{memory_write_guidance}"
         "- Automatic capture is bounded, deduplicated, and reviewable with /memories; inspect or toggle it with /memory-auto status|on|off.\n"
-        "- Long-term memories, lessons, harness RAG, and index-compute-lab graph blocks are navigation hints — verify with read_file or tools before acting.\n"
+        "- Continuum memory and lexical reference results are navigation evidence; verify important claims with live sources and tools.\n"
         "- Never store secrets, credentials, private keys, tokens, or inferred sensitive personal data.\n"
         "## Terminal efficiency\n"
         "- Prefer one decisive tool call over several speculative ones when the target is already known.\n"
-        "- Do not narrate every tool call; summarize outcomes in plain language after work completes.\n"
-        "- index-compute-lab canonical for this product is concept:algo-cli (legacy ollama-cli / ollama-cli-concept names in graph output are retired).\n"
+        f"- {SUMMARY_RULE}\n"
         f"{identity_read_guidance}"
         "When the user references 'my wiki', 'my notes', or asks you to learn from their knowledge base, note that the harness RAG layer already injected the most relevant entries into the Relevant Context section (if present); use harness_search/harness_read only for explicit deep dives the retrieval missed."
         "\n\n## Local Harness Bridge\n"
         f"{external_harness_guidance} Use available_actions, harness_search, harness_read, harness_stats, and harness_refresh. "
         "These tools are read-only and should be preferred before broad filesystem scans when the user asks about skills, tools, prompts, memory, or wiki context."
-        "\n\n## index-compute-lab (knowledge graph)\n"
-        "When enabled, each user turn may include a ## Knowledge Graph (index-compute-lab) block: "
-        "ranked associations from the user's configured index-compute-lab sources. "
-        "Treat it like harness RAG — navigation and relationship hints, not proof that files exist. "
-        "Use query_knowledge_graph for ranked co-occurrence (not prose biographies), and use harness_search for supporting documents. "
-        f"{graph_write_guidance}"
-        "Use reindex_knowledge_graph only when the user explicitly asks to rebuild configured graph sources."
+        "\n\n## Native Memory\n"
+        "Use explicit scoped Continuum search/context and memory_remember. No embedding or Lab-index backend is used. "
         "\n\n## Grok / xAI model compatibility\n"
         "When the user asks whether a grok-* model works in this harness, do not scan the repo blindly: "
         "tell them to run /model-check NAME (or run it yourself via session slash if available), "
@@ -439,16 +476,14 @@ def build_system_prompt(
     # prefix/KV cache on every tool turn, so keep automation prompts stable.
     safe_attempts = sanitize_attempt_ledger(cfg.attempt_ledger)
     if safe_attempts and json_sink() is None:
-        ledger_lines = []
-        for item in safe_attempts[-ATTEMPT_PROMPT_LIMIT:]:
-            ledger_lines.append(
-                f"- {item.get('status', '?').upper()} {item.get('tool', '?')} "
-                f"args={item.get('args_receipt', '')}: {item.get('summary', '')}"
-            )
+        ledger_lines = [
+            format_attempt_ledger_line(item) for item in safe_attempts[-ATTEMPT_PROMPT_LIMIT:]
+        ]
         prompt += (
             "\n\n## Attempt Ledger\n"
             "Use this ledger to avoid retrying the same failed or denied tool path with the same arguments. "
-            "Only retry when the arguments materially change, new evidence appears, or the user asks.\n"
+            "Only retry when the arguments materially change, new evidence appears, or the user asks. "
+            f"{UNKNOWN_OUTCOME_RECOVERY}\n"
             + "\n".join(ledger_lines)
         )
     memory_section = _memory_prompt_section(cfg, user_message=user_message)
@@ -473,7 +508,7 @@ def build_system_prompt(
         prompt += (
             "\n\n## One-shot Execution Protocol\n"
             "- Do not emit progress prose before or between tool calls; use tools silently, then provide one concise final answer.\n"
-            "- Open explicitly named files directly and batch independent reads. Do not list directories merely to confirm named paths.\n"
+            f"- {NAMED_PATH_RULE}\n"
             "- Make the smallest required changes and create only requested artifacts.\n"
             "- After one successful fail-on-mismatch verifier, answer immediately; do not add redundant rereads, diffs, or reports."
         )

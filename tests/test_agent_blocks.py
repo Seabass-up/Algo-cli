@@ -36,7 +36,8 @@ def test_named_pipelines_have_expected_roles():
     code_change = agent_blocks.code_change_pipeline()
     assert code_change[0].allowed_tools == agent_blocks.PLAN_TOOLS
     assert "read_file" in code_change[0].allowed_tools
-    assert "query_knowledge_graph" in code_change[0].allowed_tools
+    assert "query_knowledge_graph" not in code_change[0].allowed_tools
+    assert "harness_search" in code_change[0].allowed_tools
     assert "write_file" not in code_change[0].allowed_tools
     assert code_change[1].requires_change is True
     assert code_change[0].max_iterations == 4

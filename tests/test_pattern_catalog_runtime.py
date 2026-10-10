@@ -197,9 +197,13 @@ def test_rust_index_receives_same_pattern_postprocessing(monkeypatch, tmp_path):
     monkeypatch.setattr(harness, "_EXTERNAL_SOURCES_ENABLED", True)
     monkeypatch.setattr(harness, "find_rust_indexer", lambda: tmp_path / "native-indexer")
     monkeypatch.setattr(harness, "INDEX_PATH", output)
+    monkeypatch.setattr(harness, "CONFIG_DIR", tmp_path)
 
-    def run(*_args, **_kwargs):
-        output.write_text(json.dumps({"records": [parent]}))
+    def run(command, **_kwargs):
+        staged = Path(command[2])
+        assert staged != output
+        assert staged.parent.parent == tmp_path
+        staged.write_text(json.dumps({"records": [parent]}))
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(harness.subprocess, "run", run)
@@ -207,6 +211,7 @@ def test_rust_index_receives_same_pattern_postprocessing(monkeypatch, tmp_path):
     assert result["pattern_stats"]["records"] == 1
     assert result["source_policy"]["pattern_records"] is True
     assert any(row.get("pattern_id") == "O1" for row in result["records"])
+    assert not output.exists()
 
 
 def test_pre_pattern_index_requires_migration(monkeypatch, tmp_path):

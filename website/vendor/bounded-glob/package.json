@@ -1,0 +1,12 @@
+{
+  "name": "@algo-cli/bounded-glob",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Synchronous glob adapter for the pinned Next lint and Vinext import callers",
+  "main": "index.cjs",
+  "files": ["index.cjs", "README.md"],
+  "dependencies": {
+    "brace-expansion": "5.0.12",
+    "glob": "13.0.6"
+  }
+}

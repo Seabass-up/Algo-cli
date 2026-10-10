@@ -43,8 +43,10 @@ Retired keys are discarded when a valid explicit Continuum configuration is save
 
 ## Operations and limitations
 
-The fifteen `memory_*` tools expose the native verification, status, evidence,
-typed state, context, revocation, conflict resolution and handoff operations.
+The sixteen `memory_*` tools expose the native verification, status, evidence,
+typed state, context, revocation, conflict resolution, applicability and handoff
+operations. `memory_set_applicability` binds its declaration to an exact record
+revision; it does not change storage scope or grant action permission.
 Every call binds its scope. Writes use expected revisions and stable request IDs;
 an uncertain write requires reconciliation, not a blind retry. `/remember` and
 `append_lesson` write to Algo's existing private Continuum fact record and verify

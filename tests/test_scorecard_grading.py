@@ -42,7 +42,7 @@ def test_all_pass_is_ready_and_score_is_sum_of_gate_points() -> None:
 
     payload = finalize_scorecard(checks)
 
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["max_score"] == 10.0
     assert payload["score"] == 10.0
     assert payload["score"] == sum(check["points"] for check in payload["checks"])
@@ -50,6 +50,22 @@ def test_all_pass_is_ready_and_score_is_sum_of_gate_points() -> None:
     assert payload["validation_errors"] == []
     assert payload["checks"][0]["metrics"] == checks[0]["metrics"]
     json.dumps(payload, allow_nan=False)
+
+
+def test_active_nine_gate_contract_does_not_accept_a_missing_gate() -> None:
+    from algo_cli.evals.scorecard_grading import HARNESS_SCORED_GATE_COUNT
+    checks = [_gate(f"active-{index}") for index in range(HARNESS_SCORED_GATE_COUNT)]
+    ready = finalize_scorecard(checks, expected_gate_count=HARNESS_SCORED_GATE_COUNT)
+    assert ready["score"] == ready["max_score"] == 9.0 and ready["overall_status"] == "ready"
+    missing = finalize_scorecard(checks[:-1], expected_gate_count=HARNESS_SCORED_GATE_COUNT)
+    assert missing["score"] == 0 and missing["overall_status"] == "blocked"
+    assert missing["validation_errors"]
+
+
+@pytest.mark.parametrize("count", [True, 0, -1, 33, "9"])
+def test_invalid_declared_gate_count_fails_closed(count) -> None:
+    payload = finalize_scorecard(_all_pass(), expected_gate_count=count)
+    assert payload["score"] == 0 and payload["overall_status"] == "blocked"
 
 
 def test_status_points_are_explicit_and_noncritical_shortfalls_degrade() -> None:

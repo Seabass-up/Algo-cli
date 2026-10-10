@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import http.server
 import json
 import os
 import re
@@ -37,6 +36,7 @@ import webbrowser
 from typing import Any
 
 from .config import CONFIG_DIR, _atomic_write_text, _exclusive_state_lock, _state_descriptor_payload
+from .oauth_loopback import CallbackRequestHandler
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -532,7 +532,7 @@ def select_redirect_port() -> int | None:
     return None
 
 
-class _CallbackHandler(http.server.BaseHTTPRequestHandler):
+class _CallbackHandler(CallbackRequestHandler):
     """Single-request handler that captures the OAuth callback query string."""
 
     query_params: dict[str, str] = {}
@@ -569,11 +569,11 @@ def run_loopback_capture(*, redirect_port: int, timeout: float = _CALLBACK_TIMEO
         query_params: dict[str, str] = {}
         done = False
 
-    server = http.server.HTTPServer((GOOGLE_REDIRECT_HOST, redirect_port), Handler)
-    server.timeout = 1.0
-    deadline = time.time() + max(1.0, float(timeout))
+    from .oauth_loopback import CallbackHTTPServer
+
+    server = CallbackHTTPServer((GOOGLE_REDIRECT_HOST, redirect_port), Handler, timeout=max(1.0, float(timeout)))
     try:
-        while time.time() < deadline and not Handler.done:
+        while time.monotonic() < server.deadline and not Handler.done:
             server.handle_request()
     finally:
         server.server_close()

@@ -10,9 +10,11 @@ from algo_cli.samuel_policy_engine import session_command_requires_approval
 
 def test_available_actions_lists_every_registered_slash_command():
     payload = json.loads(tools.available_actions("slash"))
+    assert payload["topic"] == "slash" and payload["focused"]["match"] == "matched"
+    payload = payload["focused"]
     registered = {command for command, _description in SLASH_COMMANDS}
     catalog = {row["command"] for row in payload["slash_registry"]}
-    assert registered <= catalog
+    assert registered == catalog
     assert payload["slash_aliases"]["/hs"] == "/hsearch"
     assert payload["slash_aliases"]["/hr"] == "/hread"
 

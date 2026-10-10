@@ -7,6 +7,7 @@ Source: gecko pattern.
 """
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -36,11 +37,15 @@ class TeamResult:
 
 
 class TeamExecutor:
-    """Execute tasks across a team of agents with ALL or RACE strategy."""
+    """Bound waiting and result publication for trusted local callbacks.
+
+    Timeout does not cancel callbacks or undo their external side effects.
+    Callers requiring cancellation must make run_fn cooperative or isolate it
+    in an owned process with an explicit termination protocol.
+    """
 
     def __init__(self, members: list[TeamMember]) -> None:
         self._members = {m.agent_id: m for m in members}
-        self._lock = threading.Lock()
 
     def execute_all(
         self,
@@ -48,30 +53,8 @@ class TeamExecutor:
         run_fn: Callable[[str, str], Any],  # (agent_id, task) → output
         timeout: float = 60.0,
     ) -> TeamResult:
-        """ALL strategy: run all agents, wait for all, return all results."""
-        result = TeamResult(strategy=TeamStrategy.ALL)
-        start = time.time()
-        threads: list[threading.Thread] = []
-
-        def worker(agent_id: str) -> None:
-            try:
-                output = run_fn(agent_id, task)
-                with self._lock:
-                    result.results[agent_id] = output
-            except Exception as e:
-                with self._lock:
-                    result.errors[agent_id] = str(e)
-
-        for member_id in self._members:
-            t = threading.Thread(target=worker, args=(member_id,))
-            threads.append(t)
-            t.start()
-
-        for t in threads:
-            t.join(timeout=timeout)
-
-        result.duration_s = time.time() - start
-        return result
+        """ALL strategy: one total deadline, with explicit unfinished results."""
+        return self._execute(TeamStrategy.ALL, task, run_fn, timeout)
 
     def execute_race(
         self,
@@ -80,35 +63,74 @@ class TeamExecutor:
         timeout: float = 60.0,
     ) -> TeamResult:
         """RACE strategy: first agent to succeed wins."""
-        result = TeamResult(strategy=TeamStrategy.RACE)
-        start = time.time()
-        won = threading.Event()
+        return self._execute(TeamStrategy.RACE, task, run_fn, timeout)
+
+    def _execute(
+        self,
+        strategy: TeamStrategy,
+        task: str,
+        run_fn: Callable[[str, str], Any],
+        timeout: float,
+    ) -> TeamResult:
+        timeout = float(timeout)
+        if not math.isfinite(timeout) or timeout < 0:
+            raise ValueError("timeout must be finite and non-negative")
+        start = time.monotonic()
+        deadline = start + timeout
+        result = TeamResult(strategy=strategy)
+        pending = set(self._members)
+        lock = threading.Lock()
+        done = threading.Event()
+        closed = False
 
         def worker(agent_id: str) -> None:
-            if won.is_set():
-                return
+            with lock:
+                if closed or (strategy is TeamStrategy.RACE and result.winner is not None):
+                    return
+            error = None
+            output = None
             try:
                 output = run_fn(agent_id, task)
-                with self._lock:
-                    if not won.is_set():
-                        result.results[agent_id] = output
+            except Exception as exc:
+                error = str(exc)
+            with lock:
+                if closed or time.monotonic() > deadline:
+                    return
+                pending.discard(agent_id)
+                if error is not None:
+                    result.errors[agent_id] = error
+                elif strategy is TeamStrategy.ALL or result.winner is None:
+                    result.results[agent_id] = output
+                    if strategy is TeamStrategy.RACE:
                         result.winner = agent_id
-                        won.set()
-            except Exception as e:
-                with self._lock:
-                    result.errors[agent_id] = str(e)
+                if not pending or result.winner is not None:
+                    done.set()
 
         threads: list[threading.Thread] = []
         for member_id in self._members:
-            t = threading.Thread(target=worker, args=(member_id,))
+            if time.monotonic() >= deadline:
+                break
+            t = threading.Thread(target=worker, args=(member_id,), daemon=True)
             threads.append(t)
             t.start()
 
-        won.wait(timeout=timeout)
-        for t in threads:
-            t.join(timeout=1.0)
+        if strategy is TeamStrategy.ALL:
+            for thread in threads:
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        elif pending:
+            done.wait(timeout=max(0.0, deadline - time.monotonic()))
 
-        result.duration_s = time.time() - start
+        # Close publication under the same lock used by workers. A late callback
+        # may continue running, but cannot change these result containers.
+        with lock:
+            closed = True
+            for agent_id in pending:
+                result.errors[agent_id] = (
+                    "Race finished before this callback completed; callback not cancelled."
+                    if result.winner is not None else
+                    "Timed out before this callback completed; callback not cancelled."
+                )
+            result.duration_s = time.monotonic() - start
         return result
 
     def shard_input(self, items: list[Any], num_shards: int | None = None) -> list[list[Any]]:

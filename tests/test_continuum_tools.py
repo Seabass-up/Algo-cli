@@ -46,6 +46,7 @@ CANONICAL_REQUIRED = {
     "memory_explain": {"memory_id", "scope"},
     "memory_history": {"memory_id", "scope"},
     "memory_handoff": {"memory_id", "goal", "completed", "next_steps", "blockers", "scope"},
+    "memory_set_applicability": {"memory_id", "memory_revision", "projects", "reason", "scope"},
 }
 
 
@@ -56,7 +57,7 @@ def _payload(value: str) -> dict:
 
 
 def test_exact_native_catalog_is_registered_and_schema_callable() -> None:
-    assert len(CONTINUUM_TOOL_NAMES) == 15
+    assert len(CONTINUUM_TOOL_NAMES) == 16
     assert set(CONTINUUM_TOOL_NAMES) <= set(tools.TOOL_MAP)
     schemas = json.loads(serialized_tool_schemas([tools.TOOL_MAP[name] for name in CONTINUUM_TOOL_NAMES]))
     assert {item["function"]["name"] for item in schemas} == set(CONTINUUM_TOOL_NAMES)
@@ -82,7 +83,7 @@ def test_local_canonical_contract_matches_registry_when_available() -> None:
 
 def test_native_authority_classification_is_complete() -> None:
     assert len(CONTINUUM_READ_ONLY_TOOLS) == 9
-    assert len(CONTINUUM_MUTATION_TOOLS) == 6
+    assert len(CONTINUUM_MUTATION_TOOLS) == 7
     for name in CONTINUUM_TOOL_NAMES:
         policy = policy_for_action(name)
         assert policy.curated is True

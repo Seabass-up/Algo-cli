@@ -84,6 +84,10 @@ class RuntimeConsole(Console):
             return ConsoleDimensions(size.width, max(1, size.height - 1))
         return size
 
+    @size.setter
+    def size(self, new_size: tuple[int, int]) -> None:
+        self._width, self._height = new_size
+
 
 # Rich, the prompt_toolkit session and the sticky footer all render at this depth, so
 # the body and the chrome can no longer disagree. The import-time value is provisional:

@@ -5,6 +5,10 @@ from __future__ import annotations
 import io
 import json
 import ssl
+import socket
+import threading
+import time
+from types import SimpleNamespace
 import urllib.error
 from typing import Any
 
@@ -612,3 +616,270 @@ def test_agent_loop_retries_current_round_without_replaying_previous_tool(
         assert cfg.messages[-1]["content"] == "Verified result"
         assert "Failed attempt reasoning" not in str(cfg.messages)
         assert cfg.messages[-1].get("thinking") == ("Successful reasoning" if show_thinking else None)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("failure", ["eof", "timeout", "server_error"])
+def test_opted_in_partial_answer_uses_one_tool_free_continuation(posts, stream, failure):
+    requests, responses, sleeps = posts
+    events = [{"type": "response.output_text.delta", "delta": "Result: **J"}]
+    if failure == "server_error":
+        events.append({"type": "response.failed", "response": {"error": {"code": "server_error"}}})
+    responses.extend([
+        StreamResponse(events, TimeoutError("read timed out") if failure == "timeout" else None),
+        StreamResponse([completed(text_item("ev answered.**"))]),
+    ])
+    prior = {"role": "assistant", "tool_calls": [{"id": "already_read", "function": {
+        "name": "read_file", "arguments": "{}"}}]}
+    messages = [prior, {"role": "tool", "tool_call_id": "already_read", "content": "Observed fixture"},
+                {"role": "user", "content": "Summarize the fixture"}]
+    tools = [{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}}]
+    reply = chatgpt_client.ChatGptClient().chat(
+        model="gpt-6-astra", messages=messages, tools=tools, stream=stream,
+        options={"recover_partial_answer": True},
+    )
+    chunks = list(reply) if stream else [reply]
+    assert content(chunks) == "Result: **Jev answered.**"
+    assert len(requests) == 2 and sleeps == []
+    assert requests[0]["tools"]
+    assert "tools" not in requests[1] and "tool_choice" not in requests[1]
+    assert requests[1]["parallel_tool_calls"] is False
+    assert requests[1]["input"][:-2] == requests[0]["input"]
+    assert requests[1]["input"][-2] == {"role": "assistant", "content": "Result: **J"}
+    assert "Observed fixture" in str(requests[1]["input"])
+    assert all(response.closed for response in responses)
+    if stream:
+        assert len([c for c in chunks if "response_recovery" in c]) == 1
+
+
+@pytest.mark.parametrize("kind", ["tool", "text_and_tool", "empty", "second_eof", "oversize"])
+def test_invalid_continuation_never_publishes_or_dispatches_it(posts, kind):
+    requests, responses, _sleeps = posts
+    events = {
+        "tool": [completed(call_item())],
+        "text_and_tool": [completed(text_item("Untrusted new text"), call_item())],
+        "empty": [completed()],
+        "second_eof": [{"type": "response.output_text.delta", "delta": "Another partial"}],
+        "oversize": [completed(text_item("x" * 65_537))],
+    }[kind]
+    responses.extend([StreamResponse([{"type": "response.output_text.delta", "delta": "Retained text"}]),
+                      StreamResponse(events)])
+    seen = []
+    with pytest.raises(chatgpt_client.CodexResponseStreamError):
+        for chunk in chatgpt_client.ChatGptClient().chat(
+            model="gpt-6-astra", messages=[], stream=True, options={"recover_partial_answer": True},
+        ):
+            seen.append(chunk)
+    assert content(seen) == "Retained text"
+    assert not any(c.get("message", {}).get("tool_calls") for c in seen)
+    assert len(requests) == 2
+    assert all(response.closed for response in responses)
+
+
+def test_continuation_deduplicates_exact_retained_prefix(posts):
+    requests, responses, _sleeps = posts
+    responses.extend([StreamResponse([{"type": "response.output_text.delta", "delta": "Partial answer"}]),
+                      StreamResponse([completed(text_item("Partial answer completed."))])])
+    reply = chatgpt_client.ChatGptClient().chat(
+        model="gpt-6-astra", messages=[], stream=True, options={"recover_partial_answer": True},
+    )
+    assert content(list(reply)) == "Partial answer completed."
+    assert len(requests) == 2
+
+
+def test_cancel_at_continuation_notice_does_not_open_another_request(posts):
+    requests, responses, _sleeps = posts
+    responses.append(StreamResponse([{"type": "response.output_text.delta", "delta": "Partial"}]))
+    reply = chatgpt_client.ChatGptClient().chat(
+        model="gpt-6-astra", messages=[], stream=True, options={"recover_partial_answer": True},
+    )
+    assert next(reply)["message"]["content"] == "Partial"
+    assert next(reply)["response_recovery"]["kind"] == "text_continuation"
+    reply.close()
+    assert len(requests) == 1 and responses[0].closed
+
+
+def test_permanent_error_after_text_is_not_continued(posts):
+    requests, responses, _sleeps = posts
+    responses.append(StreamResponse([
+        {"type": "response.output_text.delta", "delta": "Partial"},
+        {"type": "response.failed", "response": {"error": {"code": "invalid_api_key"}}},
+    ]))
+    with pytest.raises(chatgpt_client.CodexResponseStreamError, match="invalid_api_key"):
+        list(chatgpt_client.ChatGptClient().chat(
+            model="gpt-6-astra", messages=[], stream=True, options={"recover_partial_answer": True},
+        ))
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_actual_agent_continues_partial_text_without_replaying_tool(posts, monkeypatch, failed):
+    from algo_cli import main
+    from algo_cli.config import Config
+    from test_main_helpers import _patch_agent_loop_for_tool_policy_test
+
+    requests, responses, _sleeps = posts
+    _patch_agent_loop_for_tool_policy_test(monkeypatch)
+    dispatched, captures, errors, infos = [], [], [], []
+    monkeypatch.setattr(main, "run_tool", lambda name, *a, **kw: dispatched.append(name) or "Observed fixture")
+    monkeypatch.setattr(main, "show_error", errors.append)
+    monkeypatch.setattr(main, "show_info", infos.append)
+    monkeypatch.setattr(main, "show_stream_text", lambda _text: None)
+    monkeypatch.setattr(main, "start_streaming_response", lambda: None)
+    monkeypatch.setattr(main.memory_runtime, "capture_completed_user_turn",
+                        lambda _cfg, _text, **kw: captures.append(kw["completed"]) or {"status": "skipped"})
+    responses.extend([
+        StreamResponse([completed(call_item())]),
+        StreamResponse([{"type": "response.output_text.delta", "delta": "Read result: "}]),
+        StreamResponse([{"type": "response.output_text.delta", "delta": "not completed"}]) if failed else
+        StreamResponse([completed(text_item("Observed fixture."))]),
+    ])
+    cfg = Config(model="gpt-6-astra", max_tool_iterations=2, skill_crystallize_enabled=False)
+    main.agent_loop(chatgpt_client.ChatGptClient(), cfg, "Read README.md and summarize it")
+    assert dispatched == ["read_file"] and len(requests) == 3
+    assert "tools" not in requests[-1]
+    assert cfg.messages[-1]["content"] == "Read result: " + ("" if failed else "Observed fixture.")
+    assert captures == [not failed]
+    assert bool(errors) == failed
+    assert any("Continuing interrupted answer" in info for info in infos)
+
+
+def test_continuation_cannot_complete_an_unverified_workspace_mutation(posts, monkeypatch, tmp_path):
+    from algo_cli import main
+    from algo_cli.config import Config
+    from test_main_helpers import _patch_agent_loop_for_tool_policy_test
+
+    requests, responses, _sleeps = posts
+    _patch_agent_loop_for_tool_policy_test(monkeypatch)
+    dispatched, captures, displayed = [], [], []
+    monkeypatch.setattr(main, "ask_approval", lambda *a, **kw: True)
+    monkeypatch.setattr(main, "run_tool", lambda name, *a, **kw: dispatched.append(name) or "Wrote 6 characters to created.py")
+    monkeypatch.setattr(main, "show_stream_text", displayed.append)
+    monkeypatch.setattr(main.memory_runtime, "capture_completed_user_turn",
+                        lambda _cfg, _text, **kw: captures.append(kw["completed"]) or {"status": "skipped"})
+    write = call_item(arguments='{"path":"created.py","content":"x = 1\\n"}')
+    write["name"] = "write_file"
+    responses.extend([StreamResponse([completed(write)]),
+                      StreamResponse([{"type": "response.output_text.delta", "delta": "Unverified "}]),
+                      StreamResponse([completed(text_item("completion claim."))])])
+    cfg = Config(model="gpt-6-astra", cwd=str(tmp_path), max_tool_iterations=2,
+                 auto_mode=True, skill_crystallize_enabled=False, decision_checkpoints_enabled=False)
+    main.agent_loop(chatgpt_client.ChatGptClient(), cfg, "Create a file and verify it")
+    assert len(requests) == 3 and dispatched == ["write_file"]
+    assert captures == [False]
+    assert not any("completion claim" in text or "Unverified " in text for text in displayed)
+
+
+def test_continuation_deadline_rejects_buffered_text(posts, monkeypatch):
+    requests, responses, _sleeps = posts
+    responses.extend([StreamResponse([{"type": "response.output_text.delta", "delta": "Partial"}]),
+                      StreamResponse([completed(text_item(" late suffix"))])])
+    ticks = iter([0.0, 31.0])
+    monkeypatch.setattr(chatgpt_client.time, "monotonic", lambda: next(ticks))
+    seen = []
+    with pytest.raises(chatgpt_client.CodexResponseStreamError, match="bound"):
+        for chunk in chatgpt_client.ChatGptClient().chat(
+            model="gpt-6-astra", messages=[], stream=True, options={"recover_partial_answer": True},
+        ):
+            seen.append(chunk)
+    assert content(seen) == "Partial" and len(requests) == 2
+    assert all(response.closed for response in responses)
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_multiline_sse_terminal_is_not_misreported_as_truncated(posts, newline):
+    requests, responses, _sleeps = posts
+    first = "data: " + json.dumps({"type": "response.output_text.delta", "delta": "Partial answer"})
+    terminal = newline.join("data: " + line for line in json.dumps(completed(text_item("Partial answer complete.")), indent=2).splitlines())
+    response = io.BytesIO((first + newline * 2 + ": keepalive" + newline + terminal + newline * 2).encode())
+    responses.append(response)
+    chunks = list(chatgpt_client.ChatGptClient().chat(
+        model="gpt-6-astra", messages=[], stream=True, options={"recover_partial_answer": True},
+    ))
+    assert content(chunks) == "Partial answer complete."
+    assert len(requests) == 1 and not any("response_recovery" in chunk for chunk in chunks)
+    assert response.closed
+
+
+def test_sse_event_label_supports_typed_payload_without_duplicate_type():
+    response = io.BytesIO(b'event: response.completed\ndata: {"response":{"status":"completed","output":[]}}\n\n')
+    events = list(chatgpt_client._parse_sse_events(response))
+    assert events == [{"type": "response.completed", "response": {"status": "completed", "output": []}}]
+
+
+def test_incomplete_sse_frame_does_not_claim_success():
+    response = io.BytesIO(('data: '+json.dumps(completed(text_item("Not a completed frame")))).encode())
+    with pytest.raises(chatgpt_client.CodexResponseStreamError) as failure:
+        list(chatgpt_client._stream_codex_responses_iter(response))
+    assert failure.value.code == "truncated_stream"
+    assert failure.value.diagnostics["event_count"] == 0
+
+
+def test_sse_frame_size_is_bounded_without_echoing_its_payload(monkeypatch):
+    monkeypatch.setattr(chatgpt_client, "SSE_MAX_EVENT_BYTES", 32)
+    response = io.BytesIO(b'data: {"secret_fixture":"' + b'x' * 64 + b'"}\n\n')
+    with pytest.raises(chatgpt_client.CodexResponseStreamError) as failure:
+        list(chatgpt_client._parse_sse_events(response))
+    assert failure.value.code == "sse_event_too_large"
+    assert "secret_fixture" not in str(failure.value) and response.closed
+
+
+def test_sse_does_not_split_unicode_line_separator_inside_json_text():
+    text = "alpha\u2028bravo"
+    response = io.BytesIO(('data: '+json.dumps(completed(text_item(text)), ensure_ascii=False)+'\n\n').encode())
+    assert content(list(chatgpt_client._stream_codex_responses_iter(response))) == text
+
+
+def test_continuation_checks_deadline_after_terminal_without_new_chunk(posts, monkeypatch):
+    _requests, responses, _sleeps = posts
+    responses.extend([
+        StreamResponse([{"type": "response.output_text.delta", "delta": "Partial"}]),
+        StreamResponse([{"type": "response.output_text.delta", "delta": " suffix"}, completed(text_item(" suffix"))]),
+    ])
+    ticks = iter([0.0, 0.0, 31.0])
+    monkeypatch.setattr(chatgpt_client.time, "monotonic", lambda: next(ticks))
+    seen = []
+    with pytest.raises(chatgpt_client.CodexResponseStreamError, match="deadline"):
+        for chunk in chatgpt_client.ChatGptClient().chat(
+            model="gpt-6-astra", messages=[], stream=True, options={"recover_partial_answer": True},
+        ):
+            seen.append(chunk)
+    assert content(seen) == "Partial" and all(response.closed for response in responses)
+
+
+def test_continuation_deadline_interrupts_keepalive_only_socket(posts, monkeypatch):
+    _requests, responses, _sleeps = posts
+    left, right = socket.socketpair()
+    reader = left.makefile("rb")
+    stop = threading.Event()
+    class SocketResponse:
+        fp = SimpleNamespace(raw=SimpleNamespace(_sock=left))
+        def __iter__(self):
+            return iter(reader)
+        def close(self):
+            reader.close()
+            left.close()
+    def keepalive():
+        try:
+            while not stop.wait(0.005):
+                right.sendall(b": keepalive\n\n")
+        except OSError:
+            pass
+    worker = threading.Thread(target=keepalive, daemon=True)
+    worker.start()
+    monkeypatch.setattr(chatgpt_client, "CODEX_CONTINUATION_TIMEOUT_SECONDS", 0.05)
+    responses.extend([StreamResponse([{"type": "response.output_text.delta", "delta": "Partial"}]), SocketResponse()])
+    start = time.monotonic()
+    try:
+        with pytest.raises(chatgpt_client.CodexResponseStreamError) as failure:
+            list(chatgpt_client.ChatGptClient().chat(
+                model="gpt-6-astra", messages=[], stream=True, options={"recover_partial_answer": True},
+            ))
+        assert failure.value.code == "continuation_limit"
+        assert time.monotonic() - start < 0.5
+    finally:
+        stop.set()
+        right.close()
+        reader.close()
+        left.close()
+        worker.join(timeout=1)

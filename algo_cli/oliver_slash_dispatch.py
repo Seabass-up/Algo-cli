@@ -15,14 +15,11 @@ from prompt_toolkit.completion import Completer, Completion
 
 from . import display
 from .config import (
-    CODE_RAG_CONSENT_VERSION,
     MEMORY_AUTO_CAPTURE_CONSENT_VERSION,
     Config,
-    code_rag_consent_granted,
     memory_auto_capture_consent_granted,
     safe_conversation_name,
 )
-from . import code_rag
 from . import harness
 from . import identity
 from . import julia_memory_candidates as memory_candidates
@@ -62,7 +59,6 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/lesson", "Store an explicit lesson in the active memory authority"),
     ("/lessons", "Show legacy lesson status or 'reindex' when Continuum is off"),
     ("/skills", "Review quarantined skills; 'crystallize' / 'approve' / 'reject'"),
-    ("/intuition", "Manage embedded memory recall"),
     ("/intelligence", "Inspect repository intelligence and your library: status, query, reindex, init"),
     ("/intel", "Alias for /intelligence"),
     ("/intelagence", "Alias for /intelligence"),
@@ -70,8 +66,6 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/kernel list", "List promoted kernel specs"),
     ("/kernel show", "Show a promoted kernel spec"),
     ("/kernel check", "Validate kernel imports, slash routes, and active action contracts"),
-    ("/icl", "index-compute-lab graph status, on/off, or ask"),
-    ("/code-rag", "Opt in or out of working-directory code retrieval: on, off, status"),
     ("/agent", "Run, delegate, resume, and inspect agent threads"),
     ("/agent team", "Fan out 2-4 read-only specialists, then integrate and verify"),
     ("/agent threads", "List persistent agent runs and child threads"),
@@ -107,7 +101,6 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/temp", "Set temperature"),
     ("/toolmax", "Set max tool iterations"),
     ("/thinkevery", "Set reflection interval"),
-    ("/embed", "Generate embeddings"),
     ("/vision", "Describe an image"),
     ("/pdf", "Extract text from a PDF"),
     ("/theme", "Switch visual theme"),
@@ -119,12 +112,10 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/harness", "Inspect harness index health"),
     ("/harness status", "Show harness index status and quality"),
     ("/harness refresh", "Refresh harness index"),
-    ("/harness embed", "Embed pending harness records"),
     ("/harness score", "Run the ten-gate benchmark and algorithm-effectiveness scorecard"),
     ("/harness compare", "Recompute the external rating and strict leader gates"),
     ("/harness patterns", "Inspect pattern evidence, explain applicability, verify tests, or compare retrieval"),
     ("/harness external", "Opt in or out of indexing other local agent stores"),
-    ("/harness benchmark-embed", "Measure synthetic embed throughput (--count N --model NAME)"),
     ("/harness build-rust", "Build optional Rust indexer"),
     ("/harness rust", "Build optional Rust indexer"),
     ("/hsearch", "Search harness assets"),
@@ -160,7 +151,7 @@ COMMAND_GROUPS: dict[str, tuple[str, ...]] = {
     ),
     "models": (
         "/model", "/models", "/host", "/cloud", "/cloudauto", "/model-check", "/system",
-        "/thinking", "/keepalive", "/ctx", "/temp", "/embed",
+        "/thinking", "/keepalive", "/ctx", "/temp",
     ),
     "workspace": ("/cd", "/ls", "/read", "/worktree", "/ship", "/diff", "/changes"),
     "agent": (
@@ -169,8 +160,8 @@ COMMAND_GROUPS: dict[str, tuple[str, ...]] = {
     ),
     "knowledge": (
         "/memory", "/memory-auto", "/remember", "/memories", "/forget", "/identity",
-        "/lesson", "/lessons", "/skills", "/intuition", "/intelligence", "/intel",
-        "/intelagence", "/kernel", "/icl", "/code-rag",
+        "/lesson", "/lessons", "/skills", "/intelligence", "/intel",
+        "/intelagence", "/kernel",
     ),
     "harness": ("/harness", "/hsearch", "/hread", "/hs", "/hr", "/actions"),
     "integrations": ("/config", "/google", "/x-account", "/plugins", "/credentials", "/url-scheme"),
@@ -233,19 +224,16 @@ _STATUS_REFRESH_COMMANDS = frozenset({"/safe", "/auto", "/theme", "/cd", "/mode"
 _HARNESS_SUBCOMMANDS = (
     "status",
     "refresh",
-    "embed",
     "score",
     "compare",
     "external",
     "build-rust",
-    "benchmark-embed",
     "patterns",
 )
 _HARNESS_USAGE = (
-    "Usage: /harness [status|refresh|embed|score|compare|build-rust] or "
+    "Usage: /harness [status|refresh|score|compare|build-rust] or "
     "/harness external [on|off|status] or "
     "/harness patterns [status [ID]|explain ID|verify ID|compare] or "
-    "/harness benchmark-embed [--count N] [--model NAME]. "
     "Search with /hsearch (alias /hs); read with /hread (alias /hr)."
 )
 
@@ -345,6 +333,24 @@ def handle_command(
     entered_command = parts[0].lower()
     command = SLASH_COMMAND_ALIASES.get(entered_command, entered_command)
     arg = parts[1] if len(parts) > 1 else ""
+    if command == "/code-rag" and arg.strip().lower() == "off":
+        from . import code_rag
+
+        cfg.code_rag_enabled = False
+        cfg.code_rag_consent_version = 0
+        try:
+            cfg.save()
+            removed = code_rag.purge_persisted_indexes()
+        except OSError:
+            m.show_error("Retired code-RAG cleanup failed; cleanup is incomplete. Retry /code-rag off after repairing the local state.")
+        else:
+            m.show_info(f"Retired code-RAG disabled; removed {removed} persisted index entries.")
+        return True, client
+    if command in {"/embed", "/icl", "/intuition", "/code-rag"} or (
+        command == "/harness" and arg.split(maxsplit=1)[:1] in (["embed"], ["benchmark-embed"])
+    ) or (command == "/lessons" and arg.strip() == "reindex"):
+        m.show_error("This legacy embedding/graph route is retired. Use native Continuum and lexical harness search.")
+        return True, client
     # Use the original command (parts[0]) to compute arg offset
     # so that /CD, /Cd, /cD all work the same as /cd
     if command in _PATH_SLASH_COMMANDS:
@@ -705,22 +711,6 @@ def handle_command(
                 m.show_error("Legacy lesson reindexing is disabled while Continuum Memory is authoritative.")
             else:
                 m.show_error("Usage: /lessons [status|reindex]")
-        elif lessons_sub == "reindex":
-            backend, _reason = m.resolve_embed_backend(cfg)
-            if not m.host_is_local(cfg.host) or not m.ollama_server_ready(cfg.host):
-                m.show_error("Local Ollama is not reachable; cannot rebuild lesson embeddings.")
-            else:
-                embed_fn, _backend, active_model = m.make_embed_fn(cfg, harness.resolve_embed_model(cfg))
-                m.show_info(f"Rebuilding lesson embeddings with {active_model} ({backend})…")
-                result = identity.rebuild_lessons_index(
-                    embed_fn,
-                    active_model,
-                    expected_dimensions=m.configured_embed_dimensions(cfg),
-                )
-                if result.get("ready"):
-                    m.show_info(f"Indexed {result.get('chunk_count', 0)} lesson chunks.")
-                else:
-                    m.show_error(f"Reindex failed: {result.get('reason', 'unknown')}")
         elif lessons_sub in {"", "status", "show", "?"}:
             status = identity.lessons_index_status()
             m.console.print(f"[muted]Lessons file:[/] {identity.LESSONS_PATH}")
@@ -815,44 +805,6 @@ def handle_command(
             )
         else:
             m.show_error("Usage: /skills [status|crystallize|approve NAME|reject NAME|on|off]")
-    elif command == "/icl":
-        m.handle_icl_command(arg, cfg)
-    elif command == "/code-rag":
-        sub = (arg or "status").strip().lower() or "status"
-        if sub == "on":
-            cfg.code_rag_enabled = True
-            cfg.code_rag_consent_version = CODE_RAG_CONSENT_VERSION
-            cfg.save()
-            m.show_info("Working-directory code retrieval: ON")
-            m.show_info(
-                "Source snippets from the active cwd may be included in model prompts, "
-                "including requests sent to cloud providers."
-            )
-        elif sub == "off":
-            cfg.code_rag_enabled = False
-            cfg.code_rag_consent_version = 0
-            cfg.save()
-            try:
-                removed = code_rag.purge_persisted_indexes()
-            except OSError as exc:
-                m.show_error(f"Code retrieval disabled, but persisted index purge failed: {exc}")
-            else:
-                m.show_info(f"Working-directory code retrieval: OFF · purged {removed} persisted index file(s)")
-        elif sub in {"status", "show", "?"}:
-            enabled = code_rag_consent_granted(cfg)
-            m.console.print(
-                "Working-directory code retrieval: "
-                f"{'on' if enabled else 'off'} · "
-                f"persisted indexes {code_rag.persisted_index_count()}"
-            )
-            m.console.print(
-                "[muted]When on, retrieved cwd snippets join the active model request and "
-                "may leave this machine with a cloud provider.[/]"
-            )
-        else:
-            m.show_error("Usage: /code-rag [on|off|status]")
-    elif command == "/intuition":
-        m.handle_intuition_command(arg, cfg)
     elif command in {"/intelligence", "/intel", "/intelagence"}:
         m.handle_intelligence_command(arg, cfg)
     elif command == "/kernel":
@@ -888,15 +840,9 @@ def handle_command(
         from . import julia_memory_runtime as memory_runtime
 
         try:
-            subcommand = (arg.strip().split(maxsplit=1) or ["home"])[0].lower()
-            embed_fn = None
-            if subcommand in {"search", "benchmark", "reindex"}:
-                embed_fn = m.intuition_embed_fn(cfg)
             memory_text = memory_runtime.command_text(
                 arg,
                 cfg,
-                embed_fn=embed_fn,
-                embedding_model=harness.resolve_embed_model(cfg),
             )
         except memory_runtime.MemorySystemError as exc:
             m.show_error(str(exc))
@@ -1430,7 +1376,7 @@ def handle_command(
         harness_parts = harness_arg.split(maxsplit=1)
         subcommand = harness_parts[0].lower() if harness_parts else ""
         subargs = harness_parts[1] if len(harness_parts) > 1 else ""
-        if subargs and subcommand not in {"benchmark-embed", "external", "patterns"}:
+        if subargs and subcommand not in {"external", "patterns"}:
             m.show_error(harness_subcommand_error(harness_arg))
         elif subcommand == "patterns":
             from .pattern_runtime import run_command
@@ -1469,58 +1415,6 @@ def handle_command(
                 m.show_error("Usage: /harness external [on|off|status]")
         elif subcommand in {"build-rust", "rust"}:
             m.build_rust_indexer()
-        elif subcommand == "benchmark-embed":
-            m.run_harness_benchmark_embed(cfg, harness_arg)
-        elif subcommand == "embed":
-            backend, _reason = m.resolve_embed_backend(cfg)
-            if not m.host_is_local(cfg.host) or not m.ollama_server_ready(cfg.host):
-                m.show_error("Local Ollama is not reachable; cannot embed harness records.")
-            else:
-                embed_fn, _backend, active_model = m.make_embed_fn(cfg, harness.resolve_embed_model(cfg), bind_identity=True)
-                dimensions = m.configured_embed_dimensions(cfg)
-                embedding_identity = harness.embedding_function_identity(embed_fn)
-                matching, total = harness.embedded_count(active_model, dimensions=dimensions, embedding_identity=embedding_identity)
-                pending = total - matching
-                if matching == 0 and any(r.get("embedding") for r in (harness.load_index().get("records") or [])):
-                    m.show_info(
-                        f"Provider, model artifact, or dimension change detected: all {total} records need matching embeddings for {active_model}."
-                    )
-                queue = harness.embedding_progress(active_model, dimensions=dimensions, embedding_identity=embedding_identity)
-                high_value = (
-                    f" High-value coverage: {queue.get('high_value_embedded', 0)}/"
-                    f"{queue.get('high_value_total', 0)}; next tier: "
-                    f"{str(queue.get('next_priority') or 'complete').replace('_', ' ')}."
-                    if int(queue.get("total", 0)) == total and int(queue.get("high_value_total", 0)) > 0
-                    else ""
-                )
-                m.show_info(
-                    f"Embedding {pending} of {total} harness records with {active_model} ({backend}) "
-                    f"using {harness.EMBED_PRIORITY_POLICY}.{high_value}"
-                )
-
-                def _prog(done: int, target: int) -> None:
-                    if done == target or done % (max(1, target // 5)) == 0:
-                        m.show_info(f"  embeddings: {done}/{target}")
-
-                result = harness.embed_index_records(
-                    embed_fn,
-                    active_model,
-                    dimensions=dimensions,
-                    on_progress=_prog,
-                    on_perf=lambda rec: m.log_embed_perf(rec, source="harness_embed_command", backend=backend),
-                )
-                if result.get("ready"):
-                    m.show_info(
-                        f"Embedded {result.get('embedded', 0)} records. Total now embedded: {result.get('total', 0)}."
-                    )
-                elif result.get("reason") == "max_records_reached":
-                    next_priority = str(result.get("next_priority") or "complete").replace("_", " ")
-                    m.show_info(
-                        f"Embedded {result.get('embedded', 0)} records; {result.get('pending', 0)} pending. "
-                        f"Next tier: {next_priority}."
-                    )
-                else:
-                    m.show_error(f"Embedding failed: {result.get('reason', 'unknown')}")
         elif subcommand in {"help", "?"}:
             m.show_info(_HARNESS_USAGE)
         else:

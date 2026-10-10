@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -10,10 +11,10 @@ from .config import CONFIG_DIR, _atomic_write_text
 from .samuel_policy import TOOL_GROUP_MAP, expand_tool_groups
 
 try:
-    import tomllib  # type: ignore[import-not-found]
+    tomllib = import_module("tomllib")
 except ImportError:  # Python 3.10: fall back to the tomli backport.
     try:
-        import tomli as tomllib
+        tomllib = import_module("tomli")
     except ImportError:  # pragma: no cover - tomli is a declared 3.10 dependency.
         tomllib = None  # type: ignore[assignment]
 

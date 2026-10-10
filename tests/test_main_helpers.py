@@ -393,34 +393,16 @@ def test_run_tool_anchors_relative_search_to_configured_workspace(tmp_path):
 
 
 def test_ensure_harness_index_returns_true_for_incremental_embedding(monkeypatch):
-    cfg = Config()
-    messages: list[str] = []
-
-    monkeypatch.setattr(main, "resolve_embed_backend", lambda _cfg: ("local", "ok"))
-    monkeypatch.setattr(main.harness, "resolve_embed_model", lambda _cfg: "embed-model")
-    monkeypatch.setattr(
-        main, "make_embed_fn", lambda _cfg, _model, *, bind_identity: (lambda texts: [[1.0] for _ in texts], "local", "embed-model")
-    )
-    monkeypatch.setattr(main.harness, "embedded_count", lambda _model=None, **_kwargs: (0, 10))
-    monkeypatch.setattr(main, "host_is_local", lambda _host: True)
-    monkeypatch.setattr(main, "ollama_server_ready", lambda _host: True)
-    monkeypatch.setattr(main, "local_model_names", lambda _cfg: ["embed-model:latest"])
-    monkeypatch.setattr(
-        main.harness,
-        "embed_index_records",
-        lambda *_args, **_kwargs: {"ready": False, "embedded": 3, "pending": 7, "reason": "max_records_reached"},
-    )
-    monkeypatch.setattr(main, "show_info", messages.append)
-
-    assert main.ensure_harness_index(cfg, max_records=3) is True
-    assert any("partially ready" in message for message in messages)
+    monkeypatch.setattr(main.harness, "load_index", lambda **kw: {"records": [{"id": "reference"}]})
+    monkeypatch.setattr(main, "make_embed_fn", lambda *a, **kw: pytest.fail("Retired embedding factory must not run"))
+    assert main.ensure_harness_index(Config(), max_records=3) is True
 
 
 def test_context_slash_command_registered():
     commands = {name for name, _description in main.SLASH_COMMANDS}
     assert "/context" in commands
     assert "/x-account" in commands
-    assert "/intuition" in commands
+    assert "/intuition" not in commands
     assert "/agent" in commands
     assert "/route" in commands
     assert "/policy" in commands
@@ -618,12 +600,7 @@ def test_last_chat_token_usage_prefers_fresh_metrics():
 
 def test_intuition_command_on_off_toggles_recall_and_capture():
     cfg = Config()
-
-    main.handle_intuition_command("on", cfg)
-    assert cfg.intuition_recall_enabled is True
-    assert cfg.intuition_capture_enabled is True
-
-    main.handle_intuition_command("off", cfg)
+    main.handle_command("/intuition on", cfg, None)
     assert cfg.intuition_recall_enabled is False
     assert cfg.intuition_capture_enabled is False
 
@@ -709,42 +686,22 @@ max_iterations = 12
 
 
 def test_capture_intuition_block_respects_capture_flag(monkeypatch, tmp_path):
-    cfg = Config()
-    engine = main._IntuitionEngineCls(index_path=str(tmp_path / "intuition.json"))  # type: ignore[operator]
-    monkeypatch.setattr(main, "_intuition_engine", engine)
-    monkeypatch.setattr(main, "intuition_embed_fn", lambda _cfg: lambda texts: [[1.0, 0.0] for _ in texts])
-
-    assert main.capture_intuition_block(cfg, "memory", "Python is preferred.", source="test") is None
-
-    cfg.intuition_capture_enabled = True
-    block_id = main.capture_intuition_block(cfg, "memory", "Python is preferred.", source="test")
-
-    assert block_id is not None
-    assert engine.status()["block_count"] == 1
-    assert engine.status()["embedded"] == 1
+    cfg = Config(intuition_capture_enabled=True)
+    assert main.capture_intuition_block(cfg, "memory", "private", source="test", force=True) is None
 
 
 def test_intuition_forget_command_removes_block(monkeypatch, tmp_path):
-    cfg = Config()
-    engine = main._IntuitionEngineCls(index_path=str(tmp_path / "intuition.json"))  # type: ignore[operator]
-    block_id = engine.capture_block("memory", "Python is preferred.", source="test")
-    monkeypatch.setattr(main, "_intuition_engine", engine)
-
-    main.handle_intuition_command(f"forget {block_id}", cfg)
-
-    assert engine.status()["block_count"] == 0
+    errors = []
+    monkeypatch.setattr(main, "show_error", errors.append)
+    main.handle_intuition_command("forget example", Config())
+    assert errors and "retired" in errors[0]
 
 
 def test_intuition_reindex_command_updates_embeddings(monkeypatch, tmp_path):
-    cfg = Config()
-    engine = main._IntuitionEngineCls(index_path=str(tmp_path / "intuition.json"))  # type: ignore[operator]
-    engine.capture_block("memory", "Python is preferred.", source="test")
-    monkeypatch.setattr(main, "_intuition_engine", engine)
-    monkeypatch.setattr(main, "intuition_embed_fn", lambda _cfg: lambda texts: [[1.0, 0.0] for _ in texts])
-
-    main.handle_intuition_command("reindex", cfg)
-
-    assert engine.status()["embedded"] == 1
+    errors = []
+    monkeypatch.setattr(main, "show_error", errors.append)
+    main.handle_intuition_command("reindex", Config())
+    assert errors and "retired" in errors[0]
 
 
 def test_client_for_model_uses_active_client_for_default_model():
@@ -1253,10 +1210,7 @@ def test_echo_authority_blocks_forced_intuition_add_without_engine_access(
     )
     main.handle_intuition_command(f"add memory {canary}", cfg)
 
-    assert errors == [
-        "Intuition is disabled while Continuum Memory is authoritative; "
-        "plaintext Intuition data was not accessed or changed."
-    ]
+    assert errors and all("retired" in error for error in errors)
 
 
 def test_echo_transition_drops_preloaded_intuition_without_access(monkeypatch) -> None:
@@ -1883,7 +1837,8 @@ def test_normal_chat_serial_path_uses_canonical_dispatcher(monkeypatch, tmp_path
 
     main.agent_loop(ScriptedClient(), cfg, "read the project")  # type: ignore[arg-type]
 
-    assert calls == [("read_file", "canonical-serial")]
+    assert calls == [("decision_decide", None), ("read_file", "canonical-serial")]
+    assert cfg.context_state["decision_checkpoints"][0]["error"] == "checkpoint_authorization_or_policy_denied"
     assert cfg.attempt_ledger[-1]["status"] == "worked"
 
 
@@ -2009,10 +1964,10 @@ def test_normal_chat_parallel_dispatch_preserves_scope_and_order(monkeypatch, tm
 
     monkeypatch.setattr(main, "run_tool", parallel_read)
     original_dispatch = main.dispatch_action
-    queue_positions: list[int | None] = []
+    queue_positions: list[tuple[str, int | None]] = []
 
     def spy_dispatch(name, args, cfg, **kwargs):
-        queue_positions.append(kwargs.get("queue_position"))
+        queue_positions.append((name, kwargs.get("queue_position")))
         return original_dispatch(name, args, cfg, **kwargs)
 
     monkeypatch.setattr(main, "dispatch_action", spy_dispatch)
@@ -2022,7 +1977,9 @@ def test_normal_chat_parallel_dispatch_preserves_scope_and_order(monkeypatch, tm
 
     assert len(worker_ids) == 2
     assert active_workspaces == [str(tmp_path.resolve()), str(tmp_path.resolve())]
-    assert sorted(queue_positions) == [0, 1]
+    assert queue_positions[0] == ("decision_decide", None)
+    assert sorted(position for name, position in queue_positions if name == "read_file") == [0, 1]
+    assert cfg.context_state["decision_checkpoints"][0]["error"] == "checkpoint_authorization_or_policy_denied"
     tool_messages = [message for message in cfg.messages if message.get("role") == "tool"]
     assert [message.get("tool_call_id") for message in tool_messages[-2:]] == [
         "canonical-parallel-0",
@@ -2267,38 +2224,12 @@ def test_harness_external_toggle_rebuilds_without_implicit_sources(monkeypatch):
 
 
 def test_code_rag_toggle_records_consent_and_off_purges(monkeypatch):
+    errors = []
     cfg = Config()
-    saves: list[tuple[bool, int]] = []
-    infos: list[str] = []
-    purge_calls: list[bool] = []
-    monkeypatch.setattr(
-        cfg,
-        "save",
-        lambda: saves.append((cfg.code_rag_enabled, cfg.code_rag_consent_version)),
-    )
-    monkeypatch.setattr(main, "show_info", infos.append)
-    monkeypatch.setattr(
-        main.code_rag,
-        "purge_persisted_indexes",
-        lambda: purge_calls.append(True) or 2,
-    )
-
-    handled, _client = main.handle_command("/code-rag on", cfg, None)
-
-    assert handled is True
-    assert cfg.code_rag_enabled is True
-    assert cfg.code_rag_consent_version == CODE_RAG_CONSENT_VERSION
-    assert saves[-1] == (True, CODE_RAG_CONSENT_VERSION)
-    assert any("cloud providers" in message for message in infos)
-
-    handled, _client = main.handle_command("/code-rag off", cfg, None)
-
-    assert handled is True
-    assert cfg.code_rag_enabled is False
-    assert cfg.code_rag_consent_version == 0
-    assert saves[-1] == (False, 0)
-    assert purge_calls == [True]
-    assert any("purged 2" in message for message in infos)
+    monkeypatch.setattr(main, "show_error", errors.append)
+    main.handle_command("/code-rag on", cfg, None)
+    assert not cfg.code_rag_enabled
+    assert errors and "retired" in errors[0]
 
 
 def test_agent_loop_code_rag_requires_current_explicit_consent(monkeypatch, tmp_path):
@@ -2338,7 +2269,7 @@ def test_agent_loop_code_rag_requires_current_explicit_consent(monkeypatch, tmp_
         code_rag_consent_version=CODE_RAG_CONSENT_VERSION,
     )
     main.agent_loop(ScriptedClient(), consented_cfg, "inspect the parser")  # type: ignore[arg-type]
-    assert retrievals == [str(tmp_path)]
+    assert retrievals == []
 
 
 def test_agent_loop_records_skill_history_only_after_opt_in(monkeypatch):

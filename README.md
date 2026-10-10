@@ -81,7 +81,7 @@ echo "what changed in main.py?" | algo-cli --oneshot --json
 algo-cli --oneshot --json --approval-mode auto --cwd /path/to/project "fix the failing test"
 ```
 
-Signed-in local Ollama can run `:cloud` models without `OLLAMA_API_KEY`. `OLLAMA_API_KEY` is only required for the direct Cloud API route (`--cloud` / `/cloud on` when an API key is present) and web tools. Embedding indexes currently use local Ollama models only; a configured cloud embedding backend falls back to local until Ollama Cloud exposes embedding models.
+Signed-in local Ollama can run `:cloud` models without `OLLAMA_API_KEY`. `OLLAMA_API_KEY` is only required for the direct Cloud API route (`--cloud` / `/cloud on` when an API key is present) and web tools. Native Continuum owns memory without a CLI embedding pipeline. Local reference lookup is lexical; no automatic embedding model is loaded.
 
 `--oneshot --json` emits one JSON object per line to stdout (NDJSON), suitable for subprocess consumption. `--approval-mode never` (default) denies approval-required tools and emits a `tool_denied` event; pass `--approval-mode auto` to grant them. Skill crystallization is disabled in one-shot mode. Event types: `session_start`, `thinking`, `content`, `tool_call`, `tool_result`, `tool_denied`, `error`, `done`. The bridge can rely on `session_start` first and `done` last as framing.
 
@@ -113,13 +113,11 @@ xAI's public API uses `XAI_API_KEY`; API calls can consume paid usage, so setup 
 
 Every normal chat request sends the active conversation and the assembled Algo CLI system context to the selected inference provider. That context includes `SOUL.md`, `IDENTITY.md`, `USER.md`, saved memories, and relevant retrieved lessons when available. With a cloud model, this content may leave the machine. Automatic memory capture is off by default. `/memory-auto on` records explicit consent for the current capture policy and enables bounded capture after successful turns. `/memory-auto off` stops future automatic captures and clears that consent (it does not delete existing memories).
 
-The installed harness corpus contains only public Algo CLI docs, skills, and runtime metadata. Other local agent stores, working-directory code retrieval, index-compute-lab, and skill run-history capture are off by default because retrieved or summarized content can become part of a model request.
+The installed reference corpus contains public Algo CLI docs, skills and runtime metadata. Continuum owns memory; Echo Veil, Lab-index, vector Code RAG and embedding routes are retired. External local references remain opt-in because retrieved content can become part of a model request.
 
 - `/harness external on` opts in to supported Codex, Claude, OpenClaw, Mercury, and shared agent stores.
-- `/icl on` opts in to `~/index-compute-lab`; override its root with `ALGO_CLI_INDEX_COMPUTE_LAB_ROOT`.
-- `/code-rag on` opts in to indexing source files beneath the active cwd and adding relevant snippets to model requests. `/code-rag off` disables retrieval and purges persisted code indexes.
 - `/skills on` opts in to bounded run-summary capture under `~/.algo_cli/private/run_history.jsonl` and automatic skill-candidate crystallization by a genuinely local, non-embedding Ollama model. There is no cloud fallback.
-- `/harness external off` and `/icl off` rebuild the generated index without those records.
+- `/harness external off` rebuilds the generated reference index without external records.
 
 Common credential forms are redacted and connector/MCP JSON is metadata-only, but redaction is not a substitute for reviewing the sources you enable. See [Privacy and local context](docs/privacy-and-context.md).
 
@@ -146,11 +144,8 @@ Common credential forms are redacted and connector/MCP JSON is metadata-only, bu
 | `/thinking effort [MODEL] LEVEL` | Set Codex reasoning effort (`low`, `medium`, `high`, `xhigh`, or GPT-5.6 `max`) |
 | `/agent team ...` | Algo's multi-agent counterpart to Codex Ultra; fan out specialists, then integrate and verify |
 | `/memory-auto [on\|off\|status]` | Inspect or toggle bounded, privacy-gated automatic memory capture after successful turns |
-| `/code-rag [on\|off\|status]` | Opt in or out of cwd source indexing and prompt retrieval; `off` purges persisted indexes |
 | `/skills [on\|off\|status\|crystallize]` | Opt in to local run-history capture and review local-only skill candidates |
 | `/remember FACT` | Save a long-term memory |
-| `/intuition [on|off|status|add|list|forget|reindex]` | Manage embedded recall blocks |
-| `/icl [on\|off\|status\|ask\|path]` | index-compute-lab knowledge graph (auto-injected each turn when on) |
 | `/harness external [on\|off\|status]` | Opt in or out of indexing other local agent stores |
 | `/route TASK` | Preview task classification, pipeline, advisory budget, and tool policy |
 | `/agent init` | Write a starter `~/.algo_cli/blocks.toml` without overwriting an existing file |
@@ -191,7 +186,7 @@ Common credential forms are redacted and connector/MCP JSON is metadata-only, bu
 
 Typing `/` in the prompt shows inline slash-command completions.
 
-For the assistant/model, slash commands are session controls, not prose. The model is prompted to use `session_slash` for deterministic `/read`, `/ls`, `/cd`, and `/cwd`; `session_command` for non-file session controls such as `/status`, `/mode`, `/context`, `/code-rag status`, `/harness refresh`, `/route`, and `/agent`; and normal model-callable tools for actual work (`write_file` for edits, `run_shell` for tests/builds). Read-only/status `session_command` calls run without approval; state-changing commands, including `/code-rag on` and `/code-rag off`, and agent execution require approval. Runtime-triggered `/agent` calls are allowed from the parent chat loop, but recursive delegation from inside an Agent Blocks run is rejected. Toggle commands accept explicit idempotent forms such as `/auto on`, `/safe off`, `/code-rag status`, `/thinking status`, `/verify on`, and `/cloud off`.
+For the assistant/model, slash commands are session controls, not prose. The model is prompted to use `session_slash` for deterministic `/read`, `/ls`, `/cd`, and `/cwd`; `session_command` for non-file session controls such as `/status`, `/mode`, `/context`, `/context status`, `/harness refresh`, `/route`, and `/agent`; and normal model-callable tools for actual work (`write_file` for edits, `run_shell` for tests/builds). Read-only/status `session_command` calls run without approval; state-changing commands and agent execution require approval. Runtime-triggered `/agent` calls are allowed from the parent chat loop, but recursive delegation from inside an Agent Blocks run is rejected. Toggle commands accept explicit idempotent forms such as `/auto on`, `/safe off`, `/context status`, `/thinking status`, `/verify on`, and `/cloud off`.
 
 `/reason` is called out in the model prompt as a reasoning-posture control. Use `/reason status` or `/reason guide` before changing it. Keep `react` for ordinary tool loops and simple edits; use `reflexion` after failed/partial attempts; `tot`, `got`, or `mcts` for ambiguous multi-path planning/search; `qcr` for comparing candidate solutions; and `neuro_symbolic` for verification-heavy logic, code invariants, contracts, math, or claim checking. Changing `/reason` does not replace evidence gathering or tool verification.
 
@@ -219,7 +214,7 @@ Every turn semantically supersedes older successful snapshots of the same resour
 
 When a `requires_change` block completes on recorded `write_file` evidence but Git verification is unavailable, the manual-confirmation notice is carried on a dedicated verification field. The block's output stays untouched; the warning is rendered on the completion panel and passed to downstream blocks in a separate `## Verification` section.
 
-Agent Block runs use enabled intuition recall before the first block and display any recalled context. For medium-risk coding tasks with policy enforcement enabled, write and shell tools remain available subject to approval; high-risk tasks remain read-only.
+Agent Block runs use native Continuum context when selected; retired Intuition recall is not injected. For medium-risk coding tasks with policy enforcement enabled, write and shell tools remain available subject to approval; high-risk tasks remain read-only.
 
 The built-in `code-change` plan block may perform up to four local read-only inspection turns before planning, so implementation starts from observed Python paths instead of guessed project structure.
 
@@ -239,7 +234,7 @@ The model can call these tools during a conversation:
 
 **Memory:** `remember`, `append_lesson`, `update_user_profile`
 
-**Multimodal:** `embed_text`, `vision_describe`
+**Multimodal:** `vision_describe`
 
 **Programmatic actions:** `action_search` retrieves a small set of exact deferred action schemas; discovery does not bypass the active capability ceiling, runtime policy, or approval. `action_program` compiles a bounded typed dataflow plan—never arbitrary Python or JavaScript—and routes every nested action through its existing ActionSpec policy, guardrails, approval, attempt ledger, and telemetry. Its wall-clock budget is cooperative: the remaining budget is propagated into timeout-aware actions and checked around every step, while actions without a timeout contract can only be marked over-budget after they return. Large intermediate values are content-addressed in the private runtime store; compact results retain hash-chained mutation and verification receipts. Successful program verifiers reconcile into the outer completion ledger, so the latest passing post-mutation check supersedes earlier failures without relying on model phrasing.
 
@@ -249,9 +244,9 @@ The model can call these tools during a conversation:
 
 **Files and Git:** `read_file`, `read_pdf`, `render_pdf_pages`, `edit_file`, `write_file`, `list_directory`, `search_files`, `find_unique_anchor`, `batch_edit`, `git_status`, `git_diff`
 
-**Harness:** `available_actions`, `harness_stats`, `harness_search`, `harness_read`, `harness_refresh`, `query_knowledge_graph`
+**References:** `available_actions`, `harness_stats`, `harness_search`, `harness_read`, `harness_refresh`. These use lexical search, not an embedding provider.
 
-After `/icl on`, `query_knowledge_graph` reads the configured index-compute-lab ranked association index through its public query CLI. Set `ALGO_CLI_INDEX_COMPUTE_LAB_ROOT` to use a different local checkout.
+**Memory:** explicit scoped native Continuum tools. Retired graph/embedding commands refuse calls and do not select a fallback backend.
 
 `write_file`, `run_shell`, `model_delete`, and `model_create` require approval unless `/auto` is enabled. A typed program is not blanket-approved: each nested mutation or external action keeps its own approval decision, and restricted Agent Blocks supply their own runtime-owned capability ceiling. Safe mode blocks destructive shell patterns by default. Agent Blocks with `requires_change = true` are instructed prescriptively that file creation, edits, appends, and deletes must go through `write_file`; `run_shell` is restricted to read-only verification (status, tests, lint, diff, grep, ls). Shell-based file mutation (heredocs, output redirection, `sed -i`, `Set-Content`, `Out-File`, etc.) is not counted as evidence of a change, and the model is told to stop and report rather than route edits through shell when `write_file` is unavailable.
 
@@ -267,7 +262,7 @@ The CLI retrieves relevant records from a local index. The public built-in corpu
 
 **Default sources:** packaged Algo CLI docs and skills, user-created `~/.algo_cli` records, and explicit `harness_roots.json` entries.
 
-**Opt-in sources:** Codex, Claude, OpenClaw, shared agents, Mercury, CLI Agent, Pi, and index-compute-lab.
+**Opt-in reference sources:** Codex, Claude, OpenClaw, shared agents, Mercury, CLI Agent and Pi. These do not replace Continuum memory.
 
 **Harness commands:**
 ```
@@ -313,7 +308,17 @@ cd harness-gateway
 go run . -addr 127.0.0.1:8765
 ```
 
-Endpoints: `GET /healthz`, `GET /harness/stats`, `GET /harness/search`, `POST /supplemental/embed`
+Gateway endpoints include `GET /healthz`, `GET /harness/stats` and
+`GET /harness/search`. CLI readiness uses the public health check; the CLI does
+not call the historical embedding endpoint.
+
+Index search and statistics are disabled unless `ALGO_CLI_GATEWAY_TOKEN` is set
+in the gateway process environment. Use a cryptographically generated URL-safe
+token of 32 to 512 characters and send it as a single
+`Authorization: Bearer <token>` header. Query-string tokens are not accepted.
+Missing or malformed server configuration returns 503; missing or invalid caller
+credentials return 401. Do not put the token in a URL, shell argument, repository
+or shared log. The health check does not require this index credential.
 
 Override: `ALGO_CLI_GATEWAY_URL`, `ALGO_CLI_GATEWAY_BIN` (legacy `OLLAMA_CLI_*` names are still accepted).
 
@@ -329,6 +334,7 @@ Config is stored in `~/.algo_cli/` by default (data from `~/.ollama_cli` is auto
 | `ALGO_CLI_THEME` | Default theme (`tokyo-night`, `catppuccin-mocha`, `dracula`, `nord`, `gruvbox`, `dolphie`, `redeye`) |
 | `NO_COLOR`, `COLORTERM`, `TERM`, `FORCE_COLOR` | Colour depth, detected once for the whole UI: `NO_COLOR` or `TERM=dumb` renders with bold, dim and reverse only; `COLORTERM=truecolor` gives 24-bit, `*-256color` 256 colours, and `FORCE_COLOR=1/2/3` raises (never lowers) the depth; any other terminal uses a 16-colour ANSI palette in which every theme shares one map that keeps success, warning, error and info distinct |
 | `ALGO_CLI_GATEWAY_URL` | Go gateway URL |
+| `ALGO_CLI_GATEWAY_TOKEN` | Optional gateway index API credential; keep private and transmit only in the Bearer header |
 | `ALGO_CLI_HARNESS_INDEXER` | Optional Rust harness indexer binary |
 | `OPENAI_OAUTH_CLIENT_ID` | Optional override for the bundled ChatGPT/Codex browser OAuth client |
 | `OPENAI_CODEX_CLIENT_ID` | Optional override for the bundled Codex OAuth client |

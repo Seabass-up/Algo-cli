@@ -382,33 +382,25 @@ def _write_pending_index() -> None:
 def test_skipped_embed_pass_records_reason_and_quality_recommendation(monkeypatch, tmp_path) -> None:
     _write_pending_index()
     cfg = Config(cwd=str(tmp_path), host="http://203.0.113.9:11434")
-    monkeypatch.setattr(main, "make_embed_fn", lambda *_a, **_k: ((lambda texts: [[1.0] for _ in texts]), "t", "m"))
-    monkeypatch.setattr(main, "host_is_local", lambda _host: False)
-
-    assert main.ensure_harness_index(cfg, []) is False
-
-    stats = harness.stats(model="m")
-    last_pass = stats["embeddings"]["last_pass"]
-    assert last_pass["outcome"] == "skipped"
-    assert last_pass["reason"] == "non_local_host"
-    assert last_pass["pending"] == 3
-    quality = stats["quality"]
-    assert quality["last_embed_pass"] == last_pass
-    recommendation = next(item for item in quality["recommendations"] if "/harness embed" in item)
-    assert recommendation.startswith("High-value tiers pending (0/3 embedded); last embed pass skipped: host not local")
-    assert recommendation.endswith("Run /harness embed or wait for the next chat turn to complete embeddings.")
+    monkeypatch.setattr(main, "make_embed_fn", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("no embedding IO")))
+    monkeypatch.setattr(main, "ollama_server_ready", lambda *a: (_ for _ in ()).throw(AssertionError("lexical retrieval does not require Ollama")))
+    assert main.ensure_harness_index(cfg, [])
+    stats = harness.stats()
+    assert stats["retrieval"]["mode"] == "lexical"
+    assert "embeddings" not in stats
+    assert not any("/harness embed" in item for item in stats["quality"]["recommendations"])
 
 
 def test_unreachable_local_host_records_its_own_skip_reason(monkeypatch, tmp_path) -> None:
     _write_pending_index()
-    cfg = Config(cwd=str(tmp_path))
-    monkeypatch.setattr(main, "make_embed_fn", lambda *_a, **_k: ((lambda texts: [[1.0] for _ in texts]), "t", "m"))
-    monkeypatch.setattr(main, "host_is_local", lambda _host: True)
-    monkeypatch.setattr(main, "ollama_server_ready", lambda _host: False)
-
-    main.ensure_harness_index(cfg, [])
-
-    assert harness.last_embed_pass()["reason"] == "ollama_unreachable"
+    cfg = Config(cwd=str(tmp_path), host="http://203.0.113.9:11434")
+    monkeypatch.setattr(main, "make_embed_fn", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("no embedding IO")))
+    monkeypatch.setattr(main, "ollama_server_ready", lambda *a: (_ for _ in ()).throw(AssertionError("lexical retrieval does not require Ollama")))
+    assert main.ensure_harness_index(cfg, [])
+    stats = harness.stats()
+    assert stats["retrieval"]["mode"] == "lexical"
+    assert "embeddings" not in stats
+    assert not any("/harness embed" in item for item in stats["quality"]["recommendations"])
 
 
 def test_embed_pass_outcomes_are_persisted_by_the_embedder() -> None:

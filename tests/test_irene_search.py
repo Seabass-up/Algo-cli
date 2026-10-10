@@ -1,7 +1,6 @@
 """Protected searches must authorize descendants, not just a starting path."""
 
 from __future__ import annotations
-
 import os
 from dataclasses import asdict
 import inspect
@@ -14,6 +13,27 @@ import pytest
 
 from algo_cli import config, irene_memory_path_policy as policy, irene_search, nathan_runtime, tools
 from algo_cli.search_execution import SearchProcessResult
+
+
+def test_worker_bootstraps_parent_runtime_not_search_workspace(protected_tree, monkeypatch):
+    import json
+    import sys
+    from types import SimpleNamespace
+
+    workspace, _private, _cfg = protected_tree
+    calls = []
+    def capture(argv, **kwargs):
+        calls.append((argv, json.loads(kwargs["input_bytes"])))
+        return SimpleNamespace(timed_out=False, stderr_truncated=False, returncode=0,
+                               truncated=False, stderr=b"", stdout=b"PUBLIC_CONTROL")
+    monkeypatch.setattr(irene_search, "run_search_process", capture)
+    result = irene_search.protected_search("needle", str(workspace), str(workspace), None, 10)
+    argv, request = calls[0]
+    assert argv[:3] == [sys.executable, "-I", "-c"]
+    assert repr(str(Path(irene_search.__file__).parent.parent.resolve())) in argv[3]
+    assert str(workspace) not in argv[3]
+    assert request["runtime_root"] == str(Path(irene_search.__file__).parent.resolve())
+    assert result == "PUBLIC_CONTROL"
 
 
 @pytest.fixture

@@ -28,7 +28,6 @@ from rich.table import Table
 from rich.text import Text
 
 from .config import (
-    CODE_RAG_CONSENT_VERSION,
     CONFIG_DIR,
     Config,
     LegacyMigrationError,
@@ -50,7 +49,7 @@ from . import agent_context
 from . import git_evidence  # noqa: F401 — tests patch main.git_evidence
 from . import harness
 from . import identity
-from . import code_rag
+from . import code_rag  # noqa: F401 - rejection-only compatibility for old callers
 from . import execution_guardrails
 from . import model_info as _model_info_module
 from . import model_profile
@@ -84,7 +83,6 @@ from .display import (
     finish_thinking_block,
     show_tool_call,
     show_tool_result,  # noqa: F401 - compatibility surface for callers and tests
-    show_recalled_context,
     show_session_overview,  # noqa: F401 — re-exported for slash_dispatch (m.show_session_overview)
     finish_streaming_response,
     theme_colors,
@@ -126,7 +124,7 @@ from .theodore_runtime_services import (
 from .theodore_runtime_qos import order_tool_batch_by_qos
 from .dorothy_perf_telemetry import (
     flush_perf_records,
-    log_embed_perf,
+    log_embed_perf,  # noqa: F401 - historical telemetry compatibility; no active embedding path
     record_chat_metrics,
     record_perf_event,
 )
@@ -158,7 +156,7 @@ from .arthur_outcomes import OutcomeStatus
 from .marcus_authority import ConfirmationMode, EffectClass, IdempotencyClass
 from .samuel_policy_engine import resolve_action
 from .tool_context import select_tools_for_prompt
-from .tool_schema import estimate_tool_schema_tokens
+from .tool_schema import estimate_tool_schema_tokens, provider_tools
 from .oliver_slash_dispatch import (
     SLASH_COMMANDS,
     SlashCommandCompleter,
@@ -281,18 +279,8 @@ def _discard_plaintext_intuition_engine() -> None:
 
 
 def _intuition_engine_for(cfg: Config) -> Any:
-    """Lazily load plaintext Intuition only when Continuum is not selected."""
-
-    global _intuition_engine
-    from .continuum_memory import selected
-
-    if selected(cfg):
-        # Protected runs never retain or inspect the plaintext engine.
-        _discard_plaintext_intuition_engine()
-        return None
-    if _intuition_engine is _INTUITION_UNINITIALIZED:
-        _intuition_engine = _make_engine(_IntuitionEngineCls)
-    return _intuition_engine
+    _discard_plaintext_intuition_engine()
+    return None
 
 
 def _drop_plaintext_intuition_if_protected(cfg: Config) -> None:
@@ -930,56 +918,7 @@ def resolve_multimodal_model(
 
 
 def handle_embed_command(arg: str, cfg: Config, client: Client) -> None:
-    parser = argparse.ArgumentParser(prog="/embed", add_help=False, exit_on_error=False)
-    parser.add_argument("--model", default=None)
-    parser.add_argument("--file", default=None)
-    parser.add_argument("--truncate", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--dimensions", type=int, default=None)
-    parser.add_argument("text", nargs="*")
-    try:
-        ns = parser.parse_args(shlex.split(arg))
-    except Exception:
-        show_error("Usage: /embed [--model MODEL] [--file PATH] [--no-truncate] [--dimensions N] TEXT")
-        return
-
-    text = " ".join(ns.text).strip()
-    if ns.file:
-        path = Path(ns.file).expanduser()
-        if not path.is_absolute():
-            path = Path(cfg.cwd) / path
-        if not path.exists():
-            show_error(f"File not found: {path}")
-            return
-        text = path.read_text(encoding="utf-8", errors="replace")
-    if not text.strip():
-        show_error("Usage: /embed [--model MODEL] [--file PATH] [--no-truncate] [--dimensions N] TEXT")
-        return
-
-    if cfg.cloud:
-        start_supplemental_gateway(cfg)
-    available = [name for name in local_model_names(cfg) if name.lower() not in harness.DEPRECATED_EMBED_MODELS]
-    model = resolve_multimodal_model(
-        cfg,
-        explicit_model=ns.model,
-        available=available,
-        predicate=is_embedding_model_name,
-        fallback=default_embedding_model(cfg),
-        install_hint="That embedding model is not installed locally. Use /models and pick one like qwen3-embedding, embeddinggemma, or nomic-embed-text.",
-        missing_hint="No supported embedding model is installed. Use /models and pick one like qwen3-embedding, embeddinggemma, or nomic-embed-text.",
-    )
-    if not model:
-        return
-    try:
-        response: Any = tools_module.gateway_embed(text, model, ns.truncate, ns.dimensions)
-        if response is None:
-            response = Client(host=cfg.host).embed(
-                model=model, input=text, truncate=ns.truncate, dimensions=ns.dimensions
-            )
-    except Exception as exc:
-        show_error(f"Error generating embeddings: {exc}")
-        return
-    payload = tools_module.unpack_embed_response(response, model, text, truncate=ns.truncate, dimensions=ns.dimensions)
-    console.print(Text(json.dumps(payload, indent=2)))
+    show_error("Embedding commands are retired. Use native Continuum memory and lexical harness search.")
 
 
 def handle_vision_command(arg: str, cfg: Config, client: Client) -> None:
@@ -2418,46 +2357,7 @@ def configured_embed_dimensions(cfg: Config) -> int | None:
 def make_local_embed_fn(
     cfg: Config, model: str, *, timeout_seconds: float | None = None, bind_identity: bool = False
 ) -> identity.EmbedFn:
-    """Closure that batches Ollama embed calls.
-
-    Prefers the supplemental gateway when it is reachable so batch embedding
-    for the harness index piggybacks on the Go proxy and the in-process RAG
-    score is faster. Falls back to the direct Ollama client when the gateway
-    is not ready or returns an error.
-    """
-    host = cfg.host
-    dimensions = configured_embed_dimensions(cfg)
-
-    def _embed(texts: list[str]) -> list[list[float]]:
-        if not texts:
-            return []
-        # Prefer the supplemental gateway for batch embedding.
-        if tools_module.gateway_ready():
-            response = (
-                tools_module.gateway_embed_batch(texts, model, True, dimensions, ollama_host=host)
-                if timeout_seconds is None
-                else tools_module.gateway_embed_batch(
-                    texts, model, True, dimensions, ollama_host=host, timeout_seconds=timeout_seconds
-                )
-            )
-            if response is not None:
-                embeddings = get_attr(response, "embeddings", []) or []
-                if embeddings:
-                    return [list(vec) for vec in embeddings]
-        # Fallback: direct Ollama client.
-        client = Client(host=host, timeout=timeout_seconds, trust_env=False, follow_redirects=False)
-        if dimensions is None:
-            client_response = client.embed(model=model, input=texts)
-        else:
-            client_response = client.embed(model=model, input=texts, dimensions=dimensions)
-        embeddings = get_attr(client_response, "embeddings", []) or []
-        return [list(vec) for vec in embeddings]
-
-    if bind_identity:
-        from .embedding_binding import bind_ollama_embedding
-
-        return bind_ollama_embedding(_embed, host, model)
-    return _embed
+    raise RuntimeError("CLI embedding support is retired; use native Continuum context and lexical reference search.")
 
 
 # Per-session backend resolution cache. Cloud embeddings are not currently
@@ -2467,28 +2367,7 @@ _EMBED_BACKEND_ANNOUNCED: set[str] = set()
 
 
 def resolve_embed_backend(cfg: Config) -> tuple[str, str]:
-    """Decide which embedding backend to use this session.
-
-    Returns (backend, reason). Ollama Cloud currently authenticates chat and
-    web-search API requests but does not serve embedding models, so 'auto'
-    remains local and an explicit 'cloud' setting falls back visibly to local.
-    """
-    setting = (cfg.embedding_backend or "auto").strip().lower()
-    if setting in _EMBED_BACKEND_CACHE:
-        return _EMBED_BACKEND_CACHE[setting]
-
-    if setting == "local":
-        result = ("local", "embedding_backend=local")
-    elif setting == "cloud":
-        result = ("local", "cloud embeddings unavailable; using local")
-    else:
-        result = ("local", "auto: local embeddings only")
-
-    _EMBED_BACKEND_CACHE[setting] = result
-    if setting not in _EMBED_BACKEND_ANNOUNCED:
-        _EMBED_BACKEND_ANNOUNCED.add(setting)
-        show_info(f"Embedding backend: {result[0]} ({result[1]})")
-    return result
+    return "retired", "CLI embedding calls were removed."
 
 
 def reset_embed_backend_cache() -> None:
@@ -2500,13 +2379,7 @@ def reset_embed_backend_cache() -> None:
 def make_embed_fn(
     cfg: Config, local_model: str, *, bind_identity: bool = False
 ) -> tuple[identity.EmbedFn, str, str]:
-    """Backend-aware embed factory. Returns (embed_fn, backend, active_model).
-
-    This preserves one routing boundary for future embedding backends while
-    selecting only the currently supported local backend.
-    """
-    backend, _reason = resolve_embed_backend(cfg)
-    return make_local_embed_fn(cfg, local_model, bind_identity=bind_identity), backend, local_model
+    raise RuntimeError("CLI embedding support is retired; use native Continuum context and lexical reference search.")
 
 
 def make_maintenance_llm_fn(cfg: Config) -> skills.LLMFn:
@@ -2556,11 +2429,7 @@ def make_local_maintenance_llm_fn(cfg: Config) -> skills.LLMFn | None:
 
 
 def intuition_embed_fn(cfg: Config) -> identity.EmbedFn | None:
-    backend, _reason = resolve_embed_backend(cfg)
-    if not host_is_local(cfg.host) or not ollama_server_ready(cfg.host):
-        return None
-    embed_fn, _backend, _model = make_embed_fn(cfg, harness.resolve_embed_model(cfg))
-    return embed_fn
+    return None
 
 
 def capture_intuition_block(
@@ -2571,189 +2440,17 @@ def capture_intuition_block(
     source: str,
     force: bool = False,
 ) -> str | None:
-    from .continuum_memory import selected
-
-    if selected(cfg):
-        return None
-    intuition_engine = _intuition_engine_for(cfg)
-    if intuition_engine is None:
-        return None
-    if not force and not cfg.intuition_capture_enabled:
-        return None
-    try:
-        return intuition_engine.capture_block(
-            block_type,
-            content,
-            source=source,
-            embed_fn=intuition_embed_fn(cfg),
-            embedding_model=harness.resolve_embed_model(cfg),
-        )
-    except Exception as exc:
-        logger.debug("Intuition capture failed: %s", exc)
-        return None
+    if force:
+        show_error("Embedded Intuition is retired; use native Continuum.")
+    return None
 
 
 def handle_icl_command(arg: str, cfg: Config) -> None:
-    """index-compute-lab auto-inject and status (/icl)."""
-    parts = (arg or "status").strip().split(maxsplit=1)
-    sub = (parts[0].lower() if parts else "status") or "status"
-    from .continuum_memory import selected
-
-    if selected(cfg):
-        if sub == "status":
-            show_info("index-compute-lab is inactive while Continuum Memory is authoritative.")
-        elif sub == "off":
-            cfg.index_compute_lab_auto_inject = False
-            cfg.save()
-            harness.configure_context_sources(
-                external=cfg.external_harness_sources_enabled,
-                index_compute_lab=False,
-            )
-            show_info("index-compute-lab auto-inject: OFF")
-        else:
-            show_error("index-compute-lab access is disabled while Continuum Memory is authoritative.")
-        return
-
-    from . import index_compute_lab
-
-    if sub in {"on", "off"}:
-        cfg.index_compute_lab_auto_inject = sub == "on"
-        cfg.save()
-        harness.configure_context_sources(
-            external=cfg.external_harness_sources_enabled,
-            index_compute_lab=cfg.index_compute_lab_auto_inject,
-        )
-        harness.load_index(refresh=True)
-        show_info(f"index-compute-lab auto-inject: {'ON' if cfg.index_compute_lab_auto_inject else 'OFF'}")
-        return
-    if sub == "path":
-        show_info(f"Lab root: {index_compute_lab.resolve_lab_root()}")
-        show_info(f"Available: {index_compute_lab.lab_available()}")
-        return
-    if sub == "ask":
-        if len(parts) < 2 or not parts[1].strip():
-            show_error("Usage: /icl ask <question>")
-            return
-        console.print(Text(index_compute_lab.run_ask(parts[1].strip(), limit=10)))
-        return
-    console.print(Text.assemble(("index-compute-lab root:", "muted"), f" {index_compute_lab.resolve_lab_root()}"))
-    console.print(f"  assets ready     : [text]{index_compute_lab.lab_available()}[/]")
-    console.print(f"  auto-inject      : [text]{'on' if cfg.index_compute_lab_auto_inject else 'off'}[/]")
-    console.print("[muted]Use /icl on|off, /icl ask <question>, /icl path.[/]")
+    show_error("Lab-index is retired. Use native Continuum search/context.")
 
 
 def handle_intuition_command(arg: str, cfg: Config) -> None:
-    sub, _, rest = (arg or "status").strip().partition(" ")
-    sub = sub.lower() or "status"
-    from .continuum_memory import selected
-
-    if selected(cfg):
-        if sub == "status":
-            show_info("Intuition is inactive while Continuum Memory is authoritative.")
-        else:
-            show_error(
-                "Intuition is disabled while Continuum Memory is authoritative; "
-                "plaintext Intuition data was not accessed or changed."
-            )
-        return
-    intuition_engine = _intuition_engine_for(cfg)
-    if intuition_engine is None:
-        show_error("Intuition engine is unavailable.")
-        return
-
-    if sub in {"on", "off"}:
-        enabled = sub == "on"
-        cfg.intuition_recall_enabled = enabled
-        cfg.intuition_capture_enabled = enabled
-        cfg.save()
-        intuition_engine.config["recall_enabled"] = enabled
-        show_info(f"Intuition recall/capture: {'ON' if enabled else 'OFF'}")
-        return
-
-    if sub == "status":
-        status = intuition_engine.status()
-        console.print(Text.assemble(("Intuition index:", "muted"), f" {status['index_path']}"))
-        console.print(f"  recall enabled : [text]{cfg.intuition_recall_enabled}[/]")
-        console.print(f"  capture enabled: [text]{cfg.intuition_capture_enabled}[/]")
-        console.print(f"  blocks         : [text]{status['block_count']}[/]")
-        console.print(f"  embedded       : [text]{status['embedded']}[/]")
-        console.print(f"  pending        : [text]{status['pending']}[/]")
-        console.print(f"  max blocks     : [text]{status['max_blocks']}[/]")
-        if status["by_type"]:
-            console.print(Text.assemble("  by type        : ", (json.dumps(status['by_type'], sort_keys=True), "text")))
-        console.print("[muted]Use /intuition on|off|list|reindex|forget <id>|add <type> <text>.[/]")
-        return
-
-    if sub == "list":
-        blocks = intuition_engine.list_blocks()
-        if not blocks:
-            show_info("No intuition blocks saved.")
-            return
-        table = Table(title=f"Intuition Blocks ({len(blocks)})", box=box.ROUNDED)
-        table.add_column("ID", style="primary", overflow="fold")
-        table.add_column("Type", style="secondary")
-        table.add_column("Embed", style="text")
-        table.add_column("Timestamp", style="muted")
-        table.add_column("Snippet", style="text", overflow="fold")
-        for block in blocks:
-            metadata = block.get("metadata") if isinstance(block.get("metadata"), dict) else {}
-            embed_state = "ready" if block.get("embedding") else str(metadata.get("embedding_status") or "pending")
-            snippet = str(block.get("content", "")).replace("\n", " ").strip()
-            if len(snippet) > 90:
-                snippet = snippet[:89] + "..."
-            table.add_row(
-                str(block.get("id", "?")),
-                str(block.get("type", "general")),
-                embed_state,
-                str(block.get("timestamp", ""))[:19],
-                snippet,
-            )
-        console.print(table)
-        return
-
-    if sub == "forget":
-        block_id = rest.strip()
-        if not block_id:
-            show_error("Usage: /intuition forget <id>")
-            return
-        removed = intuition_engine.forget_block(block_id)
-        if removed is None:
-            show_error(f"No intuition block found: {block_id}")
-        else:
-            show_info(f"Forgot intuition block: {block_id}")
-        return
-
-    if sub == "reindex":
-        embed_fn = intuition_embed_fn(cfg)
-        if embed_fn is None:
-            show_error("Local Ollama is not reachable; cannot reindex intuition blocks.")
-            return
-        result = intuition_engine.reindex(
-            embed_fn,
-            embedding_model=harness.resolve_embed_model(cfg),
-        )
-        if result.get("ok"):
-            show_info(
-                f"Reindexed {result.get('updated', 0)}/{result.get('total', 0)} intuition blocks "
-                f"with {harness.resolve_embed_model(cfg)}."
-            )
-        else:
-            show_error(f"Reindex incomplete: {result.get('updated', 0)} updated, {result.get('failed', 0)} failed.")
-        return
-
-    if sub == "add":
-        block_type, _, text = rest.strip().partition(" ")
-        if not block_type or not text.strip():
-            show_error("Usage: /intuition add <type> <text>")
-            return
-        captured_id = capture_intuition_block(cfg, block_type, text, source="/intuition add", force=True)
-        if captured_id:
-            show_info(f"Intuition block saved: {captured_id}")
-        else:
-            show_error("Could not save intuition block.")
-        return
-
-    show_error("Usage: /intuition [on|off|status|list|reindex|forget <id>|add <type> <text>]")
+    show_error("Embedded Intuition is retired. Use native Continuum memory.")
 
 
 def handle_intelligence_command(arg: str = "", cfg: Config | None = None) -> None:
@@ -3019,91 +2716,8 @@ def maybe_crystallize_skills(
 
 
 def ensure_harness_index(cfg: Config, local_names: list[str] | None = None, *, max_records: int = 0) -> bool:
-    """Embed records missing the active model and requested dimension mode.
-
-    Returns True if at least some records match the active embedding contract.
-    Idempotent: cheap when everything is already embedded.
-    """
-    backend, _reason = resolve_embed_backend(cfg)
-    # Resolve the active model up-front so embedded_count reflects the right backend.
-    embed_fn, _backend2, active_model = make_embed_fn(cfg, harness.resolve_embed_model(cfg), bind_identity=True)
-    dimensions = configured_embed_dimensions(cfg)
-    embedding_identity = harness.embedding_function_identity(embed_fn)
-    matching, total = harness.embedded_count(active_model, dimensions=dimensions, embedding_identity=embedding_identity)
-    if total == 0:
-        return False
-    if matching == total:
-        return True
-    if not host_is_local(cfg.host) or not ollama_server_ready(cfg.host):
-        skip_reason = "non_local_host" if not host_is_local(cfg.host) else "ollama_unreachable"
-        harness.record_embed_pass("skipped", skip_reason, pending=total - matching)
-        return matching > 0
-    # Auto-pull the embed model if it isn't present locally.
-    if local_names is None:
-        local_names = local_model_names(cfg)
-    base_name = active_model.split(":")[0]
-    if local_names and not any(n.startswith(base_name) for n in local_names):
-        show_info(f"Pulling embed model {active_model} (first-time setup)…")
-        try:
-            Client(host=cfg.host).pull(active_model)
-            embed_fn, _backend2, active_model = make_embed_fn(cfg, active_model, bind_identity=True)
-            embedding_identity = harness.embedding_function_identity(embed_fn)
-            matching, total = harness.embedded_count(active_model, dimensions=dimensions, embedding_identity=embedding_identity)
-        except Exception as exc:
-            show_info(f"Could not auto-pull {active_model}: {exc}. RAG disabled until model is available.")
-            harness.record_embed_pass("skipped", "model_pull_failed", pending=total - matching)
-            return matching > 0
-    pending = total - matching
-    # If switching backends/models leaves the index stale, surface that before
-    # we kick off what may be a long re-embed pass.
-    if matching == 0 and any(r.get("embedding") for r in (harness.load_index().get("records") or [])):
-        show_info(
-            f"Embedding provider, model artifact, or dimension setting changed for {active_model}; "
-            f"all {total} records need matching embeddings."
-        )
-    queue_note = ""
-    queue = harness.embedding_progress(active_model, dimensions=dimensions, embedding_identity=embedding_identity)
-    if int(queue.get("total", 0)) == total and int(queue.get("high_value_total", 0)) > 0:
-        next_priority = str(queue.get("next_priority") or "complete").replace("_", " ")
-        queue_note = (
-            f" High-value coverage: {queue.get('high_value_embedded', 0)}/"
-            f"{queue.get('high_value_total', 0)}; next tier: {next_priority}."
-        )
-    pass_limit = max_records or harness.EMBED_PER_TURN_CAP
-    selected = min(pending, pass_limit) if pass_limit > 0 else pending
-    show_info(
-        f"Embedding the next {selected} of {pending} pending harness records with "
-        f"{active_model} ({backend}) using {harness.EMBED_PRIORITY_POLICY}.{queue_note}"
-    )
-    last_pct = -10
-
-    def _progress(done: int, target: int) -> None:
-        nonlocal last_pct
-        pct = int(done * 100 / max(1, target))
-        if pct - last_pct >= 10:
-            show_info(f"  harness embeddings: {done}/{target} ({pct}%)")
-            last_pct = pct
-
-    result = harness.embed_index_records(
-        embed_fn,
-        active_model,
-        dimensions=dimensions,
-        max_records=max_records or harness.EMBED_PER_TURN_CAP,
-        on_progress=_progress,
-        on_perf=lambda rec: log_embed_perf(rec, source="ensure_harness_index", backend=backend),
-    )
-    if result.get("ready"):
-        show_info(f"Harness embeddings ready: {result.get('embedded', 0)} embedded, {result.get('total', 0)} total.")
-        return True
-    if result.get("reason") == "max_records_reached" and int(result.get("embedded", 0)) > 0:
-        next_priority = str(result.get("next_priority") or "complete").replace("_", " ")
-        show_info(
-            f"Harness embeddings partially ready: {result.get('embedded', 0)} embedded this turn, "
-            f"{result.get('pending', 0)} pending. Next tier: {next_priority}; continuing incrementally."
-        )
-        return True
-    show_info(f"Harness embedding unavailable: {result.get('reason', 'unknown')}. RAG disabled this session.")
-    return matching > 0
+    """Prepare lexical reference records without an embedding provider."""
+    return bool(harness.load_index().get("records"))
 
 
 def _parse_benchmark_embed_args(arg: str) -> tuple[int, str | None]:
@@ -3140,92 +2754,10 @@ def _synthetic_embed_text(index: int) -> str:
 
 
 def run_harness_benchmark_embed(cfg: Config, arg: str) -> None:
-    if not host_is_local(cfg.host) or not ollama_server_ready(cfg.host):
-        show_error("Local Ollama is not reachable; cannot run embedding benchmark.")
-        return
-    count, override_model = _parse_benchmark_embed_args(arg)
-    model = override_model or harness.resolve_embed_model(cfg)
-    embed_fn, backend, model = make_embed_fn(cfg, model)
-    show_info(f"Benchmark: embedding {count} synthetic records with {model} ({backend})…")
-    texts = [_synthetic_embed_text(i) for i in range(count)]
-
-    single_start = time.perf_counter()
-    try:
-        embed_fn([texts[0]])
-    except Exception as exc:
-        show_error(f"Embedding failed: {exc}")
-        return
-    single_ms = round((time.perf_counter() - single_start) * 1000, 2)
-
-    batch_size = harness.EMBED_BATCH_SIZE
-    per_batch_ms: list[float] = []
-    overall_start = time.perf_counter()
-    try:
-        for start in range(0, count, batch_size):
-            chunk = texts[start : start + batch_size]
-            chunk_start = time.perf_counter()
-            embed_fn(chunk)
-            per_batch_ms.append(round((time.perf_counter() - chunk_start) * 1000, 2))
-    except Exception as exc:
-        show_error(f"Embedding failed mid-run: {exc}")
-        return
-    total_ms = round((time.perf_counter() - overall_start) * 1000, 2)
-
-    sorted_batches = sorted(per_batch_ms)
-    p50 = sorted_batches[len(sorted_batches) // 2]
-    p95_index = max(0, int(round(len(sorted_batches) * 0.95)) - 1)
-    p95 = sorted_batches[p95_index] if sorted_batches else 0.0
-    per_record_mean_ms = round(total_ms / max(1, count), 2)
-
-    show_info(f"Benchmark complete: count={count} model={model} batch_size={batch_size}")
-    show_info(f"  total={total_ms}ms  per-record-mean={per_record_mean_ms}ms  single-record-baseline={single_ms}ms")
-    show_info(f"  batch latency p50={p50}ms  p95={p95}ms  batches={len(per_batch_ms)}")
-
-    log_embed_perf(
-        {
-            "event": "benchmark",
-            "count": count,
-            "batch_size": batch_size,
-            "model": model,
-            "total_ms": total_ms,
-            "per_record_mean_ms": per_record_mean_ms,
-            "single_record_ms": single_ms,
-            "batch_p50_ms": p50,
-            "batch_p95_ms": p95,
-            "batch_count": len(per_batch_ms),
-        },
-        source="benchmark_embed",
-        backend=backend,
-    )
+    show_error("Embedding benchmarks are retired; no model call was made.")
 
 
 def ensure_lessons_index(cfg: Config) -> bool:
-    """Rebuild the lessons embedding index if stale. Returns True if index is ready."""
-    from .continuum_memory import selected
-
-    if selected(cfg):
-        return False
-    if not identity.LESSONS_PATH.exists():
-        return False
-    requested_model = harness.resolve_embed_model(cfg)
-    requested_dimensions = configured_embed_dimensions(cfg)
-    if not identity.lessons_index_stale(requested_model, requested_dimensions):
-        status = identity.lessons_index_status()
-        return bool(status.get("index"))
-    backend, _reason = resolve_embed_backend(cfg)
-    if not host_is_local(cfg.host) or not ollama_server_ready(cfg.host):
-        return False
-    embed_fn, _backend, active_model = make_embed_fn(cfg, requested_model)
-    show_info(f"Embedding lessons with {active_model} ({backend})…")
-    result = identity.rebuild_lessons_index(
-        embed_fn,
-        active_model,
-        expected_dimensions=requested_dimensions,
-    )
-    if result.get("ready"):
-        show_info(f"Lessons indexed: {result.get('chunk_count', 0)} chunks.")
-        return True
-    show_info(f"Lesson embedding unavailable: {result.get('reason', 'unknown')}. Falling back to inline lessons.")
     return False
 
 
@@ -3362,7 +2894,9 @@ def _agent_loop_body(
         optional_context_blocks.append(
             OptionalContextBlock("reconciliation", "Structured Reconciliation", reconciliation_guidance)
         )
-    active_tools = select_tools_for_prompt(user_message, ALL_TOOLS)
+    active_tools = select_tools_for_prompt(
+        user_message, ALL_TOOLS, decision_coordinator=cfg.decision_routing_mode == "jev",
+    )
     active_schema_tokens = estimate_tool_schema_tokens(active_tools)
     full_schema_tokens = estimate_tool_schema_tokens(ALL_TOOLS)
     schema_reduction_pct = round(
@@ -3388,129 +2922,26 @@ def _agent_loop_body(
         protected=external_memory_authority,
     ):
         show_info(f"↻ identity updated · {changed_path.name}")
-    # Single memoized embed function shared by both retrieval calls (same model).
-    # Saves one Ollama round-trip when both modules embed the same user message.
-    _embed_memo: dict[tuple[str, ...], list[list[float]]] = {}
-    _embed_base, _embed_backend, _embed_model = make_embed_fn(cfg, harness.resolve_embed_model(cfg), bind_identity=True)
-
-    def _shared_embed(texts: list[str]) -> list[list[float]]:
-        key = tuple(texts)
-        hit = _embed_memo.get(key)
-        if hit is not None:
-            if harness.embedding_function_identity(_embed_base) is None:
-                raise ValueError("embedding_identity_unavailable_or_changed")
-            return hit
-        result = _embed_base(texts)
-        _embed_memo[key] = result
-        return result
-
-    for binding_field in ("embedding_identity", "validate_embedding_identity"):
-        if hasattr(_embed_base, binding_field):
-            setattr(_shared_embed, binding_field, getattr(_embed_base, binding_field))
-
-    # Fetch model metadata once per turn; used to set context window and gate think mode.
+    # Continuum owns memory; local references use lexical retrieval only.
     try:
         _active_model_info = _model_info_module.resolve_model_info(cfg, client)
     except Exception:
         _active_model_info = _model_info_module.resolve_model_info(cfg, None)
-
     _turn_local_models: list[str] = []
     if not cfg.cloud and not routes_to_xai(cfg) and not routes_to_chatgpt(cfg):
         _turn_local_models = local_model_names(cfg)
-
-    retrieved_lessons: list[str] | None = [] if external_memory_authority else None
-    if not external_memory_authority and ensure_lessons_index(cfg):
-        retrieved_lessons = identity.retrieve_lessons(
-            context_query_message, _shared_embed, _embed_model, k=LESSONS_TOP_K
-        )
-    # Governed memory recall is independent from the optional Intuition layer.
-    # Pinned facts are already injected by context_budget; only curated/history
-    # records are retrieved here so the prompt does not contain duplicates.
-    if not external_memory_authority:
-        try:
-            memory_catalog = memory_runtime.MemoryCatalog()
-            memory_catalog.sync_legacy_facts(cfg.memories, authoritative=False)
-            memory_embed_fn = _shared_embed if host_is_local(cfg.host) and ollama_server_ready(cfg.host) else None
-            memory_hits = memory_catalog.search(
-                context_query_message,
-                embed_fn=memory_embed_fn,
-                embedding_model=_embed_model,
-                tiers={"curated", "history"},
-                scopes={memory_runtime.scope_for_workspace(cfg.cwd)},
-            )
-            memory_block = memory_runtime.format_prompt_hits(memory_hits)
-            if memory_block:
-                optional_context_blocks.append(
-                    OptionalContextBlock(
-                        "memory",
-                        "Relevant System Memory",
-                        memory_block,
-                    )
-                )
-        except memory_runtime.MemorySystemError as exc:
-            logger.debug("Governed memory recall failed: %s", exc)
-    retrieved_context: list[dict[str, Any]] | None = None
+    retrieved_lessons: list[str] | None = []
     from .session_mode import active_mode, completion_recovery_limit, work_iteration_limit
-
-    _session_mode = active_mode(cfg)
     harness_tools_available = any(getattr(tool, "__name__", "").startswith("harness_") for tool in active_tools)
-    if (
-        _session_mode != "execute"
-        and (json_sink() is None or harness_tools_available)
-        and ensure_harness_index(cfg, _turn_local_models)
-    ):
-        retrieved_context = harness.hybrid_search(
-            context_query_message,
-            _shared_embed,
-            _embed_model,
-            dimensions=configured_embed_dimensions(cfg),
-            k=HARNESS_TOP_K,
-            pattern_context=harness.runtime_pattern_context(active_tools=active_tools),
-            index=harness.retrieval_index(protected_memory=external_memory_authority),
+    if active_mode(cfg) != "execute" and (json_sink() is None or harness_tools_available):
+        reference_index = harness.retrieval_index(protected_memory=external_memory_authority)
+        retrieved_context = harness.search_index(
+            context_query_message, limit=HARNESS_TOP_K,
+            pattern_context=harness.runtime_pattern_context(active_tools=active_tools), index=reference_index,
         )
-        context_block = harness.format_retrieved_context(retrieved_context or [])
+        context_block = harness.format_retrieved_context(retrieved_context)
         if context_block:
-            optional_context_blocks.append(OptionalContextBlock("harness", "Relevant Context", context_block))
-    intuition_engine = _intuition_engine_for(cfg)
-    if intuition_engine is not None and not external_memory_authority:
-        try:
-            recalled_blocks = intuition_engine.recall(
-                context_query_message,
-                enabled=cfg.intuition_recall_enabled,
-                embed_fn=_shared_embed if cfg.intuition_recall_enabled else None,
-            )
-            if recalled_blocks:
-                show_recalled_context(recalled_blocks)
-                injection = intuition_engine.format_for_injection(recalled_blocks)
-                if injection:
-                    optional_context_blocks.append(OptionalContextBlock("intuition", "", injection))
-                    context_query_message = f"{context_query_message}\n\n{injection}"
-        except Exception as exc:
-            logger.debug("Intuition run failed: %s", exc)
-    if cfg.index_compute_lab_auto_inject and not external_memory_authority:
-        from . import index_compute_lab
-
-        lab_block = index_compute_lab.context_for_query(context_query_message)
-        if lab_block:
-            optional_context_blocks.append(
-                OptionalContextBlock("index-compute-lab", "Knowledge Graph (index-compute-lab)", lab_block)
-            )
-    if (
-        not external_memory_authority
-        and getattr(cfg, "code_rag_enabled", False)
-        and getattr(cfg, "code_rag_consent_version", 0) == CODE_RAG_CONSENT_VERSION
-        and code_rag_consent_granted(cfg)
-        and host_is_local(cfg.host)
-        and ollama_server_ready(cfg.host)
-        and code_rag.looks_like_code_project(cfg.cwd)
-    ):
-        try:
-            code_hits = code_rag.retrieve(cfg.cwd, persisted_user_message, _shared_embed, _embed_model, k=4)
-            code_block = code_rag.format_code_context(code_hits)
-            if code_block:
-                optional_context_blocks.append(OptionalContextBlock("code", "Working-Directory Code", code_block))
-        except Exception as exc:
-            logger.debug("Code RAG failed: %s", exc)
+            optional_context_blocks.append(OptionalContextBlock("harness", "Relevant References", context_block))
     if getattr(cfg, "reasoning_chat_enabled", False):
         if json_sink() is None:
             show_info(f"↳ reasoning preflight ({cfg.reasoning_mode})…")
@@ -3673,6 +3104,11 @@ def _agent_loop_body(
         )
     reflection_interval = max(1, _profile_params.tool_think_every)
     tool_calls_since_reflection = 0
+    from .decision_checkpoints import TaskCheckpoints, checkpoint_notice
+    checkpoints = TaskCheckpoints(
+        cfg, persisted_user_message, {tool.__name__ for tool in active_tools}, dispatch_action,
+        notify=(lambda receipt: show_info(checkpoint_notice(receipt))) if json_sink() is None else None,
+    )
     run_started = time.perf_counter()
     run_tool_calls: list[dict[str, Any]] = []
     final_content = ""
@@ -3762,8 +3198,9 @@ def _agent_loop_body(
             model_info=_active_model_info,
             usage_override=base_used,
         )
-        base_message = persisted_user_message
-        adjusted_base_used = base_used
+        checkpoint_context = checkpoints.context_for_request()
+        base_message = persisted_user_message + checkpoint_context
+        adjusted_base_used = base_used + estimate_text_tokens(checkpoint_context)
         live_optional_blocks = optional_context_blocks
         if optional_context_blocks and small_context.is_small_context(runtime_cap):
             if small_context_ledger is None:
@@ -3782,7 +3219,7 @@ def _agent_loop_body(
                     logger.debug("Small-context ledger write failed: %s", exc)
             if small_context_ledger is not None:
                 trigger = small_context.refresh_trigger(small_context_ledger)
-                base_message = f"{persisted_user_message}\n\n{trigger}"
+                base_message = f"{persisted_user_message}\n\n{trigger}" + checkpoint_context
                 adjusted_base_used += estimate_text_tokens("\n\n" + trigger)
                 if not small_context_notified and json_sink() is None:
                     show_info(f"↳ small-context ledger: {small_context_ledger.path}")
@@ -3833,6 +3270,7 @@ def _agent_loop_body(
         # YOLO leaves the work and verification-recovery ceilings unset so the
         # model can keep calling tools until it finishes or the user interrupts.
         for _ in _model_round_indices(max_iterations):
+            checkpoints.start_if_due()
             context_build_started = agent_loop_started if iterations_used == 0 else time.perf_counter()
             recovery_finalization = (
                 completion_nudged
@@ -3999,6 +3437,7 @@ def _agent_loop_body(
                 chat_options["reasoning_effort"] = chatgpt_client.reasoning_effort_for_model(
                     cfg.model, cfg.chatgpt_reasoning_efforts
                 )
+                chat_options["recover_partial_answer"] = True
             status = None
             if json_sink() is None:
                 from .display import model_wait_status
@@ -4016,7 +3455,7 @@ def _agent_loop_body(
                 stream = client.chat(
                     model=cfg.model,
                     messages=request_messages,
-                    tools=[] if finalization_turn else active_tools,
+                    tools=[] if finalization_turn else provider_tools(active_tools),
                     stream=True,
                     think=_think,
                     keep_alive=cfg.keep_alive,
@@ -4028,6 +3467,11 @@ def _agent_loop_body(
                         status.stop()
                         status = None
                     response_retry = get_attr(chunk, "response_retry", None)
+                    if get_attr(chunk, "response_recovery", None):
+                        finish_thinking_block()
+                        show_info("Continuing interrupted answer once, without tools. Completed actions will not be replayed.")
+                        record_perf_event("stream_recovery", model=cfg.model, phase="text_continuation",
+                                          status="attempted", reason=get_attr(chunk, "response_recovery")["reason"])
                     if isinstance(response_retry, dict):
                         finish_thinking_block()
                         thinking_text = ""
@@ -4190,7 +3634,7 @@ def _agent_loop_body(
             if stream_error is not None:
                 show_error(
                     "Response stream interrupted after partial output: "
-                    f"{stream_error}. Partial response retained; retry the request to continue."
+                    f"{str(stream_error).rstrip('.')}. Partial response retained; retry the request to continue."
                 )
                 break
 
@@ -4343,6 +3787,7 @@ def _agent_loop_body(
                     call_id=tool_call_id,
                 )
                 cfg.messages.append(dispatched.message)
+                checkpoints.observe(dispatched.message, args)
                 loop_state.record_tool_result(
                     tool_call_id,
                     mutation_outcome_uncertain=dispatched.status == "unknown_outcome",
@@ -4500,6 +3945,7 @@ def _agent_loop_body(
                     reflection_checkpoint(client, cfg, persisted_user_message, reflection_interval)
                 tool_calls_since_reflection -= reflection_interval
     finally:
+        checkpoints.close()
         end_tool_turn(cfg)
         try:
             execution_guardrails.end_execution_scope(execution_scope)
@@ -4835,55 +4281,7 @@ def print_harness_results(
     harness_name: str | None = None,
     kind: str | None = None,
 ) -> None:
-    if cfg is not None:
-        ensure_harness_index(cfg)  # embed any pending records before searching
-    if cfg is not None:
-        embed_fn, _backend, active_model = make_embed_fn(cfg, harness.resolve_embed_model(cfg), bind_identity=True)
-        matching, _total = harness.embedded_count(
-            active_model, dimensions=configured_embed_dimensions(cfg),
-            embedding_identity=harness.embedding_function_identity(embed_fn),
-        )
-    else:
-        embed_fn = None
-        active_model = harness.DEFAULT_EMBED_MODEL
-        matching, _total = harness.embedded_count(active_model)
-    if cfg is not None and embed_fn is not None and matching > 0:
-        from .continuum_memory import selected
-
-        protected_memory = selected(cfg)
-        results = harness.hybrid_search(
-            query,
-            embed_fn,
-            active_model,
-            dimensions=configured_embed_dimensions(cfg),
-            k=12,
-            harness=harness_name,
-            kind=kind,
-            index=harness.retrieval_index(protected_memory=protected_memory),
-        )
-        if results:
-            lines = [f"[dim]hybrid (RRF) results for:[/] {query}", ""]
-            for rec in results:
-                harness_kind = " · ".join(filter(None, [rec.get("harness"), rec.get("kind")]))
-                score = rec.get("score", 0.0)
-                lines.append(
-                    f"  [primary]{rec.get('id', '')}[/]  {rec.get('title', '')}  [muted]{harness_kind}  rrf={score:.4f}[/]"
-                )
-                if rec.get("snippet"):
-                    lines.append(f"    [muted]{rec['snippet'][:160]}[/]")
-            console.print("\n".join(lines))
-            return
-    from .tools import harness_search
-
-    console.print(
-        harness_search(
-            query=query,
-            harness_name=harness_name,
-            kind=kind,
-            limit=12,
-            cfg=cfg,
-        )
-    )
+    console.print(Text(tools_module.harness_search(query, harness_name=harness_name, kind=kind, limit=12, cfg=cfg)))
 
 
 def build_rust_indexer() -> None:
@@ -5304,17 +4702,6 @@ def main() -> None:
             f"Scaffolded identity in {identity.IDENTITY_DIR} ({len(created)} files). Edit USER.md to teach the CLI about yourself."
         )
     skills.ensure_dirs()
-    from .continuum_memory import selected
-
-    if not selected(cfg):
-        from . import index_compute_lab
-
-        if index_compute_lab.ensure_harness_roots_file():
-            show_info(
-                "Removed legacy index-compute-lab entry from harness_roots.json "
-                f"(lab is indexed dynamically from {index_compute_lab.resolve_lab_root()}). "
-                "Run /harness refresh to drop duplicate atom records."
-            )
 
     # --- Subcommand: plugin list ---
     _prompt_lower = (args.prompt or "").strip().lower()

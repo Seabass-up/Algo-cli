@@ -9,9 +9,11 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import socket
 import ssl
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 import urllib.error
@@ -37,13 +39,18 @@ class ChatGptOAuthAccessError(RuntimeError):
 class CodexResponseStreamError(ChatGptOAuthAccessError):
     """A response failure, distinct from an OAuth credential failure."""
 
-    def __init__(self, message: str, *, code: str, retryable: bool = False):
+    def __init__(self, message: str, *, code: str, retryable: bool = False,
+                 diagnostics: dict[str, Any] | None = None):
         super().__init__(message)
         self.code = code
         self.retryable = retryable
+        self.diagnostics = diagnostics or {}
 
 
 CODEX_STREAM_RETRY_DELAYS = (1.0, 2.0)
+CODEX_CONTINUATION_TIMEOUT_SECONDS = 30.0
+CODEX_CONTINUATION_MAX_BYTES = 65_536
+SSE_MAX_EVENT_BYTES = 4 * 1024 * 1024
 
 
 CODEX_SUBSCRIPTION_MODELS = {
@@ -645,23 +652,49 @@ def _post_codex_responses(payload: dict[str, Any], *, timeout: float = 120.0, _r
 
 
 def _parse_sse_events(resp: Any) -> Generator[dict[str, Any], None, None]:
+    data_lines: list[str] = []
+    event_label = ""
+    event_bytes = 0
+    first_line = True
     try:
         for raw in resp:
-            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-            if not line.startswith("data:"):
-                continue
-            data = line[5:].strip()
-            if not data:
-                continue
-            if data == "[DONE]":
-                yield {"type": "[DONE]"}
-                return
-            try:
-                event = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(event, dict):
-                yield event
+            text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+            lines = text.split("\n")
+            if text.endswith("\n"):
+                lines.pop()
+            for line in lines:
+                if first_line:
+                    line = line.removeprefix("\ufeff")
+                    first_line = False
+                if line == "":
+                    data = "\n".join(data_lines)
+                    label = event_label
+                    data_lines, event_label, event_bytes = [], "", 0
+                    if not data:
+                        continue
+                    if data.strip() == "[DONE]":
+                        yield {"type": "[DONE]"}
+                        return
+                    try:
+                        event = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(event, dict):
+                        if "type" not in event and label:
+                            event["type"] = label
+                        yield event
+                elif not line.startswith(":"):
+                    name, _, value = line.partition(":")
+                    value = value.removeprefix(" ")
+                    if name == "data":
+                        event_bytes += len(value.encode("utf-8")) + 1
+                        if event_bytes > SSE_MAX_EVENT_BYTES:
+                            raise CodexResponseStreamError("SSE event exceeded its size bound.", code="sse_event_too_large")
+                        data_lines.append(value)
+                    elif name == "event":
+                        event_label = value
+        # A frame without its blank separator is unfinished, even if its JSON
+        # happens to parse. Never invent a successful terminal event at EOF.
     finally:
         try:
             resp.close()
@@ -757,6 +790,8 @@ def _stream_codex_responses_iter(resp: Any) -> Generator[dict[str, Any], None, N
     text_item_ids: dict[int, str] = {}
     text_parts: dict[tuple[str | int, int], str] = {}
     terminal_seen = False
+    event_count = 0
+    last_event = "none"
 
     def text_identity(item_id: Any, output_index: int) -> str | int:
         # Sparse terminal snapshots can move an already streamed message to a
@@ -828,6 +863,13 @@ def _stream_codex_responses_iter(resp: Any) -> Generator[dict[str, Any], None, N
     with closing(_parse_sse_events(resp)) as events:
         for event in events:
             event_type = str(event.get("type") or "")
+            event_count += 1
+            last_event = event_type if event_type in {
+                "response.created", "response.in_progress", "response.output_text.delta", "response.output_text.done",
+                "response.output_item.added", "response.output_item.done", "response.content_part.added",
+                "response.content_part.done", "response.reasoning_summary_text.delta",
+                "response.function_call_arguments.delta", "response.function_call_arguments.done",
+            } else "other"
             if event_type in {"error", "response.failed", "response.incomplete"}:
                 raise _responses_stream_failure(event)
             if event_type == "[DONE]":
@@ -886,7 +928,8 @@ def _stream_codex_responses_iter(resp: Any) -> Generator[dict[str, Any], None, N
 
     if not terminal_seen:
         raise CodexResponseStreamError(
-            "Codex Responses stream ended before completion.", code="truncated_stream", retryable=True
+            "Codex Responses stream ended before completion.", code="truncated_stream", retryable=True,
+            diagnostics={"ending": "eof_without_terminal", "event_count": event_count, "last_event": last_event},
         )
     for call in pending_calls.values():
         fn = call["function"]
@@ -918,7 +961,7 @@ def _is_retryable_codex_failure(exc: BaseException) -> bool:
 
 def _stream_codex_responses_with_retry(
     resp: Any, payload: dict[str, Any], *, initial_error: Exception | None = None
-) -> Iterator[dict[str, Any]]:
+) -> Generator[dict[str, Any], None, None]:
     """Retry only this model request, never the surrounding tool execution loop."""
     delivered_output = False
     for attempt in range(len(CODEX_STREAM_RETRY_DELAYS) + 1):
@@ -952,6 +995,92 @@ def _stream_codex_responses_with_retry(
                 },
             }
             time.sleep(delay)
+
+
+def _stream_codex_text_continuation(
+    chunks: Generator[dict[str, Any], None, None], payload: dict[str, Any]
+) -> Generator[dict[str, Any], None, None]:
+    """Recover displayed text once; never retry the turn or expose new actions."""
+    parts: list[str] = []
+    delivered_calls = False
+    with closing(chunks):
+        try:
+            for chunk in chunks:
+                message = chunk.get("message") or {}
+                if message.get("content"):
+                    parts.append(message["content"])
+                delivered_calls |= bool(message.get("tool_calls"))
+                yield chunk
+            return
+        except (CodexResponseStreamError, OSError, http.client.IncompleteRead) as exc:
+            partial = "".join(parts)
+            if (delivered_calls or not partial.strip() or not _is_retryable_codex_failure(exc)
+                    or len(partial.encode("utf-8")) > CODEX_CONTINUATION_MAX_BYTES):
+                raise
+            reason = exc.code if isinstance(exc, CodexResponseStreamError) else "transport_interrupted"
+            diagnostics = exc.diagnostics if isinstance(exc, CodexResponseStreamError) else {}
+
+    yield {"message": {}, "response_recovery": {"kind": "text_continuation", "attempt": 1,
+           "max_attempts": 1, "reason": reason, "diagnostics": diagnostics}}
+    continuation = {key: value for key, value in payload.items() if key not in {"tools", "tool_choice"}}
+    continuation["parallel_tool_calls"] = False
+    continuation["input"] = [*payload["input"], {"role": "assistant", "content": partial}, {
+        "role": "user", "content": (
+            "[Runtime text-only recovery] The previous answer stream was interrupted. "
+            "Continue immediately after its retained text, finishing any interrupted word or sentence. "
+            "Do not repeat the retained prefix. No tools are available and no new actions were performed. "
+            "Use only the existing evidence and completed tool results; never claim an unexecuted action, "
+            "successful verification or task completion without that evidence. State remaining work honestly."
+        )}]
+    response = _post_codex_responses(continuation, timeout=CODEX_CONTINUATION_TIMEOUT_SECONDS)
+    recovered: list[str] = []
+    metadata: list[dict[str, Any]] = []
+    byte_count = 0
+    deadline = time.monotonic() + CODEX_CONTINUATION_TIMEOUT_SECONDS
+    expired = threading.Event()
+    active_socket = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+    def expire() -> None:
+        expired.set()
+        if active_socket is not None:
+            try:
+                active_socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+    timer = threading.Timer(CODEX_CONTINUATION_TIMEOUT_SECONDS, expire)
+    timer.daemon = True
+    timer.start()
+    # Buffer until a valid terminal event. Even a response containing both text
+    # and a tool call must be rejected without publishing either.
+    try:
+        with closing(_stream_codex_responses_iter(response)) as recovery:
+            for chunk in recovery:
+                message = chunk.get("message") or {}
+                if message.get("tool_calls"):
+                    raise CodexResponseStreamError("Text-only continuation attempted a tool call.", code="continuation_tool_call")
+                text = message.get("content") or ""
+                byte_count += len(text.encode("utf-8"))
+                if byte_count > CODEX_CONTINUATION_MAX_BYTES or expired.is_set() or time.monotonic() > deadline:
+                    raise CodexResponseStreamError("Text-only continuation exceeded its bound.", code="continuation_limit")
+                if text:
+                    recovered.append(text)
+                if chunk.get("usage"):
+                    metadata.append(chunk)
+    except (CodexResponseStreamError, OSError, http.client.IncompleteRead) as exc:
+        if expired.is_set():
+            raise CodexResponseStreamError("Text-only continuation timed out.", code="continuation_limit") from exc
+        raise
+    finally:
+        timer.cancel()
+        timer.join()
+    if expired.is_set() or time.monotonic() > deadline:
+        raise CodexResponseStreamError("Text-only continuation exceeded its deadline.", code="continuation_limit")
+    suffix = "".join(recovered)
+    if suffix.startswith(partial):
+        suffix = suffix[len(partial):]
+    if not suffix.strip():
+        raise CodexResponseStreamError("Text-only continuation returned no new answer.", code="empty_continuation")
+    yield from metadata
+    yield {"message": {"content": suffix}}
 
 
 def _nonstream_to_chunk(body: dict[str, Any]) -> dict[str, Any]:
@@ -1091,6 +1220,8 @@ class ChatGptClient:
                 return chunk
             _MODEL_REQUEST_SCOPE_MISSING = False
             chunks = _stream_codex_responses_with_retry(resp, payload, initial_error=initial_error)
+            if options and options.get("recover_partial_answer") is True:
+                chunks = _stream_codex_text_continuation(chunks, payload)
             if stream:
                 return chunks
             return _collect_codex_responses(chunks)

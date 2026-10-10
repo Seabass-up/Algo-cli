@@ -170,8 +170,8 @@ def test_edit_file_in_verification_layer():
     """The system prompt verification layer must mention edit_file preference."""
     import json
 
-    payload = json.loads(tools.available_actions("tools"))
-    layer = payload.get("verification_layer", [])
+    payload = json.loads(tools.available_actions("files"))
+    layer = payload["focused"].get("verification_layer", [])
     joined = "\n".join(layer).lower()
     assert "edit_file" in joined
     assert "prefer edit_file" in joined

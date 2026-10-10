@@ -2,6 +2,11 @@
 
 Parses YAML-like flow definitions into a DAG of nodes, executes them in
 topological order, and runs evaluation checks against the outputs.
+
+Trusted-local library only: Python nodes execute with this process's privileges,
+not in a sandbox. Callers must establish source trust and action authorization
+before running a flow. Do not pass model-generated or untrusted flow definitions
+to this executor. This library is not the agent runtime's authorized tool layer.
 """
 
 from __future__ import annotations
@@ -237,7 +242,7 @@ class FlowExecutor:
                 elif node.kind == "python":
                     output = self._run_python(node.source_code or "", resolved)
                 else:
-                    output = ""
+                    raise FlowError(f"Unsupported flow node kind: {node.kind}")
                 context[nid] = {**resolved, "text": output}
                 traces.append(FlowTrace(node_id=nid, inputs=resolved, output=output))
             except Exception as e:
@@ -257,7 +262,7 @@ class FlowExecutor:
                 eval_results[ev.name] = ev.check_fn(text)
             else:
                 eval_results[ev.name] = False
-        success = all(eval_results.values()) if eval_results else True
+        success = all(trace.error is None for trace in traces) and all(eval_results.values())
         return FlowResult(outputs=outputs, traces=traces, eval_results=eval_results, success=success)
 
     @staticmethod

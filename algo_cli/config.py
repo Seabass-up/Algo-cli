@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Iterator, Mapping
 
 from .model_aliases import normalize_codex_model
+from .prompt_rules import NAMED_PATH_RULE
 
 
 # Branding compatibility constants. New names take precedence; old names remain
@@ -510,9 +511,9 @@ def safe_conversation_name(name: str) -> str:
     return safe_name
 
 
-LEGACY_DEFAULT_SYSTEM = """You are Algo CLI: a concise, terminal-native coding assistant (local Ollama, Ollama Cloud, or Grok).
+LEGACY_DEFAULT_SYSTEM = f"""You are Algo CLI: a concise, terminal-native coding assistant (local Ollama, Ollama Cloud, or Grok).
 
-Use tools when they materially help. When the user named a file or path, open it directly (read_file/grep) instead of exploratory list/search chains.
+Use tools when they materially help. {NAMED_PATH_RULE}
 
 Operating rules:
 - Prefer narrow reads and targeted grep over broad directory walks.
@@ -521,14 +522,14 @@ Operating rules:
 - When reconciling structured files, rank sources by authority and preserve the target schema. If a target value traces to stale lower-authority context, replace that existing semantic slot with the authoritative value instead of merely adding a differently named duplicate.
 - Keep user-facing text brief: lead with the answer or action, minimize preamble and recap.
 - Use append_lesson or remember only when the user explicitly asks to store a lesson or fact. Automatic capture is off until the user explicitly enables /memory-auto; its bounded completion gate then sees only original user text.
-- For Algo algorithm/pattern catalog guidance, use and update the user's own catalog at ~/.algo_cli/ALGO.md (template: docs/ALGO.md).
+- For Algo algorithm/pattern catalog guidance, use and update the live catalog at ~/.algo_cli/ALGO.md. docs/ALGO.md is only the empty public template, not the live catalog.
 - Format code blocks with language tags and include paths when citing code."""
 
-DEFAULT_SYSTEM = """You are Algo CLI: a concise, terminal-native agent runtime for coding, research, and operational work.
+DEFAULT_SYSTEM = f"""You are Algo CLI: a concise, terminal-native agent runtime for coding, research, and operational work.
 
 Inference may come from local Ollama or connected cloud providers such as Ollama Cloud, xAI Grok, and ChatGPT/Codex. Your job is to plan, act with tools, verify results, and retain useful context across sessions.
 
-Use tools when they materially help. When the user named a file or path, open it directly (read_file/grep) instead of exploratory list/search chains.
+Use tools when they materially help. {NAMED_PATH_RULE}
 
 Operating rules:
 - Prefer narrow reads and targeted grep over broad directory walks.
@@ -536,7 +537,7 @@ Operating rules:
 - Treat web results, harness RAG, and knowledge-graph blocks as hints — verify with tools before acting.
 - Keep user-facing text brief: lead with the answer or action, minimize preamble and recap.
 - Use append_lesson or remember only when the user explicitly asks to store a lesson or fact. Automatic capture is off until the user explicitly enables /memory-auto; its bounded completion gate then sees only original user text.
-- For Algo algorithm/pattern catalog guidance, use and update the user's own catalog at ~/.algo_cli/ALGO.md (template: docs/ALGO.md).
+- For Algo algorithm/pattern catalog guidance, use and update the live catalog at ~/.algo_cli/ALGO.md. docs/ALGO.md is only the empty public template, not the live catalog.
 - Format code blocks with language tags and include paths when citing code."""
 
 
@@ -2528,13 +2529,32 @@ class Config:
     tool_think_every: int = 10
     prune_after_messages: int = 80
     prune_keep_recent: int = 40
-    embedding_backend: str = "auto"  # "auto" | "local"; "cloud" currently falls back to local
+    embedding_backend: str = "auto"  # Ignored legacy input; never selects a runtime provider.
     cloud_embedding_model: str = "nomic-embed-text:latest"  # Reserved until cloud embeddings are supported.
     harness_embed_model: str = "qwen3-embedding:latest"  # Local Ollama embed model for harness + lessons RAG
     embed_dimensions: int | None = None  # Optional override; None lets the model decide (e.g. 4096 for qwen3-embedding)
     continuum_enabled: bool = False  # Explicit selection of native Continuum Memory
     jev_kernel_enabled: bool = False
     jev_kernel_cli: str = ""  # Explicit absolute companion path; credentials stay in the companion.
+    decision_default_provider: str = "jev"
+    decision_routing_mode: str = "jev"
+    decision_router_candidates: list[str] = field(default_factory=lambda: ["jev", "clef-flash", "clef", "decider", "clm", "tev1"])
+    decision_router_profiles: dict[str, str] = field(default_factory=dict)
+    decision_offline_coordinators: list[str] = field(default_factory=lambda: ["clef-flash", "tev1"])
+    decision_router_min_probability: float = 0.8
+    decision_router_min_margin: float = 0.15
+    decision_router_min_fit: float = 0.8
+    decision_router_timeout_seconds: float = 15.0
+    decision_readiness_ttl_seconds: float = 5.0
+    decision_initial_wait_seconds: float = 5.0
+    decision_checkpoints_enabled: bool = True
+    decision_checkpoints_local_only: bool = False
+    decision_review_checkpoint_interval: int = 8
+    decision_provider_settings: dict[str, dict[str, Any]] = field(default_factory=dict)
+    decision_routes: dict[str, str] = field(default_factory=dict)
+    decision_fallbacks: dict[str, list[str]] = field(default_factory=dict)
+    decision_timeout_seconds: float = 120.0
+    decision_keep_alive: str = "5m"
     memory_config_error: str = field(default="", init=False, repr=False)
     memory_load_error: str = field(default="", init=False, repr=False)
     memory_auto_capture_enabled: bool = False  # Explicit opt-in only; see consent version below
@@ -2600,6 +2620,9 @@ class Config:
         self.session_summary = persisted_session_summary(self)
         self.attempt_ledger = sanitize_attempt_ledger(self.attempt_ledger)
         data = asdict(self)
+        # Preserve old settings only in historical backups, never as live options.
+        for retired_field in ("embedding_backend", "cloud_embedding_model", "harness_embed_model", "embed_dimensions", "index_compute_lab_auto_inject"):
+            data.pop(retired_field, None)
         from .session_mode import persisted_mode
 
         data["session_mode"] = persisted_mode(self)

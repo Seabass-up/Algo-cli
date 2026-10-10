@@ -21,6 +21,7 @@ _MEMORY_MUTATION_NAMES = frozenset(
         "memory_revoke",
         "memory_resolve",
         "memory_handoff",
+        "memory_set_applicability",
         "remember",
         "append_lesson",
     }
@@ -165,6 +166,7 @@ def invoke_continuum(
         "revoke",
         "resolve",
         "explain",
+        "set_applicability",
         "history",
         "handoff",
     }:
@@ -345,6 +347,20 @@ def _context_packet(cfg: Any, query: str, *, scope: str, budget: int) -> dict[st
     raise AssertionError("bounded context request did not terminate")
 
 
+def _model_context_projection(packet: dict[str, Any]) -> dict[str, Any]:
+    """Drop integrity envelope fields after validate_context has succeeded.
+
+    The runtime already verified the packet. Receipt digests are not instructions
+    and do not help the model recognize a task. Context items stay intact.
+    """
+    drop = {"receipt", "receipt_mac", "receipts"}
+    projected = {key: value for key, value in packet.items() if key not in drop}
+    context = projected.get("context")
+    if type(context) is dict and any(key in context for key in drop):
+        projected["context"] = {key: value for key, value in context.items() if key not in drop}
+    return projected
+
+
 def prompt_context(cfg: Any, query: str) -> str:
     """Retrieve both authorized scopes and retain their bounded packet metadata."""
     facts = recall_facts(cfg)
@@ -357,7 +373,7 @@ def prompt_context(cfg: Any, query: str) -> str:
         verified = invoke_continuum(cfg, "validate_context", {"packet": packet}, scope=scope)
         if verified.get("ok") is not True:
             raise ContinuumMemoryError("Continuum context changed or could not be verified; no fallback was used.")
-        packets[scope] = packet
+        packets[scope] = _model_context_projection(packet)
     return json.dumps({"facts": facts, "contexts": packets}, ensure_ascii=False, allow_nan=False)
 
 
