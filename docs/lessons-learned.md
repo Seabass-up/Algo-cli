@@ -70,6 +70,14 @@ Packaged documentation changes also require reinstall before parity checks;
 declare only existing manifest files (the standard-library-only Go module has
 no `go.sum`). Preserve failed receipts rather than bypassing these setup gates.
 
+**Complete-suite transfer check:** The first integrated full run found one more
+canonical-output mock in the pattern-catalog suite. Enumerate all three
+`build_index_with_rust` callers, update the last mock to follow staged output,
+assert canonical nonpublication and isolate its configuration directory. This
+is a test-contract adaptation to the security repair, not permission relaxation.
+The prior full run remains failed; require a new complete run on the corrected
+integration commit before reporting local CI as passed.
+
 ## 2026-10-09: Valid Decision Advice Is Not Semantic Verification
 
 **Symptom/cause:** The supplied Jev trial contained well-formed, confidently wrong
