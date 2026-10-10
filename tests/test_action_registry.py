@@ -51,8 +51,7 @@ def test_effective_action_specs_cover_runtime_tool_and_slash_surface() -> None:
     assert tool_specs["read_file"].requires_approval is False
     assert slash_specs["/help"].requires_approval is False
     assert slash_specs["/config"].requires_approval is True
-    assert slash_specs["/code-rag"].requires_approval is True
-    assert "privacy" in slash_specs["/code-rag"].tags
+    assert "/code-rag" not in slash_specs
     assert "generated" in slash_specs["/help"].tags
 
 
@@ -67,7 +66,7 @@ def test_doctor_degrades_direct_cloud_api_without_key(monkeypatch, tmp_path) -> 
     assert data["overall_status"] == "degraded"
     messages = "\n".join(finding["message"] for finding in data["findings"])
     assert "direct Cloud API disabled" in messages
-    assert "optional index-compute-lab context is disabled" in messages
+    assert "index-compute-lab" not in messages
 
 
 def test_doctor_reports_web_tools_degraded_without_cloud_key(monkeypatch, tmp_path) -> None:
@@ -142,7 +141,7 @@ def test_doctor_reports_icl_ranked_map_ready(monkeypatch, tmp_path) -> None:
 
     report = build_doctor_report(_cfg(index_compute_lab_auto_inject=True))
     messages = "\n".join(finding["message"] for finding in report.as_dict()["findings"])
-    assert "index-compute-lab graph ready" in messages
+    assert "index-compute-lab" not in messages
 
 
 def test_action_registry_runtime_audit_checks_tool_and_slash_existence(monkeypatch) -> None:

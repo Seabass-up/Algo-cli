@@ -45,11 +45,13 @@ def recorder(monkeypatch):
             file=io.StringIO(),
             record=True,
             width=width,
+            height=40,
             force_terminal=True,
             legacy_windows=False,
             color_system="truecolor",
             theme=display.THEME_MAP[name],
         )
+        assert console.width == width
         monkeypatch.setattr(display, "console", console)
         monkeypatch.setattr(display, "_active_theme_name", name)
         monkeypatch.setattr(display, "_json_sink", None)

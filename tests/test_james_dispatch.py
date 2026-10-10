@@ -82,15 +82,15 @@ def test_successful_wrapped_remember_sets_semantic_receipt(monkeypatch, tmp_path
     assert result.outcome.explicit_memory_write is True
 
 
-def test_successful_protected_knowledge_note_sets_semantic_receipt(
+def test_native_memory_write_preserves_confirmation_receipt(
     monkeypatch,
     tmp_path,
 ) -> None:
     monkeypatch.setattr("builtins.input", lambda _prompt: "y")
     cfg = Config(cwd=str(tmp_path), auto_mode=True)
     result = dispatch_action(
-        "write_knowledge_graph_note",
-        {"title": "Alias", "body": "Protected note"},
+        "remember",
+        {"fact": "Protected note"},
         cfg,
         dependencies=_dependencies(
             tmp_path,

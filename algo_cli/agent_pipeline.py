@@ -57,7 +57,6 @@ from .display import (
     show_agent_recovery_start,  # noqa: F401 - compatibility hook for tests/plugins
     show_error,
     show_info,
-    show_recalled_context,
     show_thinking_text,
 )
 from .dorothy_perf_telemetry import flush_perf_records, record_chat_metrics
@@ -74,6 +73,7 @@ from .nathan_runtime import (
     summarize_tool_result,
 )
 from .samuel_policy_engine import resolve_action
+from .tool_schema import provider_tools
 
 TOOL_MAP = tools_module.TOOL_MAP
 logger = logging.getLogger(__name__)
@@ -431,6 +431,19 @@ def run_agent_block(
         include_external=cfg.external_harness_sources_enabled,
     )
     system_parts = [block.prompt]
+    if "decision_decide" in runtime_tool_names:
+        system_parts.append(
+            "\n\n## Decision checkpoints\n"
+            "You remain the thinking and judgment model. While planning, frame useful bounded questions "
+            "with relevant state and explicit criteria, call decision_decide, and wait for its validated "
+            "result before the dependent step. Omit provider for the configured Jev coordinator; use an "
+            "explicit provider only for a user-requested override. Jev also recommends relevant kernels "
+            "and ALGO references without activating them. Proposed patterns remain research references. "
+            "local_only=true forbids remote routing and answering; online Jev requires false and normal "
+            "runtime authority. Local Clef-flash/Tev1 coordinate only after confirmed internet loss, not "
+            "after an authentication/service error. Never send full thought streams, credentials or bulk "
+            "history. Retain uncertainty and verify actual outcomes with normal authorized tools."
+        )
     if protected_memory:
         system_parts.append(
             "\n\n## Continuum Memory Contract\n"
@@ -582,10 +595,19 @@ def run_agent_block(
         "_algo_program_authorization",
         authorization_for_actions(tuple(runtime_tool_names)),
     )
+    from .decision_checkpoints import TaskCheckpoints
+    from .james_dispatch import dispatch_action
+    checkpoints = TaskCheckpoints(
+        cfg, task, set(runtime_tool_names) if run_contract is None else set(), dispatch_action,
+    )
+    if run_contract is not None:
+        # Signed contracts must declare and account for any extra provider calls.
+        checkpoints.enabled = False
 
     try:
         for _ in range(iteration_limit):
             _raise_if_team_cancelled(cfg)
+            checkpoints.start_if_due()
             recovery_finalization = completion_nudged and completion_recovery_rounds >= MAX_COMPLETION_RECOVERY_ROUNDS
             if recovery_finalization:
                 if not execution_guardrails.completion_decision().allowed:
@@ -628,6 +650,13 @@ def run_agent_block(
                     block.output = f"## Block Output\n\nRun contract stopped execution: {exc}"
                     break
             request_messages = messages
+            checkpoint_context = checkpoints.context_for_request()
+            if checkpoint_context:
+                request_messages = [dict(message) for message in messages]
+                for message in request_messages:
+                    if message.get("role") == "user":
+                        message["content"] = str(message.get("content", "")) + checkpoint_context
+                        break
             if _model_info_module.is_gemini_model(block_model):
                 request_messages = collapse_tool_history_for_gemini(request_messages)
             if run_contract is not None:
@@ -664,14 +693,17 @@ def run_agent_block(
             content_text = ""
             tool_calls: list[Any] = []
             try:
+                chat_options = _model_chat_options(block_model, cfg)
+                if run_contract is None and routes_to_chatgpt(cfg, block_model):
+                    chat_options["recover_partial_answer"] = True
                 stream = block_client.chat(
                     model=block_model,
                     messages=request_messages,
-                    tools=round_tools,
+                    tools=provider_tools(round_tools),
                     stream=True,
                     think=cfg.show_thinking,
                     keep_alive=cfg.keep_alive,
-                    options=_model_chat_options(block_model, cfg),
+                    options=chat_options,
                 )
                 for chunk in stream:
                     _raise_if_team_cancelled(cfg)
@@ -1050,6 +1082,7 @@ def run_agent_block(
                 ):
                     block.mutation_actions.append(mutation_action)
                 messages.append(tool_message)
+                checkpoints.observe(tool_message, args)
                 loop_state.record_tool_result(tool_call_id)
             loop_state.finish_tool_batch()
             if dispatch_interruption is not None:
@@ -1075,6 +1108,7 @@ def run_agent_block(
             block.status_code = "completion_check_error"
             block.status_reason = completion_error
         try:
+            checkpoints.close()
             execution_guardrails.end_execution_scope(execution_scope)
         except execution_guardrails.ExecutionGuardrailError as exc:
             block.status = "failed"
@@ -2002,7 +2036,6 @@ def run_agent_pipeline(
                 provenance="verified-parent-thread",
             )
         )
-    from . import main as _main
 
     continuum_memory_authority = continuum_memory.selected(cfg)
     if continuum_memory_authority:
@@ -2059,60 +2092,6 @@ def run_agent_pipeline(
                 contract_id=contract.contract_id,
                 contract_mode=contract.mode,
             )
-    else:
-        try:
-            memory_catalog = memory_runtime.MemoryCatalog()
-            memory_catalog.sync_legacy_facts(cfg.memories, authoritative=False)
-            memory_hits = memory_catalog.search(
-                task,
-                embed_fn=_main.intuition_embed_fn(cfg),
-                embedding_model=_main.harness.resolve_embed_model(cfg),
-                tiers={"curated", "history"},
-                scopes={memory_runtime.scope_for_workspace(cfg.cwd)},
-            )
-            memory_injection = memory_runtime.format_prompt_hits(memory_hits)
-            if memory_injection:
-                context_sources.append(
-                    agent_context.AgentContextSource(
-                        name="governed_memory",
-                        title="Relevant System Memory",
-                        body=memory_injection,
-                        priority=80,
-                        trust="governed_memory",
-                        scope="workspace",
-                        freshness_rank=700,
-                        provenance="julia-memory-runtime",
-                    )
-                )
-        except memory_runtime.MemorySystemError as exc:
-            logger.debug("Agent pipeline governed memory recall failed: %s", exc)
-
-    engine = _main._intuition_engine_for(cfg)
-    if engine is not None and cfg.intuition_recall_enabled and not continuum_memory_authority:
-        try:
-            recalled_blocks = engine.recall(
-                task,
-                enabled=True,
-                embed_fn=_main.intuition_embed_fn(cfg),
-            )
-            if recalled_blocks:
-                show_recalled_context(recalled_blocks)
-                injection = engine.format_for_injection(recalled_blocks)
-                if injection:
-                    context_sources.append(
-                        agent_context.AgentContextSource(
-                            name="intuition_memory",
-                            title="Heuristic Intuition Memory",
-                            body=injection,
-                            priority=50,
-                            trust="heuristic_memory",
-                            scope="workspace",
-                            freshness_rank=500,
-                            provenance="intuition-runtime",
-                        )
-                    )
-        except Exception as exc:
-            logger.debug("Agent pipeline intuition recall failed: %s", exc)
     try:
         context_bundle = agent_context.build_agent_context(
             task,

@@ -48,7 +48,6 @@ def _known_protected_roots() -> tuple[Path, ...]:
     from . import harness
     from . import config
     from .config import CONFIG_DIR, LEGACY_CONFIG_DIR
-    from .index_compute_lab import resolve_lab_root
     from .continuum_memory import storage_root
 
     roots = {
@@ -56,7 +55,8 @@ def _known_protected_roots() -> tuple[Path, ...]:
         Path(CONFIG_DIR).expanduser(),
         Path(LEGACY_CONFIG_DIR).expanduser(),
         config.get_legacy_backup_dir().expanduser(),
-        resolve_lab_root().expanduser(),
+        # Retired stores remain deny roots, never an active backend.
+        Path(os.environ.get("ALGO_CLI_INDEX_COMPUTE_LAB_ROOT") or os.environ.get("INDEX_COMPUTE_LAB_ROOT") or Path.home() / "index-compute-lab").expanduser(),
         harness.CODEX_DIR,
         harness.CLAUDE_DIR,
         harness.OPENCLAW_DIR,

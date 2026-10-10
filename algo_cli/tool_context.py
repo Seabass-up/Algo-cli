@@ -36,13 +36,13 @@ _CLASS_TO_TOOLS: dict[str, frozenset[str]] = {
     ),
     "shell": frozenset({"run_shell"}),
     "jev": frozenset({"jev_kernel_status", "jev_question_contract"}),
+    "decision": frozenset({"decision_status", "decision_decide"}),
     "web": frozenset({"web_search", "web_fetch"}),
     "network": frozenset({"web_search", "web_fetch", "x_search"}),
     "memory": frozenset(
         {
             "remember",
             "append_lesson",
-            "write_knowledge_graph_note",
             "update_user_profile",
             "memory_init",
             "memory_verify",
@@ -59,10 +59,11 @@ _CLASS_TO_TOOLS: dict[str, frozenset[str]] = {
             "memory_explain",
             "memory_history",
             "memory_handoff",
+            "memory_set_applicability",
         }
     ),
     "model": frozenset(
-        {"embed_text", "vision_describe", "model_pull", "model_delete", "model_create", "model_copy", "model_show"}
+        {"vision_describe", "model_pull", "model_delete", "model_create", "model_copy", "model_show"}
     ),
     "harness": frozenset(
         {
@@ -74,7 +75,6 @@ _CLASS_TO_TOOLS: dict[str, frozenset[str]] = {
             "harness_read",
         }
     ),
-    "knowledge_graph": frozenset({"query_knowledge_graph", "reindex_knowledge_graph", "write_knowledge_graph_note"}),
     "session": frozenset({"available_actions", "session_slash", "session_command"}),
     "plugins": frozenset({"plugins_discover", "plugins_load"}),
     "credentials": frozenset({"credential_helpers_get", "credential_helpers_store"}),
@@ -163,9 +163,6 @@ _SPECIALIZED_INTENT_GATES: tuple[tuple[str, frozenset[str], frozenset[str]], ...
     ("plugins_", frozenset(), frozenset({"extension", "plugin"})),
     ("x_account_", frozenset({"account"}), frozenset({"draft", "post", "reply", "social", "tweet", "twitter", "xcom"})),
     ("x_search", frozenset(), frozenset({"social", "tweet", "twitter", "xcom"})),
-    ("query_knowledge_graph", frozenset(), frozenset({"graph", "knowledge"})),
-    ("reindex_knowledge_graph", frozenset(), frozenset({"graph", "knowledge"})),
-    ("write_knowledge_graph", frozenset(), frozenset({"graph", "knowledge"})),
     ("web_", frozenset(), frozenset({"internet", "latest", "online", "research", "web"})),
     ("version_manifest_", frozenset(), frozenset({"manifest", "version"})),
     ("extensions_manifest_", frozenset(), frozenset({"extension", "manifest"})),
@@ -449,6 +446,7 @@ def select_tools_for_prompt(
     *,
     limit: int = DEFAULT_TOOL_LIMIT,
     schema_token_budget: int = DEFAULT_SCHEMA_TOKEN_BUDGET,
+    decision_coordinator: bool = False,
 ) -> list[Callable[..., Any]]:
     """Select a bounded model-visible tool catalog for one user turn.
 
@@ -470,12 +468,15 @@ def select_tools_for_prompt(
     available_names = {str(getattr(tool, "__name__", "") or "") for tool in tools}
     selected_names = set(CORE_TOOL_NAMES & available_names)
     selected_names.update(DEFERRED_TOOL_NAMES & available_names)
+    if decision_coordinator or {"decision", "decide", "clef", "clef_flash", "clm", "decider", "tev1"} & set(_expanded_query_terms(prompt)):
+        selected_names.update({"decision_decide"} & available_names)
     if "action_search" not in available_names and "available_actions" in available_names:
         selected_names.add("available_actions")
 
-    effective_limit = max(bounded_limit, len(selected_names))
+    coordinator_tools = [tool for tool in tools if decision_coordinator and getattr(tool, "__name__", "") == "decision_decide"]
+    effective_limit = max(bounded_limit + bool(coordinator_tools), len(selected_names))
     effective_schema_budget = max(
-        int(schema_token_budget),
+        int(schema_token_budget) + estimate_tool_schema_tokens(coordinator_tools),
         estimate_tool_schema_tokens([tool for tool in tools if getattr(tool, "__name__", "") in selected_names]),
     )
     for tool in rank_tools_for_prompt(prompt, tools):

@@ -10,7 +10,7 @@ from pathlib import Path
 import signal
 import subprocess
 import threading
-from typing import Any
+from typing import Any, TypeGuard, cast
 
 
 MODEL = "jev-1.13.0"
@@ -68,8 +68,12 @@ def companion_path(cfg: Any) -> Path:
     return path
 
 
-def _invoke(cfg: Any, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
-    body = _encoded(payload)
+def _invoke(cfg: Any, operation: str, payload: dict[str, Any], *, preserve_order: bool = False,
+            timeout_seconds: float = TIMEOUT_SECONDS) -> dict[str, Any]:
+    body = (
+        json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+        if preserve_order else _encoded(payload)
+    )
     if len(body) > MAX_REQUEST_BYTES:
         raise JevKernelError("jev_request_too_large")
     cli = companion_path(cfg)
@@ -86,23 +90,24 @@ def _invoke(cfg: Any, operation: str, payload: dict[str, Any]) -> dict[str, Any]
         start_new_session=os.name == "posix",
     ) as process:
         assert process.stdin is not None and process.stdout is not None
+        writer, reader = process.stdin, process.stdout
 
         def send() -> None:
             try:
                 remaining = memoryview(body)
                 while remaining:
-                    written = process.stdin.write(remaining)
+                    written = writer.write(remaining)
                     if not written:
                         raise OSError("write did not advance")
                     remaining = remaining[written:]
-                process.stdin.close()
+                writer.close()
             except OSError:
                 errors.append("jev_companion_io_error")
 
         def receive() -> None:
             try:
                 while True:
-                    chunk = process.stdout.read(min(8192, MAX_RESPONSE_BYTES + 1 - len(reply)))
+                    chunk = reader.read(min(8192, MAX_RESPONSE_BYTES + 1 - len(reply)))
                     if not chunk:
                         break
                     reply.extend(chunk)
@@ -117,7 +122,7 @@ def _invoke(cfg: Any, operation: str, payload: dict[str, Any]) -> dict[str, Any]
         for worker in workers:
             worker.start()
         try:
-            process.wait(timeout=TIMEOUT_SECONDS)
+            process.wait(timeout=min(TIMEOUT_SECONDS, max(1.0, timeout_seconds)))
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=5)
@@ -146,6 +151,15 @@ def _invoke(cfg: Any, operation: str, payload: dict[str, Any]) -> dict[str, Any]
         return value
 
 
+def _finite_number(value: Any) -> TypeGuard[int | float]:
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(cast(float, value))
+    except OverflowError:
+        return False
+
+
 def _valid_choice(answer: Any, choices: set[str]) -> bool:
     if type(answer) is not dict or answer.get("type") != "choice":
         return False
@@ -153,9 +167,9 @@ def _valid_choice(answer: Any, choices: set[str]) -> bool:
     confidence = answer.get("confidence")
     return (
         type(answer.get("choice")) is str and answer["choice"] in choices
-        and type(confidence) in (int, float) and math.isfinite(confidence) and 0 <= confidence <= 1
+        and _finite_number(confidence) and 0 <= confidence <= 1
         and type(probabilities) is dict and set(probabilities) == choices
-        and all(type(p) in (int, float) and math.isfinite(p) and 0 <= p <= 1 for p in probabilities.values())
+        and all(_finite_number(p) and 0 <= p <= 1 for p in probabilities.values())
         and abs(sum(probabilities.values()) - 1) <= 0.02
     )
 
@@ -191,7 +205,7 @@ def _validate_answers(value: dict[str, Any], contract: dict, mode: str) -> None:
             (shape == "yes_no" and type(result) is bool)
             or (shape == "single_choice" and type(result) is str and type(criteria) is dict
                 and result in criteria and result not in {"no_match", "insufficient_evidence"})
-            or (shape == "ordinal" and type(result) in (int, float) and math.isfinite(result)
+            or (shape == "ordinal" and _finite_number(result)
                 and type(criteria) is list and 0 <= result <= len(criteria) - 1)
         )
         if not valid:

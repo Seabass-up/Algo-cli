@@ -35,7 +35,7 @@ class _FakeStreamResponse:
         self._lines = []
         for ev in events:
             data = ev if isinstance(ev, str) else json.dumps(ev)
-            self._lines.append(f"data: {data}\n".encode("utf-8"))
+            self._lines.append(f"data: {data}\n\n".encode("utf-8"))
         self.closed = False
 
     def __iter__(self):

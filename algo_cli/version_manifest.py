@@ -51,7 +51,7 @@ def _safe_get_harness_info() -> dict[str, Any]:
             return {}
         index = json.loads(harness.INDEX_PATH.read_text(encoding="utf-8"))
         record_count = len(index.get("records", []))
-        embed_model = index.get("embed_model", "")
+        embed_model = ""  # Historical vectors are not a runtime provider.
         index_version = index.get("version", "")
         return {
             "harness_index_version": index_version,
@@ -63,23 +63,7 @@ def _safe_get_harness_info() -> dict[str, Any]:
 
 
 def _safe_get_kg_info() -> dict[str, Any]:
-    """Read existing knowledge-graph metadata without running the graph."""
-    try:
-        from . import index_compute_lab
-        assets = index_compute_lab.lab_assets()
-        if assets is not None:
-            _root, graph_path, _aliases = assets
-            data = json.loads(graph_path.read_text(encoding="utf-8"))
-            nodes = data.get("nodes")
-            index = data.get("index")
-            node_count = len(nodes) if isinstance(nodes, list) else len(index) if isinstance(index, dict) else 0
-            version = data.get("version") or data.get("schema_version") or ""
-            return {
-                "knowledge_graph_version": version,
-                "knowledge_graph_node_count": node_count,
-            }
-    except Exception:
-        pass
+    """Retired graph metadata must not be probed at runtime."""
     return {}
 
 

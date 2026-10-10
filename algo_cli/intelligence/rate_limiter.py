@@ -6,7 +6,6 @@ insufficient tokens are available, the request is denied (or delayed).
 
 Harness use:
   - Throttle Ollama API calls to avoid rate limits
-  - Throttle embedding batches
   - Throttle web fetches
   - Throttle harness indexing rate
 
@@ -24,6 +23,8 @@ Properties:
 """
 from __future__ import annotations
 
+import math
+import threading
 import time
 from collections import deque
 from typing import Any
@@ -38,40 +39,48 @@ class TokenBucket:
     """
 
     def __init__(self, capacity: float, refill_rate: float) -> None:
-        if capacity <= 0:
-            raise ValueError("capacity must be positive")
-        if refill_rate <= 0:
-            raise ValueError("refill_rate must be positive")
         self.capacity = float(capacity)
         self.refill_rate = float(refill_rate)
-        self._tokens = float(capacity)  # start full
+        if not math.isfinite(self.capacity) or self.capacity <= 0:
+            raise ValueError("capacity must be finite and positive")
+        if not math.isfinite(self.refill_rate) or self.refill_rate <= 0:
+            raise ValueError("refill_rate must be finite and positive")
+        self._lock = threading.Lock()
+        self._tokens = self.capacity  # start full
         self._last_refill = time.monotonic()
 
     def _refill(self) -> None:
-        """Add tokens based on elapsed time since last refill."""
+        """Add tokens based on elapsed time; caller holds the lock."""
         now = time.monotonic()
         elapsed = now - self._last_refill
         self._tokens = min(self.capacity, self._tokens + elapsed * self.refill_rate)
         self._last_refill = now
+
+    def _request_tokens(self, tokens: float) -> float:
+        amount = float(tokens)
+        if not math.isfinite(amount) or not 0 < amount <= self.capacity:
+            raise ValueError("tokens must be finite, positive and no greater than capacity")
+        return amount
 
     def try_acquire(self, tokens: float = 1.0) -> bool:
         """Non-blocking attempt to acquire tokens.
 
         Returns True if tokens were acquired, False if insufficient.
         """
-        self._refill()
-        if self._tokens >= tokens:
-            self._tokens -= tokens
-            return True
-        return False
+        amount = self._request_tokens(tokens)
+        with self._lock:
+            self._refill()
+            if self._tokens >= amount:
+                self._tokens -= amount
+                return True
+            return False
 
     def wait_time(self, tokens: float = 1.0) -> float:
         """Return seconds to wait until tokens are available."""
-        self._refill()
-        if self._tokens >= tokens:
-            return 0.0
-        needed = tokens - self._tokens
-        return needed / self.refill_rate
+        amount = self._request_tokens(tokens)
+        with self._lock:
+            self._refill()
+            return max(0.0, (amount - self._tokens) / self.refill_rate)
 
     def acquire(self, tokens: float = 1.0, timeout: float | None = None) -> bool:
         """Blocking acquire — sleeps until tokens are available.
@@ -83,22 +92,32 @@ class TokenBucket:
         Returns:
             True if acquired, False if timed out.
         """
+        amount = self._request_tokens(tokens)
+        if timeout is not None:
+            timeout = float(timeout)
+            if not math.isfinite(timeout) or timeout < 0:
+                raise ValueError("timeout must be finite and non-negative")
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            wait = self.wait_time(tokens)
-            if wait == 0.0:
+            with self._lock:
                 self._refill()
-                self._tokens -= tokens
-                return True
-            if deadline is not None and time.monotonic() + wait > deadline:
-                return False
+                if self._tokens >= amount:
+                    self._tokens -= amount
+                    return True
+                wait = (amount - self._tokens) / self.refill_rate
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                wait = min(wait, remaining)
             time.sleep(wait)
 
     @property
     def available_tokens(self) -> float:
         """Current token count (after refilling)."""
-        self._refill()
-        return self._tokens
+        with self._lock:
+            self._refill()
+            return self._tokens
 
     def stats(self) -> dict[str, Any]:
         return {

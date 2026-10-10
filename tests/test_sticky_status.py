@@ -43,6 +43,21 @@ def test_format_status_toolbar_plain_matches_key_chips() -> None:
     assert "auto on" in line
 
 
+def test_runtime_console_size_setter_preserves_physical_dimensions(monkeypatch) -> None:
+    from algo_cli.display import RuntimeConsole
+    console = RuntimeConsole(width=80, height=24)
+    active = [False]
+    monkeypatch.setattr(sticky_status, "is_active", lambda: active[0])
+    console.size = (100, 30)
+    assert console.size == (100, 30)
+    active[0] = True
+    assert console.size == (100, 29)
+    console.size = (60, 20)
+    assert console.size == (60, 19)
+    active[0] = False
+    assert console.size == (60, 20)
+
+
 def test_sticky_status_noop_on_non_tty() -> None:
     sticky_status._test_reset()
     stream = StringIO()

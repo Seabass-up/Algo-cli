@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from algo_cli import harness
+from algo_cli import __version__, harness
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -201,17 +201,19 @@ def test_reviewed_wiki_docs_expose_runtime_and_evidence_boundaries() -> None:
     assert "/harness status" in external
 
     privacy_frontmatter = harness.parse_frontmatter(privacy)
-    assert privacy_frontmatter["updated"] == "2026-09-21"
-    assert privacy_frontmatter["last_reviewed"] == "2026-09-21"
-    assert privacy_frontmatter["runtime_version"] == "Algo CLI v0.20.2 development"
+    assert privacy_frontmatter["updated"] == "2026-10-09"
+    assert privacy_frontmatter["last_reviewed"] == "2026-10-09"
+    assert privacy_frontmatter["runtime_version"] == f"Algo CLI v{__version__} development"
 
     graph_frontmatter = harness.parse_frontmatter(graph)
     assert graph_frontmatter["concept"] == "concept:algo-cli"
-    assert "retrieval evidence, not proof" in graph.lower()
+    assert "retrieval evidence, not proof" in " ".join(graph.lower().split())
+    assert graph_frontmatter["status"] == "retired"
 
     assert "Encryption at rest is not isolation" in memory
     assert "continuum_enabled" in memory and "continuum_memory.py" in memory
-    assert "fifteen `memory_*` tools" in memory
+    assert "sixteen `memory_*` tools" in memory
+    assert "memory_set_applicability" in memory
     assert "explicit" in memory and "shared" in memory and "private" in memory
     assert "no plaintext" in memory.lower()
     assert "Unit tests alone do not qualify an installed service" in memory

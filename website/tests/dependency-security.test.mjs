@@ -22,12 +22,13 @@ test("ordinary YAML inheritance remains available within its budget", () => {
 });
 
 for (const consumer of ["next", "miniflare"]) {
-  test(`${consumer} resolves a patched native image decoder with working AVIF support`, async () => {
+  test(`${consumer} resolves patched native image decoders with working AVIF and SVG support`, async () => {
     const dependencyRequire = createRequire(require.resolve(consumer));
     const sharp = dependencyRequire("sharp");
     const semver = createRequire(dependencyRequire.resolve("sharp"))("semver");
-    assert.ok(semver.gte(sharp.versions.sharp, "0.35.4"), `affected sharp ${sharp.versions.sharp}`);
+    assert.ok(semver.gte(sharp.versions.sharp, "0.35.5"), `affected sharp ${sharp.versions.sharp}`);
     assert.ok(semver.gte(sharp.versions.heif, "1.23.2"), `affected libheif ${sharp.versions.heif}`);
+    assert.ok(semver.gte(sharp.versions.rsvg, "2.63.2"), `affected librsvg ${sharp.versions.rsvg}`);
     const input = await sharp({
       create: { width: 8, height: 6, channels: 3, background: { r: 32, g: 96, b: 160 } },
     }).avif().toBuffer();
@@ -35,5 +36,9 @@ for (const consumer of ["next", "miniflare"]) {
     assert.equal(result.info.format, "png");
     assert.equal(result.info.width, 4);
     assert.equal(result.info.height, 3);
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6"><rect width="8" height="6" fill="#2060a0"/></svg>');
+    const renderedSvg = await sharp(svg).png().toBuffer({ resolveWithObject: true });
+    assert.equal(renderedSvg.info.width, 8);
+    assert.equal(renderedSvg.info.height, 6);
   });
 }

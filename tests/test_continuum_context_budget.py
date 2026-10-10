@@ -96,6 +96,34 @@ def test_footer_survives_refusal_and_recovers_without_false_usage(monkeypatch):
     assert main.RUNTIME_STATUS["context_used"] == 100
 
 
+def test_prompt_context_omits_receipt_fields_after_validation(monkeypatch):
+    packet = {
+        "ok": True,
+        "budget_bytes": 12000,
+        "context": {"items": ["required-record"], "coverage": "selected"},
+        "receipt": {"context_digest": "abc", "head": {"mac": "def"}},
+        "receipt_mac": "feed",
+    }
+    seen = []
+
+    def invoke(_cfg, operation, payload, *, scope):
+        if operation == "validate_context":
+            seen.append(payload["packet"])
+            return {"ok": True}
+        return packet
+
+    monkeypatch.setattr(memory, "recall_facts", lambda _cfg: ["fact"])
+    monkeypatch.setattr(memory, "invoke_continuum", invoke)
+    value = json.loads(memory.prompt_context(Config(continuum_enabled=True), "task"))
+    assert seen[0]["receipt_mac"] == "feed"
+    assert seen[0]["context"]["items"] == ["required-record"]
+    projected = value["contexts"]["shared"]
+    assert "receipt" not in projected
+    assert "receipt_mac" not in projected
+    assert projected["context"]["items"] == ["required-record"]
+    assert value["facts"] == ["fact"]
+
+
 def test_prompt_assembly_still_refuses_unavailable_required_memory(monkeypatch):
     monkeypatch.setattr(memory, "recall_facts", lambda cfg: [])
     monkeypatch.setattr(memory, "invoke_continuum", lambda *a, **k: refusal(required=40000))

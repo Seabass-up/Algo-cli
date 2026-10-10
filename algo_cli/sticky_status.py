@@ -76,7 +76,7 @@ def _write(stream: TextIO, data: str) -> None:
 def _visible_line(line: str | FooterLine, cols: int) -> str:
     if isinstance(line, FooterLine):
         from prompt_toolkit.data_structures import Size
-        from prompt_toolkit.formatted_text import to_formatted_text
+        from prompt_toolkit.formatted_text import FormattedText, to_formatted_text
         from prompt_toolkit.output.vt100 import Vt100_Output
         from prompt_toolkit.renderer import print_formatted_text
         from prompt_toolkit.styles import default_ui_style, merge_styles
@@ -107,7 +107,7 @@ def _visible_line(line: str | FooterLine, cols: int) -> str:
             # The same depth as the Rich console and the prompt session (ui.detect).
             default_color_depth=prompt_color_depth(),
         )
-        print_formatted_text(output, fragments, merge_styles([default_ui_style(), line.style]))
+        print_formatted_text(output, FormattedText(fragments), merge_styles([default_ui_style(), line.style]))
         return buffer.getvalue()
     visible = line.replace("\n", " ").replace("\r", " ")
     if len(visible) > cols - 1:

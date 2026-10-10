@@ -30,7 +30,6 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from . import harness
 from . import identity
-from . import index_compute_lab as _index_compute_lab
 from .alice_artifact_store import (
     ArtifactPolicy,
     ArtifactStoreError,
@@ -57,12 +56,14 @@ from .continuum_tools import (
     memory_resolve,
     memory_revoke,
     memory_search,
+    memory_set_applicability,
     memory_status,
     memory_validate_context,
     memory_verify,
 )
 from .marcus_authority import CuratedToolRegistry
 from .jev_kernel import jev_kernel_status, jev_question_contract
+from .decision_layer import decision_decide, decision_status
 from ollama import Client
 
 from .chat_protocol import get_attr
@@ -643,6 +644,7 @@ def read_file(
         chunks: list[str] = []
         remaining_chars = max_chars
         with ExitStack() as stack:
+            handle: io.TextIOBase
             if protected:
                 from .irene_memory_path_policy import protected_path_rules
                 from .irene_search import open_protected_file
@@ -650,7 +652,8 @@ def read_file(
                 binary = stack.enter_context(open_protected_file(p, protected_path_rules()))
                 handle = stack.enter_context(io.TextIOWrapper(binary, encoding="utf-8", errors="replace", newline=None))
             else:
-                handle = stack.enter_context(p.open("r", encoding="utf-8", errors="replace", newline=None))
+                handle = p.open("r", encoding="utf-8", errors="replace", newline=None)
+                stack.callback(handle.close)
             while remaining_chars > 0:
                 chunk = handle.read(min(READ_FILE_CHUNK_CHARS, max(remaining_chars, 1)))
                 if not chunk:
@@ -1749,9 +1752,12 @@ def git_status(cwd: str | None = None) -> str:
     except Exception as exc:
         return f"Error running git status: {exc}"
     output = (proc.stdout or proc.stderr or "").strip()
+    from .prompt_rules import runtime_source_root
+
+    header = f"runtime_source: {runtime_source_root()}\nworkdir: {workdir}\n"
     if proc.returncode != 0:
-        return f"Error: git status failed ({proc.returncode}): {output or 'no output'}"
-    return _cap(output or "(clean working tree)")
+        return f"{header}Error: git status failed ({proc.returncode}): {output or 'no output'}"
+    return _cap(header + (output or "(clean working tree)"))
 
 
 def git_diff(path: str | None = None, cwd: str | None = None, names_only: bool = False) -> str:
@@ -2832,23 +2838,7 @@ def gateway_embed(
     *,
     ollama_host: str | None = None,
 ) -> dict[str, Any] | None:
-    try:
-        data = _gateway_payload(text, model, truncate, dimensions)
-        if data is None:
-            return None
-        upstream = _gateway_upstream_host(ollama_host)
-        request = Request(
-            current_gateway_url(url) + "/supplemental/embed-bound/v1",
-            data=data,
-            method="POST",
-            headers={"Content-Type": "application/json", "X-Algo-Ollama-Host": upstream},
-        )
-        with _open_local_gateway(request, timeout=60) as response:
-            if getattr(response, "headers", {}).get("X-Algo-Ollama-Host") != upstream:
-                return None
-            return _gateway_json_response(response)
-    except (OSError, URLError, TypeError, ValueError):
-        return None
+    return {"ok": False, "error": "cli_embeddings_retired"}
 
 
 def gateway_embed_batch(
@@ -2861,23 +2851,7 @@ def gateway_embed_batch(
     timeout_seconds: float = 60.0,
     ollama_host: str | None = None,
 ) -> dict[str, Any] | None:
-    try:
-        data = _gateway_payload(texts, model, truncate, dimensions)
-        if data is None:
-            return None
-        upstream = _gateway_upstream_host(ollama_host)
-        request = Request(
-            current_gateway_url(url) + "/supplemental/embed-bound/v1",
-            data=data,
-            method="POST",
-            headers={"Content-Type": "application/json", "X-Algo-Ollama-Host": upstream},
-        )
-        with _open_local_gateway(request, timeout=timeout_seconds) as response:
-            if getattr(response, "headers", {}).get("X-Algo-Ollama-Host") != upstream:
-                return None
-            return _gateway_json_response(response)
-    except (OSError, URLError, TypeError, ValueError):
-        return None
+    return {"ok": False, "error": "cli_embeddings_retired"}
 
 
 def embed_text(
@@ -2886,15 +2860,7 @@ def embed_text(
     truncate: bool = True,
     dimensions: int | None = None,
 ) -> str:
-    """Generate embeddings for text through Ollama."""
-    try:
-        response: Any = gateway_embed(text, model, truncate, dimensions)
-        if response is None:
-            response = active_ollama_client().embed(model=model, input=text, truncate=truncate, dimensions=dimensions)
-    except Exception as exc:
-        return f"Error generating embeddings: {exc}"
-    payload = unpack_embed_response(response, model, text, truncate=truncate, dimensions=dimensions)
-    return json.dumps(payload, indent=2)
+    return "Error: CLI embedding calls are retired; use native Continuum context."
 
 
 def vision_describe(
@@ -3114,7 +3080,6 @@ def _slash_command_groups() -> dict[str, list[str]]:
             "algo-cli config auth chatgpt logout",
         ],
         "multimodal": [
-            "/embed [--model MODEL] [--file PATH] TEXT",
             "/vision [--model MODEL] [--prompt TEXT] IMAGE [QUESTION]",
         ],
         "documents": ["/pdf [--pages N] [--chars N] PATH"],
@@ -3126,7 +3091,6 @@ def _slash_command_groups() -> dict[str, list[str]]:
             "/remember FACT",
             "/memories",
             "/forget ID",
-            "/intuition [on|off|status|add]",
         ],
         "intelligence": [
             "/intel status",
@@ -3142,10 +3106,8 @@ def _slash_command_groups() -> dict[str, list[str]]:
             "/kernel check [NAME]",
         ],
         "harness": [
-            "/code-rag [on|off|status]",
             "/harness status",
             "/harness refresh",
-            "/harness embed",
             "/harness score",
             "/harness compare",
             "/hsearch QUERY",
@@ -3207,7 +3169,7 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
         ],
         "session": [
             "session_slash: /read PATH, /ls [PATH], /cd PATH, /cwd (safe cwd file navigation)",
-            "session_command: any registered slash command such as /status, /mode execute, /context status, /code-rag status, /harness status, /harness refresh, /harness embed, /harness score, /harness compare, /route TASK (session control; may require approval)",
+            "session_command: any registered slash command such as /status, /mode execute, /context status, /harness status, /harness refresh, /harness score, /harness compare, /route TASK (session control; may require approval)",
         ],
         "shell": ["run_shell"],
         "web": ["web_search", "web_fetch"],
@@ -3247,8 +3209,9 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
             "memory_explain",
             "memory_history",
             "memory_handoff",
+            "memory_set_applicability",
         ],
-        "multimodal": ["embed_text", "vision_describe"],
+        "multimodal": ["vision_describe"],
         "harness": [
             "available_actions",
             "harness_stats",
@@ -3257,22 +3220,20 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
             "harness_search",
             "harness_read",
             "harness_refresh",
-            "query_knowledge_graph",
-            "reindex_knowledge_graph",
-            "write_knowledge_graph_note",
         ],
         "models": ["model_show", "model_pull", "model_copy", "model_create", "model_delete"],
+        "decision": ["decision_status", "decision_decide"],
     }
     slash_guidance = [
         "Slash commands are session controls. Writing '/command' in a final answer does not execute it.",
-        "Use session_slash for /read, /ls, /cd, and /cwd when you need deterministic cwd-relative file navigation.",
-        "Use session_command for non-file slash commands only when the user asks for that action or session state must change/check before continuing; read-only/status commands such as /kernel list, /code-rag status, /harness status, or /agent threads run without approval. State-changing commands such as /code-rag on, /code-rag off, /harness refresh, /harness embed, and agent execution require approval.",
+        "Use session_slash for /read, /ls, /cd, and /cwd when you need deterministic cwd-relative file navigation. When the user names a file or path, open it directly; do not call /ls first to confirm that path.",
+        "Use session_command for non-file slash commands only when the user asks for that action or session state must change/check before continuing; read-only/status commands such as /kernel list, /harness status, or /agent threads run without approval. State-changing commands such as /harness refresh, and agent execution require approval.",
         "Prefer direct tools for actual work: write_file for edits, run_shell for tests/builds, read_pdf/render_pdf_pages for PDFs, cleanup_pdf_render_artifact after vision inspection, and web_search/web_fetch for web.",
-        "Prefer explicit on/off/status forms for toggles (/auto on, /safe off, /memory-auto status, /code-rag status, /thinking status, /verify on, /cloud off) so you do not accidentally flip state.",
+        "Prefer explicit on/off/status forms for toggles (/auto on, /safe off, /memory-auto status, /thinking status, /verify on, /cloud off) so you do not accidentally flip state.",
         "For /reason, check /reason status or /reason guide first; only change reasoning mode for genuinely complex, failed, ambiguous, or verification-heavy work.",
         "For independent complex work, the parent runtime may invoke /agent team through session_command. Use 2-4 clear roles; specialists are read-only and one integration pipeline owns mutations and verification.",
         "Use /agent resume THREAD to continue the same context or /agent fork THREAD [--same-worktree] TASK to explore an isolated child follow-up. Do not delegate routine one-step work.",
-        "Call available_actions('agent'), available_actions('kernel'), available_actions('intel'), available_actions('google'), available_actions('chatgpt'), available_actions('slash'), or available_actions('reason') when unsure which command/tool should be used.",
+        "Call available_actions('agent'), available_actions('kernel'), available_actions('kernel-all'), available_actions('intel'), available_actions('google'), available_actions('chatgpt'), available_actions('slash'), or available_actions('reason') when unsure which command/tool should be used.",
     ]
     reasoning_guidance = [
         "/reason status: inspect current reasoning mode, depth, branches, and auto flags; safe/read-only.",
@@ -3300,20 +3261,38 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
         "When the same file needs 2+ independent edits, call batch_edit with all of them at once instead of looping edit_file. One atomic write, faster, and you can see the whole change set in the result.",
         "Use run_shell for build/test/typecheck/lint/git verification after code changes.",
         "In requires_change Agent Blocks, use write_file or edit_file for file edits; mutating shell or Git commands require explicit approval.",
-        "For Algo algorithm/pattern catalog guidance, read and update the user's own catalog at ~/.algo_cli/ALGO.md (template: docs/ALGO.md).",
-        "For harness maintenance, use harness_stats or /harness status to inspect quality, harness_scorecard or /harness score to grade readiness, harness_refresh or /harness refresh after source edits, and /harness embed to fill pending embeddings.",
+        "For Algo algorithm/pattern catalog guidance, use and update the live catalog at ~/.algo_cli/ALGO.md. docs/ALGO.md is only the empty public template, not the live catalog.",
+        "For reference maintenance use harness_stats, harness_refresh and lexical harness_search. Native Continuum owns memory; embedding and Lab-index routes are retired.",
         "Use web_search/web_fetch only when OLLAMA_API_KEY enables Ollama Cloud web access.",
         "Use x_search for real-time X.com content only after the user configured XAI_API_KEY with `algo-cli config setup xai`; xAI API calls may consume paid usage.",
         "Use x_account_* for X account actions through xurl; writes require explicit confirmation and separate X API OAuth.",
         "Treat memory/wiki as navigation; verify consequential facts against live files or endpoints.",
     ]
     from .oliver_slash_dispatch import SLASH_COMMAND_ALIASES, SLASH_COMMANDS
-    from .kernels.manifest import kernel_runtime_snapshot
+    from .kernels.manifest import kernel_discovery_snapshot
 
     stats = _harness_stats_for_config(cfg)
 
     intelligence_runtime = intelligence_runtime_snapshot()
-    kernel_runtime = kernel_runtime_snapshot()
+    kernel_runtime = kernel_discovery_snapshot()
+    if not focus:
+        topics = sorted({*commands, *tool_groups, "kernel", "kernel-all", "reason", "slash", "intel", "agent"})
+        return json.dumps(
+            {
+                "topic": "index",
+                "topics": topics,
+                "active_kernels": [row["name"] for row in kernel_runtime["kernels"]],
+                "kernel_counts": kernel_runtime["counts"],
+                "kernel_total": kernel_runtime["total"],
+                "next": (
+                    "Index only. Call available_actions(topic) for one family. "
+                    "available_actions('kernel') lists active kernels; "
+                    "available_actions('kernel-all') lists preview and planned too. "
+                    "This is not the product manual."
+                ),
+            },
+            indent=2,
+        )
     payload: dict[str, Any] = {
         "topic": focus or "all",
         "commands": commands,
@@ -3360,7 +3339,8 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
                 if slash_focus and key == "session" or group_matches(key, value)
             },
         }
-        special_focus = slash_focus or reason_focus or focus in {"intel", "intelligence", "intelagence", "kernel", "kernels"}
+        kernel_all_focus = focus in {"kernel-all", "kernels-all", "kernel_all"}
+        special_focus = slash_focus or reason_focus or kernel_all_focus or focus in {"intel", "intelligence", "intelagence", "kernel", "kernels"}
         if not special_focus and not matching["commands"] and not matching["model_callable_tools"]:
             # A topic that matched nothing returns a compact no-match result
             # instead of the full catalog, so the model cannot mistake the
@@ -3372,8 +3352,8 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
                     "topics": sorted({*commands, *tool_groups}),
                     "next": (
                         "No command group or model-callable tool matched this topic. This is a no-match "
-                        "result, not proof the capability is unsupported. Try one of the listed topics, "
-                        "action_search(query), or available_actions() without a topic."
+                        "result, not proof the capability is unsupported. Try one of the listed topics "
+                        "or action_search(query). available_actions() without a topic returns an index, not this catalog."
                     ),
                 },
                 indent=2,
@@ -3381,16 +3361,46 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
         matching["match"] = "matched"
         if slash_focus:
             matching["when_to_use"] = slash_guidance
+            matching["slash_command_guidance"] = slash_guidance
         if reason_focus:
             matching["reasoning_mode_guidance"] = reasoning_guidance
         if focus in {"intel", "intelligence", "intelagence"}:
             matching["intelligence_runtime"] = intelligence_runtime
         if focus in {"kernel", "kernels"}:
-            matching["kernels"] = kernel_runtime
+            matching["kernels"] = kernel_discovery_snapshot()
+        if kernel_all_focus:
+            matching["kernels"] = kernel_discovery_snapshot(include_inactive=True)
         if slash_focus:
             matching["slash_registry"] = payload["slash_registry"]
             matching["slash_aliases"] = payload["slash_aliases"]
-        payload["focused"] = matching
+        focus_l = focus.lower()
+        tool_names = [
+            item.split(":", 1)[0].strip().lower()
+            for items in matching["model_callable_tools"].values()
+            for item in items
+        ]
+        matching["verification_layer"] = [
+            line for line in verification_layer
+            if focus_l in line.lower()
+            or any(name and name in line.lower() for name in tool_names)
+            or (focus_l == "harness" and "ALGO.md" in line)
+        ]
+        if not slash_focus:
+            matching["slash_command_guidance"] = [
+                line for line in slash_guidance if focus_l in line.lower()
+            ]
+        return json.dumps(
+            {
+                "topic": focus,
+                "focused": matching,
+                "topics": sorted({*commands, *tool_groups}),
+                "next": (
+                    "Requested topic only. Call available_actions() for the index, "
+                    "or another topic for a different family."
+                ),
+            },
+            indent=2,
+        )
     return json.dumps(payload, indent=2)
 
 
@@ -3680,21 +3690,20 @@ def session_command(command: str, cfg: Any = None) -> str:
     - /route TASK — preview route/budget/tool policy without running a pipeline
     - /kernel list, /kernel show NAME — inspect promoted kernel specs without executing workloads
     - /kernel check [NAME] — validate imports, slash routes, metadata, and active ActionSpecs
-    - /code-rag on|off|status — opt in/out of cwd source indexing and prompt retrieval
-    - /harness status, /harness refresh, /harness embed, /harness score, /harness compare, /hsearch QUERY, /hread ID — harness index
+    - /harness status, /harness refresh, /harness score, /harness compare, /hsearch QUERY, /hread ID — harness index
     - /intelligence status|query TERM|reindex or /intel ... — repository intelligence project graph
     - /memory home|search QUERY|show ID|doctor|benchmark — governed memory review, recall, and measured qualification
     - /memory add|supersede|promote|demote|archive|reindex — governed memory mutations
-    - /remember FACT, /memories, /forget ID, /lesson TEXT, /lessons reindex
+    - /remember FACT, /memories, /forget ID, /lesson TEXT, /lessons status
     - /context status|rebuild|clear — context management
     - /save NAME, /load NAME — conversation persistence
     - /temp N, /ctx N, /toolmax N, /thinkevery N — model parameters
     - /diff, /changes — git/agent activity
-    - /skills, /intuition, /icl, /reflex on|off|status — knowledge/loop controls
+    - /skills, /reflex on|off|status — knowledge/loop controls
     - /google gmail-list [query] [--max N], /google gmail-get MESSAGE_ID — read-only Gmail (email, inbox)
     - /google drive-list, drive-search, docs-get, sheets-values, calendar-list — read-only Google Workspace;
       requires `algo-cli config setup google` and Google login first
-    - /theme NAME, /embed, /vision, /pdf, /reload
+    - /theme NAME, /vision, /pdf, /reload
 
     Args:
         command: Full slash command line, e.g. "/status" or "/mode execute".
@@ -3752,56 +3761,14 @@ def session_command(command: str, cfg: Any = None) -> str:
 
 
 def harness_refresh(cfg: Config | None = None) -> str:
-    """Refresh the local harness index for skills, tools, prompts, memories, and wiki pages."""
     index = harness.load_index(refresh=True)
-    indexer = str(index.get("indexer") or "python")
-    refresh_stats = index.get("refresh_stats", {})
-    if indexer == "rust":
-        refresh_detail = "Rust full rebuild."
-    else:
-        refresh_detail = (
-            f"Reused: {refresh_stats.get('reused_records', 0)}, "
-            f"rebuilt: {refresh_stats.get('rebuilt_records', 0)}, "
-            f"removed: {refresh_stats.get('removed_records', 0)}."
-        )
-    embeddings = (
-        harness.embedding_summary(
-            index, model=harness.resolve_embed_model(cfg), dimensions=harness.resolve_embed_dimensions(cfg),
-            embedding_identity=harness.resolve_embed_identity(cfg),
-        )
-        if cfg is not None
-        else harness.embedding_summary(index)
-    )
-    embedded_count = int(embeddings.get("embedded_count", 0))
-    pending_count = int(embeddings.get("pending_count", 0))
-    total = embedded_count + pending_count
-    active_model = embeddings.get("active_model") or harness.DEFAULT_EMBED_MODEL
-    if total == 0:
-        embed_detail = "Embeddings: no records to embed."
-    elif embeddings.get("complete"):
-        embed_detail = f"Embeddings: {active_model} ({embedded_count}/{total} ready, embedded by {embeddings.get('embedded_by', 'python')})."
-    else:
-        embed_detail = (
-            f"Embeddings: {active_model} ({embedded_count}/{total} ready, {pending_count} pending). "
-            f"Run /harness embed or wait for the next chat turn to fill them in."
-        )
-    return (
-        f"Refreshed harness index at {harness.INDEX_PATH}. "
-        f"Indexer: {indexer}. Records: {index.get('record_count', 0)}. {refresh_detail} "
-        f"{embed_detail}"
-    )
+    return f"Refreshed lexical reference index. Records: {index.get('record_count', 0)}. Memory authority: native Continuum. No embedding calls."
 
 
 def _harness_stats_for_config(cfg: Config | None) -> dict[str, Any]:
-    if cfg is None:
-        return harness.stats()
-    result = harness.stats(
-        model=harness.resolve_embed_model(cfg), dimensions=harness.resolve_embed_dimensions(cfg),
-        embedding_identity=harness.resolve_embed_identity(cfg),
-    )
+    result = harness.stats()
     from . import continuum_memory
-
-    if continuum_memory.selected(cfg):
+    if cfg is not None and continuum_memory.selected(cfg):
         try:
             result["continuum_memory"] = {"enabled": True, **continuum_memory.doctor(cfg)}
         except continuum_memory.ContinuumMemoryError:
@@ -3923,8 +3890,8 @@ def _collect_harness_index_integrity() -> dict[str, Any]:
 def harness_scorecard(cfg: Config | None = None) -> str:
     """Run the evidence-backed v2 harness scorecard and return structured JSON.
 
-    Ten scored gates are worth one point each. A 10/10 therefore requires
-    current index/embedding evidence, retrieval correctness, a repeatable
+    Nine active scored gates are worth one point each. A 9/9 therefore requires
+    current lexical index evidence, retrieval correctness, a repeatable
     benchmark, and proof that every required production algorithm actually ran.
     Optional cloud/Web and Google availability remain visible but unscored so a
     healthy local-first runtime is not penalized for intentionally absent creds.
@@ -3949,7 +3916,7 @@ def harness_scorecard(cfg: Config | None = None) -> str:
         MIN_REUSABLE_SPEEDUP,
         run_harness_retrieval_benchmark,
     )
-    from .evals.scorecard_grading import finalize_scorecard
+    from .evals.scorecard_grading import HARNESS_SCORED_GATE_COUNT, finalize_scorecard
 
     checks: list[dict[str, Any]] = []
     capabilities: list[dict[str, Any]] = []
@@ -3978,10 +3945,8 @@ def harness_scorecard(cfg: Config | None = None) -> str:
         stats = {}
         stats_error = type(exc).__name__
     quality_value = stats.get("quality")
-    embeddings_value = stats.get("embeddings")
     runtime_store_value = stats.get("runtime_event_store")
     quality = quality_value if isinstance(quality_value, dict) else {}
-    embeddings = embeddings_value if isinstance(embeddings_value, dict) else {}
     runtime_store = runtime_store_value if isinstance(runtime_store_value, dict) else {}
 
     continuum_value = stats.get("continuum_memory")
@@ -3993,53 +3958,12 @@ def harness_scorecard(cfg: Config | None = None) -> str:
         continuum_readiness.get("ok") is True and continuum_readiness.get("verify") is True
     )
 
-    embedding_fields = (
-        stats.get("record_count"),
-        embeddings.get("embedded_count"),
-        embeddings.get("pending_count"),
-        embeddings.get("high_value_pending"),
-    )
-    if stats_error or any(value is None for value in embedding_fields):
-        status = "error" if stats_error else "unavailable"
-        total = embedded_count = pending_count = high_value_pending = 0
-    else:
-        total = int(embedding_fields[0] or 0)
-        embedded_count = int(embedding_fields[1] or 0)
-        pending_count = int(embedding_fields[2] or 0)
-        high_value_pending = int(embedding_fields[3] or 0)
-        counts_consistent = embedded_count + pending_count == total
-        if (
-            total > 0
-            and counts_consistent
-            and embedded_count == total
-            and pending_count == 0
-            and high_value_pending == 0
-            and embeddings.get("complete") is True
-        ):
-            status = "pass"
-        elif embedded_count > 0 and counts_consistent and high_value_pending == 0:
-            status = "warn"
-        else:
-            status = "fail"
-    checks.append(
-        _scorecard_check(
-            "embedding readiness",
-            status,
-            (
-                f"model={embeddings.get('active_model') or '-'} "
-                f"embedded={embedded_count}/{total} pending={pending_count} "
-                f"high_value_pending={high_value_pending}"
-            ),
-            "Run /harness embed until active-model and high-value coverage are complete." if status != "pass" else "",
-            metrics={
-                "total": total,
-                "embedded": embedded_count,
-                "pending": pending_count,
-                "high_value_pending": high_value_pending,
-                "complete": embeddings.get("complete"),
-            },
-        )
-    )
+    total = int(stats.get("record_count") or 0)
+    checks.append(_scorecard_check(
+        "lexical reference readiness", "error" if stats_error else "pass" if total else "unavailable",
+        f"records={total}; embedding calls retired",
+        "Refresh the lexical reference index." if not total else "", metrics={"total": total, "retrieval_mode": "lexical"},
+    ))
 
     memory_value = quality.get("memory_records")
     curated_memory_value = quality.get("curated_product_memory_records")
@@ -4185,34 +4109,7 @@ def harness_scorecard(cfg: Config | None = None) -> str:
 
     from .continuum_memory import selected
 
-    if cfg is not None and selected(cfg):
-        kg_text = "Legacy knowledge graph disabled under Continuum Memory authority."
-        status = "unavailable"
-        kg_recommendation = (
-            "Use scoped Continuum search/context; keep the legacy graph disabled."
-        )
-    else:
-        kg_recommendation = "Reindex the graph and verify the exact project:algo-cli canonical."
-        try:
-            kg_text = str(query_knowledge_graph("rate your harness", cfg=cfg))
-            canonical_match = re.search(r"(?<![\w-])project:algo-cli(?![\w-])", kg_text) is not None
-            if canonical_match:
-                status = "pass"
-            elif "No matching canonicals" in kg_text:
-                status = "fail"
-            else:
-                status = "warn"
-        except Exception as exc:
-            kg_text = type(exc).__name__
-            status = "error"
-    checks.append(
-        _scorecard_check(
-            "knowledge graph",
-            status,
-            kg_text[:240],
-            kg_recommendation if status != "pass" else "",
-        )
-    )
+    # Retired graph/embedding backends are not readiness requirements.
 
     try:
         audit = action_registry.audit_action_registry_runtime()
@@ -4234,17 +4131,16 @@ def harness_scorecard(cfg: Config | None = None) -> str:
     required_harness_commands = {
         "/harness status",
         "/harness refresh",
-        "/harness embed",
         "/harness score",
         "/harness compare",
     }
     try:
         harness_actions = json.loads(available_actions("harness"))
-        harness_commands = set(harness_actions.get("commands", {}).get("harness", []))
+        harness_commands = set(harness_actions.get("focused", {}).get("commands", {}).get("harness", []))
         missing_harness_commands = sorted(required_harness_commands - harness_commands)
         direct_status = _direct_read_only_session_result("/harness status")
         status_payload = json.loads(direct_status or "")
-        payload_contract = isinstance(status_payload, dict) and isinstance(status_payload.get("embeddings"), dict)
+        payload_contract = isinstance(status_payload, dict) and status_payload.get("retrieval", {}).get("mode") == "lexical"
         capture_contract = all(
             _session_command_captures_output(command) for command in ("/harness score", "/harness compare")
         )
@@ -4390,7 +4286,7 @@ def harness_scorecard(cfg: Config | None = None) -> str:
 
     try:
         google_actions = json.loads(available_actions("google"))
-        google_commands = set(google_actions.get("commands", {}).get("google", []))
+        google_commands = set(google_actions.get("focused", {}).get("commands", {}).get("google", []))
         required_google_fragments = (
             "algo-cli config setup google",
             "algo-cli config auth google login",
@@ -4418,7 +4314,8 @@ def harness_scorecard(cfg: Config | None = None) -> str:
         )
     )
 
-    return json.dumps(finalize_scorecard(checks, capabilities=capabilities), indent=2)
+    return json.dumps(finalize_scorecard(checks, capabilities=capabilities,
+                                       expected_gate_count=HARNESS_SCORED_GATE_COUNT), indent=2)
 
 
 def harness_competitive_rating(cfg: Config | None = None) -> str:
@@ -4561,26 +4458,9 @@ def harness_search(
     by_id = {
         record["id"]: record
         for record in records
-        if (not harness_names or record.get("harness") in harness_names) and (not kind or record.get("kind") == kind)
+        if isinstance(record, dict) and record.get("id") and (not harness_names or record.get("harness") in harness_names) and (not kind or record.get("kind") == kind)
     }
-    results: list[dict[str, Any]] = []
-    if cfg is not None and by_id:
-        from .main import make_local_embed_fn
-
-        model = harness.resolve_embed_model(cfg)
-        embed_fn = make_local_embed_fn(cfg, model, timeout_seconds=10.0, bind_identity=True)
-        results = harness.hybrid_search(
-            query,
-            embed_fn,
-            model,
-            dimensions=harness.resolve_embed_dimensions(cfg),
-            harness=harness_name,
-            kind=kind,
-            k=limit,
-            index=index,
-        )
-    elif by_id:
-        results = harness.search_index(query, harness_name, kind, limit, index=index)
+    results = harness.search_index(query, harness_name, kind, limit, index=index) if by_id else []
     # Format from the authorized snapshot, not arbitrary ranker-returned payloads.
     results = [record for record in results if record.get("id") in by_id]
     if not results:
@@ -4675,32 +4555,7 @@ def query_knowledge_graph(
     limit: int = 10,
     cfg: Config | None = None,
 ) -> str:
-    """Query the local index-compute-lab ranked association graph.
-
-    Returns co-occurring entities and relationship counts (not prose bios).
-    For biography-style questions, use harness_search on user-configured sources
-    and verify important details against live files or authoritative sources.
-
-    Args:
-        question: Natural-language question about entities, projects, or relationships.
-        limit: Maximum ranked neighbors or results to return, between 1 and 20.
-    """
-    if cfg is not None:
-        from .continuum_memory import selected
-
-        if selected(cfg):
-            return "Error: legacy knowledge-graph access is disabled while Continuum Memory is authoritative."
-    text = (question or "").strip()
-    if not text:
-        return "Error: knowledge graph question was empty."
-    output = _index_compute_lab.run_ask(text, limit=limit, timeout=20.0)
-    if output and "no matching canonicals" in output.lower():
-        expanded = _knowledge_graph_query_expansion(text)
-        if expanded and expanded != text:
-            fallback = _index_compute_lab.run_ask(expanded, limit=limit, timeout=20.0)
-            if fallback and "no matching canonicals" not in fallback.lower() and not fallback.startswith("Error:"):
-                output = fallback
-    return _cap(output or "No knowledge graph results.")
+    return "Error: index-compute-lab is retired; use scoped native Continuum search/context."
 
 
 def reindex_knowledge_graph(
@@ -4708,30 +4563,7 @@ def reindex_knowledge_graph(
     removable_scope: str | None = None,
     cfg: Config | None = None,
 ) -> str:
-    """Rebuild index-compute-lab ranked graph (association → normalize → rank).
-
-    Use only when the user explicitly asks to rebuild configured graph sources.
-    include_removable_seed runs removable_drive_atoms.py first; pass removable_scope
-    to limit the scan to one user-provided path.
-    After completion, run harness_refresh in the same session.
-
-    Args:
-        include_removable_seed: When true, re-seed removable-drive atoms before the pipeline.
-        removable_scope: Optional single --scope path for removable_drive_atoms.py.
-    """
-    if cfg is not None:
-        from .continuum_memory import selected
-
-        if selected(cfg):
-            return (
-                "Error: legacy knowledge-graph reindexing is disabled while Continuum Memory is authoritative."
-            )
-    scopes = [removable_scope.strip()] if removable_scope and removable_scope.strip() else None
-    output = _index_compute_lab.run_pipeline(
-        include_removable_seed=include_removable_seed,
-        removable_scopes=scopes,
-    )
-    return _cap(output)
+    return "Error: index-compute-lab is retired; no graph pipeline was invoked."
 
 
 def write_knowledge_graph_note(
@@ -4739,22 +4571,7 @@ def write_knowledge_graph_note(
     body: str,
     cfg: Config | None = None,
 ) -> str:
-    """Persist an explicit retrievable note in the active memory authority.
-
-    Under Continuum Memory this operation is refused in favor of an explicit,
-    scoped memory_remember call. Otherwise the legacy graph-note behavior remains.
-
-    Args:
-        title: Short note title (used as filename slug).
-        body: Markdown body (one or more paragraphs).
-        cfg: Runtime configuration injected by Algo CLI.
-    """
-    if cfg is not None:
-        from .continuum_memory import selected
-
-        if selected(cfg):
-            return "Error: graph-note persistence is unavailable with Continuum Memory; use memory_remember explicitly."
-    return _index_compute_lab.write_graph_note(title, body)
+    return "Error: graph-note persistence is retired; use explicit scoped memory_remember."
 
 
 def model_pull(name: str) -> str:
@@ -5157,6 +4974,8 @@ def action_search(query: str, limit: int = 6, cfg: Any = None) -> str:
             or protected_tool_policy_error(name, {}, cfg) is None
         )
     candidates = [fn for name, fn in TOOL_MAP.items() if name in allowed]
+    named = normalized_query.lstrip("+").strip()
+    outside_ceiling = named in TOOL_MAP and named not in allowed
     ranked = rank_tools_for_prompt(normalized_query, candidates)[:bounded_limit]
     actions: list[dict[str, Any]] = []
     for fn in ranked:
@@ -5199,7 +5018,13 @@ def action_search(query: str, limit: int = 6, cfg: Any = None) -> str:
             + " ".join(reasons)
             + " Report this policy block to the user; do not retry discovery or work around it."
         )
-    if not candidates and not slash_commands and not blocked_slash_commands:
+    if outside_ceiling:
+        next_steps.append(
+            f"{named} exists in the running package but is outside the current authorization ceiling. "
+            "This is not proof the launcher lacks the tool, and a workspace git status is not the running source. "
+            "Report the ceiling; do not keep retrying discovery."
+        )
+    elif not candidates and not slash_commands and not blocked_slash_commands:
         # The runtime ceiling admits no composable action at all; that is a
         # policy state, distinct from a query that matched nothing.
         next_steps.append(
@@ -5221,8 +5046,11 @@ def action_search(query: str, limit: int = 6, cfg: Any = None) -> str:
             "slash_command_count": len(slash_commands),
             "slash_commands": slash_commands,
             "policy_blocked_slash_commands": blocked_slash_commands,
+            "outside_ceiling": [named] if outside_ceiling else [],
             "match": (
-                "found" if actions or slash_commands else "policy_blocked" if blocked_slash_commands else "none"
+                "found" if actions or slash_commands
+                else "policy_blocked" if blocked_slash_commands or outside_ceiling
+                else "none"
             ),
             "next": " ".join(next_steps),
         },
@@ -5503,9 +5331,9 @@ ALL_TOOLS = [
     _hide_cfg_param(memory_explain),
     _hide_cfg_param(memory_history),
     _hide_cfg_param(memory_handoff),
+    _hide_cfg_param(memory_set_applicability),
     _hide_cfg_param(append_lesson),
     _hide_cfg_param(update_user_profile),
-    embed_text,
     vision_describe,
     _hide_cfg_param(action_search),
     _hide_cfg_param(action_program),
@@ -5518,9 +5346,6 @@ ALL_TOOLS = [
     _hide_cfg_param(harness_competitive_rating),
     _hide_cfg_param(harness_search),
     _hide_cfg_param(harness_read),
-    _hide_cfg_param(query_knowledge_graph),
-    _hide_cfg_param(reindex_knowledge_graph),
-    _hide_cfg_param(write_knowledge_graph_note),
     model_pull,
     model_delete,
     model_create,
@@ -5532,6 +5357,8 @@ ALL_TOOLS = [
     extensions_manifest_build,
     _hide_cfg_param(jev_kernel_status),
     _hide_cfg_param(jev_question_contract),
+    _hide_cfg_param(decision_status),
+    _hide_cfg_param(decision_decide),
     runtime_qos_hint,
     screenshot_description_verify,
     capability_mask_describe,

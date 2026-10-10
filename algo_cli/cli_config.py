@@ -58,6 +58,23 @@ def build_parser() -> argparse.ArgumentParser:
     jev = subparsers.add_parser("jev", help="Configure the advisory Jev question-contract companion.")
     jev.add_argument("action", choices=("status", "enable", "disable"))
     jev.add_argument("--cli", help="Absolute path to the installed jev-workflows executable.")
+    decision = subparsers.add_parser("decision", help="Configure bounded decision providers and explicit routing.")
+    decision.add_argument("action", choices=("status", "select", "configure", "route", "fallback", "coordinate"), nargs="?", default="status")
+    decision.add_argument("provider", nargs="?")
+    decision.add_argument("--model")
+    decision.add_argument("--model-digest")
+    decision.add_argument("--base-url")
+    decision.add_argument("--cli")
+    decision.add_argument("--task")
+    decision.add_argument("--fallback", nargs="*")
+    decision.add_argument("--descriptor", help="Reviewed extra Ollama System One model descriptor JSON.")
+    decision.add_argument("--timeout", type=float)
+    decision.add_argument("--keep-alive")
+    decision.add_argument("--candidates", nargs="+")
+    decision.add_argument("--offline-coordinators", nargs="+")
+    decision.add_argument("--minimum-probability", type=float)
+    decision.add_argument("--minimum-margin", type=float)
+    decision.add_argument("--minimum-fit", type=float)
     return parser
 
 
@@ -460,6 +477,135 @@ def _run_jev(action: str, cli: str | None) -> int:
     return 0
 
 
+def _run_decision(namespace: Any) -> int:
+    from pathlib import Path
+    from .config import Config
+    from .decision_layer import DecisionError, ID_RE, decision_status, provider_for, selected_providers
+
+    cfg = Config.load()
+    if namespace.action == "status":
+        print(decision_status(namespace.provider, cfg))
+        return 0
+    try:
+        name = namespace.provider
+        if type(name) is not str or not ID_RE.fullmatch(name):
+            raise DecisionError("invalid_provider")
+        if namespace.action == "coordinate":
+            from .decision_coordinator import _settings
+            if name not in {"jev", "direct"}:
+                raise DecisionError("invalid_coordinator")
+            cfg.decision_routing_mode = name
+            if name == "jev":
+                cfg.decision_default_provider = "jev"
+            for attribute, value in (
+                ("decision_router_candidates", namespace.candidates),
+                ("decision_offline_coordinators", namespace.offline_coordinators),
+                ("decision_router_min_probability", namespace.minimum_probability),
+                ("decision_router_min_margin", namespace.minimum_margin),
+                ("decision_router_min_fit", namespace.minimum_fit),
+            ):
+                if value is not None:
+                    setattr(cfg, attribute, value)
+            names, _profiles, _policy = _settings(cfg)
+            for candidate in names:
+                provider_for(candidate, cfg)
+            if (not cfg.decision_offline_coordinators or len(cfg.decision_offline_coordinators) > 2
+                    or len(set(cfg.decision_offline_coordinators)) != len(cfg.decision_offline_coordinators)
+                    or any(p not in {"clef", "clef-flash", "tev1"} or p not in names for p in cfg.decision_offline_coordinators)):
+                raise DecisionError("invalid_offline_coordinators")
+        elif namespace.action == "configure":
+            settings = dict(cfg.decision_provider_settings.get(name, {}))
+            if namespace.descriptor:
+                payload = Path(namespace.descriptor).expanduser().read_bytes()
+                if len(payload) > 16_000:
+                    raise DecisionError("descriptor_too_large")
+                settings = json.loads(payload)
+                if type(settings) is not dict:
+                    raise DecisionError("invalid_descriptor")
+            for key, value in (("model", namespace.model), ("model_digest", namespace.model_digest),
+                               ("base_url", namespace.base_url), ("cli", namespace.cli)):
+                if value is not None:
+                    settings[key] = str(Path(value).expanduser().resolve()) if key == "cli" else value
+            cfg.decision_provider_settings[name] = settings
+        if namespace.action != "coordinate":
+            provider_for(name, cfg)
+        if namespace.action == "select":
+            cfg.decision_default_provider = name
+            cfg.decision_routing_mode = "direct"
+        elif namespace.action == "route":
+            if type(namespace.task) is not str or not ID_RE.fullmatch(namespace.task):
+                raise DecisionError("invalid_task")
+            cfg.decision_routes[namespace.task] = name
+        elif namespace.action == "fallback":
+            if namespace.fallback is None:
+                raise DecisionError("explicit_fallback_list_required")
+            for fallback in namespace.fallback:
+                provider_for(fallback, cfg)
+            cfg.decision_fallbacks[name] = namespace.fallback
+            selected_providers(cfg, name, "")
+        if namespace.timeout is not None:
+            if not 1 <= namespace.timeout <= 300:
+                raise DecisionError("invalid_timeout")
+            cfg.decision_timeout_seconds = namespace.timeout
+        if namespace.keep_alive is not None:
+            cfg.decision_keep_alive = namespace.keep_alive
+        _save_decision_configuration(namespace, cfg)
+        console.print(f"Decision configuration saved; default provider is {cfg.decision_default_provider}.")
+        return 0
+    except (DecisionError, OSError, ValueError, TypeError):
+        console.print("[error]Invalid or unavailable decision configuration; no change was saved.[/]")
+        return 2
+
+
+def _save_decision_configuration(namespace: Any, cfg: Any) -> None:
+    from . import config as storage
+    from .decision_layer import DecisionError, decode
+
+    if cfg.memory_config_error:
+        raise DecisionError("memory_configuration_requires_repair")
+    storage._ensure_private_config_parent(storage.CONFIG_FILE)
+    with storage._exclusive_state_lock(storage.CONFIG_FILE):
+        try:
+            current = decode(storage._state_descriptor_payload(storage.CONFIG_FILE, max_bytes=storage.MAX_JSON_STATE_BYTES))
+        except FileNotFoundError:
+            current = {}
+        name = namespace.provider
+        if namespace.action == "configure":
+            existing = current.setdefault("decision_provider_settings", {})
+            if type(existing) is not dict:
+                raise DecisionError("invalid_provider_configuration")
+            if namespace.descriptor:
+                existing[name] = cfg.decision_provider_settings[name]
+            else:
+                row = existing.setdefault(name, {})
+                if type(row) is not dict:
+                    raise DecisionError("invalid_provider_configuration")
+                for key, value in (("model", namespace.model), ("model_digest", namespace.model_digest),
+                                   ("base_url", namespace.base_url), ("cli", namespace.cli)):
+                    if value is not None:
+                        row[key] = cfg.decision_provider_settings[name][key]
+        elif namespace.action == "select":
+            current["decision_default_provider"] = name
+            current["decision_routing_mode"] = "direct"
+        elif namespace.action == "coordinate":
+            for key in ("decision_routing_mode", "decision_default_provider", "decision_router_candidates",
+                        "decision_offline_coordinators", "decision_router_min_probability",
+                        "decision_router_min_margin", "decision_router_min_fit"):
+                current[key] = getattr(cfg, key)
+        elif namespace.action in {"route", "fallback"}:
+            field = "decision_routes" if namespace.action == "route" else "decision_fallbacks"
+            mapping = current.setdefault(field, {})
+            if type(mapping) is not dict:
+                raise DecisionError("invalid_routing_configuration")
+            key = namespace.task if namespace.action == "route" else name
+            mapping[key] = getattr(cfg, field)[key]
+        if namespace.timeout is not None:
+            current["decision_timeout_seconds"] = cfg.decision_timeout_seconds
+        if namespace.keep_alive is not None:
+            current["decision_keep_alive"] = cfg.decision_keep_alive
+        storage._atomic_write_text(storage.CONFIG_FILE, json.dumps(current, indent=2))
+
+
 def run(
     argv: Sequence[str] | None = None,
     *,
@@ -505,5 +651,7 @@ def run(
         return _run_memory(namespace.action)
     if namespace.command == "jev":
         return _run_jev(namespace.action, namespace.cli)
+    if namespace.command == "decision":
+        return _run_decision(namespace)
     parser.error(f"Unsupported config command: {namespace.command}")
     return 2

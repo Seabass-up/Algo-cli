@@ -247,7 +247,7 @@ def test_native_lessons_route_continuum_and_profile_shadows_are_unavailable(back
     assert "Preserve verified negative results." in backend["facts"]
     assert "unavailable with Continuum Memory" in tools.update_user_profile("a profile", cfg=cfg)
     assert main._intuition_engine_for(cfg) is None
-    assert "unavailable with Continuum Memory" in tools.write_knowledge_graph_note("a title", "a body", cfg=cfg)
+    assert "retired" in tools.write_knowledge_graph_note("a title", "a body", cfg=cfg)
 
 
 def test_failed_continuum_preflight_stops_before_any_model_call(config_dir, monkeypatch):

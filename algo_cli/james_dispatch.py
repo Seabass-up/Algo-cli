@@ -44,6 +44,7 @@ _EXPLICIT_MEMORY_WRITE_ACTIONS = frozenset(
         "memory_revoke",
         "memory_resolve",
         "memory_handoff",
+        "memory_set_applicability",
     }
 )
 _MEMORY_MUTATION_SLASHES = frozenset({"/remember", "/forget"})

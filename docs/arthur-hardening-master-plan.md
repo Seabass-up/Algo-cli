@@ -812,8 +812,12 @@ at least 60 percent gateway coverage, vet, and `govulncheck`. The first live Go
 scan found the workflow's Go 1.26.4 standard library affected by GO-2026-5856,
 and a later recurring scan found Go 1.26.5 affected by GO-2026-6218,
 GO-2026-6090, GO-2026-6089, GO-2026-5972, and GO-2026-5026. The workflow and
-gateway module now pin Go 1.26.6, ordinary module-local Go commands self-select
-that fixed toolchain, and the rescan reports no known reachable vulnerabilities.
+gateway module subsequently pinned Go 1.26.6. The October 9 recurring scan found
+nine symbol-level standard-library advisories, including the HTTP/2 encoder
+race GO-2026-6617. The independent candidate now pins Go 1.26.9 in both the
+workflow and gateway module; qualification must use normal module-local toolchain
+selection rather than a forced-version override. Audit results are recorded in
+`docs/clean-history-candidate.md`; they do not establish application exploitability.
 A deterministic CycloneDX 1.5 artifact records the locked
 runtime resolution, not every unconstrained installer resolution and not
 dependencies embedded in the wheel. Wheel/sdist checksums, Twine validation,

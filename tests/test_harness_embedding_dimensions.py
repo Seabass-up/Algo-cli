@@ -39,7 +39,7 @@ def test_dimension_mode_change_rebuilds_even_when_actual_width_is_equal(public_i
     harness.embed_index_records(lambda texts: _embed(texts, before or 2), "fixture", dimensions=before)
     assert harness.embedded_count("fixture", dimensions=after) == (0, 3)
     assert harness.embedding_progress("fixture", dimensions=after)["pending"] == 3
-    assert harness.stats(model="fixture", dimensions=after)["embeddings"]["complete"] is False
+    assert harness.embedding_summary(harness.load_index(), model="fixture", dimensions=after)["complete"] is False
     seen = []
 
     def embed(texts):
@@ -223,8 +223,8 @@ def test_actual_runtime_rebuilds_after_setting_change(local_transport, command, 
         from algo_cli.oliver_slash_dispatch import handle_command
 
         assert handle_command("/harness embed", cfg, None)[0] is True
-    assert local_transport == [(dimensions, 3)]
-    assert {len(row["embedding"]) for row in harness.load_index()["records"]} == {dimensions or 4}
+    assert local_transport == []
+    assert {len(row["embedding"]) for row in harness.load_index()["records"]} == {2}
 
 
 def test_runtime_search_status_and_refresh_use_configured_mode(local_transport):
@@ -233,8 +233,8 @@ def test_runtime_search_status_and_refresh_use_configured_mode(local_transport):
     result = tools.harness_search("public", cfg=cfg)
     assert "Retrieval: keyword-only" in result
     assert local_transport == []
-    assert json.loads(tools.harness_stats(cfg=cfg))["embeddings"]["pending_count"] == 3
-    assert "0/3 ready, 3 pending" in tools.harness_refresh(cfg=cfg)
+    assert json.loads(tools.harness_stats(cfg=cfg))["retrieval"]["mode"] == "lexical"
+    assert "No embedding calls" in tools.harness_refresh(cfg=cfg)
 
 
 @pytest.mark.parametrize("name", ["harness_stats", "harness_refresh", "available_actions"])

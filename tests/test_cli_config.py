@@ -181,8 +181,12 @@ def test_config_memory_repair_reports_retained_backup(monkeypatch, tmp_path) -> 
     assert backup.name in output.replace("\n", "")
 
 
-def test_config_memory_goal_repair_reports_blocked_successor(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("width", [40, 80, 160])
+def test_config_memory_goal_repair_reports_blocked_successor(monkeypatch, tmp_path, width) -> None:
     from algo_cli import ada_task_ledger
+    from rich.console import Console
+
+    monkeypatch.setattr(cli_config, "console", Console(width=width, color_system=None))
 
     backup = tmp_path / "task_ledger.json"
     monkeypatch.setattr(
@@ -200,8 +204,8 @@ def test_config_memory_goal_repair_reports_blocked_successor(monkeypatch, tmp_pa
 
     assert result == 0
     output = captured.get()
-    assert "blocked, non-resumable state" in output
-    assert backup.name in output
+    assert "blocked, non-resumable state" in " ".join(output.split())
+    assert str(backup) in output.replace("\n", "")
 
 
 def test_main_routes_top_level_config_before_runtime_initialization(monkeypatch) -> None:

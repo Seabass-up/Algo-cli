@@ -40,9 +40,9 @@ from algo_cli.boron_browser_isolation import (
 ROOT = Path(__file__).resolve().parents[1]
 RESOURCE = ROOT / "algo_cli" / "resources" / "boron_browser"
 PLATFORM = "linux/amd64"
-CHROME_VERSION = "154.0.8037.57"
+CHROME_VERSION = "155.0.8059.39"
 CHROME_DEBIAN_VERSION = CHROME_VERSION + "-1"
-CHROME_RELEASE_AT_MS = 1_790_100_540_403
+CHROME_RELEASE_AT_MS = 1_791_306_547_199
 CRYPTOGRAPHY_VERSION = "50.0.0"
 CFFI_VERSION = "2.1.0"
 PYCPARSER_VERSION = "3.0"
@@ -116,7 +116,7 @@ DEBIAN_BASE_REFERENCE = "debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb
 DEBIAN_BASE_AMD64_DIGEST = "sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e"
 DEBIAN_SNAPSHOT = "20260712T202631Z"
 DEBIAN_SECURITY_SNAPSHOT = "20260712T194830Z"
-BROWSER_DPKG_LOCK_DIGEST = "sha256:ff1b017fb2b738b25d594d6472fcce443a7a5a2857f4d3304fab1b3d75c2166f"
+BROWSER_DPKG_LOCK_DIGEST = "sha256:a23b5ee899f39f30cd7613a270f013b3a6c4819c299f0d2c3916c741c0f021c9"
 BROWSER_DPKG_LOCK_ENTRIES = "228"
 BROKER_DPKG_LOCK_DIGEST = "sha256:945e9057beb01efbdcf89ca6ba002f260eb6bda40f5d535337e7ca7dc6eed640"
 BROKER_DPKG_LOCK_ENTRIES = "122"
@@ -152,7 +152,7 @@ _SBOM_COMPONENTS_BY_DOCKERFILE = {
         (
             "google-chrome-stable",
             CHROME_DEBIAN_VERSION,
-            "pkg:deb/debian/google-chrome-stable@154.0.8037.57-1?arch=amd64&distro=debian-12",
+            "pkg:deb/debian/google-chrome-stable@155.0.8059.39-1?arch=amd64&distro=debian-12",
         ),
         *_PYTHON_SBOM_COMPONENTS,
     ),

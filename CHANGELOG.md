@@ -4,6 +4,20 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### 0.20.3 Core CLI Candidate
+
+- Prepare the Continuum-only runtime, bounded Jev coordinator and interrupted
+  stream/cancellation reliability repairs for exact-source qualification.
+- Require deterministic evidence for exact calculations; preserve decision
+  uncertainty, shell approvals and independent workspace verification. Add
+  machine-keyed graph/probability and confident-wrong-answer regressions.
+- Align protected draft capture with the fresh 0.20.3 candidate; do not reuse
+  the immutable 0.20.2 tag or its draft evidence.
+- Include Go 1.26.9 and qualified website dependency repairs. Keep signed native
+  features disabled and the public catalog free of owner data.
+- Publication remains conditional on local and hosted core-release gates;
+  see `docs/henry-release-0.20.3.md` for scope and excluded native features.
+
 ## [0.20.2] - 2026-09-25
 
 A patch release. It closes a secret-redaction gap in captured session command

@@ -801,10 +801,40 @@ def kernel_runtime_snapshot() -> dict[str, Any]:
     }
 
 
+def kernel_discovery_snapshot(*, include_inactive: bool = False) -> dict[str, Any]:
+    """Return the catalog a model should see by default.
+
+    Status counts stay complete. Preview and planned rows are omitted unless
+    the caller asks for the full inventory, so discovery does not advertise
+    non-executable kernels as the working surface.
+    """
+
+    snapshot = kernel_runtime_snapshot()
+    kernels = snapshot["kernels"]
+    if not include_inactive:
+        kernels = [row for row in kernels if row.get("status") == "active"]
+    return {
+        "total": snapshot["total"],
+        "counts": snapshot["counts"],
+        "listed": "all" if include_inactive else "active",
+        "kernels": kernels,
+        "note": (
+            "Full kernel inventory, including preview and planned entries that are not executable."
+            if include_inactive
+            else (
+                "Only active kernels are listed. Preview and planned kernels are not the "
+                "executable surface. Call available_actions('kernel-all') to inspect them."
+            )
+        ),
+    }
+
+
 def audit_kernel(spec: KernelSpec) -> KernelAudit:
     """Validate imports, slash roots, metadata, and declared action contracts.
 
-    This is a declaration audit, not a dry-run execution probe.
+    This is a declaration audit, not a dry-run execution probe. Imports execute
+    module initializers, including trusted user modules; this is not an
+    import-free inspection or an approval/sandbox boundary.
     """
 
     from ..action_registry import list_action_specs

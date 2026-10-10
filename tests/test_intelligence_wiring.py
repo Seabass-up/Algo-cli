@@ -140,6 +140,21 @@ def test_available_actions_exposes_intelligence_runtime_and_kernels():
     names = {row["name"] for row in kernels["focused"]["kernels"]["kernels"]}
     assert "repo-intelligence" in names
     assert "benchmark" in names
-    assert kernels["focused"]["kernels"]["total"] == len(names)
-    assert catalog["intelligence_runtime"]["wired"] is True
-    assert catalog["kernels"]["total"] >= 17
+    assert kernels["focused"]["kernels"]["listed"] == "active"
+    assert all(row["status"] == "active" for row in kernels["focused"]["kernels"]["kernels"])
+    assert kernels["focused"]["kernels"]["total"] > len(names)
+    assert "review" not in names
+    full = json.loads(tools.available_actions("kernel-all"))
+    full_names = {row["name"] for row in full["focused"]["kernels"]["kernels"]}
+    assert full["focused"]["kernels"]["listed"] == "all"
+    assert full["focused"]["kernels"]["total"] == len(full_names)
+    assert "review" in full_names
+    assert catalog["topic"] == "index"
+    assert catalog["kernel_total"] >= 17
+    assert catalog["active_kernels"]
+    assert len(catalog["active_kernels"]) == catalog["kernel_counts"]["active"]
+    assert "slash_registry" not in catalog
+    assert "reasoning_mode_guidance" not in catalog
+    assert "commands" not in catalog
+    assert "files" in catalog["topics"]
+    assert "Call available_actions(topic)" in catalog["next"]

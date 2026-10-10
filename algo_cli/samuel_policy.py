@@ -31,11 +31,11 @@ TOOL_GROUP_MAP: dict[str, frozenset[str]] = {
             "harness_stats",
             "harness_search",
             "harness_read",
-            "query_knowledge_graph",
             "model_show",
         }
     ),
     "web": frozenset({"web_search", "web_fetch", "x_search"}),
+    "decision": frozenset({"decision_status", "decision_decide"}),
     "write": WRITE_TOOLS,
     "shell": SHELL_TOOLS,
 }

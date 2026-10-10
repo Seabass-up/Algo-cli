@@ -23,7 +23,7 @@ assert SPEC and SPEC.loader
 AUTHORITY = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = AUTHORITY
 SPEC.loader.exec_module(AUTHORITY)
-TAG = "v0.20.2"
+TAG = "v0.20.3"
 RELEASE_ID = 432100001
 PUBLISHER = "a" * 40
 SOURCE = PUBLISHER
@@ -125,7 +125,7 @@ def test_exact_capture_preserves_identity_and_only_gets(
 
 
 @pytest.mark.parametrize("change", [
-    {"RELEASE_TAG": "v0.19.0"}, {"CAPTURE_PHASE": "other"}, {"GITHUB_REPOSITORY": "other/repo"},
+    {"RELEASE_TAG": "v0.19.0"}, {"RELEASE_TAG": "v0.20.2"}, {"CAPTURE_PHASE": "other"}, {"GITHUB_REPOSITORY": "other/repo"},
     {"GITHUB_ACTOR_ID": "1"}, {"GITHUB_REF": "refs/heads/other"}, {"GITHUB_REF_PROTECTED": "false"},
     {"GITHUB_EVENT_NAME": "pull_request"}, {"GITHUB_RUN_ATTEMPT": "2"}, {"GITHUB_SHA": "main"},
 ])

@@ -260,6 +260,12 @@ def resolve_action(
     outcome_model = policy.outcome_model
     verification = policy.verification
     compensation_action = policy.compensation_action
+    if name == "decision_decide" and args.get("local_only", True) is True:
+        # The adapter refuses every remote endpoint/fallback under this exact flag.
+        target = "runtime:decision:local"
+        target_scope = TargetScope.RUNTIME
+        capabilities = Capability.READ.value | Capability.MODEL.value
+        confirmation_mode = ConfirmationMode.NONE
     if name == "jev_question_contract" and args.get("mode", "lint") == "lint":
         # Local validation must not borrow or create provider inference authority.
         target = "runtime:jev:lint"
@@ -329,6 +335,8 @@ def resolve_action(
 def _target_for(name: str, args: dict[str, Any], *, cwd: str, target_scope: TargetScope) -> str:
     if name == "jev_question_contract":
         return "provider:typesafe:jev"
+    if name == "decision_decide":
+        return "provider:decision:configured"
     path_keys = _WORKSPACE_PATH_ARGUMENTS.get(name, ())
     for key in path_keys:
         if key in args:

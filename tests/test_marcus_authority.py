@@ -105,8 +105,10 @@ def test_action_spec_dict_is_json_serializable_and_exposes_authority() -> None:
 
 
 def test_memory_writes_require_action_time_confirmation() -> None:
-    for name in ("remember", "append_lesson", "write_knowledge_graph_note", "update_user_profile"):
+    for name in ("remember", "append_lesson", "memory_remember", "update_user_profile"):
         assert action_registry.action_confirmation_mode(name) is ConfirmationMode.ACTION_TIME
+    assert "write_knowledge_graph_note" not in tools.TOOL_MAP
+    assert action_registry.action_confirmation_mode("write_knowledge_graph_note") is ConfirmationMode.HANDOFF_REQUIRED
 
 
 def test_lifecycle_aware_harness_scorecard_requires_approval() -> None:
@@ -130,10 +132,11 @@ def test_session_wrappers_declare_dynamic_exact_action_resolution() -> None:
 
     # Jev resolves per mode: local lint versus provider inference.
     assert policy_for_action("jev_question_contract").dynamic_resolution is True
+    assert policy_for_action("decision_decide").dynamic_resolution is True
     assert all(
         not policy.dynamic_resolution
         for name, policy in CURATED_TOOL_POLICIES.items()
-        if name not in {"session_command", "session_slash", "jev_question_contract"}
+        if name not in {"session_command", "session_slash", "jev_question_contract", "decision_decide"}
     )
 
 

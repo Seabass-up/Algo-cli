@@ -11,7 +11,7 @@
     "unknown_trials": 1000
   },
   "fixture_digest": "sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659",
-  "generated_at": "2026-09-26T21:17:37Z",
+  "generated_at": "2026-10-10T02:19:51Z",
   "limitations": [
     "Zero observed failures in a finite local sample is not zero risk.",
     "No production browser, selected-Chrome, Developer ID, notarization, Gatekeeper, or live TCC claim is made.",
@@ -19,22 +19,22 @@
   ],
   "metrics": [
     {
-      "denominator": 41,
+      "denominator": 40,
       "id": "privileged_policy",
       "limitations": "Dynamic session wrappers are excluded because their resolved inner command is independently policy evaluated.",
       "measurements": {
         "generated_privileged_specs": 0,
         "hostile_unknowns_rejected": 1000,
-        "runtime_tools": 82,
+        "runtime_tools": 81,
         "unconfirmed_protected_actions": 0
       },
-      "numerator": 41,
+      "numerator": 40,
       "rate": 1.0,
       "scope": "Complete current runtime tool registry, curated policy table, effective ActionSpecs, and hostile unknown names.",
       "status": "pass",
       "threshold": "0 generated privileged specs and 0 protected actions without confirmation",
       "wilson_95": [
-        0.914332,
+        0.912378,
         1.0
       ]
     },
@@ -45,8 +45,8 @@
       "measurements": {
         "dispatches": 0,
         "mutations": 0,
-        "p50_ms": 5.867,
-        "p95_ms": 9.066,
+        "p50_ms": 6.134,
+        "p95_ms": 7.708,
         "seed": 310400406105
       },
       "numerator": 10000,
@@ -141,8 +141,8 @@
       "limitations": "Finite adapters do not establish that a future native or browser adapter observes a real external target correctly.",
       "measurements": {
         "mutations": 1000,
-        "p50_ms": 7.206,
-        "p95_ms": 10.856
+        "p50_ms": 9.011,
+        "p95_ms": 13.129
       },
       "numerator": 1000,
       "rate": 1.0,
@@ -159,7 +159,7 @@
       "id": "local_token_efficiency",
       "limitations": "Synthetic local token estimates do not establish task completion, model quality, screenshot reduction, or cross-harness advantage.",
       "measurements": {
-        "median_schema_reduction_pct": 83.449,
+        "median_schema_reduction_pct": 83.613,
         "typed_program_reduction_pct": 96.644
       },
       "numerator": 5,
@@ -231,7 +231,7 @@
   "public_claim_eligible": false,
   "qualification": "henry-m8-local-v1",
   "schema_version": 1,
-  "source_digest": "sha256:caba98e0d90c3f3190fe41cd1c86606e042a00a59007ccff59b5b49a72e3bae1",
+  "source_digest": "sha256:91a6d5df52cc6647e61b4273294a5d9ca5fb6092eab0636d3e93bd2de06689f3",
   "status": "blocked",
   "summary": {
     "blocked": 5,

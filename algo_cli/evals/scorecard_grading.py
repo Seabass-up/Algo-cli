@@ -8,8 +8,9 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SCORED_GATE_COUNT = 10
+HARNESS_SCORED_GATE_COUNT = 9
 MAX_SCORE = float(SCORED_GATE_COUNT)
 VALID_STATUSES = frozenset({"pass", "warn", "unavailable", "fail", "error"})
 STATUS_POINTS = {
@@ -205,8 +206,9 @@ def _normalize_capability(raw: Any, position: int) -> dict[str, Any]:
 def finalize_scorecard(
     checks: Iterable[Mapping[str, Any]] | None,
     capabilities: Iterable[Mapping[str, Any]] | None = (),
+    *, expected_gate_count: int = SCORED_GATE_COUNT,
 ) -> dict[str, Any]:
-    """Finalize exactly ten evidence-backed gates into a JSON-ready scorecard.
+    """Finalize the explicitly declared evidence-backed gates, defaulting to ten.
 
     Optional capabilities are normalized for display but never affect points or
     overall status. Invalid scored-gate schemas fail closed and are returned as
@@ -214,15 +216,20 @@ def finalize_scorecard(
     """
     raw_checks, collection_error = _materialize(checks, label="checks")
     validation_errors = [collection_error] if collection_error else []
+    invalid_count = type(expected_gate_count) is not int or not 1 <= expected_gate_count <= 32
+    if invalid_count:
+        validation_errors.append("expected gate count must be an integer between 1 and 32")
+        expected_gate_count = SCORED_GATE_COUNT
+    max_score = float(expected_gate_count)
     normalized_checks: list[dict[str, Any]] = []
     for position, raw in enumerate(raw_checks):
         normalized, errors = _normalize_check(raw, position)
         normalized_checks.append(normalized)
         validation_errors.extend(errors)
 
-    if len(normalized_checks) != SCORED_GATE_COUNT:
+    if invalid_count or len(normalized_checks) != expected_gate_count:
         validation_errors.append(
-            f"expected exactly {SCORED_GATE_COUNT} scored gates, got {len(normalized_checks)}"
+            f"expected exactly {expected_gate_count} scored gates, got {len(normalized_checks)}"
         )
         # With the wrong denominator there is no meaningful partial grade.
         # Preserve the definitions for diagnosis but fail every supplied gate
@@ -276,10 +283,10 @@ def finalize_scorecard(
     )
     all_pass = (
         not validation_errors
-        and len(normalized_checks) == SCORED_GATE_COUNT
+        and len(normalized_checks) == expected_gate_count
         and all(check["status"] == "pass" for check in normalized_checks)
     )
-    if all_pass and score == MAX_SCORE:
+    if all_pass and score == max_score:
         overall_status = "ready"
     elif validation_errors or critical_failure:
         overall_status = "blocked"
@@ -289,7 +296,7 @@ def finalize_scorecard(
     return {
         "schema_version": SCHEMA_VERSION,
         "score": score,
-        "max_score": MAX_SCORE,
+        "max_score": max_score,
         "overall_status": overall_status,
         "scored_gate_count": len(normalized_checks),
         "checks": normalized_checks,
@@ -300,6 +307,7 @@ def finalize_scorecard(
 
 __all__ = [
     "MAX_SCORE",
+    "HARNESS_SCORED_GATE_COUNT",
     "SCHEMA_VERSION",
     "SCORED_GATE_COUNT",
     "STATUS_POINTS",

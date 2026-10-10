@@ -219,6 +219,17 @@ def test_inference_requires_egress_authority_but_lint_is_local():
     assert run.target == "provider:typesafe:jev"
 
 
+@pytest.mark.parametrize("field", ["confidence", "probability"])
+def test_huge_numeric_choice_is_rejected_without_overflow(field):
+    answer = {"type": "choice", "choice": "yes", "confidence": 0.9,
+              "probabilities": {"yes": 0.9, "no": 0.1}}
+    if field == "confidence":
+        answer["confidence"] = 10 ** 1000
+    else:
+        answer["probabilities"]["yes"] = 10 ** 1000
+    assert not jev._valid_choice(answer, {"yes", "no"})
+
+
 def test_kernel_and_tool_are_discoverable():
     from algo_cli.kernels.manifest import audit_kernels
     from algo_cli.tool_context import select_tools_for_prompt

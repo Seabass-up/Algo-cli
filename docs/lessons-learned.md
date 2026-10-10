@@ -1,5 +1,574 @@
 # Lessons Learned
 
+## 2026-10-09: Core 0.20.3 Preparation And Chrome Inventory
+
+**Symptom/cause:** The owner chose a fresh core CLI version with native features
+disabled. Draft capture and its validator still hardcoded 0.20.2; advancing only
+the package version would leave protected publication unable to capture the new
+draft. Chrome refresh also requires a new installed-package digest, not merely
+a version string.
+
+**Repair:** Prepare version 0.20.3, align the tightly scoped capture/validator and
+asset names, reject the old tag, retain approvals and artifact checks, and document
+the core/native scope. Pin Chrome 155.0.8059.39-1 to Google's downloaded package
+SHA-256 `c58aa0f2cd66179c9f050e062c882d27aa9b9f8c2b7c73fee3498560b5ed0b38`.
+Run the pinned Debian snapshot installation to measure the 228-package inventory
+digest `a23b5ee899f39f30cd7613a270f013b3a6c4819c299f0d2c3916c741c0f021c9`.
+Bind source, fixtures, labels and SBOM version to that evidence and the official
+serving timestamp 1791306547199 ms; preserve strict inventory and lag enforcement.
+
+**Verification:** Metadata/capture/native-packager/privacy tests: 93 passed.
+Browser image/hosted-report contract tests: 193 passed. Observe-only native-host
+tests: 38 passed. Repository Ruff and installed-source parity pass. The first
+browser test run failed because its synthetic newer-release and browser-major
+fixtures still used 154; update those premises to 155, not the rejection gates.
+Retain that failed receipt. Local inventory installation used AMD64 emulation;
+this is package evidence, not hosted sandbox/security qualification.
+
+**History boundary:** A fresh public mirror (348 reachable commits, including
+advertised PR refs) passes the unchanged all-refs scanner. The five original
+local findings were not reproduced there. Select normal protected PR integration
+onto audited public main rather than rewriting already-clean public history.
+This does not prove absence or erasure of unadvertised caches/forks.
+
+**Prevention/limits:** Keep version, capture, assets and source bindings aligned.
+Compute inventory digests through actual installation. Native protocol remains
+disabled; full final-source local/hosted qualification and public delivery are
+still required. No hosted pass, tag, publication or normal installation is
+claimed by these preparation checks.
+
+**Final-suite follow-up:** The first complete run reached 70.91% coverage but
+failed one repair-message assertion: Rich wrapped the long temporary backup path
+inside its filename. Assert the full path after removing rendering line breaks
+and exercise widths 40/80/160; all 17 CLI configuration tests pass. Retain the
+original failing receipt, and require a new full run rather than relabeling it
+green. Also correct the memory operations document from fifteen to sixteen tools
+and explicitly document the already-wired applicability operation; its curated
+contract now checks that description. Refresh source-bound evidence after the
+contract edit before final qualification.
+
+**Integration review correction:** A fresh comparison against public main found
+that reviewed security commit `29e1598` was on a separate branch and absent from
+the candidate source. Transfer its bounded OAuth callback server/handlers, native
+connector metadata projection, gateway Bearer authorization and corresponding
+tests. Adapt Python index normalization/staging to the current core-only harness,
+retaining existing sensitive-path checks and adding no embedding calls or
+memory backend. Include new helper/privacy/semantic source and tests in the M8
+manifest. Rust now passes eight tests; Go race tests pass with 70.6% coverage;
+OAuth/native-privacy focused checks pass with three platform-specific skips.
+Branch existence and earlier green runs are not integration evidence. A complete
+new final-source qualification is required; earlier receipts remain historical.
+
+**Transfer test portability:** Legacy native-output mocks still wrote directly to
+the canonical index instead of the new staged destination. Update them to follow
+the actual command and assert canonical nonpublication plus staging cleanup.
+Metadata reads are denied when the temporary path itself is sensitive (for
+example the macOS `/private` alias), and otherwise return sanitized metadata;
+assert both contractual outcomes without relaxing the path guard. Do not infer
+an external-source permission policy from an incidental temporary-path denial.
+Packaged documentation changes also require reinstall before parity checks;
+declare only existing manifest files (the standard-library-only Go module has
+no `go.sum`). Preserve failed receipts rather than bypassing these setup gates.
+
+## 2026-10-09: Valid Decision Advice Is Not Semantic Verification
+
+**Symptom/cause:** The supplied Jev trial contained well-formed, confidently wrong
+shortest-path and probability answers. Type validation checks structure, not
+truth; distribution concentration is not a correctness guarantee. The reported
+shell denial was a normal-mode approval boundary, as the owner clarified, not a
+YOLO regression or evidence of a provider outage.
+
+**Repair:** Add a shared prompt rule, used in interactive and one-shot requests,
+and explicit decision-tool guidance requiring authorized deterministic checks for
+exact calculations. Preserve raw advisory answers, typed probability semantics,
+routing thresholds and existing authorization/verification gates. Add enumerated
+answer keys and synthetic wrong-answer tests through validation and actual
+runtime dispatch. Do not alter shell approval rules to conceal missing checks.
+
+**Verification:** Focused `pytest` over `test_decision_semantic_regressions.py`,
+`test_prompt_rules.py` and `test_decision_layer.py`: 55 passed, zero failures,
+errors or skips. Ruff passes on the five changed Python files. The dispatch
+regression confirms that a successful, high-confidence decision cannot satisfy
+verification after a workspace mutation. These tests use synthetic replies,
+not live semantic qualification. Broader candidate CI is still required.
+
+**Live operation follow-up:** The existing public eight-question fixture matched
+all expected answers through Jev 1.13.0 (481.688 ms) and Clef-flash (8,400.440 ms,
+including loading). The isolated actual agent loop, Kimi K3 via Ollama, received
+a validated task checkpoint from Jev, then read the synthetic review fixture and
+reported its source defect; 7,044.488 ms total, receipt/result checks passed.
+The optional subsequent background checkpoint was not consumed before completion.
+This verifies provider operation and initial checkpoint consumption, not the
+previous mathematical counterexamples, universal background participation or
+held-out accuracy. Normal owner configuration and shell policy were unchanged.
+
+**Prevention/limits:** Keep exact answer keys machine-derived; distinguish schema
+validity, model advice and observed execution evidence in every report. A prompt
+rule mitigates misuse but cannot guarantee compliance or repair model weights.
+No improved Jev mathematical accuracy, normal launcher update, hosted CI or
+release is claimed by this repair.
+
+## 2026-10-09: Independent Clean-History Candidate
+
+**Symptom/cause:** Current source passed its privacy scan, but the all-refs scan
+reproduced five private-residue findings in older blobs. An orphan branch in the
+same Git repository would retain other reachable refs; changing detectors would
+hide rather than repair the delivery boundary.
+
+**Repair:** With explicit local-candidate/commit permission, export the reviewed
+working source into an independent repository. All 821 source files matched
+bytes/executable flags; original contents, dirty status, commit and refs remain
+unchanged. No remote, push, tag, publication or normal launcher/configuration
+change. Personal catalog/kernel data, Git history, environments and caches were
+not exported. Candidate-only documentation explains its separate scope.
+
+**Verification:** Source/history and built wheel/sdist privacy scans pass.
+Frozen noneditable parity, Ruff, 271-module mypy, compile, version and locked
+Python audit pass. Full Python: 7,382 passed, 42 skipped, zero failures/errors
+in 395.463 seconds, combined coverage 73.22% against a 57% floor. One macOS alias
+skip passed separately with the required `/var` layout. Rust format/clippy/seven
+tests/audit pass. Go race/vet pass with 68.2% coverage; website build/eight
+tests/lint pass. Actual source and limits are in `clean-history-candidate.md`.
+
+**Qualification setup lesson:** The first external-environment attempt correctly
+failed the no-site bootstrap's checkout-local locked-environment guard. Preserve
+that failed/interrupted receipt, create a real frozen `.venv`, and rerun the
+guard plus complete suite. Do not point the guard at arbitrary environments or
+follow symlinks. Dedicated pytest base directories avoid unrelated old fixture
+cleanup; rerun platform-path tests with the layout they actually require.
+
+**Go follow-up repair:** Explicit candidate-only permission allowed updating both
+module/CI pins and regression expectations from 1.26.6 to 1.26.9. The confirmed
+cause of the audit failure was nine symbol-level standard-library advisories,
+including GO-2026-6617; application exploitation was not independently proven.
+Normal module-local `go version` and `go env GOVERSION GOTOOLCHAIN` report
+go1.26.9 / auto without an environment override. govulncheck v1.6.0 `./...`
+reports no vulnerabilities; `go test -race -count=1 -coverprofile=... -covermode=atomic
+./...` passes with 68.2% coverage; the unchanged 60% floor and `go vet ./...`
+pass. Keep CI/module/test pins aligned and rescan recurring toolchain advisories;
+temporary override success is not proof of applied default pins.
+The initial source-currency check correctly failed on the stale M8 receipt.
+Rerunning the actual qualification produced nine local passes, five external
+blocks and zero metric failures; appended new ledger rows, retaining old evidence
+and statuses, then regenerated M9 with `--expect-blocked`. Final policy/M9 and
+current-artifact checks: 82 passed, zero failures/errors/skips. Installed-source
+parity, source/history/distribution privacy, Ruff and whitespace checks pass.
+No new full Python run is claimed for this Go/config/test-only follow-up.
+
+**Prevention/limits:** Scan every candidate ref and actual artifacts; preserve
+original history privately, not inside the public candidate's ref graph. The
+website follow-up below replaces the earlier 17-advisory blocker. External browser/signing
+and hosted/public upgrade gates remain unqualified. Do not call this all-green
+CI, deployed recovery or release readiness. Jev helped the bounded design check;
+uncertain votes did not replace exact Git, environment or test evidence.
+
+**Website follow-up, original promotion:** Update Next/eslint-config-next to
+16.3.8, Cloudflare tooling to 1.63.1/4.149.0, sharp to 0.35.5 and compatible
+transitives. An unpatched braces advisory propagated to eight remaining packages.
+Replace only the two pinned synchronous glob callers with a limited adapter over
+Glob 13.0.6 and patched brace-expansion 5.0.12, retaining lint rules and CommonJS
+transformation. Independent executable review rejected the first Tinyglobby
+attempt: unmatched class prefixes hid nesting, dot-dot switch keys changed,
+wildcard symlink roots vanished and numeric ranges lost lint coverage. Final
+regressions assert actual lint violations and execute the transformed module.
+Check expanded alternatives before filesystem discovery; reject over-budget work
+explicitly instead of silently truncating roots. Keep brace/parenthesis counts
+separate so mismatched closers cannot erase another parser's nesting.
+
+**Actual website verification:** Node 22.23.3/npm 10.9.9 clean `npm ci`, complete
+`npm test` (20 passed, zero failures/skips), lint, full audit (zero vulnerabilities)
+and `deploy:cloudflare:dry-run` pass. Both Next/Miniflare decoders expose sharp
+0.35.5, librsvg 2.63.2 and working AVIF/SVG. No forced framework downgrade,
+audit suppression, broad script-policy exception or production deployment. Restore
+the known lock baseline and regenerate targeted resolution instead of removing
+transport protections when new npm rejects cached remote specs; clear a stale
+derived Fast Glob lock node and let npm regenerate its authoritative override.
+Run installers before concurrent lint/build processes; rebuilding node_modules
+during a lint run caused a transient missing-package failure, not a source defect.
+
+**Promotion/prevention:** Apply only verified website files to the original
+checkout after hash/mode comparison with its pre-edit snapshot. Preserve all
+unrelated changes, saved configuration and launcher. Keep the adapter's explicit
+supported interface under caller regressions on every dependency upgrade. A zero
+audit is not compatibility proof or hosted qualification. Current CI/reproduction
+details are in `website-dependency-repair.md`; clean-history replacement remains
+a plan only, with no push/tag/publication or environment policy changes.
+The resumed final Python run: 7,382 passed, 42 skipped, zero failures/errors,
+212.663 seconds and 70.92% coverage. Ruff, 271-module mypy/parity, locked Python
+audit, Rust format/clippy/seven tests/audit and Go audit/race/vet pass. Both
+candidate and original website checks pass 20 tests with zero vulnerabilities.
+Jev's final contract check was uncertain (0.55/0.49); actual executable evidence,
+not those votes, establishes the result. Source/history/distribution privacy
+remain separate checks; no hosted or signed-native completion is inferred.
+The source scan also rejected npm-generated dependencies in vendor source.
+Pack file dependencies with repository-local `install-links=true` and an explicit
+package file list; move only owned generated outputs to temporary staging and
+rerun clean installs/caller checks. Never whitelist generated author metadata or
+disable the privacy detector. A regression verifies the installed adapter lives
+under node_modules rather than linking back into source.
+
+## 2026-10-09: Final Checkpoint Ownership And Deadline Audit
+
+**Confirmed causes:** A future could complete after a polling timeout but before
+`done()`, causing a false failed checkpoint. `close()` consumed and notified a
+finished future after the final answer, although the main model had not used it.
+A terminal SSE snapshot could finish without yielding another chunk, skipping
+the continuation's last elapsed-time check.
+
+**Repair:** Re-read a completed future without waiting; preserve real worker
+timeout failures. Seal publication before closing, recording finished undelivered
+results as `not_consumed`, not a successful decision or service failure. Keep
+cancellation of pending publication and later provider dispatch. Check the receive
+deadline before publishing any buffered continuation, even after a silent terminal.
+
+**Verification:** Four deterministic regressions and the existing checkpoint/
+stream suites passed. Real Astra on the repaired source recovered one injected
+post-read stream interruption through exactly one continuation and one read in
+13,582 ms; late evidence was honestly `not_consumed`. Final full/current-artifact
+qualification follows below when its processes complete.
+
+**Final audit qualification:** Frozen noneditable full Python: 7,383 passed,
+41 skipped, zero failures in 138.627 s (`audit-final-complete-local.xml`).
+Checkpoint/stream 184 and protection 117 focused checks pass; all three current
+artifact checks pass. Source parity digest
+`sha256:5fa20aeb9ea6ad5455946865ba93c4c006f49e0ca6dd9e2a6ebea4761a76c854`,
+all 271-module mypy, Ruff, source privacy and locked audit pass. Honest M8/M9
+external blocks and the historical privacy gate remain unchanged and unqualified
+for publication. No product source edits occurred during the final full run.
+
+**Prevention/limits:** Distinguish inference finished, result validated, result
+consumed and action verified. Polling timeouts are not completed-worker errors;
+closed turns cannot retrospectively use advice. No threshold, grant, default
+model, action replay, private-data upload or release authorization was added.
+
+## 2026-10-09: Installed Runtime Contracts And Qualification
+
+**Causes:** Noneditable protected-search workers imported a different runtime
+tree from their parent, then correctly rejected its identity. Editable tests
+masked that mismatch. `RuntimeConsole.size` dropped Rich's setter. Continuum's
+16th native operation was absent from this launcher. The nine-check lexical
+scorecard still used a ten-gate validator and two consumers read obsolete
+top-level discovery fields. Logo fixtures under `TERM=dumb` did not pin height.
+A prompt test read an unrelated checkout and embedded a real machine path.
+The locked urllib3 2.7.0 dependency had three current security advisories.
+
+**Repairs:** Bootstrap isolated search from the parent's trusted package path,
+retaining exact identity and protected-root checks. Restore size assignment and
+use native FormattedText without palette changes; retain Python 3.10 TOML fallback.
+Wire native `memory_set_applicability` with action-time authority, stable request
+IDs, required nullable projects, strict input validation and independent exact
+readback. Schema 3 scorecards explicitly declare nine active one-point gates
+(maximum nine), not a denominator inferred from supplied checks; missing gates,
+counterfeit evidence and critical failures still block. Repair focused discovery
+consumers, isolate rendering dimensions and use a temporary Git fixture instead
+of a personal checkout. Update only urllib3's lock entry to 2.8.0.
+
+**Verification:** Package-wide mypy passed all 271 modules; Ruff and public-source
+scan passed. Frozen noneditable dev/supply-chain installation passed source parity.
+Protected-search regressions passed in that environment without relaxing policy.
+The locked dependency audit changed from three advisories to none. Real Astra
+agent runs verified decision-to-read (14,095 ms), injected post-read stream loss
+with one continuation and one read (12,811 ms), and an injected provider timeout
+handled without retry or false validation (15,882 ms). Fixtures were unchanged;
+injected faults are not natural service outages. Qualification source manifests
+now include decision modules; artifacts are produced by their real runners only.
+Final artifact/full-suite results are recorded after their processes finish.
+
+**Final local result:** Frozen noneditable full Python qualification with
+`ALGO_TEST_REQUIRE_RIPGREP=1`: 7,379 passed, 41 skipped, zero failures in 145.432 s;
+receipt `goal-local-final-green.xml` in the existing temporary qualification
+directory. Focused runtime checks: 373 passed/one skipped; qualification artifact
+checks: 152 passed. Package mypy (271 files), Ruff, installed-source parity, source
+privacy scan, version check, locked dependency audit, Go race and seven Rust tests
+pass. Reachable-history scan is still blocked by five historical privacy findings,
+so these results are not an all-green publication gate or release authorization.
+
+**Artifact follow-up:** Real runners regenerated current evidence after the
+product source was frozen. Nathan: 17/17 correctness probes and 31 workloads pass;
+M8: nine local metrics pass, five external browser metrics blocked, zero failures.
+Append-only ledger rows preserve prior evidence, requirement statuses and false
+public-claim eligibility. The M9 audit and all three stored-artifact checks now
+agree with those exact files; this is not external-browser or release completion.
+
+**Prevention/limits:** Qualify installed and editable paths, bind workers to the
+trusted caller runtime, and test current producer/consumer contracts. Never use
+personal workspaces as test fixtures, credit retired backends, inflate grades,
+ignore advisories or copy old receipt hashes. Reachable history still contains
+five historical privacy findings; do not rewrite it without authorization.
+External browser gates remain separate from local runtime tests. No owner
+settings/launcher change, commit, push, tag or publication.
+
+## 2026-10-09: Partial Streams And Coordination Overhead
+
+**Symptom/cause:** Answers stopped mid-word with `truncated_stream`. The SSE parser
+decoded individual `data:` lines instead of complete events; valid multiline
+completion envelopes reproduced the same error. Real missing-terminal streams
+also stopped intentionally after partial text because same-request retries cannot
+replay displayed output/actions. The original user's transport cause remains
+unknown. Serial discovery added latency, and worker checkpoints waited on an
+unbounded `Future.result()` before the next model request.
+
+**Repair:** Parse bounded SSE frames; preserve EOF uncertainty. Allow one buffered,
+validated text-only continuation in the main Codex runtime and unsigned blocks,
+never signed unbudgeted runs. Preserve executed tools, cancellation, permanent
+errors and mutation verification. Add a receive watchdog, configuration-bound
+readiness reuse, fresh per-operation Ollama snapshots, bounded initial waiting,
+nonblocking follow-ups and late-result/cancellation ownership. Huge numeric Jev
+answers now reject without overflow; checked pipe handles and explicit external
+companion imports satisfy their typing contracts.
+
+**Verified evidence:** A real Astra call completed normally in 3,941 ms; a separate
+injected EOF recovered via one real continuation in 5,724 ms. A real unpinned
+Kimi/Jev agent review consumed deferral then validated evidence in 8,412 ms with
+unchanged fixture bytes. Cold/warm repaired discovery measured 863/323/264 ms;
+these are samples, not calibrated provider comparisons. Go race and seven Rust
+tests passed; seven repaired source modules pass mypy and repository Ruff passed.
+Final source: 589 focused tests passed; complete Python ran in 151.120 s with
+7,340 passed, 41 skipped and the same 12 failures. Receipts:
+`/tmp/algo-continuum-cleanup.VJ38qP/goal-source-final-focused.xml` and
+`goal-source-final-full.xml`. These results do not make full local CI green.
+
+**Prevention/limits:** Test protocol framing, adverse ordering and cancellation,
+not just successful JSON examples. Cached readiness is not inference, permission
+or verification. Pending/abstained work is not provider failure, and cancellation
+cannot undo remote requests already sent. Retain original failed receipts and
+remaining local CI defects; do not claim release readiness. See
+[goal report](runtime-reliability-goal.md). No normal settings/grant/launcher change,
+commit, push, tag, release or retired-memory fallback.
+
+## 2026-10-08: Valid Routing Abstention Is Not A Broken Brain
+
+**Symptom/cause:** `route_requires_main_model` hid the failed quality check and
+disabled later checkpoints. The supplied Jev preference 0.70 missed 0.80 while
+fit 0.84 and margin 0.49 passed. Valid coordinator judgment was conflated with
+an unanswered original question. One Choice also requested references, mixing
+bounded selection with open-ended generation. Pinned earlier demos did not
+exercise the full candidate set.
+
+**Research/repair:** Official TypeSafe composability, confidence, fan-out and
+jaggedness guidance informed atomic questions, explicit code-owned assessment,
+validated abstention and evidence-driven follow-up. Keep thresholds/router
+privacy unchanged; expose rejected metrics and retain typed routing advice
+without original answers or silent specialist dispatch. Reject forged/stale
+deferrals and duplicate evidence; retain denied/error stops. Batch relevance
+Noul separately when excerpts exist. No third-party brain/tape/memory installed.
+
+**Verification:** Exact supplied distribution replay, request-change/forgery,
+duplicate evidence and authority regressions passed in 354 focused tests.
+Ruff/whitespace/three-file mypy passed. Real unpinned Kimi/Jev review validated
+both checkpoints with unchanged fixture (11,131.928 ms); a separately labelled
+replay continued through deferrals (6,981.978 ms). Full Python: 7,300 passed,
+41 skipped, 12 same failures. See [research](jev-brain-runtime-research-20261008.md).
+
+**Prevention/limits:** Separate inference completion, route acceptance, original
+answer validation and world verification. Do not tune to one example, adopt raw
+tapes or repeat until agreement. Main AI remains thinker; code remains authority.
+Synthetic trials are not calibration/offline/release proof; current permissions,
+data boundaries and source-bound release gates remain unchanged.
+
+## 2026-10-08: Deleted Roots, Generation-Bound Lookup And Extreme Vector Math
+
+**Symptoms/confirmed causes:** An absent entire source root was omitted from
+freshness checks, leaving cached snippets searchable. A warmed ID lookup skipped
+`load_index`, so changed generations/new records remained invisible. The dormant
+NumPy helper cast to float32 before scaling, rejecting valid extreme vectors.
+
+**Repair:** Include absent configured roots, compare recorded root descriptors,
+and drop records when all known roots are removed. Bind direct lookup to the
+normally checked snapshot, protect publication, retain a local map reference and
+clear it on reconfiguration. Scale historical vectors in float64 before float32
+normalization; no retired embedding provider/call path is restored.
+
+**Verification:** Isolated before-fix reproductions and new delete/rename/config,
+snapshot/concurrency and 1e-300..1e300 regressions. 568 focused tests, Ruff,
+whitespace and two-file mypy passed. Full Python: 7,296 passed, 41 skipped, the
+same 12 failures. A first check caught a missing lock import; repaired before
+qualification. See [the source-bound report](harness-review-followup-20261008.md).
+
+**Prevention/limits:** A missing managed root is evidence, not a reason to skip
+freshness checks. A secondary lookup must bind to the checked primary snapshot.
+Scale before narrowing numeric precision. Preserve freshness TTL, source/denial
+guards and scope assertions; historical math does not imply a live memory route.
+The separate review tree is unchanged; no public delivery/release claimed.
+
+## 2026-10-08: Static Review Findings And Request Policy Versus Provider Health
+
+**Symptoms/confirmed causes:** The pasted review called online routing unavailable
+without its actual error trace. A local-only online Jev request produces a policy
+refusal, not a health test. Reproductions confirmed per-thread timeout multiplication,
+post-return TeamResult mutation and silent unfinished members; TokenBucket accepted
+negative requests and could wait forever above capacity. FlowExecutor also marked
+a failed node successful when there were no failing evaluations.
+
+**Repair:** Keep local-only restrictions and attach explicit policy/health/recovery
+metadata through automatic checkpoints. Use one monotonic team deadline and a
+closed publication boundary, unfinished-member errors and daemon workers. Validate
+finite bucket parameters/requests and lock refill/debit without sleeping under the
+lock. Flow success requires successful node traces; unsupported kinds fail. Clean
+source mojibake and document unsandboxed trusted flow code/import initializers.
+
+**Verification:** Before-fix probes showed mutable returned dictionaries, missing
+timeouts, manufactured tokens and false flow success. 294 focused tests, repository
+Ruff, whitespace checks and five-file mypy passed. A fresh actual Kimi main-loop
+review received automatic Jev task/evidence judgments and preserved the fixture.
+Full Python: 7,254 passed, 41 skipped, the same 12 known failures. See the
+[source-bound report](review-followup-20261008.md).
+
+**Prevention/limits:** Freeze publication, not just waiting; daemonization does not
+cancel callbacks or their side effects. Validate impossible numeric requests before
+sleeping; do not let passing evaluations mask failed execution. Distinguish policy,
+approval and health errors without loosening privacy. Original session cause needs
+its trace. Flow provenance is not proved hostile; no sandbox/import-free audit,
+release qualification, hosted CI or public delivery is claimed. Jev advised the
+bounded repair choice; executable checks retained verification authority.
+
+**Later root-cause follow-up:** The provided checkpoint confirmed a local-only
+policy refusal. The automatic detector was matching words anywhere in the task,
+so a pasted report discussing local-only/offline policy became a new restriction.
+The prior diagnostic repair did not correct that inference. Locality now honors
+configured privacy and explicit task directives while excluding topic mentions
+and quoted/fenced examples; normal runtime grants still authorize remote calls.
+26 new regressions and 341 focused tests pass. A deliberate policy-mention task
+reached Jev automatically in the real Kimi loop (11,694.859 ms total), preserving
+the fixture. Full Python: 7,280 passed, 41 skipped, the same 12 failures. Never
+use a keyword anywhere in supplied evidence as a new permission/privacy directive;
+record the request constraint's basis. This is bounded parsing and demonstrated
+recovery, not universal language understanding or offline provider qualification.
+
+**Subsequent actual trace:** Automatic checks were skipped for `Do a revei...`
+because the action-keyword gate did not recognize the typo. The later manual call
+explicitly used `local_only=True`; its refusal was not an outage. Remove the exact
+keyword gate for configured ordinary tasks, retain small-talk/command/opt-out and
+authority ceilings, and classify the reported review for evidence follow-up.
+The exact wording now reaches Jev twice in the actual Kimi loop (6,823.120 ms),
+with unchanged fixture bytes. Do not patch one spelling as the entire solution
+or silently change a model's explicitly local-only call to remote. Core checks
+must use canonical dispatch; unapproved calls remain denied.
+
+## 2026-10-08: Retire Embedding And Lab Paths Without Weakening Continuum
+
+**Symptoms/causes:** Native Continuum was selected, but the CLI still initialized
+embedding infrastructure and advertised Lab/Intuition/vector routes. The exact-file
+catalog watermark watched its parent directory, so unrelated generated state could
+invalidate it. Non-object cache rows survived normalization and could crash readers.
+
+**Repair:** Remove main and Agent Block vector recall/injection; use lexical
+reference search. Remove retired model tools, commands and authority policies;
+keep rejection-only compatibility and historical protected-root denials. Drop
+retired reference-provider fields from normal serialization, replace current Lab
+instructions with a retirement notice, retain historical utilities/data, and
+convert old positive tests into refusal/no-IO checks. Normalize malformed rows
+and track actual exact-file source changes without unrelated directory writes.
+
+**Verification:** 564 focused tests and a separate 190-test pipeline/documentation
+run passed. Repository Ruff, whitespace checks and four-file scoped mypy passed.
+Live launcher Continuum doctor/context succeeded; registry is ready (80 tools,
+96 slashes). The live synthetic automatic Jev review completed without embedding
+startup. The latest full run has 7,220 passes, 41 skips and 12 failures, not a
+qualified release. See [the repair receipt](continuum-reference-retirement.md).
+
+**Prevention/limits:** Retirement covers discovery and docs as well as execution.
+Do not restore vector calls to satisfy obsolete tests, erase historical stores,
+or remove denial/provenance/cancellation assertions. Jev's migration triage
+confirmed preserving snapshot tests; other low-confidence answers stayed leads.
+Native operation-count drift, stale qualification receipts, slash/scorecard and
+logo gaps remain. Existing processes need restart; no push/tag/public release.
+
+## 2026-10-08: Jev Coordination, Reasoning Checkpoints And Offline Evidence
+
+**Issue/cause:** Selecting a decision backend did not create a coordinator. The
+main model could omit the deferred tool; Clef-flash's normalized name missed its
+intent gate. Provider selection, useful catalog recommendations and actual action
+verification were separate operations. Early routing wording misread evidence
+omitted for privacy as evidence missing from the answering task. A synthetic
+preapproval used a monotonic timestamp against the runtime's wall-clock grants.
+
+**Repair:** Add default Jev coordination over deterministic compatible/available
+providers, typed route/fit judgments and explicit uncertainty policy. Offer
+source-bound kernel/algorithm references without importing custom implementations
+or promoting proposed status. Expose checkpoints in main and allowed Agent Block
+loops while retaining the main thinking model and existing authority. Only
+observed offline status permits local coordinator substitution; auth/service
+errors and ambiguous connectivity do not. Fix fixture grant clock, denial-result
+parsing and discovery budget/alias regressions. Saved owner coordinator/default
+is Jev; non-decision configuration hash is unchanged.
+
+**Verification:** Focused adapter/catalog/coordinator/Agent Block/discovery suites
+passed 247 tests. Scoped Ruff and five-file mypy checks passed. Real main-loop
+synthetic trial: Jev chose Clef-flash at probability .98/fit .92; router 517.735 ms,
+answer 5137.451 ms, whole agent 43564.645 ms, subsequent authorized read matched
+the expected hash. Online eight-question fixture matched all expected answers.
+The final fresh-source repeat also passed: router 560.226 ms, answer 5209.353 ms,
+whole agent 36045.115 ms. Agent trials used an explicit fixture task pin; they
+prove consumption/fit, not a neutral comparison of provider quality.
+Offline trials retained uncertain votes and did not dispatch; simulated offline
+is not a physical network outage. Final full local suite: 7,186 passed, 41 skipped,
+13 failed in 146.23 s. Remaining failures are the Continuum operation registry,
+qualification environment/source artifacts, slash catalog, scorecard and seven
+logo tests. These match the prior categories; do not infer an all-green release.
+
+**Prevention/limits:** Bind tests to a stable source snapshot. Catalog wiring
+disappeared during this pass; the cause is unknown, was reconciled without
+discarding unrelated edits, and the final check records source hashes. Never
+weaken thresholds to produce a successful demo, infer offline from a provider
+error, or treat a model vote as truth/permission. Offline coordinator reliability,
+kernel workload quality and production calibration remain unqualified. Normal
+approval policy and the main model were not changed; no commit/push/tag/hosted CI.
+
+### Automatic Review Follow-up
+
+The main model still omitted the optional decision tool in a real review.
+`TaskCheckpoints` now dispatches bounded task and read-only evidence checks before
+dependent main-model requests. Preapproved calls may use a worker; approvals
+stay on the main thread and live revocable grants remain authoritative. No raw
+thinking or bulk memory is uploaded, no denied call is retried through another
+route, and signed contracts receive no unbudgeted call.
+
+The first worker snapshot tried to assign a derived property and failed before
+inference; it now sets the real approval controls. Focused revocation and denied
+call checks pass. A fresh public synthetic review used Jev automatically:
+1,257.945 ms task, 1,086.898 ms evidence, 8,903.654 ms whole Kimi loop. Source was
+read and its logic defect reported, not repaired. The fixture stayed unchanged.
+This is working runtime consumption, not calibration or exhaustive review.
+
+## 2026-10-07: Native Decision Providers And Actual Agent Consumption
+
+**Issue and cause:** Existing Jev contract tools did not provide one runtime
+decision interface for the requested local models. SDK 0.6.2 converted a union
+state annotation into an invalid comma-separated schema type and discarded
+nested property constraints. A live main-agent trial then sent malformed question
+criteria. Decider's native extra uncertainty fields were initially rejected by
+the shared strict validator; CLM's stock CLI could silently truncate encoder text.
+
+**Repair:** Add native Jev, Ollama System One, CLM and Decider adapters behind a
+reviewed provider interface; register model-callable tools through normal
+dispatch/authority and both conversational loops. Use an explicit SDK-compatible
+schema with concrete primitive examples and safe validation guidance. Preserve
+Jev option order and credential handling; validate/retain Decider's native extras;
+run pinned CLM tokenizer admission before its existing local inference. Enforce
+local-only primary/fallback restrictions, absolute response deadlines, explicit
+routing and focused locked configuration updates. Images remain disabled.
+
+**Verification:** The original focused baseline passed 94 tests. New adapter,
+schema, privacy, configuration, authority and completion regressions pass; the
+actual main loop requested Clef-flash, consumed the validated Choice in a later
+round, performed an authorized read and checked the observed result. The same
+eight-question live fixture was run across all six providers; CLM's six misses
+remain recorded. First failed agent/Decider receipts are retained. Source/import
+checks confirm the editable launcher loads this implementation; no default model,
+decision default, unrelated saved setting, permission gate or private catalog
+was changed. Complete-suite results and source-specific limits are recorded in
+the private qualification receipt rather than inferred from older reports.
+
+**Prevention and limits:** Test the real SDK wire schema and actual agent
+consumption, not just direct adapter calls. Native response types and confidence
+meanings need adapter-specific treatment. Do not turn a model vote into action
+authority or completion evidence, silently truncate input/output, or equate a
+download/loaded model with successful inference. Small development fixtures do
+not establish provider calibration or production reliability. Tev1's installed
+and upstream weight-license metadata disagree; redistribution remains unqualified.
+Existing source-bound release artifacts do not qualify this changed runtime.
+
 Record verified repairs here before closing the associated task. Update an
 existing incident instead of duplicating it. Each entry needs an observed issue,
 confirmed cause (or an explicit unknown), repair, verification, prevention, and

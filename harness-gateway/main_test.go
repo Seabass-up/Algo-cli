@@ -91,7 +91,7 @@ func TestBoundEmbeddingRejectsMismatchesBeforeCallingUpstream(t *testing.T) {
 		_, _ = io.WriteString(w, `{"model":"fixture","embeddings":[[1,0]]}`)
 	}))
 	defer upstream.Close()
-	mux := newGatewayMux("unused", upstream.URL, upstream.Client())
+	mux := newGatewayMux("unused", upstream.URL, upstream.Client(), "")
 	for _, expected := range []string{"", "http://127.0.0.1:1", "http://user:secret@localhost:11434", "http://example.com:11434"} {
 		request := httptest.NewRequest(http.MethodPost, "/supplemental/embed-bound/v1", strings.NewReader(`{"model":"fixture","input":["public fixture"]}`))
 		request.Header.Set("Content-Type", "application/json")
@@ -173,7 +173,8 @@ func TestGatewayMethodsQueriesSearchAndPrivacy(t *testing.T) {
 		_, _ = io.WriteString(w, `{"models":[]}`)
 	}))
 	defer upstream.Close()
-	mux := newGatewayMux(indexPath, upstream.URL, upstream.Client())
+	token := strings.Repeat("fixture-", 6)
+	mux := newGatewayMux(indexPath, upstream.URL, upstream.Client(), token)
 
 	health := httptest.NewRecorder()
 	mux.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -188,17 +189,18 @@ func TestGatewayMethodsQueriesSearchAndPrivacy(t *testing.T) {
 	}
 
 	statsResponse := httptest.NewRecorder()
-	mux.ServeHTTP(statsResponse, httptest.NewRequest(http.MethodGet, "/harness/stats", nil))
+	statsRequest := httptest.NewRequest(http.MethodGet, "/harness/stats", nil)
+	statsRequest.Header.Set("Authorization", "Bearer "+token)
+	mux.ServeHTTP(statsResponse, statsRequest)
 	statsPayload := decodeResponse(t, statsResponse)
 	if _, leaked := statsPayload["index"]; leaked || strings.Contains(statsResponse.Body.String(), indexPath) {
 		t.Fatalf("stats leaked local path: %s", statsResponse.Body.String())
 	}
 
 	searchResponse := httptest.NewRecorder()
-	mux.ServeHTTP(
-		searchResponse,
-		httptest.NewRequest(http.MethodGet, "/harness/search?q=control&harness=algo-cli", nil),
-	)
+	searchRequest := httptest.NewRequest(http.MethodGet, "/harness/search?q=control&harness=algo-cli", nil)
+	searchRequest.Header.Set("Authorization", "bearer "+token)
+	mux.ServeHTTP(searchResponse, searchRequest)
 	var searchPayload []map[string]interface{}
 	if err := json.Unmarshal(searchResponse.Body.Bytes(), &searchPayload); err != nil {
 		t.Fatal(err)
@@ -213,6 +215,7 @@ func TestGatewayMethodsQueriesSearchAndPrivacy(t *testing.T) {
 		"/harness/search?q="+strings.Repeat("a", maxSearchQueryBytes+1),
 		nil,
 	)
+	request.Header.Set("Authorization", "Bearer "+token)
 	mux.ServeHTTP(bounded, request)
 	if bounded.Code != http.StatusBadRequest {
 		t.Fatalf("oversized query accepted: %d", bounded.Code)
@@ -220,6 +223,49 @@ func TestGatewayMethodsQueriesSearchAndPrivacy(t *testing.T) {
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func TestIndexRoutesRequireOwnerCredentialBeforeReading(t *testing.T) {
+	token := strings.Repeat("fixture-", 6)
+	indexPath := writeFixtureIndex(t, []map[string]interface{}{{
+		"id": "private", "summary": "SYNTHETIC_PRIVATE_VALUE", "search_text": "private",
+	}})
+	for _, path := range []string{"/harness/stats", "/harness/search?q=private"} {
+		for _, source := range []string{indexPath, "missing-index"} {
+			mux := newGatewayMux(source, "http://127.0.0.1:11434", nil, token)
+			for _, headers := range [][]string{
+				nil, {"Bearer wrong"}, {"Basic " + token}, {"Bearer " + token + " "},
+				{"Bearer " + token, "Bearer " + token}, {"Bearer " + token + ", Bearer " + token},
+			} {
+				req := httptest.NewRequest(http.MethodGet, path, nil)
+				for _, header := range headers {
+					req.Header.Add("Authorization", header)
+				}
+				response := httptest.NewRecorder()
+				mux.ServeHTTP(response, req)
+				if response.Code != http.StatusUnauthorized || strings.Contains(response.Body.String(), "SYNTHETIC_PRIVATE_VALUE") {
+					t.Fatalf("unauthorized index access: %d %s", response.Code, response.Body.String())
+				}
+			}
+		}
+		for _, config := range []string{"", "short", token + "\n", strings.Repeat("a", 513)} {
+			mux := newGatewayMux(indexPath, "http://127.0.0.1:11434", nil, config)
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Authorization", "Bearer "+token)
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, req)
+			if response.Code != http.StatusServiceUnavailable {
+				t.Fatalf("invalid token configuration enabled index: %d", response.Code)
+			}
+		}
+	}
+	mux := newGatewayMux(indexPath, "http://127.0.0.1:11434", nil, token)
+	req := httptest.NewRequest(http.MethodGet, "/harness/search?q=private&access_token="+token, nil)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, req)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatal("query credential accepted")
+	}
+}
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
@@ -253,7 +299,7 @@ func TestProxyRejectsTruncationRedirectsAndOversizedResponses(t *testing.T) {
 			Request:    request,
 		}, nil
 	})}
-	mux := newGatewayMux("missing", "http://127.0.0.1:11434", client)
+	mux := newGatewayMux("missing", "http://127.0.0.1:11434", client, "")
 
 	tooLarge := httptest.NewRecorder()
 	request := httptest.NewRequest(
@@ -278,7 +324,7 @@ func TestProxyRejectsTruncationRedirectsAndOversizedResponses(t *testing.T) {
 			Request: request,
 		}, nil
 	})}
-	redirectMux := newGatewayMux("missing", "http://127.0.0.1:11434", redirectClient)
+	redirectMux := newGatewayMux("missing", "http://127.0.0.1:11434", redirectClient, "")
 	redirect := httptest.NewRecorder()
 	redirectMux.ServeHTTP(redirect, httptest.NewRequest(http.MethodGet, "/supplemental/models", nil))
 	if redirect.Code != http.StatusBadGateway || !strings.Contains(redirect.Body.String(), "upstream_redirect") {
@@ -293,7 +339,7 @@ func TestProxyRejectsTruncationRedirectsAndOversizedResponses(t *testing.T) {
 			Request:    request,
 		}, nil
 	})}
-	largeMux := newGatewayMux("missing", "http://127.0.0.1:11434", largeClient)
+	largeMux := newGatewayMux("missing", "http://127.0.0.1:11434", largeClient, "")
 	large := httptest.NewRecorder()
 	largeMux.ServeHTTP(large, httptest.NewRequest(http.MethodGet, "/supplemental/models", nil))
 	if large.Code != http.StatusBadGateway || !strings.Contains(large.Body.String(), "upstream_response_bounds") {
@@ -316,7 +362,7 @@ func TestProxyForwardsOnlyFixedJSONRequestAndSecurityHeaders(t *testing.T) {
 		_, _ = io.WriteString(w, `{"embedding":[1]}`)
 	}))
 	defer upstream.Close()
-	mux := newGatewayMux("missing", upstream.URL, upstream.Client())
+	mux := newGatewayMux("missing", upstream.URL, upstream.Client(), "")
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(
 		http.MethodPost,
