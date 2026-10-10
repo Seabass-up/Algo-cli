@@ -1,6 +1,7 @@
 """Bound the lifetime of each local OAuth HTTP connection and capture session."""
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import io
 import socket
 from socketserver import TCPServer
 from threading import Timer
@@ -13,6 +14,8 @@ class CallbackHTTPServer(HTTPServer):
         self, address: tuple[str, int], handler: type[BaseHTTPRequestHandler], *, timeout: float,
     ) -> None:
         self.deadline = time.monotonic() + max(0.0, timeout)
+        if address[0] == "localhost":
+            address = ("127.0.0.1", address[1])
         super().__init__(address, handler)
 
     def server_bind(self) -> None:
@@ -55,8 +58,31 @@ class CallbackHTTPServer(HTTPServer):
             timer.join()
 
 
+class _DeadlineSocketReader(io.RawIOBase):
+    def __init__(self, connection: socket.socket, deadline: float) -> None:
+        self.connection = connection
+        self.deadline = deadline
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("OAuth connection deadline expired")
+        inactivity = self.connection.gettimeout()
+        self.connection.settimeout(min(remaining, inactivity) if inactivity is not None else remaining)
+        return self.connection.recv_into(buffer)
+
+
 class CallbackRequestHandler(BaseHTTPRequestHandler):
     server: CallbackHTTPServer
+
+    def setup(self) -> None:
+        super().setup()
+        self.rfile.close()
+        # Windows shutdown need not interrupt a pending buffered socket read.
+        self.rfile = io.BufferedReader(_DeadlineSocketReader(self.connection, self.server.connection_deadline))
 
     def parse_request(self) -> bool:
         # HTTP parsing accepts EOF as the end of headers, including timer-closed partial requests.

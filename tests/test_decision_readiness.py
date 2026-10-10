@@ -59,7 +59,7 @@ def test_raw_cli_configuration_and_permissions_invalidate_cache(monkeypatch, tmp
     from algo_cli import decision_readiness as r
     cfg, calls, cli = jev_fixture(monkeypatch, tmp_path)
     r.status_for_routing(cfg, d.JevProvider(cfg), {})
-    cli.chmod(0o700)
+    cli.chmod(cli.stat().st_mode & ~0o200)
     r.status_for_routing(cfg, d.JevProvider(cfg), {})
     monkeypatch.chdir(tmp_path)
     cfg.jev_kernel_cli = cli.name

@@ -1632,7 +1632,7 @@ def _record_signature_matches(record: dict[str, Any], source_stat: os.stat_resul
 
 
 def _source_watermark_ns(index: dict[str, Any] | None = None) -> int:
-    """Maximum mtime across harness roots and source files.
+    """Effective freshness watermark across harness roots and source files.
 
     When an index is available, check root directory mtimes plus the already-indexed
     record paths. This preserves in-place edit detection without a full recursive
@@ -1646,6 +1646,10 @@ def _source_watermark_ns(index: dict[str, Any] | None = None) -> int:
     whose name (e.g. ``tmp``) overlaps a skip entry.
     """
     if not INDEX_PATH.exists():
+        return 0
+    try:
+        invalidation_stamp = INDEX_PATH.stat().st_mtime_ns + 1
+    except OSError:
         return 0
     watermark = 0
     all_roots = all_source_roots()
@@ -1685,7 +1689,8 @@ def _source_watermark_ns(index: dict[str, Any] | None = None) -> int:
             # would keep a future-dated source stale on every load.
             if _record_signature_matches(record, source_stat):
                 continue
-            watermark = max(watermark, source_stat.st_mtime_ns)
+            # Changed metadata must invalidate even with a restored/coarse timestamp.
+            watermark = max(watermark, source_stat.st_mtime_ns, invalidation_stamp)
         for root in all_roots:
             if not root.root.exists():
                 continue
@@ -1697,7 +1702,7 @@ def _source_watermark_ns(index: dict[str, Any] | None = None) -> int:
                 if key in indexed_paths:
                     continue
                 try:
-                    watermark = max(watermark, path.stat().st_mtime_ns)
+                    watermark = max(watermark, path.stat().st_mtime_ns, invalidation_stamp)
                 except OSError:
                     continue
         return watermark

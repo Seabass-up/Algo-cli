@@ -92,6 +92,28 @@ Refresh affected source-bound reports and rerun complete local/hosted CI before
 claiming this successor qualified; prior hosted success/failure belongs to the
 earlier commit.
 
+**Second hosted diagnosis and Windows follow-up:** The DNS-free successor still
+failed during macOS connection setup. Keep that failure; reverse DNS alone was
+not its complete cause. Normalize the registered localhost listener to numeric
+IPv4 without changing the registered redirect URI. Tests now use the listener's
+actual ephemeral port and a readiness event, with direct numeric TCP connection,
+rather than reserve/release/retry a port. Keep capture and connection budgets.
+Windows additionally showed that shutdown did not reliably interrupt a buffered
+read whose inactivity timeout had been overridden. Enforce remaining absolute
+time before each raw receive, backed by the existing timer; a deterministic test
+checks declining budgets and rejection before another receive at expiry.
+
+Windows fixtures also assumed representable 10-nanosecond timestamps, POSIX
+execute-bit chmod and modern-console dimensions. Use observed whole-second
+timestamps, an actual read-only mode change, and compare both Rich legacy/modern
+dimensions. Measure cancellation from injected interrupt rather than earlier
+initialization; retain its five-second bound. Compact the shared semantic rule
+without dropping constraints to retain the existing one-shot budget. Metadata
+comparison revealed a separate stale-cache defect: changed/new source files with
+restored or coarse timestamps must signal invalidation beyond the index's stamp.
+Add a size-change/restored-time regression. Focused checks pass locally; require
+new complete local/hosted source qualification before accepting this successor.
+
 ## 2026-10-09: Valid Decision Advice Is Not Semantic Verification
 
 **Symptom/cause:** The supplied Jev trial contained well-formed, confidently wrong

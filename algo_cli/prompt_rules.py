@@ -33,14 +33,12 @@ RUNTIME_SOURCE_RULE = (
 )
 
 DECISION_VERIFICATION_RULE = (
-    "Decision schema validation checks types, labels, bounds and distributions, not factual correctness. "
-    "Choice confidence is distribution concentration, not a calibrated correctness guarantee; "
-    "Noul and Score outputs are advisory estimates, not exact calculators. "
-    "Use authorized deterministic computation for exact arithmetic, probabilities, graph algorithms "
-    "and formal deductions; use decision models to compare bounded evidence and computed candidates. "
-    "A high-confidence decision or a manually checked answer key is not independent machine verification. "
-    "If the required computation cannot be performed under current permissions, report it unverified; "
-    "do not bypass the permission boundary, lower routing thresholds or relabel an advisory as proof."
+    "Decision validation checks schema, not factual correctness. "
+    "Choice confidence is distribution concentration, not correctness; Noul and Score are advisory. "
+    "Use authorized deterministic computation for exact arithmetic, probabilities, graphs and proofs. "
+    "Confidence and manual answer keys are not machine verification. "
+    "When checking is unauthorized, report it unverified; never bypass permissions, lower routing "
+    "thresholds or relabel advice as proof."
 )
 
 

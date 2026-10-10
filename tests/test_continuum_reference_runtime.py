@@ -62,18 +62,36 @@ def test_exact_catalog_root_is_not_invalidated_by_generated_state(monkeypatch, t
     catalog.write_text("old\n")
     index_path = root / "harness_index.json"
     index_path.write_text("{}")
-    os.utime(catalog, ns=(10, 10))
-    os.utime(index_path, ns=(20, 20))
-    record = {"path": str(catalog), "file_size": catalog.stat().st_size, "file_mtime_ns": 10}
+    os.utime(catalog, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(index_path, ns=(2_000_000_000, 2_000_000_000))
+    record = {"path": str(catalog), "file_size": catalog.stat().st_size,
+              "file_mtime_ns": catalog.stat().st_mtime_ns}
     monkeypatch.setattr(harness, "INDEX_PATH", index_path)
     monkeypatch.setattr(harness, "all_source_roots", lambda: (harness.SourceRoot("algo-cli", "algorithm", root, ("ALGO.md",), 1),))
     (root / "unrelated_state.json").write_text("generated state")
     assert harness._source_watermark_ns({"records": [record]}) == 0
     catalog.write_text("changed\n")
-    os.utime(catalog, ns=(30, 30))
-    assert harness._source_watermark_ns({"records": [record]}) == 30
+    os.utime(catalog, ns=(3_000_000_000, 3_000_000_000))
+    assert harness._source_watermark_ns({"records": [record]}) == catalog.stat().st_mtime_ns
 
 
 def test_normalization_drops_malformed_cache_records():
     index = harness._normalize_index_records({"records": [None, "bad", 42], "record_count": 3})
     assert index["records"] == [] and index["record_count"] == 0
+
+
+def test_catalog_size_change_with_restored_timestamp_invalidates_index(monkeypatch, tmp_path):
+    catalog = tmp_path / "ALGO.md"
+    catalog.write_text("old\n")
+    index_path = tmp_path / "harness_index.json"
+    index_path.write_text("{}")
+    os.utime(catalog, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(index_path, ns=(2_000_000_000, 2_000_000_000))
+    observed = catalog.stat()
+    record = {"path": str(catalog), "file_size": observed.st_size, "file_mtime_ns": observed.st_mtime_ns}
+    monkeypatch.setattr(harness, "INDEX_PATH", index_path)
+    monkeypatch.setattr(harness, "all_source_roots", lambda: (
+        harness.SourceRoot("algo-cli", "algorithm", tmp_path, ("ALGO.md",), 1),))
+    catalog.write_text("changed size\n")
+    os.utime(catalog, ns=(observed.st_mtime_ns, observed.st_mtime_ns))
+    assert harness._source_watermark_ns({"records": [record]}) > index_path.stat().st_mtime_ns

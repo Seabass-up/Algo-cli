@@ -43,19 +43,24 @@ def test_format_status_toolbar_plain_matches_key_chips() -> None:
     assert "auto on" in line
 
 
-def test_runtime_console_size_setter_preserves_physical_dimensions(monkeypatch) -> None:
+@pytest.mark.parametrize("legacy_windows", [False, True])
+def test_runtime_console_size_setter_preserves_rich_dimensions(monkeypatch, legacy_windows) -> None:
+    from rich.console import Console
     from algo_cli.display import RuntimeConsole
-    console = RuntimeConsole(width=80, height=24)
+    console = RuntimeConsole(width=80, height=24, legacy_windows=legacy_windows)
+    parent = Console(width=80, height=24, legacy_windows=legacy_windows)
     active = [False]
     monkeypatch.setattr(sticky_status, "is_active", lambda: active[0])
     console.size = (100, 30)
-    assert console.size == (100, 30)
+    parent.size = (100, 30)
+    assert console.size == parent.size
     active[0] = True
-    assert console.size == (100, 29)
+    assert console.size == (parent.size.width, parent.size.height - 1)
     console.size = (60, 20)
-    assert console.size == (60, 19)
+    parent.size = (60, 20)
+    assert console.size == (parent.size.width, parent.size.height - 1)
     active[0] = False
-    assert console.size == (60, 20)
+    assert console.size == parent.size
 
 
 def test_sticky_status_noop_on_non_tty() -> None:

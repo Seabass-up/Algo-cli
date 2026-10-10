@@ -409,6 +409,7 @@ def test_ctrl_c_during_parallel_batch_does_not_wait_for_hung_tool(monkeypatch, t
     fast_done = threading.Event()
     release = threading.Event()
     configs: list = []
+    interrupted_at = []
 
     def invoke(_name, args, _cfg):
         if args["path"] == "hung":
@@ -420,11 +421,11 @@ def test_ctrl_c_during_parallel_batch_does_not_wait_for_hung_tool(monkeypatch, t
 
     def interrupt_wait(_futures):
         assert hung_entered.wait(timeout=5) and fast_done.wait(timeout=5)
+        interrupted_at.append(time.monotonic())
         raise KeyboardInterrupt
 
     monkeypatch.setattr(main, "as_completed", interrupt_wait)
     monkeypatch.setattr(main, "PARALLEL_INTERRUPT_GRACE_SECONDS", 0.3)
-    started = time.monotonic()
     try:
         code, events, client, _invoked, _captures = run_script(
             monkeypatch,
@@ -438,7 +439,7 @@ def test_ctrl_c_during_parallel_batch_does_not_wait_for_hung_tool(monkeypatch, t
             invoke=invoke,
             configure=configs.append,
         )
-        elapsed = time.monotonic() - started
+        elapsed = time.monotonic() - interrupted_at[0]
     finally:
         release.set()
 
