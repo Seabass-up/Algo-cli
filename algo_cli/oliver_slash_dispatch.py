@@ -333,6 +333,19 @@ def handle_command(
     entered_command = parts[0].lower()
     command = SLASH_COMMAND_ALIASES.get(entered_command, entered_command)
     arg = parts[1] if len(parts) > 1 else ""
+    if command == "/code-rag" and arg.strip().lower() == "off":
+        from . import code_rag
+
+        cfg.code_rag_enabled = False
+        cfg.code_rag_consent_version = 0
+        try:
+            cfg.save()
+            removed = code_rag.purge_persisted_indexes()
+        except OSError:
+            m.show_error("Retired code-RAG cleanup failed; cleanup is incomplete. Retry /code-rag off after repairing the local state.")
+        else:
+            m.show_info(f"Retired code-RAG disabled; removed {removed} persisted index entries.")
+        return True, client
     if command in {"/embed", "/icl", "/intuition", "/code-rag"} or (
         command == "/harness" and arg.split(maxsplit=1)[:1] in (["embed"], ["benchmark-embed"])
     ) or (command == "/lessons" and arg.strip() == "reindex"):

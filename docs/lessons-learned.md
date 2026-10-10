@@ -1,5 +1,47 @@
 # Lessons Learned
 
+## 2026-10-10: PR 89 Decision Metadata And Retired Index Cleanup
+
+**Symptom/cause:** Valid JSON with null or non-object Ollama `details` or Decider
+`runtime` reached chained dictionary access and raised uncaught `AttributeError`.
+A supported adapter without distributions could return `probabilities: null`,
+but explicit choice policy also dereferenced it. Retirement caught `/code-rag off`
+before clearing old consent/settings and purging persisted source indexes.
+
+**Repair:** Validate discovery containers and Decider metadata at their adapter
+boundaries; retain model/revision pinning. An unavailable choice distribution
+produces a null derived choice, not invented confidence. Restore only exact
+`/code-rag off`: disable and persist consent first, then use the existing bounded,
+identity-checked purge. Report save/purge failure as incomplete and permit retry.
+Other retired routes stay unlisted and rejected; no embeddings, memory fallback,
+permission change, normal installation or publication is introduced.
+
+**Verification:** New tests reproduced all four defects before source repair
+(12 failures, one passing missing-distribution control). Focused decision,
+coordinator, checkpoint, semantic, code-index and session-command suites:
+`pytest -o addopts='' -q tests/test_decision_layer.py
+tests/test_continuum_reference_runtime.py tests/test_decision_readiness.py
+tests/test_code_rag.py tests/test_session_command_output.py
+tests/test_decision_coordinator.py tests/test_decision_checkpoints.py
+tests/test_decision_semantic_regressions.py`: 315 passed, 3 platform skips.
+Repository Ruff and all 272 package modules pass mypy. Frozen non-editable
+installed-source parity, compilation, source/history privacy scans and the locked
+Python vulnerability audit pass. The complete workflow-matching run (`pytest tests
+--cov --cov-branch --cov-fail-under=57 -vv --durations=25`, with the workflow's
+120-second fail-closed faulthandler settings) passes 7,454 tests with 41 skips,
+zero failures, 73.34% coverage and 207.67-second duration. The earlier complete
+run also passes 7,454/41. Real refreshed Nathan passes; M8 retains 9 local passes,
+5 external blocks and zero failures; M9 remains blocked. Prior evidence rows
+are preserved. Hosted checks for the fix commit and merge are still pending.
+
+**Prevention/limits:** Valid JSON does not guarantee nested schema validity.
+Test null, missing and wrong-shaped metadata through status and actual decisions;
+exercise distribution-free registered adapters through policy derivation. Feature
+retirement must preserve explicit safe cleanup and its failure visibility.
+Existing purge alias/hardlink protections and session authorization remain tested.
+Jev 1.13.0 recommended boundary tests (288.351 ms); its repair-plan confidence was
+0.4 and is advisory, not verification or merge approval.
+
 ## 2026-10-09: Core 0.20.3 Preparation And Chrome Inventory
 
 **Symptom/cause:** The owner chose a fresh core CLI version with native features

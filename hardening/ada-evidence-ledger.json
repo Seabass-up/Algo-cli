@@ -4493,6 +4493,15 @@
           "timestamp": "2026-10-10T03:34:26Z",
           "scope": "Actual local qualification after buffered-read deadline and freshness/portable-contract repairs; source sha256:f740e5fb7d13ff655c1a12c62194e80c9d2ba1ae5e458e9593c38d752e9e9da8",
           "limitations": "No hosted browser, production signing or public delivery qualification inferred; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:31114da018e20a9dc1b2afe2b22d443c7512a563b213ab5ce5f2ab5ce9fb4e5e",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-10T20:24:37Z",
+          "scope": "Actual PR 89 metadata, missing-distribution and retired-index cleanup repair; source sha256:207fb7184f2f662a22c24f132336d12ccc5497e4434b61117f8bc83621618120",
+          "limitations": "Finite local qualification is not provider calibration, hosted browser/signing or public delivery proof; HARD-080 remains in progress"
         }
       ]
     },
@@ -7336,6 +7345,24 @@
           "timestamp": "2026-10-10T03:34:26Z",
           "scope": "Actual local qualification after buffered-read deadline and freshness/portable-contract repairs; source sha256:f740e5fb7d13ff655c1a12c62194e80c9d2ba1ae5e458e9593c38d752e9e9da8",
           "limitations": "No hosted browser, production signing or public delivery qualification inferred; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "scripts/nathan_agent_runtime_qualification.py --refresh --quiet; hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:6ebdf8a2715f014c347a6b238fed57c8e96e58800fce80cbf1a1b7323b2a445a",
+          "result": "status pass; public_claim_eligible is false",
+          "timestamp": "2026-10-10T20:21:53Z",
+          "scope": "Actual PR 89 metadata, missing-distribution and retired-index cleanup repair; source sha256:039d6673e6830009071360edb9389e4341d949da853c50907c9abe341dedd2a1",
+          "limitations": "Finite local qualification is not provider calibration, hosted browser/signing or public delivery proof; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "scripts/henry_m8_qualification.py --output hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:31114da018e20a9dc1b2afe2b22d443c7512a563b213ab5ce5f2ab5ce9fb4e5e",
+          "result": "status blocked: 9 local metrics pass, 5 external browser metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-10T20:24:37Z",
+          "scope": "Actual PR 89 metadata, missing-distribution and retired-index cleanup repair; source sha256:207fb7184f2f662a22c24f132336d12ccc5497e4434b61117f8bc83621618120",
+          "limitations": "Finite local qualification is not provider calibration, hosted browser/signing or public delivery proof; HARD-081 remains in progress"
         }
       ]
     },

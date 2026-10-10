@@ -74,6 +74,80 @@ def test_explicit_threshold_policy_retains_raw_result_and_gray_band(monkeypatch)
     assert result["answers"] == ANSWERS and result["applied_policy"] == policy
 
 
+@pytest.mark.parametrize("probabilities", [None, "absent"])
+def test_choice_policy_abstains_when_distribution_is_unavailable(monkeypatch, probabilities):
+    answers = copy.deepcopy(ANSWERS)
+    if probabilities is None:
+        answers["pick"]["probabilities"] = None
+    else:
+        answers["pick"].pop("probabilities")
+    provider = FakeProvider("fixture", answer=answers)
+    provider.capabilities = d.Capabilities(distributions=False)
+    monkeypatch.setattr(d, "_PROVIDER_FACTORIES", {})
+    d.register_provider("fixture", lambda cfg: provider)
+    result = d.decide(Config(), "state", QUESTIONS, provider="fixture",
+                      policy={"minimum_choice_probability": 0.5})
+    assert result["ok"] and result["answers"] == answers
+    assert result["derived"] == {"pick": None}
+    assert result["action_authority"] is False and result["real_world_verified"] is False
+
+
+@pytest.mark.parametrize("details", [None, [], "gguf", 42])
+def test_malformed_ollama_details_fail_structurally_in_status_and_decide(monkeypatch, details):
+    calls = []
+
+    def http(base, route, payload, timeout):
+        calls.append(route)
+        return {
+            "/api/version": {"version": "0.35.1"},
+            "/api/tags": {"models": [{"name": "clef:latest"}]},
+            "/api/show": {"capabilities": ["decision"], "details": details},
+        }[route]
+
+    monkeypatch.setattr(d, "_http_json", http)
+    cfg = Config()
+    status = json.loads(d.decision_status("clef", cfg))["providers"]["clef"]
+    assert status == {"ok": False, "error": "incompatible_decision_model"}
+    result = d.decide(cfg, "state", QUESTIONS, provider="clef")
+    assert not result["ok"] and result["error"] == "incompatible_decision_model"
+    assert result["answers"] == {} and "/v1/systemone" not in calls
+
+
+@pytest.mark.parametrize("route,field,value,error", [
+    ("/api/tags", "models", None, "invalid_ollama_discovery"),
+    ("/api/tags", "models", [None], "invalid_ollama_discovery"),
+    ("/api/show", "capabilities", None, "incompatible_decision_model"),
+    ("/api/show", "capabilities", "decision", "incompatible_decision_model"),
+    ("/api/ps", "models", None, "invalid_ollama_discovery"),
+    ("/api/ps", "models", [None], "invalid_ollama_discovery"),
+])
+def test_malformed_nested_ollama_discovery_returns_structured_error(monkeypatch, route, field, value, error):
+    replies = {
+        "/api/version": {"version": "0.35.1"},
+        "/api/tags": {"models": [{"name": "clef:latest"}]},
+        "/api/show": {"capabilities": ["decision"], "details": {"format": "gguf"}},
+        "/api/ps": {"models": []},
+    }
+    replies[route][field] = value
+    monkeypatch.setattr(d, "_http_json", lambda base, route, payload, timeout: replies[route])
+    result = d.decide(Config(), "state", QUESTIONS, provider="clef")
+    assert not result["ok"] and result["error"] == error and not result["answers"]
+
+
+@pytest.mark.parametrize("runtime", [None, [], "revision", 42, "absent"])
+def test_malformed_decider_runtime_returns_structured_failure(monkeypatch, tmp_path, runtime):
+    provider = d.CompanionProvider("decider", {})
+    monkeypatch.setattr(provider, "_path", lambda: tmp_path / "decider_local.py")
+    reply = {"ok": True, "response": {"model": provider.model, "answers": ANSWERS}}
+    if runtime != "absent":
+        reply["runtime"] = runtime
+    monkeypatch.setattr(d, "_cli_json", lambda *_: copy.deepcopy(reply))
+    use_provider(monkeypatch, provider)
+    result = d.decide(Config(), "state", QUESTIONS, provider="decider")
+    assert not result["ok"] and result["error"] == "invalid_companion_response"
+    assert result["answers"] == {} and result["action_authority"] is False
+
+
 @pytest.mark.parametrize("mutate,code", [
     (lambda a: a.pop("present"), "answer_ids_mismatch"),
     (lambda a: a["present"].update(noul=True), "invalid_answer_number"),

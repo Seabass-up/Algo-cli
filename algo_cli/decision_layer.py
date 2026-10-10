@@ -398,15 +398,21 @@ class OllamaProvider:
         if match is None or tuple(int(part) for part in match.groups()) < minimum:
             raise DecisionError("incompatible_ollama_server")
         tags = discovery("/api/tags").get("models", [])
+        if type(tags) is not list or any(type(model) is not dict for model in tags):
+            raise DecisionError("invalid_ollama_discovery")
         tag = next((m for m in tags if type(m) is dict and m.get("name") == self.model), None)
         if tag is None:
             raise DecisionError("model_unavailable")
         show = _http_json(self.base, "/api/show", {"model": self.model}, 5)
-        if "decision" not in show.get("capabilities", []) or show.get("details", {}).get("format") != "gguf":
+        capabilities, details = show.get("capabilities"), show.get("details")
+        if (type(capabilities) is not list or "decision" not in capabilities
+                or type(details) is not dict or details.get("format") != "gguf"):
             raise DecisionError("incompatible_decision_model")
         if self.pin and self.pin != tag.get("digest"):
             raise DecisionError("model_digest_mismatch")
         loaded = discovery("/api/ps").get("models", [])
+        if type(loaded) is not list or any(type(model) is not dict for model in loaded):
+            raise DecisionError("invalid_ollama_discovery")
         return {"available": True, "loaded": any(m.get("name") == self.model for m in loaded),
                 "server_version": version, "model_digest": tag.get("digest"), "local": self.local,
                 "source": self.source, "inference": "not_probed_by_status", "images_enabled": False}
@@ -473,7 +479,10 @@ class CompanionProvider:
             raise DecisionError("invalid_companion_response")
         response = result["response"]
         if self.name == "decider":
-            if result.get("runtime", {}).get("model_revision") != "eb5fbdfc9448473ec25e399882912863afbdb70e":
+            runtime = result.get("runtime")
+            if type(runtime) is not dict:
+                raise DecisionError("invalid_companion_response")
+            if runtime.get("model_revision") != "eb5fbdfc9448473ec25e399882912863afbdb70e":
                 raise DecisionError("model_revision_mismatch")
             if result.get("input_sha256") != digest(request).removeprefix("sha256:"):
                 raise DecisionError("companion_request_mismatch")
@@ -619,7 +628,8 @@ def _policy_answers(answers: dict[str, Any], policy: dict[str, Any] | None) -> d
         floor = _number(policy["minimum_choice_probability"], 0, 1)
         for key, answer in answers.items():
             if answer["type"] == "choice":
-                p = answer.get("probabilities", {}).get(answer["choice"])
+                probabilities = answer.get("probabilities")
+                p = probabilities.get(answer["choice"]) if type(probabilities) is dict else None
                 derived[key] = answer["choice"] if p is not None and p >= floor else None
     return derived
 

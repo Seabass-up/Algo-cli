@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from algo_cli import harness, main, tools, index_compute_lab, oliver_slash_dispatch
-from algo_cli.config import Config
+from algo_cli import code_rag, harness, main, tools, index_compute_lab, oliver_slash_dispatch
+from algo_cli.config import CODE_RAG_CONSENT_VERSION, Config
 
 
 def test_retired_tools_are_not_model_discoverable():
@@ -26,6 +26,71 @@ def test_retired_commands_return_without_model_or_lab_calls(monkeypatch, command
     monkeypatch.setattr(main, "make_embed_fn", lambda *a, **kw: pytest.fail("No embedding calls"))
     handled, _ = oliver_slash_dispatch.handle_command(command, Config(), object())
     assert handled and messages and "retired" in messages[0]
+
+
+def test_retired_code_rag_off_cleans_state_without_embedding_calls(monkeypatch, tmp_path):
+    root = tmp_path / "code_index"
+    root.mkdir()
+    (root / "legacy.json").write_text('{"chunks": ["public synthetic fixture"]}')
+    monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", root)
+    monkeypatch.setattr(code_rag, "_INDEX_MEM", {"fixture": {"chunks": []}})
+    monkeypatch.setattr(code_rag, "_LAST_SCAN", {"fixture": 1.0})
+    monkeypatch.setattr(main, "make_embed_fn", lambda *a, **kw: pytest.fail("No embedding calls"))
+    messages, errors, saved = [], [], []
+    monkeypatch.setattr(main, "show_info", messages.append)
+    monkeypatch.setattr(main, "show_error", errors.append)
+    monkeypatch.setattr(Config, "save", lambda cfg: saved.append((cfg.code_rag_enabled, cfg.code_rag_consent_version)))
+    cfg = Config(code_rag_enabled=True, code_rag_consent_version=CODE_RAG_CONSENT_VERSION)
+    client = object()
+    handled, returned = oliver_slash_dispatch.handle_command("/code-rag off", cfg, client)
+    assert handled and returned is client and not errors
+    assert saved == [(False, 0)] and not cfg.code_rag_enabled and cfg.code_rag_consent_version == 0
+    assert not root.exists() and not code_rag._INDEX_MEM and not code_rag._LAST_SCAN
+    assert messages and "1" in messages[0]
+    assert "/code-rag" not in {name for name, _ in oliver_slash_dispatch.SLASH_COMMANDS}
+
+
+def test_retired_code_rag_off_reports_failed_purge_and_can_retry(monkeypatch, tmp_path):
+    root = tmp_path / "code_index"
+    root.mkdir()
+    unexpected = root / "nested"
+    unexpected.mkdir()
+    monkeypatch.setattr(code_rag, "CODE_INDEX_DIR", root)
+    monkeypatch.setattr(Config, "save", lambda cfg: None)
+    errors, messages = [], []
+    monkeypatch.setattr(main, "show_error", errors.append)
+    monkeypatch.setattr(main, "show_info", messages.append)
+    cfg = Config(code_rag_enabled=True, code_rag_consent_version=CODE_RAG_CONSENT_VERSION)
+    assert oliver_slash_dispatch.handle_command("/code-rag off", cfg, object())[0]
+    assert errors and not messages and unexpected.is_dir()
+    assert not cfg.code_rag_enabled and cfg.code_rag_consent_version == 0
+    unexpected.rmdir()
+    assert oliver_slash_dispatch.handle_command("/code-rag off", cfg, object())[0]
+    assert messages and not root.exists()
+
+
+def test_retired_code_rag_off_does_not_claim_cleanup_after_save_failure(monkeypatch):
+    def fail_save(cfg):
+        raise OSError("synthetic storage failure")
+
+    monkeypatch.setattr(Config, "save", fail_save)
+    monkeypatch.setattr(code_rag, "purge_persisted_indexes", lambda: pytest.fail("Save must precede purge"))
+    errors, messages = [], []
+    monkeypatch.setattr(main, "show_error", errors.append)
+    monkeypatch.setattr(main, "show_info", messages.append)
+    cfg = Config(code_rag_enabled=True, code_rag_consent_version=CODE_RAG_CONSENT_VERSION)
+    assert oliver_slash_dispatch.handle_command("/code-rag off", cfg, object())[0]
+    assert errors and "incomplete" in errors[0] and not messages
+
+
+@pytest.mark.parametrize("arg", ["on", "status", "index", "off extra"])
+def test_other_retired_code_rag_commands_never_purge_or_save(monkeypatch, arg):
+    monkeypatch.setattr(Config, "save", lambda cfg: pytest.fail("No config write"))
+    monkeypatch.setattr(code_rag, "purge_persisted_indexes", lambda: pytest.fail("No cleanup"))
+    errors = []
+    monkeypatch.setattr(main, "show_error", errors.append)
+    assert oliver_slash_dispatch.handle_command(f"/code-rag {arg}", Config(), object())[0]
+    assert errors and "retired" in errors[0]
 
 
 def test_embedding_factories_cannot_contact_a_provider():
