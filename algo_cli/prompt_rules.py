@@ -54,16 +54,13 @@ def catalog_guidance(config_dir: Path | None = None) -> str:
 
 
 def current_catalog_system_prompt(system: str) -> str:
-    """Replace only known product-owned legacy sentences, not custom instructions."""
+    """Remove exact product-owned duplicates; runtime renders catalog guidance once."""
     old_lines = {
         "- For Algo algorithm/pattern catalog guidance, use and update docs/ALGO.md.",
         "- For Algo algorithm/pattern catalog guidance, use and update the live catalog at ~/.algo_cli/ALGO.md. docs/ALGO.md is only the empty public template, not the live catalog.",
+        "- To read/update the live catalog, use the path in the runtime Algorithm Catalog section; docs/ALGO.md is only the empty public template.",
     }
-    replacement = (
-        "- To read/update the live catalog, use the path in the runtime Algorithm Catalog section; "
-        "docs/ALGO.md is only the empty public template."
-    )
-    return "\n".join(replacement if line in old_lines else line for line in system.split("\n"))
+    return "\n".join(line for line in system.split("\n") if line not in old_lines)
 
 
 def runtime_source_root() -> Path:

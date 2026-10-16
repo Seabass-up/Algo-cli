@@ -137,14 +137,19 @@ def test_catalog_guidance_uses_configured_root(monkeypatch, tmp_path):
     assert "public template" in guidance and "~/.algo_cli/ALGO.md" not in guidance
 
 
-def test_saved_product_rule_is_updated_in_prompt_only_and_custom_text_survives():
-    legacy = "- For Algo algorithm/pattern catalog guidance, use and update docs/ALGO.md."
+@pytest.mark.parametrize("legacy", [
+    "- For Algo algorithm/pattern catalog guidance, use and update docs/ALGO.md.",
+    "- For Algo algorithm/pattern catalog guidance, use and update the live catalog at ~/.algo_cli/ALGO.md. docs/ALGO.md is only the empty public template, not the live catalog.",
+    "- To read/update the live catalog, use the path in the runtime Algorithm Catalog section; docs/ALGO.md is only the empty public template.",
+])
+def test_saved_product_rule_is_updated_in_prompt_only_and_custom_text_survives(legacy):
     custom = "Custom: review docs/ALGO.md as a public template.\n\nDo not alter my instructions.\n"
     cfg = Config(system=legacy + "\n" + custom)
     projected = prompt_rules.current_catalog_system_prompt(cfg.system)
     assert legacy not in projected
     assert projected.endswith(custom)
-    assert "runtime Algorithm Catalog" in projected
+    assert projected == custom
+    assert prompt_rules.current_catalog_system_prompt(projected) == projected
     assert cfg.system == legacy + "\n" + custom
 
 

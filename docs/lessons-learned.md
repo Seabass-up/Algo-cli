@@ -43,6 +43,19 @@ ranking metadata. Jev supported the bounded findings and superset/fallback
 contract, but tests determine validity. Merge only after required checks pass;
 no publication, watchdog edit, approval bypass or normal installation is included.
 
+**Hosted follow-up:** The first exact-head CI at `357f891` passed nine required
+checks but Windows failed the existing one-shot prompt compactness assertion:
+1,659 tokens was not below 45% of 3,672. The cause was duplicated product-owned
+catalog reminders plus longer Windows shell guidance, not a provider outage.
+Render the authoritative catalog section once, strip only exact owned duplicates
+from the generated projection, and preserve saved/custom prompts and historical
+migration constants. Keep the original 45% bound and all path/privacy guidance.
+The new platform-shaped regression reproduces the Windows failure before repair;
+after repair macOS/Linux record 1,584/3,598 tokens and Windows 1,618/3,631.
+Focused tests pass (231 passed, 23 skipped); the three platform cases also pass
+independently. Ruff and targeted typing pass. These are local results; a fresh
+source-bound qualification and all required hosted checks remain necessary.
+
 ## 2026-10-15: Scoped Harness Guidance Port Without Watchdog Changes
 
 **Symptom/cause:** Operational skills recommended retired memory routes and blind

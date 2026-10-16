@@ -6,6 +6,8 @@ truncated history long before compaction ever fired.
 """
 
 import pytest
+from pathlib import Path
+from types import SimpleNamespace
 
 from algo_cli import context_budget, model_info
 from algo_cli.config import Config
@@ -48,8 +50,14 @@ def test_request_estimate_accounts_for_visible_tool_schemas():
     assert with_tools - without_tools == estimate_tool_schema_tokens(selected)
 
 
-def test_oneshot_prompt_defers_interactive_capability_tutorials(monkeypatch):
+@pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
+def test_oneshot_prompt_defers_interactive_capability_tutorials(monkeypatch, record_property, platform):
+    from algo_cli import config
     cfg = Config(model="test-model")
+    monkeypatch.setattr(context_budget, "sys", SimpleNamespace(platform=platform))
+    # Render the Windows job's shape without changing the host platform or paths.
+    monkeypatch.setattr(context_budget, "runtime_source_root", lambda: Path("D:/a/Algo-cli/Algo-cli/.venv/Lib/site-packages"))
+    monkeypatch.setattr(config, "CONFIG_DIR", Path("D:/a/_temp/algo_cli_pytest_6112"))
     monkeypatch.setattr(context_budget.identity, "build_identity_block", lambda **_kwargs: "")
 
     monkeypatch.setattr(context_budget, "json_sink", lambda: None)
@@ -62,7 +70,16 @@ def test_oneshot_prompt_defers_interactive_capability_tutorials(monkeypatch):
     assert "## Grok / xAI model compatibility" not in automated
     assert "## PDF Handling" not in automated
     assert "Prefer action_program" in automated
-    assert context_budget.estimate_text_tokens(automated) < (context_budget.estimate_text_tokens(interactive) * 0.45)
+    assert "Never publish the user's catalog or custom kernels" in automated
+    assert str(config.CONFIG_DIR / "ALGO.md") in automated
+    if platform == "win32":
+        assert "cmd.exe" in automated
+        assert "Unix tools" in automated
+    automated_tokens = context_budget.estimate_text_tokens(automated)
+    interactive_tokens = context_budget.estimate_text_tokens(interactive)
+    record_property("automated_tokens", automated_tokens)
+    record_property("interactive_tokens", interactive_tokens)
+    assert automated_tokens < (interactive_tokens * 0.45)
 
 
 def test_adaptive_window_feeds_accounting():

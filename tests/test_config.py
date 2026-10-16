@@ -1133,9 +1133,15 @@ def test_windows_state_lock_is_private_before_first_write(monkeypatch: pytest.Mo
     assert config._windows_private_dacl(lock_path) is True
 
 
-def test_default_system_points_algo_pattern_updates_to_reviewed_doc():
-    assert "docs/ALGO.md" in config.DEFAULT_SYSTEM
-    assert "update" in config.DEFAULT_SYSTEM
+def test_runtime_prompt_renders_configured_catalog_guidance_once(monkeypatch):
+    from algo_cli import context_budget
+    monkeypatch.setattr(context_budget.identity, "build_identity_block", lambda **kwargs: "")
+    monkeypatch.setattr(context_budget, "json_sink", lambda: object())
+    prompt = context_budget.build_system_prompt(Config(), user_message="inspect patterns")
+    assert str(config.CONFIG_DIR / "ALGO.md") in prompt
+    assert prompt.count("## Algorithm Catalog") == 1
+    assert "docs/ALGO.md is only the empty public template" not in config.DEFAULT_SYSTEM
+    assert "Never publish the user's catalog or custom kernels" in prompt
 
 
 def test_load_refreshes_only_the_stock_legacy_system_prompt():
