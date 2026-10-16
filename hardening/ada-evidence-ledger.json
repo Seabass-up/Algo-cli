@@ -4520,6 +4520,15 @@
           "timestamp": "2026-10-16T02:00:10Z",
           "scope": "PR90 review fixes at product commit e29517a; source sha256:0f0c046e0196bea1e6ba639717731786d3a0f7b2dad0f3ae4ccf457e8557586f",
           "limitations": "Finite local evidence is not hosted browser, production signing, provider calibration or public delivery proof; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:98a1addf02887664e4f2a6c5eb18a9bc457cd1edb0e2b668ae19a4228dc6f579",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-16T02:35:12Z",
+          "scope": "PR90 Windows prompt repair at product commit e34cf07; source sha256:51d2a08e6f298f82db7f072c7134d88aee03e685c845a20113c86527be2cd264",
+          "limitations": "Finite local evidence is not hosted browser, production signing, provider calibration or public delivery proof; HARD-080 remains in progress"
         }
       ]
     },
@@ -7416,6 +7425,24 @@
           "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
           "timestamp": "2026-10-16T02:00:10Z",
           "scope": "PR90 review fixes at product commit e29517a; source sha256:7872abc772bf9855bae2b444a54eca9804214bcf75e3f2cd5076a1cb1806827a",
+          "limitations": "Finite local evidence is not hosted browser, production signing, provider calibration or public delivery proof; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:98a1addf02887664e4f2a6c5eb18a9bc457cd1edb0e2b668ae19a4228dc6f579",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-16T02:35:12Z",
+          "scope": "PR90 Windows prompt repair at product commit e34cf07; source sha256:51d2a08e6f298f82db7f072c7134d88aee03e685c845a20113c86527be2cd264",
+          "limitations": "Finite local evidence is not hosted browser, production signing, provider calibration or public delivery proof; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:d89139eaaeafbdc203c9b643bb1b85fe04a30c96d1bee5d08efc03bfc28bd51c",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-10-16T02:35:12Z",
+          "scope": "PR90 Windows prompt repair at product commit e34cf07; source sha256:bbe6560bfb249fe2e6982bc55879807347b8e192e6899c34f9be1c5492e28720",
           "limitations": "Finite local evidence is not hosted browser, production signing, provider calibration or public delivery proof; HARD-081 remains in progress"
         }
       ]

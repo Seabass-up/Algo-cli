@@ -93,7 +93,7 @@
     ],
     "total": 17
   },
-  "created_at": "2026-10-16T01:54:15Z",
+  "created_at": "2026-10-16T02:31:12Z",
   "effectiveness": {
     "context_token_utilization": {
       "p50": 0.07421875,
@@ -121,8 +121,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 30.104292,
-        "ttfa_ms": 4.906959,
+        "total_ms": 27.246208,
+        "ttfa_ms": 4.7855,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -137,8 +137,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 32.029792,
-        "ttfa_ms": 5.021584,
+        "total_ms": 30.31625,
+        "ttfa_ms": 4.931792,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -153,8 +153,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 30.373917,
-        "ttfa_ms": 5.282417,
+        "total_ms": 29.290292,
+        "ttfa_ms": 4.922292,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -169,8 +169,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 31.095917,
-        "ttfa_ms": 5.965958,
+        "total_ms": 28.034708,
+        "ttfa_ms": 4.913333,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -185,8 +185,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 35.220541,
-        "ttfa_ms": 6.636375,
+        "total_ms": 28.358959,
+        "ttfa_ms": 4.613459,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -201,8 +201,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 35.202042,
-        "ttfa_ms": 6.066167,
+        "total_ms": 32.696166,
+        "ttfa_ms": 4.955166,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -217,8 +217,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 33.359792,
-        "ttfa_ms": 5.781833,
+        "total_ms": 27.263334,
+        "ttfa_ms": 5.070292,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -233,8 +233,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 35.935041,
-        "ttfa_ms": 6.602208,
+        "total_ms": 27.697583,
+        "ttfa_ms": 4.680875,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -249,8 +249,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 36.459667,
-        "ttfa_ms": 6.440125,
+        "total_ms": 28.042666,
+        "ttfa_ms": 4.969541,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -265,8 +265,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 35.541041,
-        "ttfa_ms": 5.6735,
+        "total_ms": 35.55275,
+        "ttfa_ms": 4.640208,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -281,8 +281,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 35.47325,
-        "ttfa_ms": 6.730334,
+        "total_ms": 29.723459,
+        "ttfa_ms": 5.254709,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -297,8 +297,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 37.560833,
-        "ttfa_ms": 6.505583,
+        "total_ms": 28.282167,
+        "ttfa_ms": 4.570333,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -313,8 +313,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 35.041125,
-        "ttfa_ms": 6.962042,
+        "total_ms": 30.547875,
+        "ttfa_ms": 5.718667,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -329,8 +329,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 34.876208,
-        "ttfa_ms": 6.173875,
+        "total_ms": 28.573959,
+        "ttfa_ms": 4.378042,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -345,8 +345,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 34.348,
-        "ttfa_ms": 6.199583,
+        "total_ms": 29.745666,
+        "ttfa_ms": 4.892666,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -361,8 +361,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 35.402292,
-        "ttfa_ms": 5.541417,
+        "total_ms": 29.868625,
+        "ttfa_ms": 5.149292,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -377,8 +377,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 34.687291,
-        "ttfa_ms": 6.05625,
+        "total_ms": 32.70475,
+        "ttfa_ms": 8.373708,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -393,8 +393,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 33.987709,
-        "ttfa_ms": 5.458375,
+        "total_ms": 29.989291,
+        "ttfa_ms": 5.219125,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -409,8 +409,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 34.652541,
-        "ttfa_ms": 5.879833,
+        "total_ms": 32.434708,
+        "ttfa_ms": 5.471,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -425,8 +425,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 35.034125,
-        "ttfa_ms": 5.648625,
+        "total_ms": 32.204833,
+        "ttfa_ms": 5.611167,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -441,8 +441,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 34.4685,
-        "ttfa_ms": 6.412417,
+        "total_ms": 30.901042,
+        "ttfa_ms": 5.862375,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -457,8 +457,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 31.165,
-        "ttfa_ms": 6.123,
+        "total_ms": 32.718042,
+        "ttfa_ms": 5.19875,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -473,8 +473,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 29.411583,
-        "ttfa_ms": 4.376916,
+        "total_ms": 32.022375,
+        "ttfa_ms": 5.856458,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -489,8 +489,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 30.702083,
-        "ttfa_ms": 5.087083,
+        "total_ms": 32.324084,
+        "ttfa_ms": 5.39925,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -505,8 +505,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 30.034875,
-        "ttfa_ms": 5.398959,
+        "total_ms": 31.849667,
+        "ttfa_ms": 5.478125,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -521,8 +521,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 29.473375,
-        "ttfa_ms": 5.913083,
+        "total_ms": 31.624917,
+        "ttfa_ms": 6.343292,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -537,8 +537,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 30.908125,
-        "ttfa_ms": 5.806625,
+        "total_ms": 29.669417,
+        "ttfa_ms": 5.391708,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -553,8 +553,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 32.4545,
-        "ttfa_ms": 4.891917,
+        "total_ms": 30.569792,
+        "ttfa_ms": 5.252792,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -569,8 +569,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 30.576541,
-        "ttfa_ms": 4.639583,
+        "total_ms": 32.092833,
+        "ttfa_ms": 5.613667,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -585,8 +585,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 29.224083,
-        "ttfa_ms": 4.638,
+        "total_ms": 31.06175,
+        "ttfa_ms": 5.571083,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -601,8 +601,8 @@
         "policy_escapes": 0,
         "protocol_correct": true,
         "task_passed": true,
-        "total_ms": 28.255125,
-        "ttfa_ms": 4.760375,
+        "total_ms": 30.568,
+        "ttfa_ms": 5.750375,
         "unverified_completions": 0,
         "verifier_passed": 2,
         "verifier_total": 2
@@ -616,22 +616,22 @@
   },
   "gates": {
     "agent_workload_total_p95_ms": {
-      "observed": 36.459667,
+      "observed": 32.718042,
       "passed": true,
       "threshold": 2500.0
     },
     "agent_workload_ttfa_p95_ms": {
-      "observed": 6.730334,
+      "observed": 6.343292,
       "passed": true,
       "threshold": 1000.0
     },
     "checkpoint_resume_p95_ms": {
-      "observed": 15.544625,
+      "observed": 11.215833,
       "passed": true,
       "threshold": 1000.0
     },
     "context_broker_p95_ms": {
-      "observed": 0.087833,
+      "observed": 0.07,
       "passed": true,
       "threshold": 100.0
     },
@@ -641,7 +641,7 @@
       "threshold": 1.0
     },
     "contract_compile_p95_ms": {
-      "observed": 0.371125,
+      "observed": 0.359041,
       "passed": true,
       "threshold": 250.0
     },
@@ -689,33 +689,33 @@
   "limitations": "This is a local model-free runtime benchmark with deterministic provider and task fixtures, temporary files, and injected static key and anchor stores. It measures harness coordination and fail-closed protected-state contracts, not model intelligence, live provider latency, production Keychain behavior, process or power-loss recovery, or superiority over OpenClaw, Hermes, or another harness. The latency profile is selected from a closed set using the report's self-reported, non-attested operating-system label; Windows changes only the checkpoint-resume and workload-total durability ceilings. Latency has not been independently reproduced. This local evidence is not authorization for public benchmark claims.",
   "performance": {
     "agent_workload_total": {
-      "max_ms": 37.560833,
-      "p50_ms": 33.987709,
-      "p95_ms": 36.459667,
+      "max_ms": 35.55275,
+      "p50_ms": 30.547875,
+      "p95_ms": 32.718042,
       "samples": 31
     },
     "agent_workload_ttfa": {
-      "max_ms": 6.962042,
-      "p50_ms": 5.806625,
-      "p95_ms": 6.730334,
+      "max_ms": 8.373708,
+      "p50_ms": 5.219125,
+      "p95_ms": 6.343292,
       "samples": 31
     },
     "checkpoint_resume": {
-      "max_ms": 26.407833,
-      "p50_ms": 11.008209,
-      "p95_ms": 15.544625,
+      "max_ms": 11.392334,
+      "p50_ms": 10.489209,
+      "p95_ms": 11.215833,
       "samples": 31
     },
     "context_broker": {
-      "max_ms": 0.156125,
-      "p50_ms": 0.042458,
-      "p95_ms": 0.087833,
+      "max_ms": 0.159083,
+      "p50_ms": 0.042792,
+      "p95_ms": 0.07,
       "samples": 101
     },
     "contract_compile": {
-      "max_ms": 0.479917,
-      "p50_ms": 0.224084,
-      "p95_ms": 0.371125,
+      "max_ms": 0.550583,
+      "p50_ms": 0.226542,
+      "p95_ms": 0.359041,
       "samples": 101
     }
   },
@@ -731,9 +731,9 @@
     "workload_repetitions": 31
   },
   "public_claim_eligible": false,
-  "report_sha256": "sha256:def8d98008e6cf4fcdfae5cd7662e6121918494a65d10449d1e62a93b1c67188",
+  "report_sha256": "sha256:eaabb999c1dfe47f5618c6d77459c35bff16ff53200a96925e45c7b3b3457257",
   "schema_version": 3,
-  "source_revision": "e29517a9f903fc879619ac0e1d6e16902d7eb8e1",
-  "source_tree_sha256": "sha256:7872abc772bf9855bae2b444a54eca9804214bcf75e3f2cd5076a1cb1806827a",
+  "source_revision": "e34cf076bf6f0623779cad8967dde8ca5a25ebb8",
+  "source_tree_sha256": "sha256:bbe6560bfb249fe2e6982bc55879807347b8e192e6899c34f9be1c5492e28720",
   "status": "pass"
 }

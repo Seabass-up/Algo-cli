@@ -56,6 +56,16 @@ Focused tests pass (231 passed, 23 skipped); the three platform cases also pass
 independently. Ruff and targeted typing pass. These are local results; a fresh
 source-bound qualification and all required hosted checks remain necessary.
 
+**Final local follow-up:** Product `e34cf07` completes 7,502 passing tests and
+41 skips, zero failures/errors, across the runtime suite and both postwrite
+evidence checks; cumulative branch-aware coverage is 71.07% (57% floor unchanged).
+The runtime phase takes 247.648 seconds. Fresh Nathan again passes 17 correctness
+checks and 31 workloads; M8 again has nine local passes/five external blocks/zero
+failures. Both report consumers bind current raw hashes and blocked M9 verifies.
+Frozen installed parity, source/history privacy, compilation, Ruff and the
+CI-configured mypy options pass. Hosted CI must still qualify the next head;
+local platform-shaped tests do not substitute for the Windows runner.
+
 ## 2026-10-15: Scoped Harness Guidance Port Without Watchdog Changes
 
 **Symptom/cause:** Operational skills recommended retired memory routes and blind
