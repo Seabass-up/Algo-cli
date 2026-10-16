@@ -4502,6 +4502,15 @@
           "timestamp": "2026-10-10T20:24:37Z",
           "scope": "Actual PR 89 metadata, missing-distribution and retired-index cleanup repair; source sha256:207fb7184f2f662a22c24f132336d12ccc5497e4434b61117f8bc83621618120",
           "limitations": "Finite local qualification is not provider calibration, hosted browser/signing or public delivery proof; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:82c5a0a7c5f7976c3bfcfdd03eadcd4ff1c04ce7246706ba67f6ec8a1a7ebb72",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-16T01:11:36Z",
+          "scope": "Scoped 0.20.3 harness-guidance repair at product commit 6657df4; source sha256:12f65b36dd757e7a29393fcb4b53845ac31384643688a514529a2256ad52c6a3",
+          "limitations": "Finite local evidence is not hosted browser, production signing, provider calibration or public delivery proof; HARD-080 remains in progress"
         }
       ]
     },
@@ -7363,6 +7372,24 @@
           "timestamp": "2026-10-10T20:24:37Z",
           "scope": "Actual PR 89 metadata, missing-distribution and retired-index cleanup repair; source sha256:207fb7184f2f662a22c24f132336d12ccc5497e4434b61117f8bc83621618120",
           "limitations": "Finite local qualification is not provider calibration, hosted browser/signing or public delivery proof; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:82c5a0a7c5f7976c3bfcfdd03eadcd4ff1c04ce7246706ba67f6ec8a1a7ebb72",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-16T01:11:36Z",
+          "scope": "Scoped 0.20.3 harness-guidance repair at product commit 6657df4; source sha256:12f65b36dd757e7a29393fcb4b53845ac31384643688a514529a2256ad52c6a3",
+          "limitations": "Finite local evidence is not hosted browser, production signing, provider calibration or public delivery proof; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:07f49ab2babf9bcf8bded0ab17bb0580b97bbb4fdb5617b123b5eeef6c9be91b",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-10-16T01:11:36Z",
+          "scope": "Scoped 0.20.3 harness-guidance repair at product commit 6657df4; source sha256:6c94a5f5a19d56ec4a042e25af50682ba84455e49850948e0d28dd12d940ffcd",
+          "limitations": "Finite local evidence is not hosted browser, production signing, provider calibration or public delivery proof; HARD-081 remains in progress"
         }
       ]
     },

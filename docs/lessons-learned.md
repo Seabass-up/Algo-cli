@@ -14,12 +14,31 @@ typed provider checks, decision-verification guidance and applicability docs.
 Preserve required memory, permissions, typed uncertainty and owner-only catalogs.
 Keep the unrelated CI watchdog branch, source, workflows and evidence untouched;
 qualify a clean review worktree, not the combined dirty watchdog tree.
+Native records also retain the skill-contract field; otherwise current skills
+would be rejected as legacy after optional native indexing.
 
-**Verification:** Local CI and real source-bound qualifications are pending for
-this port. Earlier 0.20.2 results do not qualify this different source. Validate
-installed resources with the runtime resolver and use the workflow's exact
-`--cov` setting, not a path override that double-counts installed/source files.
-Jev supported the bounded port/isolation strategy; it is not verification.
+**Verification:** Frozen, non-editable Python 3.11.15 full suite: 7,479 passed,
+41 skipped, zero failures/errors in 315.699 seconds; 71.06% branch-aware coverage
+against the unchanged 57% floor. Focused port tests: 276 passed; final guidance
+and checkpoint tests: 85 passed. Ruff, all-runtime mypy (272 modules), workflow
+mypy (78 files), compilation, source/history privacy and installed-source parity
+pass. Real Nathan: 17 correctness checks and 31 workloads pass. Real M8: nine
+local passes, five external blocks, zero failures. All three current-artifact
+checks and expected-blocked M9 pass after binding both report consumers.
+Website build/lint/20 tests and dependency audit pass (Node 26.4.0, not hosted
+Node 22); Python, Rust and Go audits pass. Rust formatting/clippy/nine tests and
+isolated native-to-Python skill admission pass. Go 1.26.9 race/vet pass with
+70.6% coverage; local Swift 89 tests and release build pass. Unchanged watchdog
+tests pass (54); byte/section comparison proves its work is preserved.
+
+**Qualification setup:** The first M8 attempt failed because the protected
+no-site bootstrap requires a real checkout-local `.venv`, not the external
+temporary environment used initially. Reproduce the actual CI layout instead
+of relaxing the check. Its dedicated reproduction passes after frozen local
+installation. An interrupted diagnostic suite (exit 2) and the qualification
+stopped before the native contract edit (exit 143) are not passes. Validate
+installed resources with the runtime resolver and use the exact workflow
+`--cov` setting. Jev supported the port/isolation strategy; it is not verification.
 
 **Prevention/limits:** Compare connected hunks and newer invariants before any
 source export. Rebuild evidence only after final source. The review push will
