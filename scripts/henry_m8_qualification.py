@@ -103,6 +103,8 @@ SOURCE_PATHS = (
     "algo_cli/decision_clm_bridge.py",
     "algo_cli/jev_kernel.py",
     "algo_cli/prompt_rules.py",
+    "algo_cli/prompt_guidance.py",
+    "tests/test_context_efficiency.py",
     "algo_cli/tool_schema.py",
     "algo_cli/evals/scorecard_grading.py",
     "algo_cli/context_budget.py",

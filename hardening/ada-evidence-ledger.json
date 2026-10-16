@@ -4547,6 +4547,15 @@
           "timestamp": "2026-10-16T18:52:21Z",
           "scope": "Chrome 155.0.8059.84 package, measured inventory and coupled qualification pin refresh over c140b9d; source sha256:f3b090ea63a7e65773032d5f40d512f6ef0cb425e5738fbf21c16e1cd793f231",
           "limitations": "Local inventory and finite regressions do not qualify hosted Windows, browser containment, native signing or public delivery; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:9c6e7b842ccae1a695bcd1db5e93a5bfaf64a97fc2d9082243b238a9a589e39d",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-16T21:08:08Z",
+          "scope": "Uncommitted context-efficiency repair over f2bc4e0; current working-tree source sha256:1a83929073e6ee2e6b7c3bb90aa8c6c1e5147ff74fc3c76bada8274dd0855425",
+          "limitations": "Finite local regressions are not hosted Windows, browser containment, signing or public delivery qualification; HARD-080 remains in progress"
         }
       ]
     },
@@ -7489,6 +7498,24 @@
           "timestamp": "2026-10-16T18:52:21Z",
           "scope": "Chrome 155.0.8059.84 package, measured inventory and coupled qualification pin refresh over c140b9d; source sha256:f3b090ea63a7e65773032d5f40d512f6ef0cb425e5738fbf21c16e1cd793f231",
           "limitations": "Local inventory and finite regressions do not qualify hosted Windows, browser containment, native signing or public delivery; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:9c6e7b842ccae1a695bcd1db5e93a5bfaf64a97fc2d9082243b238a9a589e39d",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-16T21:08:08Z",
+          "scope": "Uncommitted context-efficiency repair over f2bc4e0; current working-tree source sha256:1a83929073e6ee2e6b7c3bb90aa8c6c1e5147ff74fc3c76bada8274dd0855425",
+          "limitations": "Finite local regressions are not hosted Windows, browser containment, signing or public delivery qualification; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:41e6e171ec6cbc575747c4a8fac8c7a5c331135aa1b7b1c180ef553e0a4eb809",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-10-16T21:08:08Z",
+          "scope": "Uncommitted context-efficiency repair over f2bc4e0; current working-tree source sha256:80999f5a90ecfe4b7611a05dc619b27bec1025d6c7ab7d6db95cd7d49a1ea6ae",
+          "limitations": "Finite local regressions are not hosted Windows, browser containment, signing or public delivery qualification; HARD-081 remains in progress"
         }
       ]
     },

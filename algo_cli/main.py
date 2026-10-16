@@ -2199,6 +2199,23 @@ def handle_context_command(arg: str, cfg: Config, client: Client) -> None:
         console.print(f"  summary chars  : [text]{len(cfg.session_summary)}[/]")
         console.print(f"  keep recent    : [text]{CONTEXT_KEEP_MESSAGES} messages[/]")
         console.print(f"  compact at     : [text]{int(CONTEXT_COMPACT_THRESHOLD * 100)}% used[/]")
+        diagnostics = getattr(cfg, "_prompt_diagnostics", {})
+        if diagnostics:
+            console.print("[muted]Last prompt build (estimates, not provider token counts):[/]")
+            for name, tokens in diagnostics["estimated_tokens"].items():
+                console.print(f"  {name:23}: {tokens} tokens")
+            console.print(f"  build time             : {diagnostics['build_ms']} ms")
+            guidance = diagnostics["guidance_tokens"]
+            console.print("  task guidance          : " + (", ".join(guidance) or "none"))
+            memory = diagnostics["memory_selection"]
+            if memory:
+                requested = memory["requested_projects"]
+                console.print(f"  memory project filter  : {requested} explicit" if requested else
+                              "  memory project filter  : global (no explicit project selection)")
+                for scope, counts in memory["scopes"].items():
+                    console.print(f"  {scope} memory: {counts['required_items']} required, "
+                                  f"{counts['optional_items']} optional; "
+                                  f"{counts['unknown_projects']} unknown projects")
     elif subcommand == "clear":
         if not cfg.session_summary:
             show_info("No context summary to clear.")
@@ -2888,6 +2905,7 @@ def _agent_loop_body(
     optional_context_blocks: list[OptionalContextBlock] = []
     system_source_tokens: dict[str, int] = {}
     optional_source_tokens: dict[str, int] = {}
+    guidance_tools: set[str] = set()
     broker_omitted_contexts: list[str] = []
     reconciliation_guidance = reconciliation.guidance_for_prompt(user_message)
     if reconciliation_guidance:
@@ -3336,6 +3354,9 @@ def _agent_loop_body(
             prune_stale_tool_messages(cfg)
             chars_after_prune = sum(len(str(message.get("content") or "")) for message in cfg.messages)
             superseded_chars = max(0, chars_before_prune - chars_after_prune)
+            from .prompt_guidance import task_tool_names
+
+            guidance_tools.update(task_tool_names(cfg.messages, persisted_user_message))
             try:
                 system_prompt = build_system_prompt(
                     cfg,
@@ -3343,6 +3364,7 @@ def _agent_loop_body(
                     active_model_info=_active_model_info,
                     user_message=persisted_user_message,
                     source_token_counts=system_source_tokens,
+                    guidance_tools=guidance_tools,
                 )
             except Exception as exc:
                 if not required_memory_protection:
@@ -3370,6 +3392,7 @@ def _agent_loop_body(
                         active_model_info=_active_model_info,
                         user_message=persisted_user_message,
                         source_token_counts=system_source_tokens,
+                        guidance_tools=guidance_tools,
                     )
                 except Exception as exc:
                     if not required_memory_protection:

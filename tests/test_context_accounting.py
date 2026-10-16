@@ -79,7 +79,11 @@ def test_oneshot_prompt_defers_interactive_capability_tutorials(monkeypatch, rec
     interactive_tokens = context_budget.estimate_text_tokens(interactive)
     record_property("automated_tokens", automated_tokens)
     record_property("interactive_tokens", interactive_tokens)
-    assert automated_tokens < (interactive_tokens * 0.45)
+    # Absolute ceilings prevent a shrinking interactive prompt from turning a
+    # genuine improvement into a failing relative-only comparison.
+    assert automated_tokens <= 1450
+    assert interactive_tokens <= 3100
+    assert automated_tokens < (interactive_tokens * 0.50)
 
 
 def test_adaptive_window_feeds_accounting():
