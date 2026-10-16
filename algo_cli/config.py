@@ -2139,7 +2139,16 @@ def _exclusive_state_lock(path: Path, *, timeout_seconds: float = 30.0) -> Itera
     retried with a short backoff.
     """
     lock_path = path.with_suffix(path.suffix + ".lock")
-    private_config_path = _ensure_private_config_parent(path)
+    if os.name == "nt" and _config_relative_path(path) is None:
+        # Existing external parents are validated by the live pinned guard below.
+        # A separate prepare pass would open, recheck and close the same chain.
+        try:
+            path.parent.lstat()
+        except FileNotFoundError:
+            _ensure_private_config_parent(path)
+        private_config_path = False
+    else:
+        private_config_path = _ensure_private_config_parent(path)
     ancestry_guard = _windows_pinned_directory_chain(lock_path.parent) if os.name == "nt" else nullcontext(())
     with ancestry_guard as windows_lock_chain:
         with _exclusive_state_lock_bound(

@@ -4529,6 +4529,15 @@
           "timestamp": "2026-10-16T02:35:12Z",
           "scope": "PR90 Windows prompt repair at product commit e34cf07; source sha256:51d2a08e6f298f82db7f072c7134d88aee03e685c845a20113c86527be2cd264",
           "limitations": "Finite local evidence is not hosted browser, production signing, provider calibration or public delivery proof; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:35b4dccc50e8deb7950806ba3e0a1212509d534f1bcb5bdcca95672937cc5a22",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-16T04:54:23Z",
+          "scope": "Uncommitted Windows journal-lock repair over d4ceae9; local working-tree source sha256:faf0d33f53ea021af176715ca9f1706ecc89cafb02a61dd58e987e46a778a2c7",
+          "limitations": "Local macOS and portable regressions do not qualify native Windows latency or hosted browser/signing/public delivery; HARD-080 remains in progress"
         }
       ]
     },
@@ -7444,6 +7453,24 @@
           "timestamp": "2026-10-16T02:35:12Z",
           "scope": "PR90 Windows prompt repair at product commit e34cf07; source sha256:bbe6560bfb249fe2e6982bc55879807347b8e192e6899c34f9be1c5492e28720",
           "limitations": "Finite local evidence is not hosted browser, production signing, provider calibration or public delivery proof; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:35b4dccc50e8deb7950806ba3e0a1212509d534f1bcb5bdcca95672937cc5a22",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-16T04:54:23Z",
+          "scope": "Uncommitted Windows journal-lock repair over d4ceae9; local working-tree source sha256:faf0d33f53ea021af176715ca9f1706ecc89cafb02a61dd58e987e46a778a2c7",
+          "limitations": "Local macOS and portable regressions do not qualify native Windows latency or hosted browser/signing/public delivery; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:43342f5069bc8ddc93ac9d1ff3deb94debbcd2aa7a7c0523160fa53a6bece74a",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-10-16T04:54:23Z",
+          "scope": "Uncommitted Windows journal-lock repair over d4ceae9; local working-tree source sha256:4a716ae833d62d909499d05e7be817b6ddcf37472012e6d7f4ae532b2612a73d",
+          "limitations": "Local macOS and portable regressions do not qualify native Windows latency or hosted browser/signing/public delivery; HARD-081 remains in progress"
         }
       ]
     },
