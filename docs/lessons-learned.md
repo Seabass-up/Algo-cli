@@ -1,5 +1,47 @@
 # Lessons Learned
 
+## 2026-10-16: Refresh Chrome Package And Coupled Qualification Pins
+
+**Symptom/cause:** Protected-main qualification passed with Chrome
+`155.0.8059.39`, but Google's live Linux stable record already served
+`155.0.8059.84`. The older patch was within the unchanged 72-hour update-lag
+policy; that is not evidence of running the latest patch.
+
+**Repair:** Refresh the exact `.84-1` Google package, checksum, official serving
+timestamp `1792096815149`, installed Debian inventory, SBOM identity, image
+labels, producer and hosted validator together. Preserve dated evidence and
+excluded native-browser status. Advance the intentionally newer upstream test
+fixture to `.85`, rather than accidentally turning it into an older version.
+Add an explicit package/label/timestamp/validator coherence regression.
+
+**Verification/limits:** Google's VersionHistory API reports serving start
+`2026-10-15T20:40:15.149737Z`; the completed official package download hashes to
+`8fbd2ae69cdf7ee98b7513c3396a7b5e06f974f8625fdd590df3091dd0c3e9de`.
+The actual pinned-snapshot Linux/amd64 install measures 228 packages, digest
+`4779f4f74c15f10d31f563163f47e317b5800d1f78dbb8dd90c7ac971d78e70b`.
+The complete local Python suite plus both postwrite evidence checks passes:
+7,513 passed, 45 skipped, zero failures/errors; cumulative branch-aware coverage
+is 71.07% against the unchanged 57% floor. Ruff, 274-file typing, compilation,
+installed parity, public source/history scans and locked Python/Rust/Go audits
+pass. Rust nine tests/clippy, Go 1.26.9 race/vet (70.6% coverage), website
+build/20 tests/lint/zero advisories, Swift 89 tests/release build, 30 process-kill
+trials and disabled-native boundary probes pass. Actual M8 regeneration has
+nine local passes/five external blocks/zero failures; the source-bound blocked
+M9 verifies. Nathan's unchanged source-bound report verifies without needless
+regeneration. The first full-suite attempt stopped before collection because
+Codex's `rg` adds a revision suffix; explicitly selecting Homebrew's exact
+`15.2.0` binary passes the unchanged tool preflight. Receipts are
+`/private/tmp/algo-chrome84-full.xml`, `algo-chrome84-postwrite.xml` and
+`algo-chrome84-complete-coverage.xml`. Exact-new-source hosted Windows/browser
+qualification is separate and pending. Local AMD64 emulation is inventory
+evidence, not hosted containment proof. No publication, native-feature
+enablement or watchdog change is included.
+
+**Prevention:** Check current upstream release evidence before freezing source;
+measure package inventories rather than inventing their digests. Treat the
+package, provenance metadata and fixtures as one reviewed change, and qualify
+the resulting exact source without weakening freshness or permission gates.
+
 ## 2026-10-15: Windows Journal Lock Ancestry Traversal
 
 **Symptom/evidence:** Exact-main CI `38843067515` passes the Windows functional

@@ -188,8 +188,8 @@ behavior, or readiness.
 
 The dated Chrome 150 Linux and macOS results above remain historical evidence
 for those exact probes. The current Linux/amd64 source candidate instead pins
-Google Chrome `155.0.8059.39`, whose official VersionHistory serving start is
-`2026-10-06T17:09:07.199909Z`, and `cryptography` `50.0.0`. These are inspected
+Google Chrome `155.0.8059.84`, whose official VersionHistory serving start is
+`2026-10-15T20:40:15.149737Z`, and `cryptography` `50.0.0`. These are inspected
 source and local-candidate properties, not a new hosted execution result.
 
 The candidate closes several source-level provenance gaps:

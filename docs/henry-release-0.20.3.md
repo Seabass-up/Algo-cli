@@ -16,7 +16,7 @@ updater. Existing immutable tags, normal launchers and owner state stay unchange
 - Jev semantic regressions and shared prompt/tool guidance: type-valid model
   advice is not correctness or machine verification. Shell approvals and routing
   thresholds are unchanged; no improved provider weights/calibration is claimed.
-- Refreshed managed Chrome 155.0.8059.39 pin and exact package/inventory bindings;
+- Refreshed managed Chrome 155.0.8059.84 pin and exact package/inventory bindings;
   fresh hosted browser evidence is required. Source pin refresh alone is not
   qualification.
 - Public starter algorithm catalog and generic kernel framework only; no owner's
