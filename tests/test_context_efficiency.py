@@ -41,14 +41,17 @@ def test_ordinary_question_keeps_jev_safety_without_unrelated_tutorials(prompt_e
     ("Read REPORT.PDF", "pdf"),
     ("Compare the PDFs", "pdf"),
     ("Does grok-4 work?", "xai"),
+    ("How do I configure XAI_API_KEY?", "xai"),
     ("Review my wiki notes", "harness"),
+    ("Learn from my knowledge base", "harness"),
+    ("Review my knowledge-base", "harness"),
 ])
 def test_task_guidance_is_selected_from_intent(task, section):
     assert set(prompt_guidance.task_guidance(task, [], xai=False)) == {section}
 
 
 @pytest.mark.parametrize("tool,section", [("read_pdf", "pdf"), ("render_pdf_pages", "pdf"),
-                                          ("vision_describe", "pdf"), ("harness_search", "harness")])
+                                          ("harness_search", "harness")])
 def test_discovered_tools_activate_guidance_but_history_does_not(tool, section):
     task = "Inspect the attachment"
     messages = [{"role": "user", "content": task},
@@ -57,6 +60,23 @@ def test_discovered_tools_activate_guidance_but_history_does_not(tool, section):
     assert prompt_guidance.task_guidance("A different question", messages, xai=False) == {}
     messages.append({"role": "user", "content": task})
     assert prompt_guidance.task_guidance(task, messages, xai=False) == {}
+
+
+@pytest.mark.parametrize("task,pdf", [("Describe image.png", False), ("Describe this PDF page", True)])
+def test_vision_calls_do_not_imply_pdf_work(task, pdf):
+    messages = [{"role": "user", "content": task},
+                {"role": "assistant", "tool_calls": [{"function": {"name": "vision_describe"}}]}]
+    assert ("pdf" in prompt_guidance.task_guidance(task, messages, xai=False)) is pdf
+    assert ("pdf" in prompt_guidance.task_guidance(task, [], xai=False,
+                                                 observed_tools={"vision_describe"})) is pdf
+
+
+def test_pdf_tool_guidance_survives_followup_vision():
+    task = "Inspect attachment"
+    messages = [{"role": "user", "content": task},
+                {"role": "assistant", "tool_calls": [{"function": {"name": "render_pdf_pages"}}]},
+                {"role": "assistant", "tool_calls": [{"function": {"name": "vision_describe"}}]}]
+    assert "pdf" in prompt_guidance.task_guidance(task, messages, xai=False)
 
 
 def test_tool_output_cannot_select_tutorials_and_xai_route_is_supported():
@@ -167,6 +187,24 @@ def test_context_status_exposes_only_content_free_build_diagnostics(monkeypatch,
     assert "not provider token counts" in output
     assert "task_guidance" in output and "pdf" in output
     assert "report.pdf" not in output
+
+
+@pytest.mark.parametrize("effective,unknown,label", [(2, 0, "2 effective projects"),
+                                                    (None, 1, "global/unfiltered")])
+def test_context_status_shows_effective_project_expansion(monkeypatch, prompt_env, capsys,
+                                                         effective, unknown, label):
+    context_budget.build_system_prompt(prompt_env, user_message="Check state")
+    prompt_env._prompt_diagnostics["memory_selection"] = {
+        "requested_projects": 1,
+        "scopes": {scope: {"required_items": 1, "optional_items": 2,
+                           "effective_projects": effective, "unknown_projects": unknown}
+                   for scope in ("shared", "private")}}
+    monkeypatch.setattr(main, "context_status", lambda *a, **kw: (1, 8192, 8191, 8192, None))
+    main.handle_context_command("status", prompt_env, object())
+    output = capsys.readouterr().out
+    assert "1 explicit" in output
+    assert output.count(label) == 2
+    assert " ".join(output.split()).count(f"{unknown} unknown projects") == 2
 
 
 def test_new_guidance_and_regressions_are_bound_to_qualification_sources():

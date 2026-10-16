@@ -2213,8 +2213,10 @@ def handle_context_command(arg: str, cfg: Config, client: Client) -> None:
                 console.print(f"  memory project filter  : {requested} explicit" if requested else
                               "  memory project filter  : global (no explicit project selection)")
                 for scope, counts in memory["scopes"].items():
+                    effective = counts["effective_projects"]
+                    project_scope = "global/unfiltered" if effective is None else f"{effective} effective projects"
                     console.print(f"  {scope} memory: {counts['required_items']} required, "
-                                  f"{counts['optional_items']} optional; "
+                                  f"{counts['optional_items']} optional; {project_scope}; "
                                   f"{counts['unknown_projects']} unknown projects")
     elif subcommand == "clear":
         if not cfg.session_summary:

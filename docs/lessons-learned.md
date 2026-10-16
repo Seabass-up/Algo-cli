@@ -77,6 +77,29 @@ Jev routing thresholds, authorization and required memory. Published `0.20.3`,
 normal launcher/config and separate watchdog work remain untouched; restart
 and installation of this local source are not claimed.
 
+**PR #93 review follow-up:** Executable regressions reproduced all four review
+findings: a standalone `vision_describe` call incorrectly implied PDF work;
+`knowledge base` and `XAI_API_KEY` requests missed the intended tutorials;
+context status hid the calculated effective project count. Remove the generic
+vision trigger, recognize the explicit request forms (including `knowledge-base`),
+and display per-scope effective counts or `global/unfiltered` for a null selection.
+Keep PDF guidance after real PDF tool use and preserve both-scope memory packets.
+The test-first run failed six cases across those four findings; after repair,
+all 67 guidance/accounting cases pass (three existing JUnit metadata warnings).
+Console assertions normalize line wrapping rather than requiring a wide terminal.
+Jev's scoped review supported these repairs; advisory output did not replace
+the reproductions. After source freeze, actual Nathan regeneration passes all
+17 correctness checks/31 workloads; M8 retains nine local passes/five external
+blockers/zero failures. Append exact raw digests to the ledger, regenerate M9,
+and verify artifact currency before full CI. The review rerun passes 7,543
+tests/45 skips with 73.42% branch-aware coverage and three existing JUnit
+warnings (`/private/tmp/algo-pr93-review-full.xml` and coverage XML). Ruff,
+the 78-target workflow mypy contract plus the helper with the same flags,
+compilation, installed/source parity, public source/history/version scans,
+locked Python dependency audit, distribution build/scan and `twine check` pass.
+Required hosted checks must still pass on the pushed repair commit before
+merging; no watchdog or publication changes are part of this repair.
+
 ## 2026-10-16: Refresh Chrome Package And Coupled Qualification Pins
 
 **Symptom/cause:** Protected-main qualification passed with Chrome

@@ -44,11 +44,11 @@ def task_guidance(task: str, messages: list[dict[str, Any]], *, xai: bool,
     """Select explanations from observable intent/use, without changing tools."""
     tools = task_tool_names(messages, task) | (observed_tools or set())
     selected = {}
-    if re.search(r"\bpdfs?\b", task, re.I) or tools & {"read_pdf", "render_pdf_pages", "vision_describe"}:
+    if re.search(r"\bpdfs?\b", task, re.I) or tools & {"read_pdf", "render_pdf_pages"}:
         selected["pdf"] = PDF_GUIDANCE
-    if xai or re.search(r"\b(?:grok|xai)\b|x\.ai\b", task, re.I):
+    if xai or re.search(r"\b(?:grok|xai|XAI_API_KEY)\b|x\.ai\b", task, re.I):
         selected["xai"] = XAI_GUIDANCE
-    if (re.search(r"\b(?:harness|skills?|wiki|notes|kernels?|catalog|patterns?)\b", task, re.I)
+    if (re.search(r"\b(?:harness|skills?|wiki|notes|kernels?|catalog|patterns?|knowledge[\s-]+base)\b", task, re.I)
             or any(name.startswith("harness_") for name in tools)):
         selected["harness"] = (
             "## Local Harness Bridge\n"
