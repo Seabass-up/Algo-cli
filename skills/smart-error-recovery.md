@@ -1,56 +1,52 @@
 ---
 name: smart-error-recovery
-description: When a tool returns an error, classify it and pick the right recovery path: tighten input, change tools, ask the user, or escalate to /reason reflexion.
+description: Recover from structured tool outcomes without replaying uncertain mutations or bypassing prerequisites.
 tags: [algo-cli, error-handling, recovery, reflexion]
 created: 2026-06-09
+runtime_contract: mutation-recovery-v1
 ---
 
 # Smart Error Recovery
 
 ## Trigger
 
-Whenever a tool call returns a string starting with `Error:`.
+Whenever a tool fails, is denied, times out, or loses its acknowledgement.
 
 ## Steps
 
-1. **Read the error string verbatim.** It usually contains a hint
-   (e.g. "matched 2 locations" means "tighten old_string" or
-   "pass replace_all=True"; "old_string not found" means "re-read
-   the file and check whitespace").
-2. **Classify** the error:
-   - *Transient* (network, model timeout): retry once with same args,
-     then with timeout bump, then escalate to user.
-   - *Input validation* (empty, ambiguous, missing file): adjust the
-     input and retry.
-   - *Permission denied* (`tool_denied` event, approval needed):
-     stop and ask the user, or check whether `/auto` is on.
-   - *Logical* (no search results, hypothesis wrong): switch tools
-     or change approach.
-3. **If the same tool fails twice in a row:** switch tools or change
-   strategy. Don't keep retrying the same broken call.
-4. **If 3+ different tools have failed on the same goal:** switch to
-   `/reason reflexion` mode, or stop and ask the user for guidance.
-5. **Always narrate the recovery** in the user-facing answer:
-   "I tried X, got Y, so I tried Z instead."
+1. **Inspect the structured outcome and attempt ledger first.** Check status,
+   mutation risk, whether execution began, retry_allowed and reconciliation
+   requirements. Error text alone does not establish whether an effect landed.
+2. **Reconcile unknown_outcome before any retry.** For a possibly executed
+   mutation, perform an authorized read-only observation of its exact target.
+   Compare with prior state and intended postcondition. If applied, do not
+   replay; if definitely not applied, retry only under normal authorization.
+   If neither is established, stop and report uncertainty. A timeout is not
+   proof of non-execution; a different tool can duplicate the same effect.
+3. **Bound safe retries.** A failed read or definitely unexecuted operation may
+   be retried once when the runtime permits it and the cause is transient.
+   Never increase deadlines past runtime limits or retry denied operations.
+4. **Satisfy prerequisites.** For read-before-write errors, read the exact file
+   first. Then choose the appropriate edit under the same checks. Do not switch
+   tools, modes or authority paths to evade a protection or a denial.
+5. **Keep the handoff compact.** Summarize consequential recovery and unresolved
+   effects, not every tool call. Verify the final outcome with normal tools.
 
 ## Key Discoveries
 
-- The 2,000-character tool-result cap in `tools.MAX_TOOL_RESULT` is
-  per-call. For large matches, narrow the search with `glob=` and
-  `path=` arguments rather than asking for everything at once.
+- For large matches, narrow the search with `glob=` and `path=` arguments.
+  Use current tool metadata for limits rather than remembered numeric caps.
 - `harness_search` returns "No harness matches" for both "nothing in
   the index" and "all matches were excluded by kind filter". Try
   `kind=None` first to see what's there.
-- `run_shell` has a hard 120s cap regardless of `timeout=` argument.
-  Long-running commands need to be backgrounded and polled, not timed
-  out at 600s and hoped for.
-- `edit_file` is the highest-leverage recovery tool: when a `write_file`
-  call returns "file already exists" or "you need to read the file first",
-  switch to `edit_file` with the exact existing string instead.
-- `session_command` errors with EOFError mean the user typed `/exit` —
-  do not retry, the session is over.
+- `run_shell` enforces its own timeout ceiling. Use an authorized bounded
+  runner for longer work; do not spawn untracked background side effects.
+- For an ambiguous edit match, re-read and choose a unique anchor. A validation
+  failure is not evidence of partial execution unless the runtime reports it.
+- EOF or connection loss does not prove a mutation failed or a user exited.
+  Establish session and operation state before deciding what can be retried.
 
 ## Environment
 
-algo-cli only. These heuristics are encoded in the system prompt
-verification_layer; this skill captures the long-form reasoning.
+Algo CLI only. Structured runtime outcomes govern recovery; this guidance
+does not grant permissions or relax verification requirements.

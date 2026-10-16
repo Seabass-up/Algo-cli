@@ -325,8 +325,16 @@ def _context_packet(cfg: Any, query: str, *, scope: str, budget: int) -> dict[st
         packet = invoke_continuum(cfg, "context", {
             "query": query,
             "budget_bytes": budget,
+            **_project_selection(cfg),
         }, scope=scope)
         if packet.get("ok") is True:
+            context = packet.get("context")
+            selection = context.get("project_selection") if type(context) is dict else None
+            if _project_selection(cfg) and (
+                type(selection) is not dict or type(selection.get("unknown_projects")) is not list
+                or selection.get("requested") != _project_selection(cfg)["active_projects"]
+            ):
+                raise ContinuumMemoryError("Continuum project selection could not be verified; no context was injected.")
             return packet
         details = packet.get("details")
         if (
@@ -361,8 +369,18 @@ def _model_context_projection(packet: dict[str, Any]) -> dict[str, Any]:
     return projected
 
 
+def _project_selection(cfg: Any) -> dict[str, Any]:
+    projects = getattr(cfg, "continuum_active_projects", [])
+    if (type(projects) is not list or len(projects) > 16
+        or any(type(item) is not str or re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", item) is None for item in projects)
+        or len(set(projects)) != len(projects)):
+        raise ContinuumMemoryError("Invalid Continuum project selection; no context request was sent.")
+    return {"active_projects": sorted(projects)} if projects else {}
+
+
 def prompt_context(cfg: Any, query: str) -> str:
     """Retrieve both authorized scopes and retain their bounded packet metadata."""
+    selection = _project_selection(cfg)
     facts = recall_facts(cfg)
     packets = {}
     for scope, budget in (("shared", 12_000), ("private", 6_000)):
@@ -370,7 +388,7 @@ def prompt_context(cfg: Any, query: str) -> str:
             cfg, query.strip()[:1000] or "Algo CLI current goals constraints and open tasks",
             scope=scope, budget=budget,
         )
-        verified = invoke_continuum(cfg, "validate_context", {"packet": packet}, scope=scope)
+        verified = invoke_continuum(cfg, "validate_context", {"packet": packet, **selection}, scope=scope)
         if verified.get("ok") is not True:
             raise ContinuumMemoryError("Continuum context changed or could not be verified; no fallback was used.")
         packets[scope] = _model_context_projection(packet)

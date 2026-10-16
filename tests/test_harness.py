@@ -1482,7 +1482,7 @@ def test_reviewed_algo_doc_metadata_rebuilds_legacy_summary_only_record(monkeypa
     assert index["refresh_stats"]["rebuilt_records"] >= 1
     assert record["index_text"]
     assert record["title"] == "ALGO reviewed algorithm pattern catalog"
-    assert record["description"] == harness.REVIEWED_ALGO_DESCRIPTION
+    assert record["description"] == harness.REVIEWED_ALGO_DESCRIPTION + " " + harness.catalog_guidance(harness.CONFIG_DIR)
     assert "pattern" in record["search_text"]
     assert "self-evaluation" in record["search_text"]
     assert "action registry" in record["search_text"]

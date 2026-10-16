@@ -26,6 +26,17 @@ context in both scopes and validates the packets before use. Required records,
 provenance, omitted counts and policy-withheld counts remain in the packets.
 Memory bodies are untrusted context, never permissions or proof of current facts.
 
+`continuum_active_projects` accepts up to 16 distinct canonical project IDs, for
+example `["my-project"]`. Empty (the default) retains global selection; Algo does
+not infer project identity from an untrusted prompt or rename the storage project.
+Configure IDs that have reviewed applicability declarations in Continuum. The same
+selection is sent to context and validation in both scopes, including size retries.
+Global and applicable mandatory records are retained. Unknown IDs (including a
+fresh private scope with no declarations) retain the native explicit diagnostic
+and global selection; they must not be reported as successfully narrowed context.
+An ignored/mismatched selection or validation refusal never becomes injected
+context. Do not reclassify a required record merely to reduce prompt size.
+
 Prompt context normally requests 12,000 serialized bytes for shared state and
 6,000 for private state. If Continuum reports that required records and their
 verification metadata exceed that budget, Algo retries that scope once with a

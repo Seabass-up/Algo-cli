@@ -581,8 +581,16 @@ def selected_providers(cfg: Any, provider: str | None, task: str) -> list[str]:
     return [primary, *fallback]
 
 
-def decision_status(provider: str | None = None, cfg: Any = None) -> str:
-    """Inspect decision providers, model availability and loading locally; no decision inference."""
+def decision_status(provider: str | None = None, cfg: Any = None, checkpoint: int | None = None) -> str:
+    """Inspect providers or a current-task checkpoint's full diagnostics; no decision inference."""
+    if checkpoint is not None:
+        if type(checkpoint) is not int or checkpoint < 0:
+            return encoded({"ok": False, "error": "invalid_checkpoint"}).decode()
+        receipt = getattr(cfg, "_decision_checkpoint_details", {}).get(checkpoint)
+        if receipt is None:
+            return encoded({"ok": False, "error": "checkpoint_not_available"}).decode()
+        return encoded({"ok": True, "checkpoint": checkpoint, "receipt": receipt,
+                        "advisory_only": True, "action_authority": False}).decode()
     names = [provider] if provider is not None else list(dict.fromkeys([
         *BUILTIN_PROVIDERS, *_PROVIDER_FACTORIES, *getattr(cfg, "decision_provider_settings", {}),
     ]))

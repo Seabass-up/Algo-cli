@@ -1,5 +1,32 @@
 # Lessons Learned
 
+## 2026-10-15: Scoped Harness Guidance Port Without Watchdog Changes
+
+**Symptom/cause:** Operational skills recommended retired memory routes and blind
+mutation retries, catalog locations were duplicated, lexical retrieval was called
+hybrid, project selection was missing, and decision diagnostics overwhelmed the
+useful result. The running 0.20.2 tree also lacks newer public privacy/freshness
+and decision-response fixes, so whole-file copying would regress 0.20.3.
+
+**Repair:** Port only guidance-contract hunks onto public main. Keep existing
+metadata redaction, staged native publication, backdated freshness invalidation,
+typed provider checks, decision-verification guidance and applicability docs.
+Preserve required memory, permissions, typed uncertainty and owner-only catalogs.
+Keep the unrelated CI watchdog branch, source, workflows and evidence untouched;
+qualify a clean review worktree, not the combined dirty watchdog tree.
+
+**Verification:** Local CI and real source-bound qualifications are pending for
+this port. Earlier 0.20.2 results do not qualify this different source. Validate
+installed resources with the runtime resolver and use the workflow's exact
+`--cov` setting, not a path override that double-counts installed/source files.
+Jev supported the bounded port/isolation strategy; it is not verification.
+
+**Prevention/limits:** Compare connected hunks and newer invariants before any
+source export. Rebuild evidence only after final source. The review push will
+carry a CI-skip marker to respect local-CI-only scope; skipped hosted checks are
+pending, not passed, and cannot authorize merge or publication. No release,
+tag, main merge, saved setting or normal-launcher change is authorized here.
+
 ## 2026-10-10: PR 89 Decision Metadata And Retired Index Cleanup
 
 **Symptom/cause:** Valid JSON with null or non-object Ollama `details` or Decider
