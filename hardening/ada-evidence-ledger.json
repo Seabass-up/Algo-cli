@@ -4538,6 +4538,15 @@
           "timestamp": "2026-10-16T04:54:23Z",
           "scope": "Uncommitted Windows journal-lock repair over d4ceae9; local working-tree source sha256:faf0d33f53ea021af176715ca9f1706ecc89cafb02a61dd58e987e46a778a2c7",
           "limitations": "Local macOS and portable regressions do not qualify native Windows latency or hosted browser/signing/public delivery; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:f1a76adf65ab125105e375e6cad37a80d6a48d837c6a64ce89b6495685a4d5ce",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-16T18:52:21Z",
+          "scope": "Chrome 155.0.8059.84 package, measured inventory and coupled qualification pin refresh over c140b9d; source sha256:f3b090ea63a7e65773032d5f40d512f6ef0cb425e5738fbf21c16e1cd793f231",
+          "limitations": "Local inventory and finite regressions do not qualify hosted Windows, browser containment, native signing or public delivery; HARD-080 remains in progress"
         }
       ]
     },
@@ -7471,6 +7480,15 @@
           "timestamp": "2026-10-16T04:54:23Z",
           "scope": "Uncommitted Windows journal-lock repair over d4ceae9; local working-tree source sha256:4a716ae833d62d909499d05e7be817b6ddcf37472012e6d7f4ae532b2612a73d",
           "limitations": "Local macOS and portable regressions do not qualify native Windows latency or hosted browser/signing/public delivery; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:f1a76adf65ab125105e375e6cad37a80d6a48d837c6a64ce89b6495685a4d5ce",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-16T18:52:21Z",
+          "scope": "Chrome 155.0.8059.84 package, measured inventory and coupled qualification pin refresh over c140b9d; source sha256:f3b090ea63a7e65773032d5f40d512f6ef0cb425e5738fbf21c16e1cd793f231",
+          "limitations": "Local inventory and finite regressions do not qualify hosted Windows, browser containment, native signing or public delivery; HARD-081 remains in progress"
         }
       ]
     },
