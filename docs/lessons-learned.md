@@ -1,5 +1,105 @@
 # Lessons Learned
 
+## 2026-10-16: Task-Specific Prompt Guidance And Content-Free Diagnostics
+
+**Symptom/cause:** A conversational question received unrelated PDF, xAI and
+harness tutorials. Interactive prompt assembly appended them unconditionally.
+A Jev routing abstention was visible too, but it was not a provider outage:
+the coordinator consulted successfully and continued main-model judgment below
+the unchanged routing threshold. Broad memory has several possible causes;
+this pass does not establish or change the owner's actual project selection.
+
+**Repair:** Keep Jev's bounded-decision, locality, uncertainty and verification
+contract always present in shorter wording. Select optional, unchanged PDF/xAI
+tutorials and harness instructions from explicit task intent, active xAI route
+or tool calls belonging to that exact user turn. Do not use retrieved/tool
+body text or unrelated prior turns as activation authority. Tutorials neither
+select tools nor grant permission. Keep discovery, protected identity, memory,
+mode policy, attempt recovery and execution enforcement intact.
+
+Add process-local `/context status` estimates for core/identity/memory/summary/
+ledger/task guidance and build time, with content-free scope/project-selection
+counts after both Continuum packets validate. Do not retain bodies, IDs, paths
+or queries in these diagnostics, persist them in config, filter required memory
+or change stored applicability. Bind the new helper and regressions into both
+source-bound qualification inventories.
+
+**Verification so far:** Pre-change targeted baseline passed. First affected
+suite passed 303 tests, including Jev, guidance coherence, protected memory,
+agent-loop accounting and telemetry. Under the same deterministic fixture,
+interactive prompts changed from 3,598 to 3,022 estimated tokens on macOS/Linux
+shapes and 3,631 to 3,056 on Windows; automated prompts changed from 1,584 to
+1,410 and 1,618 to 1,444. These are approximate text-token counts, not provider
+tokenization, measured model latency, or live task-quality improvements. A
+relative-only one-shot size assertion falsely rejected the improved interactive
+prompt; use explicit tighter absolute ceilings plus the remaining relative
+check. Final affected regressions pass 312 tests, including compaction and two
+actual agent-loop intent cases. A separate 51-build-per-case comparison with
+the exact released module shows estimated reductions 16.72% ordinary, 13.00%
+PDF, 12.21% xAI, 13.67% harness and 5.41% combined; build medians rise by a few
+microseconds, so no model-speedup claim is made.
+
+**Qualification ordering:** Initial full runs correctly rejected stale source
+receipts, then one audit saw new reports before their ledger rows were updated.
+This was local CI sequencing, not a reason to weaken digest checks. Freeze
+source, run the real Nathan/M8 producers, append exact raw-byte digest rows,
+regenerate the blocked M9 audit, verify currency, then run full CI without
+changing source or evidence. All 44 postwrite evidence regressions pass. The
+stable full-suite rerun passes 7,536 tests/45 skips, with 73.41% branch-aware
+coverage against the unchanged 57% floor. Three existing JUnit `record_property`
+warnings remain. Retain external/native/public-claim limits.
+
+**Final local checks:** Frozen non-editable installation and
+`scripts/oliver_installed_source_parity.py` match all 273 Python files.
+`ruff check algo_cli tests scripts`, workflow mypy (78 explicit targets) plus
+the new helper, compilation, public source/history scans, version validation
+and locked Python/Rust/Go dependency audits pass. Rust nine tests/clippy, Go
+1.26.9 race/vet (70.6% coverage), website build/20 tests/lint/zero advisories,
+Swift tests/release build, 30 replay-store process-kill trials and both disabled
+native-boundary probes pass. Build/public-artifact scan/metadata validation and
+isolated wheel install pass without installing the owner launcher.
+
+Real producers refresh Nathan's 17 correctness/31 workload pass and M8's nine
+local passes/five external blockers/zero failures. Exact raw-byte ledger entries
+and the blocked M9 audit verify; public-claim eligibility remains false. Full
+CI command: `PATH=/opt/homebrew/bin:$PATH ALGO_TEST_REQUIRE_RIPGREP=1 .venv/bin/python
+-m pytest tests --cov --cov-branch --cov-fail-under=57` with verbose/JUnit/coverage
+reporting and existing timeout settings. Receipts:
+`/private/tmp/algo-context-full-stable.xml`,
+`/private/tmp/algo-context-stable-coverage.xml`,
+`/private/tmp/algo-context-measure-report.json` and
+`/private/tmp/algo-context-targeted-final.xml`.
+
+**Prevention/limits:** Regress task/route/discovered-tool activation, old-turn
+and tool-body isolation, exact memory payload preservation, failed-validation
+diagnostic clearing, non-persistence and source-accounting sums. Preserve all
+Jev routing thresholds, authorization and required memory. Published `0.20.3`,
+normal launcher/config and separate watchdog work remain untouched; restart
+and installation of this local source are not claimed.
+
+**PR #93 review follow-up:** Executable regressions reproduced all four review
+findings: a standalone `vision_describe` call incorrectly implied PDF work;
+`knowledge base` and `XAI_API_KEY` requests missed the intended tutorials;
+context status hid the calculated effective project count. Remove the generic
+vision trigger, recognize the explicit request forms (including `knowledge-base`),
+and display per-scope effective counts or `global/unfiltered` for a null selection.
+Keep PDF guidance after real PDF tool use and preserve both-scope memory packets.
+The test-first run failed six cases across those four findings; after repair,
+all 67 guidance/accounting cases pass (three existing JUnit metadata warnings).
+Console assertions normalize line wrapping rather than requiring a wide terminal.
+Jev's scoped review supported these repairs; advisory output did not replace
+the reproductions. After source freeze, actual Nathan regeneration passes all
+17 correctness checks/31 workloads; M8 retains nine local passes/five external
+blockers/zero failures. Append exact raw digests to the ledger, regenerate M9,
+and verify artifact currency before full CI. The review rerun passes 7,543
+tests/45 skips with 73.42% branch-aware coverage and three existing JUnit
+warnings (`/private/tmp/algo-pr93-review-full.xml` and coverage XML). Ruff,
+the 78-target workflow mypy contract plus the helper with the same flags,
+compilation, installed/source parity, public source/history/version scans,
+locked Python dependency audit, distribution build/scan and `twine check` pass.
+Required hosted checks must still pass on the pushed repair commit before
+merging; no watchdog or publication changes are part of this repair.
+
 ## 2026-10-16: Refresh Chrome Package And Coupled Qualification Pins
 
 **Symptom/cause:** Protected-main qualification passed with Chrome

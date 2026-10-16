@@ -396,6 +396,7 @@ def _valid_project_selection(selection: Any, requested: list[str]) -> bool:
 
 def prompt_context(cfg: Any, query: str) -> str:
     """Retrieve both authorized scopes and retain their bounded packet metadata."""
+    setattr(cfg, "_memory_context_diagnostics", {})
     selection = _project_selection(cfg)
     facts = recall_facts(cfg)
     packets = {}
@@ -408,6 +409,20 @@ def prompt_context(cfg: Any, query: str) -> str:
         if verified.get("ok") is not True:
             raise ContinuumMemoryError("Continuum context changed or could not be verified; no fallback was used.")
         packets[scope] = _model_context_projection(packet)
+    # Publish diagnostics only after both scopes validate. Never log bodies or IDs.
+    diagnostics: dict[str, Any] = {"requested_projects": len(selection.get("active_projects", [])), "scopes": {}}
+    for scope, packet in packets.items():
+        context = packet.get("context") or {}
+        items = context.get("items") or []
+        projects = context.get("project_selection") or {}
+        effective = projects.get("effective")
+        diagnostics["scopes"][scope] = {
+            "required_items": sum(1 for item in items if isinstance(item, dict) and item.get("required") is True),
+            "optional_items": sum(1 for item in items if isinstance(item, dict) and item.get("required") is not True),
+            "effective_projects": len(effective) if isinstance(effective, list) else None,
+            "unknown_projects": len(projects.get("unknown_projects") or []),
+        }
+    setattr(cfg, "_memory_context_diagnostics", diagnostics)
     return json.dumps({"facts": facts, "contexts": packets}, ensure_ascii=False, allow_nan=False)
 
 

@@ -26,6 +26,7 @@ from . import identity
 from . import model_info as _model_info_module
 from . import reflex
 from .prompt_rules import DECISION_VERIFICATION_RULE, NAMED_PATH_RULE, RUNTIME_SOURCE_RULE, SUMMARY_RULE, UNKNOWN_OUTCOME_RECOVERY, catalog_guidance, current_catalog_system_prompt, runtime_source_root
+from .prompt_guidance import task_guidance
 from .session_mode import active_mode
 from .chat_protocol import get_attr, normalize_tool_call
 from .display import json_sink, show_info
@@ -273,7 +274,31 @@ def build_system_prompt(
     active_model_info: dict[str, Any] | None = None,
     user_message: str | None = None,
     source_token_counts: dict[str, int] | None = None,
+    guidance_tools: set[str] | None = None,
 ) -> str:
+    started = time.perf_counter()
+    setattr(cfg, "_prompt_diagnostics", {})
+    setattr(cfg, "_memory_context_diagnostics", {})
+    guidance_counts: dict[str, int] = {}
+    summary_tokens = ledger_tokens = 0
+
+    def finish(prompt: str) -> str:
+        counts = source_token_counts or {}
+        total = estimate_text_tokens(prompt)
+        partition = {"identity": counts.get("identity", 0), "memory": counts.get("memory", 0),
+                     "task_guidance": sum(guidance_counts.values()),
+                     "summary": summary_tokens, "attempt_ledger": ledger_tokens}
+        partition["core_policy_and_runtime"] = total - sum(partition.values())
+        setattr(cfg, "_prompt_diagnostics", {
+            "estimated_tokens": partition, "total_tokens": total,
+            "guidance_tokens": dict(guidance_counts),
+            "build_ms": round((time.perf_counter() - started) * 1000, 3),
+            "memory_selection": getattr(cfg, "_memory_context_diagnostics", {}),
+        })
+        return prompt
+
+    if source_token_counts is None:
+        source_token_counts = {}
     if source_token_counts is not None:
         source_token_counts.clear()
         source_token_counts.update(identity=0, memory=0)
@@ -290,29 +315,17 @@ def build_system_prompt(
     prompt += "\n\n## Algorithm Catalog\n" + catalog_guidance()
     prompt += (
         "\n\n## Bounded decision models\n"
-        "For a useful bounded choice, classification, evidence judgment or priority, formulate a specific "
-        "question, relevant state/evidence and explicit criteria, then call decision_decide. "
-        "Use it at checkpoints while thinking/planning, before the final answer; pause the dependent "
-        "step until the validated result arrives, then continue your reasoning. Send the bounded "
-        "question packet, not an entire private thought stream or conversation. "
-        "It supports Jev, local Clef/Clef-flash/Tev1, CLM, Decider and reviewed registered adapters. "
-        "The main AI is the thinking and judgment model; Jev is the default bounded-decision coordinator, "
-        "not a conversational replacement. Omit provider so the runtime lets Jev select a compatible "
-        "available decision provider. Explicit provider is only for a user-requested override. "
-        "The coordinator also recommends task-relevant kernels and ALGO patterns from local catalogs. "
-        "Check their returned status and source binding; proposed patterns are research references, "
-        "not implemented algorithms. Recommendations never activate kernels or grant authority. "
-        "Jev receives question specifications and routing metadata, not the raw evidence. "
-        "Only confirmed internet loss enables local Clef-flash or Tev1 coordination; a service/auth "
-        "error or uncertain route is not proof of offline status. Use decision_status for configuration. "
-        "local_only=true forbids remote routing, inference and fallbacks. Online Jev requires explicit "
-        "local_only=false and existing runtime authority for the supplied question packet. "
-        "Do not fabricate offline status or relax privacy after a failure. Preserve Noul probabilities, fractional Scores "
-        "and distributions; do not infer a boolean without explicit thresholds. Treat uncertainty or "
-        "failure as a reason to obtain evidence or continue main-model reasoning. "
-        "Use the validated answer to guide the next step; it never grants action permission or proves "
-        "completion. Keep open-ended planning, writing, coding and explanations with the main model. "
-        "Execute with normal tools and verify their actual outcomes. Do not send credentials or bulk history."
+        "Use decision_decide during reasoning for useful bounded choices, classifications, evidence judgments and priorities: "
+        "supply a specific question, relevant evidence and explicit criteria; await validation before the dependent step. "
+        "The main model owns open-ended planning, coding, writing and judgment. Jev is the default coordinator; omit provider "
+        "unless the user requests an override. It routes compatible Jev, Clef/Clef-flash/Tev1, CLM, Decider or registered adapters. "
+        "Jev routing receives question specifications/metadata, not raw evidence. Send bounded packets, never private thought streams, credentials or bulk history. "
+        "Kernel/ALGO recommendations require status/source checks; proposed patterns are research, not implementations or activation authority. "
+        "local_only=true forbids ALL remote routing, inference and fallback. Online Jev needs explicit local_only=false and runtime authority. "
+        "Only confirmed internet loss enables local Clef-flash/Tev1 coordination; auth/service errors or deferrals are not offline proof. "
+        "Never relax privacy after failure. Preserve Noul probabilities, fractional Scores and distributions; boolean conversion needs explicit thresholds. "
+        "On uncertainty, gather evidence or continue main-model judgment. Use decision_status for configuration/details. "
+        "Advice grants no permission or completion proof; execute with authorized tools and verify outcomes."
         f" {DECISION_VERIFICATION_RULE}"
     )
     prompt += (
@@ -406,13 +419,15 @@ def build_system_prompt(
         from . import session_mode
 
         prompt += f"\n\n{session_mode.prompt_section(active_mode(cfg), include_external=cfg.external_harness_sources_enabled)}"
-        return prompt
+        return finish(prompt)
     from . import session_commands
 
     prompt += f"\n\n## Session Slash Commands\n{session_commands.catalog_for_prompt()}"
     persisted_summary = persisted_session_summary(cfg).strip()
     if persisted_summary and json_sink() is None:
+        before_summary = estimate_text_tokens(prompt)
         prompt += f"\n\n## Conversation Summary\n{persisted_summary}"
+        summary_tokens = estimate_text_tokens(prompt) - before_summary
     identity_guidance = (
         "\n\n## Protected Identity Boundary\n"
         "The identity and soul text above is immutable repo-shipped product policy. "
@@ -446,26 +461,21 @@ def build_system_prompt(
         "- Prefer one decisive tool call over several speculative ones when the target is already known.\n"
         f"- {SUMMARY_RULE}\n"
         f"{identity_read_guidance}"
-        "When the user references 'my wiki', 'my notes', or asks you to learn from their knowledge base, note that the harness RAG layer already injected the most relevant entries into the Relevant Context section (if present); use harness_search/harness_read only for explicit deep dives the retrieval missed."
-        "\n\n## Local Harness Bridge\n"
-        f"{external_harness_guidance} Use available_actions, harness_search, harness_read, harness_stats, and harness_refresh. "
-        "These tools are read-only and should be preferred before broad filesystem scans when the user asks about skills, tools, prompts, memory, or wiki context."
+        "Use action_search to discover exact tool schemas; task tutorials do not select or authorize tools. "
+        f"{external_harness_guidance}"
         "\n\n## Native Memory\n"
         "Use explicit scoped Continuum search/context and memory_remember. No embedding or Lab-index backend is used. "
-        "\n\n## Grok / xAI model compatibility\n"
-        "When the user asks whether a grok-* model works in this harness, do not scan the repo blindly: "
-        "tell them to run /model-check NAME (or run it yourself via session slash if available), "
-        "and search the currently enabled harness for Algo CLI xAI/X-account guidance; do not assume external record IDs exist. "
-        "Multi-agent grok models use xAI /v1/responses; other Grok models use /v1/chat/completions. "
-        "Auth uses the documented XAI_API_KEY flow. Tell users to run `algo-cli config setup xai`; do not request, "
-        "display, or persist key material in conversation. xAI API calls may consume paid usage."
         "\n\n## Capability Awareness\n"
         "When the user asks what you can do, what actions are available, what internal stats exist, or what tools/skills/memory/wiki you can access, call available_actions first."
-        "\n\n## PDF Handling\n"
-        "For PDF files, call read_pdf first. Do not claim Python is unavailable and do not improvise shell-based PDF extraction before trying read_pdf. "
-        "If read_pdf says the document is scanned or image-only, call render_pdf_pages next and then pass one returned PNG path to vision_describe or another OCR-capable path. "
-        "If a vision/OCR model returns unsupported-image or insufficient-memory errors, do not repeat the same model across more PDF pages or sibling PDFs without changing the model or approach."
     )
+    for name, guidance in task_guidance(
+        _memory_recall_query(cfg, user_message), cfg.messages,
+        xai=routes_to_xai(cfg),
+        observed_tools=guidance_tools,
+    ).items():
+        before_guidance = estimate_text_tokens(prompt)
+        prompt += "\n\n" + guidance
+        guidance_counts[name] = estimate_text_tokens(prompt) - before_guidance
     prompt += (
         "\n\n## Reflection Checkpoints\n"
         f"Every {max(1, int(cfg.tool_think_every))} tool calls, pause to reassess the objective, what has been completed, what remains, "
@@ -478,6 +488,7 @@ def build_system_prompt(
     # prefix/KV cache on every tool turn, so keep automation prompts stable.
     safe_attempts = sanitize_attempt_ledger(cfg.attempt_ledger)
     if safe_attempts and json_sink() is None:
+        before_ledger = estimate_text_tokens(prompt)
         ledger_lines = [
             format_attempt_ledger_line(item) for item in safe_attempts[-ATTEMPT_PROMPT_LIMIT:]
         ]
@@ -488,6 +499,7 @@ def build_system_prompt(
             f"{UNKNOWN_OUTCOME_RECOVERY}\n"
             + "\n".join(ledger_lines)
         )
+        ledger_tokens = estimate_text_tokens(prompt) - before_ledger
     memory_section = _memory_prompt_section(cfg, user_message=user_message)
     if memory_section:
         before_memory_tokens = estimate_text_tokens(prompt)
@@ -545,7 +557,7 @@ def build_system_prompt(
             "or unsourced consequential facts. For read-only file work, read live files before refusing.\n\n"
             f"{mercury_gates}"
         )
-    return prompt
+    return finish(prompt)
 
 
 def estimate_context_usage(
