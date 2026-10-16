@@ -35,7 +35,10 @@ def test_valid_routing_abstention_preserves_advice_and_allows_new_evidence(monke
     packet = json.loads(controller.context_for_request().split("## Runtime-owned decision checkpoint\n")[1])
     assert packet["ok"] is False and packet["answers"] == {}
     assert packet["status"] == "deferred" and packet["coordinator_completed"] is True
-    assert packet["routing_judgments"]["route"]["choice"] == "jev"
+    assert "routing_judgments" not in packet
+    detail = json.loads(decisions.decision_status(cfg=cfg, checkpoint=controller.count))["receipt"]
+    assert detail["routing_judgments"]["route"]["choice"] == "jev"
+    assert detail["routing_assessment"]["rejections"]
     assert not controller.failed
     assert "jev consulted; selection deferred" in notices[0] and "0.7 < 0.8" in notices[0]
     controller.start_if_due()
@@ -84,6 +87,45 @@ def test_checkpoint_preserves_policy_refusal_without_claiming_provider_outage(mo
     assert packet["recovery"]["automatic_retry"] is False
     assert "do not infer an outage" in packet["main_model_instruction"]
     assert controller.failed
+
+
+def test_compact_context_preserves_answer_uncertainty_and_inspectable_details(monkeypatch):
+    cfg, controller, calls = setup(monkeypatch)
+    controller.start_if_due()
+    context = controller.context_for_request()
+    packet = json.loads(context.split("## Runtime-owned decision checkpoint\n")[1])
+    detail = json.loads(decisions.decision_status(cfg=cfg, checkpoint=controller.count))["receipt"]
+    assert packet["answers"] == detail["answers"]
+    assert packet["answers"]["next_investigation"]["probabilities"]["scope"] == 0.95
+    assert packet["action_authority"] is False and packet["real_world_verified"] is False
+    assert "routing_judgments" not in packet and "reference_catalog" not in packet
+    original_prompt = {key: value for key, value in detail.items() if key != "routing_details"}
+    assert len(decisions.encoded(packet)) < len(decisions.encoded(original_prompt))
+    assert "repo-intelligence" in context
+    assert "routing_judgments" not in json.dumps(cfg.context_state)
+    monkeypatch.setattr(decisions, "provider_for", lambda *a: pytest.fail("Inspection must not probe providers"))
+    controller.close()
+    assert json.loads(decisions.decision_status(cfg=cfg, checkpoint=controller.count))["ok"]
+    # A new task cannot see the preceding task's receipt as current advice.
+    checkpoint.TaskCheckpoints(cfg, "new task", set(), lambda *a: None)
+    assert json.loads(decisions.decision_status(cfg=cfg, checkpoint=1))["error"] == "checkpoint_not_available"
+
+
+@pytest.mark.parametrize("identifier", [True, -1, "1", 1.5])
+def test_invalid_receipt_lookup_does_not_probe_or_infer(monkeypatch, identifier):
+    monkeypatch.setattr(decisions, "provider_for", lambda *a: pytest.fail("No provider call"))
+    assert json.loads(decisions.decision_status(checkpoint=identifier))["error"] == "invalid_checkpoint"
+
+
+def test_oversized_detail_cannot_return_an_older_receipt(monkeypatch):
+    cfg, controller, _ = setup(monkeypatch)
+    controller._finish({"ok": False, "error": "fixture"}, False)
+    assert json.loads(decisions.decision_status(cfg=cfg, checkpoint=0))["ok"]
+    controller._finish({"ok": False, "error": "fixture", "routing": {
+        "reference_catalog": {"notes": "x" * 70_000}, "recommendations": None}}, False)
+    packet = json.loads(controller.context.split("## Runtime-owned decision checkpoint\n")[1])
+    assert packet["diagnostics"]["available"] is False
+    assert json.loads(decisions.decision_status(cfg=cfg, checkpoint=0))["error"] == "checkpoint_not_available"
 
 
 def setup(monkeypatch, *, approved=True, task="Review the parser source", allowed=True, **settings):

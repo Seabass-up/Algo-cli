@@ -3261,7 +3261,7 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
         "When the same file needs 2+ independent edits, call batch_edit with all of them at once instead of looping edit_file. One atomic write, faster, and you can see the whole change set in the result.",
         "Use run_shell for build/test/typecheck/lint/git verification after code changes.",
         "In requires_change Agent Blocks, use write_file or edit_file for file edits; mutating shell or Git commands require explicit approval.",
-        "For Algo algorithm/pattern catalog guidance, use and update the live catalog at ~/.algo_cli/ALGO.md. docs/ALGO.md is only the empty public template, not the live catalog.",
+        harness.catalog_guidance(),
         "For reference maintenance use harness_stats, harness_refresh and lexical harness_search. Native Continuum owns memory; embedding and Lab-index routes are retired.",
         "Use web_search/web_fetch only when OLLAMA_API_KEY enables Ollama Cloud web access.",
         "Use x_search for real-time X.com content only after the user configured XAI_API_KEY with `algo-cli config setup xai`; xAI API calls may consume paid usage.",

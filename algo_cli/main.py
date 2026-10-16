@@ -2933,8 +2933,11 @@ def _agent_loop_body(
     retrieved_lessons: list[str] | None = []
     from .session_mode import active_mode, completion_recovery_limit, work_iteration_limit
     harness_tools_available = any(getattr(tool, "__name__", "").startswith("harness_") for tool in active_tools)
+    reference_provenance = "harness-reference-index"
     if active_mode(cfg) != "execute" and (json_sink() is None or harness_tools_available):
         reference_index = harness.retrieval_index(protected_memory=external_memory_authority)
+        if reference_index.get("retrieval_backend") == "lexical":
+            reference_provenance = "harness-lexical-index"
         retrieved_context = harness.search_index(
             context_query_message, limit=HARNESS_TOP_K,
             pattern_context=harness.runtime_pattern_context(active_tools=active_tools), index=reference_index,
@@ -2974,7 +2977,7 @@ def _agent_loop_body(
             90,
             "harness_retrieval",
             "workspace",
-            "harness-hybrid-index",
+            reference_provenance,
         ),
         "index-compute-lab": (
             80,

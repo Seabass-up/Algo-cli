@@ -42,6 +42,27 @@ DECISION_VERIFICATION_RULE = (
 )
 
 
+def catalog_guidance(config_dir: Path | None = None) -> str:
+    """Use the same configured owner catalog for every operational surface."""
+    from .config import CONFIG_DIR
+
+    return (
+        f"Read and update the live algorithm/pattern catalog at {(config_dir or CONFIG_DIR) / 'ALGO.md'}. "
+        "If absent, it is an unpopulated user catalog. docs/ALGO.md is only the empty "
+        "public template, not the live catalog. Never publish the user's catalog or custom kernels."
+    )
+
+
+def current_catalog_system_prompt(system: str) -> str:
+    """Remove exact product-owned duplicates; runtime renders catalog guidance once."""
+    old_lines = {
+        "- For Algo algorithm/pattern catalog guidance, use and update docs/ALGO.md.",
+        "- For Algo algorithm/pattern catalog guidance, use and update the live catalog at ~/.algo_cli/ALGO.md. docs/ALGO.md is only the empty public template, not the live catalog.",
+        "- To read/update the live catalog, use the path in the runtime Algorithm Catalog section; docs/ALGO.md is only the empty public template.",
+    }
+    return "\n".join(line for line in system.split("\n") if line not in old_lines)
+
+
 def runtime_source_root() -> Path:
     """Directory that contains the algo_cli package currently imported."""
     return Path(__file__).resolve().parents[1]

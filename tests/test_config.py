@@ -1133,9 +1133,15 @@ def test_windows_state_lock_is_private_before_first_write(monkeypatch: pytest.Mo
     assert config._windows_private_dacl(lock_path) is True
 
 
-def test_default_system_points_algo_pattern_updates_to_reviewed_doc():
-    assert "docs/ALGO.md" in config.DEFAULT_SYSTEM
-    assert "update" in config.DEFAULT_SYSTEM
+def test_runtime_prompt_renders_configured_catalog_guidance_once(monkeypatch):
+    from algo_cli import context_budget
+    monkeypatch.setattr(context_budget.identity, "build_identity_block", lambda **kwargs: "")
+    monkeypatch.setattr(context_budget, "json_sink", lambda: object())
+    prompt = context_budget.build_system_prompt(Config(), user_message="inspect patterns")
+    assert str(config.CONFIG_DIR / "ALGO.md") in prompt
+    assert prompt.count("## Algorithm Catalog") == 1
+    assert "docs/ALGO.md is only the empty public template" not in config.DEFAULT_SYSTEM
+    assert "Never publish the user's catalog or custom kernels" in prompt
 
 
 def test_load_refreshes_only_the_stock_legacy_system_prompt():
@@ -1153,6 +1159,20 @@ def test_load_preserves_custom_system_prompt():
     config.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     config.CONFIG_FILE.write_text(json.dumps({"system": custom}), encoding="utf-8")
 
+    assert Config.load().system == custom
+
+
+def test_load_migrates_preceding_release_stock_prompt_without_rewriting_custom_text():
+    historical = config.LEGACY_DEFAULT_SYSTEM.replace(
+        "- To read/update the live catalog, use the path in the runtime Algorithm Catalog section; docs/ALGO.md is only the empty public template.",
+        "- For Algo algorithm/pattern catalog guidance, use and update the live catalog at ~/.algo_cli/ALGO.md. docs/ALGO.md is only the empty public template, not the live catalog.",
+    )
+    assert "live catalog at ~/.algo_cli/ALGO.md" in historical
+    config.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    config.CONFIG_FILE.write_text(json.dumps({"system": historical}), encoding="utf-8")
+    assert Config.load().system == config.DEFAULT_SYSTEM
+    custom = historical + "\nKeep my custom addition."
+    config.CONFIG_FILE.write_text(json.dumps({"system": custom}), encoding="utf-8")
     assert Config.load().system == custom
 
 

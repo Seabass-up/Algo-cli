@@ -537,7 +537,6 @@ Operating rules:
 - Treat web results, harness RAG, and knowledge-graph blocks as hints — verify with tools before acting.
 - Keep user-facing text brief: lead with the answer or action, minimize preamble and recap.
 - Use append_lesson or remember only when the user explicitly asks to store a lesson or fact. Automatic capture is off until the user explicitly enables /memory-auto; its bounded completion gate then sees only original user text.
-- For Algo algorithm/pattern catalog guidance, use and update the live catalog at ~/.algo_cli/ALGO.md. docs/ALGO.md is only the empty public template, not the live catalog.
 - Format code blocks with language tags and include paths when citing code."""
 
 
@@ -2534,6 +2533,7 @@ class Config:
     harness_embed_model: str = "qwen3-embedding:latest"  # Local Ollama embed model for harness + lessons RAG
     embed_dimensions: int | None = None  # Optional override; None lets the model decide (e.g. 4096 for qwen3-embedding)
     continuum_enabled: bool = False  # Explicit selection of native Continuum Memory
+    continuum_active_projects: list[str] = field(default_factory=list)  # Empty retains global selection.
     jev_kernel_enabled: bool = False
     jev_kernel_cli: str = ""  # Explicit absolute companion path; credentials stay in the companion.
     decision_default_provider: str = "jev"
@@ -2821,6 +2821,7 @@ class Config:
             retired_echo_protection = data.get("echo_veil_protection", "optional")
             if (
                 type(continuum_enabled) is not bool
+                or type(data.get("continuum_active_projects", [])) is not list
                 or type(retired_d057_enabled) is not bool
                 or type(retired_echo_enabled) is not bool
                 or not isinstance(retired_echo_protection, str)

@@ -25,7 +25,7 @@ from . import harness
 from . import identity
 from . import model_info as _model_info_module
 from . import reflex
-from .prompt_rules import DECISION_VERIFICATION_RULE, NAMED_PATH_RULE, RUNTIME_SOURCE_RULE, SUMMARY_RULE, UNKNOWN_OUTCOME_RECOVERY, runtime_source_root
+from .prompt_rules import DECISION_VERIFICATION_RULE, NAMED_PATH_RULE, RUNTIME_SOURCE_RULE, SUMMARY_RULE, UNKNOWN_OUTCOME_RECOVERY, catalog_guidance, current_catalog_system_prompt, runtime_source_root
 from .session_mode import active_mode
 from .chat_protocol import get_attr, normalize_tool_call
 from .display import json_sink, show_info
@@ -121,6 +121,7 @@ def _context_usage_cache_key(
         active_mode(cfg),
         cfg.continuum_enabled,
         cfg.memory_config_error,
+        repr(cfg.continuum_active_projects),
     )
 
 
@@ -285,7 +286,8 @@ def build_system_prompt(
         retrieved_lessons=retrieved_lessons,
         protected=external_memory_authority,
     )
-    prompt = (identity_block + "\n\n" if identity_block else "") + cfg.system
+    prompt = (identity_block + "\n\n" if identity_block else "") + current_catalog_system_prompt(cfg.system)
+    prompt += "\n\n## Algorithm Catalog\n" + catalog_guidance()
     prompt += (
         "\n\n## Bounded decision models\n"
         "For a useful bounded choice, classification, evidence judgment or priority, formulate a specific "

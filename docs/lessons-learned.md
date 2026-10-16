@@ -1,5 +1,117 @@
 # Lessons Learned
 
+## 2026-10-15: PR 90 Review Contracts And Cross-Platform Regressions
+
+**Symptom/cause:** Four review findings were confirmed. A temporary test skill
+root was not registered, so `/tmp` paths hit the sensitive-directory exclusion.
+Editing the historical stock-prompt constant broke exact migration. Continuum
+selection checked the request echo but not effective/unknown consistency. Skill
+compatibility used filenames before source kind, rejecting wiki collisions and
+missing renamed declared skills.
+
+**Repair:** Register the fixture root without weakening path policy. Restore the
+historical prompt constant and preserve custom prompts. Validate canonical,
+distinct selection IDs, unknown membership and effective/request consistency;
+retain explicit unknown/global fallback and legitimate dependency expansion.
+Carry declared skill identity through Python and Rust; scope contracts to skill
+records, rebuild identity-less configured source caches, and reject obsolete
+native output before falling back to Python. Do not suppress unrelated records
+merely because synthetic ranking metadata lacks a new cache field.
+
+**Verification:** Linux-style `/tmp` reproductions fail before repair. The new
+regression run records the migration, selection and identity failures before
+source repair. Final focused tests: 286 passed, 21 skipped; Ruff, all-runtime
+mypy (272 files), Rust nine tests and clippy pass. Real qualification refresh,
+the complete suite and artifact bindings then pass: 7,498 passed, 41 skipped,
+zero failures/errors across the runtime suite plus its two postwrite evidence
+checks, with 71.07% cumulative branch-aware coverage against the unchanged 57%
+floor. No tests are omitted; hosted CI runs the unsplit suite. Real Nathan has
+17 correctness passes and 31 workloads; final M8 has nine local passes, five
+external blocks and zero failures. All three artifact-currency checks and the
+expected-blocked M9 verify after appending actual report hashes. Both real native
+project-selection packets and renamed native skill admission pass. Source/history
+privacy, compilation and installed parity pass. A stale installed documentation
+resource correctly stopped an intermediate qualification; reinstall and verify
+parity after every final resource edit, not just Python edits. Hosted results
+belong to PR 90's exact-head checks, not this local receipt or a release claim.
+
+**Prevention/limits:** Keep migration fixtures independent of mutable defaults;
+test configured roots on both temporary-directory layouts. Check typed response
+semantics, not just echoed inputs. Preserve declared identity across producer,
+cache, refresh and read boundaries; keep source freshness separate from generic
+ranking metadata. Jev supported the bounded findings and superset/fallback
+contract, but tests determine validity. Merge only after required checks pass;
+no publication, watchdog edit, approval bypass or normal installation is included.
+
+**Hosted follow-up:** The first exact-head CI at `357f891` passed nine required
+checks but Windows failed the existing one-shot prompt compactness assertion:
+1,659 tokens was not below 45% of 3,672. The cause was duplicated product-owned
+catalog reminders plus longer Windows shell guidance, not a provider outage.
+Render the authoritative catalog section once, strip only exact owned duplicates
+from the generated projection, and preserve saved/custom prompts and historical
+migration constants. Keep the original 45% bound and all path/privacy guidance.
+The new platform-shaped regression reproduces the Windows failure before repair;
+after repair macOS/Linux record 1,584/3,598 tokens and Windows 1,618/3,631.
+Focused tests pass (231 passed, 23 skipped); the three platform cases also pass
+independently. Ruff and targeted typing pass. These are local results; a fresh
+source-bound qualification and all required hosted checks remain necessary.
+
+**Final local follow-up:** Product `e34cf07` completes 7,502 passing tests and
+41 skips, zero failures/errors, across the runtime suite and both postwrite
+evidence checks; cumulative branch-aware coverage is 71.07% (57% floor unchanged).
+The runtime phase takes 247.648 seconds. Fresh Nathan again passes 17 correctness
+checks and 31 workloads; M8 again has nine local passes/five external blocks/zero
+failures. Both report consumers bind current raw hashes and blocked M9 verifies.
+Frozen installed parity, source/history privacy, compilation, Ruff and the
+CI-configured mypy options pass. Hosted CI must still qualify the next head;
+local platform-shaped tests do not substitute for the Windows runner.
+
+## 2026-10-15: Scoped Harness Guidance Port Without Watchdog Changes
+
+**Symptom/cause:** Operational skills recommended retired memory routes and blind
+mutation retries, catalog locations were duplicated, lexical retrieval was called
+hybrid, project selection was missing, and decision diagnostics overwhelmed the
+useful result. The running 0.20.2 tree also lacks newer public privacy/freshness
+and decision-response fixes, so whole-file copying would regress 0.20.3.
+
+**Repair:** Port only guidance-contract hunks onto public main. Keep existing
+metadata redaction, staged native publication, backdated freshness invalidation,
+typed provider checks, decision-verification guidance and applicability docs.
+Preserve required memory, permissions, typed uncertainty and owner-only catalogs.
+Keep the unrelated CI watchdog branch, source, workflows and evidence untouched;
+qualify a clean review worktree, not the combined dirty watchdog tree.
+Native records also retain the skill-contract field; otherwise current skills
+would be rejected as legacy after optional native indexing.
+
+**Verification:** Frozen, non-editable Python 3.11.15 full suite: 7,479 passed,
+41 skipped, zero failures/errors in 315.699 seconds; 71.06% branch-aware coverage
+against the unchanged 57% floor. Focused port tests: 276 passed; final guidance
+and checkpoint tests: 85 passed. Ruff, all-runtime mypy (272 modules), workflow
+mypy (78 files), compilation, source/history privacy and installed-source parity
+pass. Real Nathan: 17 correctness checks and 31 workloads pass. Real M8: nine
+local passes, five external blocks, zero failures. All three current-artifact
+checks and expected-blocked M9 pass after binding both report consumers.
+Website build/lint/20 tests and dependency audit pass (Node 26.4.0, not hosted
+Node 22); Python, Rust and Go audits pass. Rust formatting/clippy/nine tests and
+isolated native-to-Python skill admission pass. Go 1.26.9 race/vet pass with
+70.6% coverage; local Swift 89 tests and release build pass. Unchanged watchdog
+tests pass (54); byte/section comparison proves its work is preserved.
+
+**Qualification setup:** The first M8 attempt failed because the protected
+no-site bootstrap requires a real checkout-local `.venv`, not the external
+temporary environment used initially. Reproduce the actual CI layout instead
+of relaxing the check. Its dedicated reproduction passes after frozen local
+installation. An interrupted diagnostic suite (exit 2) and the qualification
+stopped before the native contract edit (exit 143) are not passes. Validate
+installed resources with the runtime resolver and use the exact workflow
+`--cov` setting. Jev supported the port/isolation strategy; it is not verification.
+
+**Prevention/limits:** Compare connected hunks and newer invariants before any
+source export. Rebuild evidence only after final source. The review push will
+carry a CI-skip marker to respect local-CI-only scope; skipped hosted checks are
+pending, not passed, and cannot authorize merge or publication. No release,
+tag, main merge, saved setting or normal-launcher change is authorized here.
+
 ## 2026-10-10: PR 89 Decision Metadata And Retired Index Cleanup
 
 **Symptom/cause:** Valid JSON with null or non-object Ollama `details` or Decider

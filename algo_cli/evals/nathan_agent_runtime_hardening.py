@@ -143,6 +143,7 @@ SOURCE_PATHS = (
     "tests/test_decision_layer.py",
     "tests/test_decision_coordinator.py",
     "tests/test_decision_checkpoints.py",
+    "tests/test_guidance_coherence.py",
     "tests/test_decision_readiness.py",
     "tests/test_worktree_runtime.py",
     "tests/test_chatgpt_client.py",

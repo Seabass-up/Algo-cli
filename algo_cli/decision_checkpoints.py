@@ -121,6 +121,7 @@ class TaskCheckpoints:
         self.cfg, self.task, self.dispatcher = cfg, task, dispatcher
         self.notify = notify
         cfg.context_state.pop("decision_checkpoints", None)
+        cfg._decision_checkpoint_details = {}
         self.enabled = (getattr(cfg, "decision_checkpoints_enabled", True) is True
                         and getattr(cfg, "decision_routing_mode", "direct") == "jev"
                         and not _OPT_OUT_RE.search(task)
@@ -318,6 +319,39 @@ class TaskCheckpoints:
                   "superseded_by_new_evidence": background and self.observations > self.submitted_observations,
                   "request_sha256": value.get("request_sha256"), "reference_catalog": routing.get("reference_catalog"),
                   "main_model_instruction": "Use these advisory judgments/references in your next reasoning step. Keep uncertainty and denial explicit. For another normal online coordinated decision, explicitly use local_only=false through runtime authority; use true only for an actual user/configured locality restriction. A request-policy refusal is not evidence of provider unavailability; do not infer an outage or loosen explicit local-only restrictions. If workspace and runtime source differ, state the review scope; do not infer their equivalence. This checkpoint is not verification, approval or an exhaustive review. Verify candidate findings with normal authorized tools."}
+        # Keep complete diagnostics off the prompt, but inspectable for this task.
+        detail_body = decisions.encoded({**packet, "routing_details": routing})
+        detail_available = len(detail_body) <= 65_536
+        details = self.cfg._decision_checkpoint_details
+        details.pop(self.count, None)
+        if detail_available:
+            details[self.count] = json.loads(detail_body)
+            for key in sorted(details)[:-3]:
+                del details[key]
+        packet.pop("routing_judgments")
+        packet.pop("reference_catalog")
+        catalog = routing.get("reference_catalog")
+        packet["reference_catalog_sha256"] = catalog.get("catalog_sha256") if type(catalog) is dict else None
+        packet["routing_rejections"] = (packet.pop("routing_assessment") or {}).get("rejections", [])
+        recommendations = packet["recommendations"]
+        packet["recommendations"] = {
+            key: {"selected": item.get("selected"), "execution_authority": False,
+                  "requires_main_model_judgment": True}
+            for key, item in (recommendations.items() if type(recommendations) is dict else [])
+            if isinstance(item, dict)
+        }
+        packet["action_authority"] = packet["real_world_verified"] = False
+        packet["diagnostics"] = {"checkpoint": self.count, "available": detail_available,
+                                 "inspect": f"decision_status(checkpoint={self.count})",
+                                 "lifetime": "current task; latest three; not persisted"}
+        if packet["status"] == "deferred":
+            packet["outcome"] = "No specialist dispatched; continue main-model judgment."
+        packet["main_model_instruction"] = (
+            "Advisory only; preserve answer uncertainty, locality and permission denials. "
+            "A request-policy refusal is not evidence of provider unavailability; do not infer an outage. "
+            "Continue main-model judgment when deferred. Verify with authorized tools; advice is not verification. "
+            "Inspect the receipt only when diagnosing routing or checking reference selection."
+        )
         body = decisions.encoded(packet)
         if len(body) > MAX_CONTEXT_BYTES:
             packet = {"phase": self.phase, "ok": False, "error": "checkpoint_context_exceeds_budget",
@@ -328,9 +362,11 @@ class TaskCheckpoints:
         self._record_receipt({"phase": self.phase, "ok": packet["ok"], "error": packet["error"],
                               "status": packet.get("status", "failed"),
                               "coordinator_completed": packet.get("coordinator_completed", False),
-                              "routing_rejections": (packet.get("routing_assessment") or {}).get("rejections", []),
+                              "routing_rejections": packet.get("routing_rejections", []),
                               "coordinator": packet.get("coordinator"), "provider": packet.get("provider"),
                               "background": background, "elapsed_ms": value.get("checkpoint_elapsed_ms"),
+                              "detail_available": detail_available,
+                              "detail_sha256": hashlib.sha256(detail_body).hexdigest(),
                               "context_sha256": hashlib.sha256(body).hexdigest()})
         if self.notify is not None:
             self.notify(self.receipts[-1])

@@ -39,7 +39,7 @@ from .cache_admission import WindowTinyLFUCache
 from . import pattern_catalog
 from .config import CONFIG_DIR, _atomic_write_text, _harness_index_descriptor_payload
 from .retrieval_algorithms import BM25Index, lexical_tokens, repair_mojibake, stable_top_k
-from .prompt_rules import NAMED_PATH_RULE
+from .prompt_rules import NAMED_PATH_RULE, catalog_guidance
 
 
 HOME = Path.home()
@@ -72,8 +72,12 @@ REVIEWED_ALGO_TITLE = "ALGO reviewed algorithm pattern catalog"
 REVIEWED_ALGO_DESCRIPTION = (
     "Canonical reviewed Algo algorithm and pattern catalog. Use for Algo CLI harness self-evaluation, "
     "capability audits, action registry/selfcheck guidance, memory/wiki quality, and runtime context review. "
-    "Read and update the live catalog at ~/.algo_cli/ALGO.md. docs/ALGO.md is only the empty public template, not the live catalog."
+    "Consult runtime catalog guidance for the configured live path; docs/ALGO.md is only the empty public template."
 )
+_SKILL_RUNTIME_CONTRACTS = {
+    "memory-recall-ritual": "continuum-memory-v1",
+    "smart-error-recovery": "mutation-recovery-v1",
+}
 REVIEWED_ALGO_TAGS = (
     "algorithm",
     "pattern",
@@ -418,6 +422,9 @@ def build_index_with_rust(previous: dict[str, Any] | None = None) -> dict[str, A
         return None
     if not isinstance(new_index, dict) or not isinstance(new_index.get("records"), list):
         return None
+    if any(isinstance(record, dict) and record.get("kind") == "skill"
+           and type(record.get("skill_name")) is not str for record in new_index["records"]):
+        return None  # Older native binaries cannot identify renamed operational skills.
     new_index = _normalize_index_records(new_index)
     # Graft embeddings from the previous index so Rust cold-start doesn't lose
     # all embedding work. Only graft when the underlying file is unchanged
@@ -808,14 +815,30 @@ def is_chatgpt_clipping(fm: dict[str, Any]) -> bool:
     return "clippings" in tags
 
 
-def should_exclude_from_index(path: Path, fm: dict[str, Any]) -> bool:
+def should_exclude_from_index(path: Path, fm: dict[str, Any], *, kind: str | None = None) -> bool:
     """Skip indexing wiki noise; archive/ dirs are already pruned in iter_files."""
-    return is_chatgpt_clipping(fm)
+    return is_chatgpt_clipping(fm) or _incompatible_skill_record({
+        "kind": kind, "path": str(path), "skill_name": fm.get("name", ""),
+        "runtime_contract": fm.get("runtime_contract", ""),
+    })
+
+
+def _incompatible_skill_record(record: dict[str, Any]) -> bool:
+    if record.get("kind") != "skill":
+        return False
+    if "skill_name" in record and type(record["skill_name"]) is not str:
+        return True
+    basename = Path(str(record.get("relative_path") or record.get("path") or "")).stem
+    identities = (record.get("skill_name", ""), basename)
+    return any(record.get("runtime_contract") != _SKILL_RUNTIME_CONTRACTS[name]
+               for name in identities if name in _SKILL_RUNTIME_CONTRACTS)
 
 
 def is_excluded_from_retrieval(record: dict[str, Any]) -> bool:
     """Filter automatic RAG injection - harness_search may still return these."""
     tokens = _record_path_tokens(record)
+    if _incompatible_skill_record(record):
+        return True
     if "/archive/" in tokens or tokens.startswith("openclaw:wiki:archive/"):
         return True
     if is_chatgpt_clipping({"description": record.get("description", ""), "tags": record.get("tags", [])}):
@@ -1064,7 +1087,7 @@ def _normalize_reviewed_algo_record(record: dict[str, Any]) -> dict[str, Any]:
 
     updated["kind"] = "algorithm"
     updated["title"] = REVIEWED_ALGO_TITLE
-    updated["description"] = REVIEWED_ALGO_DESCRIPTION
+    updated["description"] = REVIEWED_ALGO_DESCRIPTION + " " + catalog_guidance(CONFIG_DIR)
     updated["tags"] = tags
     search_text = " ".join(
         str(value)
@@ -1131,6 +1154,9 @@ def _normalize_index_records(index: dict[str, Any]) -> dict[str, Any]:
     changed = False
     for record in records:
         if not isinstance(record, dict):
+            changed = True
+            continue
+        if _incompatible_skill_record(record):
             changed = True
             continue
         normalized_record = _normalize_reviewed_algo_record(_normalize_record_privacy(record))
@@ -1209,6 +1235,8 @@ def make_record(root: SourceRoot, path: Path, *, stat_result: Any | None = None,
         "description": description,
         "tags": tags,
         "status": status,
+        "skill_name": fm.get("name", ""),
+        "runtime_contract": fm.get("runtime_contract", ""),
         "updated": fm.get("updated") or datetime.fromtimestamp(stat_result.st_mtime).isoformat(timespec="seconds"),
         "file_size": int(stat_result.st_size),
         "file_mtime_ns": int(stat_result.st_mtime_ns),
@@ -1687,6 +1715,9 @@ def _source_watermark_ns(index: dict[str, Any] | None = None) -> int:
             # A source still matching its recorded signature is already reflected
             # in the index; comparing its mtime with the index file's own mtime
             # would keep a future-dated source stale on every load.
+            if record.get("kind") == "skill" and "skill_name" not in record and rel is not None:
+                watermark = max(watermark, invalidation_stamp)
+                continue
             if _record_signature_matches(record, source_stat):
                 continue
             # Changed metadata must invalidate even with a restored/coarse timestamp.
@@ -1771,7 +1802,7 @@ def build_index(previous: dict[str, Any] | None = None) -> dict[str, Any]:
         prior_records = [
             _normalize_reviewed_algo_record(_normalize_record_privacy(record))
             for record in (previous.get("records", []) or [])
-            if isinstance(record, dict)
+            if isinstance(record, dict) and not _incompatible_skill_record(record)
         ]
         # Empty synthetic indexes remain useful to historical utility tests, but
         # removing every known configured root must not resurrect its records.
@@ -1809,11 +1840,11 @@ def build_index(previous: dict[str, Any] | None = None) -> dict[str, Any]:
             except OSError:
                 continue
             fm = parse_frontmatter(read_text(path))
-            if should_exclude_from_index(path, fm):
-                continue
             item_id, rel = record_id(root, path)
-            seen_ids.add(item_id)
             kind = resolve_record_kind(root, rel)
+            if should_exclude_from_index(path, fm, kind=kind):
+                continue
+            seen_ids.add(item_id)
             prior = existing.get(item_id)
             if (
                 prior
@@ -1823,6 +1854,8 @@ def build_index(previous: dict[str, Any] | None = None) -> dict[str, Any]:
                 and prior.get("index_text")
                 and "status" in prior
                 and str(prior.get("kind", "")) == kind
+                and (kind != "skill" or "skill_name" in prior)
+                and not _incompatible_skill_record(prior)
                 and (not _metadata_only_json(path) or prior.get("content_policy") == "metadata-only-v1")
             ):
                 records.append(_normalize_reviewed_algo_record(prior))
@@ -2128,7 +2161,7 @@ def retrieval_index(*, protected_memory: bool = False) -> dict[str, Any]:
         raise ValueError("protected harness source policy is not prepared")
     index = load_index()
     if not protected_memory:
-        return index
+        return {**index, "retrieval_backend": "lexical"}
     records = []
     roots = tuple(
         root for root in built_in_source_roots(include_external=False) if _protected_memory_source_allowed(root)
@@ -2153,7 +2186,8 @@ def retrieval_index(*, protected_memory: bool = False) -> dict[str, Any]:
     # A single bounded projection is retained; no source read is skipped on reuse.
     if records != _PUBLIC_RETRIEVAL_RECORDS:
         _PUBLIC_RETRIEVAL_RECORDS = records
-    return {**index, "records": _PUBLIC_RETRIEVAL_RECORDS, "record_count": len(records)}
+    return {**index, "records": _PUBLIC_RETRIEVAL_RECORDS, "record_count": len(records),
+            "retrieval_backend": "lexical"}
 
 
 def configure_protected_memory_authority(enabled: bool) -> int:
@@ -2606,6 +2640,8 @@ def read_record(record_id: str, max_chars: int = MAX_READ_TEXT, *, protected_mem
     record = get_record(record_id)
     if not record:
         return f"Error: no harness record found for id: {record_id}"
+    if _incompatible_skill_record(record):
+        return "Error: incompatible operational skill; refresh references for current runtime guidance."
     if protected_memory and not _protected_memory_record_allowed(record):
         return "Error: record is not a shipped public source while Continuum Memory is authoritative."
     if protected_memory and record.get("kind") == "memory":
@@ -2653,6 +2689,8 @@ def read_record(record_id: str, max_chars: int = MAX_READ_TEXT, *, protected_mem
             text = redact_sensitive_text(read_text(path, max_chars))
     title = record.get("title", "")
     harness = record.get("harness", "")
+    if record.get("kind") == "skill" and should_exclude_from_index(path, parse_frontmatter(text), kind="skill"):
+        return "Error: incompatible operational skill source; refresh references for current runtime guidance."
     kind = record.get("kind", "")
     relative_path = record.get("relative_path") or path.name
     location = f" | Lines: {record['source_start_line']}-{record['source_end_line']} | Status: {record.get('status', 'unknown')}" if record.get("pattern_id") else ""
