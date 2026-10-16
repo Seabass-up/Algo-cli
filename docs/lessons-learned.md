@@ -22,7 +22,18 @@ merely because synthetic ranking metadata lacks a new cache field.
 regression run records the migration, selection and identity failures before
 source repair. Final focused tests: 286 passed, 21 skipped; Ruff, all-runtime
 mypy (272 files), Rust nine tests and clippy pass. Real qualification refresh,
-the complete suite and hosted required checks are still pending for this source.
+the complete suite and artifact bindings then pass: 7,498 passed, 41 skipped,
+zero failures/errors across the runtime suite plus its two postwrite evidence
+checks, with 71.07% cumulative branch-aware coverage against the unchanged 57%
+floor. No tests are omitted; hosted CI runs the unsplit suite. Real Nathan has
+17 correctness passes and 31 workloads; final M8 has nine local passes, five
+external blocks and zero failures. All three artifact-currency checks and the
+expected-blocked M9 verify after appending actual report hashes. Both real native
+project-selection packets and renamed native skill admission pass. Source/history
+privacy, compilation and installed parity pass. A stale installed documentation
+resource correctly stopped an intermediate qualification; reinstall and verify
+parity after every final resource edit, not just Python edits. Hosted results
+belong to PR 90's exact-head checks, not this local receipt or a release claim.
 
 **Prevention/limits:** Keep migration fixtures independent of mutable defaults;
 test configured roots on both temporary-directory layouts. Check typed response
