@@ -1,5 +1,64 @@
 # Lessons Learned
 
+## 2026-10-15: Windows Journal Lock Ancestry Traversal
+
+**Symptom/evidence:** Exact-main CI `38843067515` passes the Windows functional
+suite (6,287 passed, 1,034 skipped) but its separate model-free latency gate
+fails: workload p95 4,028.1325 ms exceeds 3,500; first-action p95 1,409.7908 ms
+exceeds 1,000. All 17 correctness probes pass. The five-workload diagnostic
+records 90 state locks, 180 complete ancestry traversals (360 generator entry/
+exit calls), and 4,590 DACL checks. Profile timing does not establish the cause
+of every slow-tail sample or qualify a repair on Windows.
+
+**Confirmed cause/repair:** Each existing external journal lock first calls
+`_ensure_windows_real_directory`, validating and releasing its entire parent
+chain, then immediately repeats that walk in the actual handle-pinned lock
+guard. An existence probe is not authorization: let the live guard perform the
+single complete validation before lock-file access and hold its no-delete-share
+handles through unlock and exit checks. Keep missing-parent preparation, private
+config-directory canonicalization, fresh ACL/file identity checks, locking,
+fsync and journal anchoring unchanged. Do not cache authorization or increase
+latency thresholds. The measured duplicate is removed; residual Windows p95
+behavior still requires native qualification.
+
+**Verification:** The traversal regression fails before repair and passes after
+a frozen non-editable reinstall. Portable tests bind one guarded traversal per
+transaction, repeated fresh validation, missing/private preparation, guard
+entry/exit failure propagation and denied-probe handling. New Windows-native
+regressions cover held-handle rename rejection, ACL drift before/during a lock,
+and junction refusal before lock creation; they are not counted as executed on
+macOS. Focused config/journal/event-store/runtime tests pass after real Nathan
+refresh. The intermediate stored-report freshness failure is expected after
+source edits and is retained as a failed check, not relabeled passing.
+
+**Final local CI:** Focused tests: 210 passed, 25 skipped. Complete runtime plus
+both postwrite artifact checks: 7,512 passed, 45 skipped, zero failures/errors;
+combined branch-aware coverage 71.07% against the unchanged 57% floor. The main
+phase takes 244.374 seconds. All ten portable new cases run; the four native
+Windows cases remain skipped on macOS. Ruff, CI-configured typing, compilation,
+installed parity, source/history privacy and locked Python/Rust/Go audits pass.
+Rust nine tests/clippy, Go 1.26.9 race/vet (70.6% coverage; cached unchanged Go
+tests), website build/lint/20 tests/zero-advisory audit on Node 22.23.2, Swift
+89 tests/release build, 30 process-kill recovery trials and disabled-feature
+negative probes pass. Real Nathan: 17 correctness checks/31 workloads pass;
+M8: nine local passes/five external blocks/zero failures; blocked M9 verifies.
+The working-tree wheel built from its sdist passes metadata/public-content
+inspection, isolated clean installation and all five upgrade paths from public
+0.20.1, including repeat updates and preservation of 11 synthetic files plus
+SQLite integrity. This uncommitted repair over `d4ceae9` is not an immutable
+Git-commit-bound package qualification. Receipts include
+`/tmp/algo-windows-latency-full.xml`, `/tmp/algo-windows-latency-postwrite.xml`,
+`/tmp/algo-windows-latency-complete-coverage.xml` and the five
+`/private/tmp/algo-windows-latency-upgrade-*.json` files. No native Windows
+latency result is claimed; its original thresholds remain unchanged.
+
+**Prevention/limits:** Avoid validate-close-reopen preparation when the actual
+operation already owns an equivalent live guard. Count native traversals as a
+deterministic regression, then measure latency independently on native Windows.
+Do not trade away durability or namespace authorization for benchmark speed.
+The watchdog checkout, normal launcher and saved owner state remain separate;
+no hosted run, approval, tag or publication is included in this local repair.
+
 ## 2026-10-15: PR 90 Review Contracts And Cross-Platform Regressions
 
 **Symptom/cause:** Four review findings were confirmed. A temporary test skill

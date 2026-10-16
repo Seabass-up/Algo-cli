@@ -1101,6 +1101,212 @@ def test_state_lock_file_does_not_grow_per_acquisition(tmp_path):
     assert target.with_suffix(".json.lock").read_bytes() == b"x"
 
 
+def test_windows_external_state_lock_validates_existing_parent_once_per_transaction(tmp_path, monkeypatch):
+    target = tmp_path / "journal.append"
+    lock_path = target.with_suffix(".append.lock")
+    monkeypatch.setattr(config, "os", SimpleNamespace(**{**vars(os), "name": "nt"}))
+    monkeypatch.setattr(config, "_config_relative_path", lambda _path: None)
+    captured = ((tmp_path, config._portable_directory_identity(tmp_path.lstat())),)
+    events = []
+    active = []
+
+    @contextmanager
+    def pinned(path):
+        assert path == target.parent
+        events.append("pin")
+        active.append(path)
+        try:
+            yield captured
+            events.append("recheck")
+        finally:
+            active.pop()
+            events.append("close")
+
+    @contextmanager
+    def bound(path, *, timeout_seconds, private_config_path, windows_lock_chain):
+        assert path == lock_path
+        assert timeout_seconds == 2.0
+        assert private_config_path is False
+        assert windows_lock_chain == captured
+        assert active == [target.parent]
+        events.append("lock")
+        yield
+        assert active == [target.parent]
+        events.append("unlock")
+
+    monkeypatch.setattr(config, "_windows_pinned_directory_chain", pinned)
+    monkeypatch.setattr(config, "_exclusive_state_lock_bound", bound)
+    for _ in range(2):
+        with config._exclusive_state_lock(target, timeout_seconds=2.0):
+            assert active == [target.parent]
+            events.append("body")
+    assert events == ["pin", "lock", "body", "unlock", "recheck", "close"] * 2
+
+
+@pytest.mark.parametrize("private", [False, True])
+def test_windows_state_lock_keeps_missing_and_private_parent_preparation(tmp_path, monkeypatch, private):
+    parent = tmp_path / "new-parent"
+    target = parent / "state.json"
+    events = []
+    monkeypatch.setattr(config, "os", SimpleNamespace(**{**vars(os), "name": "nt"}))
+    monkeypatch.setattr(config, "_config_relative_path", lambda _path: Path("state.json") if private else None)
+
+    def prepare(path):
+        assert path == target
+        events.append("prepare")
+        parent.mkdir(exist_ok=True)
+        return private
+
+    @contextmanager
+    def pinned(path):
+        assert path == parent and parent.is_dir()
+        events.append("pin")
+        yield ()
+        events.append("recheck")
+
+    @contextmanager
+    def bound(path, **kwargs):
+        assert kwargs["private_config_path"] is private
+        events.append("lock")
+        yield
+
+    monkeypatch.setattr(config, "_ensure_private_config_parent", prepare)
+    monkeypatch.setattr(config, "_windows_pinned_directory_chain", pinned)
+    monkeypatch.setattr(config, "_exclusive_state_lock_bound", bound)
+    if private:
+        parent.mkdir()
+    with config._exclusive_state_lock(target):
+        events.append("body")
+    assert events == ["prepare", "pin", "lock", "body", "recheck"]
+
+
+@pytest.mark.parametrize("on_exit", [False, True])
+@pytest.mark.parametrize("error_type", [FileNotFoundError, PermissionError, OSError])
+def test_windows_external_state_lock_never_retries_failed_parent_guard(tmp_path, monkeypatch, on_exit, error_type):
+    target = tmp_path / "state.json"
+    monkeypatch.setattr(config, "os", SimpleNamespace(**{**vars(os), "name": "nt"}))
+    monkeypatch.setattr(config, "_config_relative_path", lambda _path: None)
+    entered = []
+    failure = error_type("unsafe parent")
+
+    @contextmanager
+    def pinned(path):
+        if not on_exit:
+            raise failure
+        yield ()
+        raise failure
+
+    @contextmanager
+    def bound(*args, **kwargs):
+        entered.append("lock")
+        yield
+
+    monkeypatch.setattr(config, "_windows_pinned_directory_chain", pinned)
+    monkeypatch.setattr(config, "_exclusive_state_lock_bound", bound)
+    with pytest.raises(error_type) as rejected:
+        with config._exclusive_state_lock(target):
+            entered.append("body")
+    assert rejected.value is failure
+    assert entered == (["lock", "body"] if on_exit else [])
+    assert not target.with_suffix(".json.lock").exists()
+
+
+def test_windows_external_state_lock_does_not_treat_probe_denial_as_missing(tmp_path, monkeypatch):
+    target = tmp_path / "state.json"
+    monkeypatch.setattr(config, "os", SimpleNamespace(**{**vars(os), "name": "nt"}))
+    monkeypatch.setattr(config, "_config_relative_path", lambda _path: None)
+    original = Path.lstat
+    failure = PermissionError("parent probe denied")
+
+    def denied(path, *args, **kwargs):
+        if path == target.parent:
+            raise failure
+        return original(path, *args, **kwargs)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("a denied probe must not trigger preparation or a second route")
+
+    monkeypatch.setattr(Path, "lstat", denied)
+    monkeypatch.setattr(config, "_ensure_private_config_parent", unexpected)
+    monkeypatch.setattr(config, "_windows_pinned_directory_chain", unexpected)
+    with pytest.raises(PermissionError) as rejected:
+        with config._exclusive_state_lock(target):
+            pytest.fail("a denied parent cannot enter the transaction")
+    assert rejected.value is failure
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows state-lock live ancestry contract")
+def test_windows_external_state_lock_pins_once_and_blocks_ancestor_rename(tmp_path, monkeypatch):
+    top = tmp_path / "external"
+    parent = top / "journals"
+    parent.mkdir(parents=True)
+    config._windows_harden_private_dacl(top)
+    config._windows_harden_private_dacl(parent)
+    target = parent / "state.json"
+    original = config._windows_pinned_directory_chain
+    pins = []
+
+    @contextmanager
+    def pinned(path):
+        pins.append(path)
+        with original(path) as captured:
+            yield captured
+
+    monkeypatch.setattr(config, "_windows_pinned_directory_chain", pinned)
+    for _ in range(2):
+        with config._exclusive_state_lock(target):
+            with pytest.raises(OSError):
+                parent.rename(top / "displaced")
+    assert pins == [parent, parent]
+    assert config._windows_private_dacl(target.with_suffix(".json.lock"))
+    parent.rename(top / "displaced")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows state-lock live DACL contract")
+@pytest.mark.parametrize("during_lock", [False, True])
+def test_windows_external_state_lock_rejects_parent_acl_drift(tmp_path, during_lock):
+    top = tmp_path / "external"
+    parent = top / "journals"
+    parent.mkdir(parents=True)
+    config._windows_harden_private_dacl(top)
+    config._windows_harden_private_dacl(parent)
+    target = parent / "state.json"
+    icacls = Path(os.environ["SystemRoot"]) / "System32" / "icacls.exe"
+
+    def change_acl():
+        changed = subprocess.run(
+            [str(icacls), str(top), "/grant", "*S-1-5-20:(DC)"],
+            check=False, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=10,
+        )
+        assert changed.returncode == 0, changed.stderr.decode(errors="replace")
+
+    if not during_lock:
+        change_acl()
+    with pytest.raises(OSError, match="ancestry"):
+        with config._exclusive_state_lock(target):
+            assert during_lock
+            change_acl()
+    assert target.with_suffix(".json.lock").exists() is during_lock
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows state-lock junction contract")
+def test_windows_external_state_lock_rejects_junction_before_lock_creation(tmp_path):
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    alias = tmp_path / "alias"
+    linked = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(victim)],
+        check=False, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=10,
+    )
+    assert linked.returncode == 0, linked.stderr.decode(errors="replace")
+    with pytest.raises(OSError, match="ancestry"):
+        with config._exclusive_state_lock(alias / "state.json"):
+            pytest.fail("junction must not authorize lock creation")
+    assert list(victim.iterdir()) == []
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows atomic private lock contract")
 def test_windows_state_lock_is_private_before_first_write(monkeypatch: pytest.MonkeyPatch) -> None:
     config._ensure_windows_private_directory(config.CONFIG_DIR)
