@@ -1156,6 +1156,20 @@ def test_load_preserves_custom_system_prompt():
     assert Config.load().system == custom
 
 
+def test_load_migrates_preceding_release_stock_prompt_without_rewriting_custom_text():
+    historical = config.LEGACY_DEFAULT_SYSTEM.replace(
+        "- To read/update the live catalog, use the path in the runtime Algorithm Catalog section; docs/ALGO.md is only the empty public template.",
+        "- For Algo algorithm/pattern catalog guidance, use and update the live catalog at ~/.algo_cli/ALGO.md. docs/ALGO.md is only the empty public template, not the live catalog.",
+    )
+    assert "live catalog at ~/.algo_cli/ALGO.md" in historical
+    config.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    config.CONFIG_FILE.write_text(json.dumps({"system": historical}), encoding="utf-8")
+    assert Config.load().system == config.DEFAULT_SYSTEM
+    custom = historical + "\nKeep my custom addition."
+    config.CONFIG_FILE.write_text(json.dumps({"system": custom}), encoding="utf-8")
+    assert Config.load().system == custom
+
+
 def test_conversation_roundtrip():
     cfg = Config()
     cfg.messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]

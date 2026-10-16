@@ -1,5 +1,37 @@
 # Lessons Learned
 
+## 2026-10-15: PR 90 Review Contracts And Cross-Platform Regressions
+
+**Symptom/cause:** Four review findings were confirmed. A temporary test skill
+root was not registered, so `/tmp` paths hit the sensitive-directory exclusion.
+Editing the historical stock-prompt constant broke exact migration. Continuum
+selection checked the request echo but not effective/unknown consistency. Skill
+compatibility used filenames before source kind, rejecting wiki collisions and
+missing renamed declared skills.
+
+**Repair:** Register the fixture root without weakening path policy. Restore the
+historical prompt constant and preserve custom prompts. Validate canonical,
+distinct selection IDs, unknown membership and effective/request consistency;
+retain explicit unknown/global fallback and legitimate dependency expansion.
+Carry declared skill identity through Python and Rust; scope contracts to skill
+records, rebuild identity-less configured source caches, and reject obsolete
+native output before falling back to Python. Do not suppress unrelated records
+merely because synthetic ranking metadata lacks a new cache field.
+
+**Verification:** Linux-style `/tmp` reproductions fail before repair. The new
+regression run records the migration, selection and identity failures before
+source repair. Final focused tests: 286 passed, 21 skipped; Ruff, all-runtime
+mypy (272 files), Rust nine tests and clippy pass. Real qualification refresh,
+the complete suite and hosted required checks are still pending for this source.
+
+**Prevention/limits:** Keep migration fixtures independent of mutable defaults;
+test configured roots on both temporary-directory layouts. Check typed response
+semantics, not just echoed inputs. Preserve declared identity across producer,
+cache, refresh and read boundaries; keep source freshness separate from generic
+ranking metadata. Jev supported the bounded findings and superset/fallback
+contract, but tests determine validity. Merge only after required checks pass;
+no publication, watchdog edit, approval bypass or normal installation is included.
+
 ## 2026-10-15: Scoped Harness Guidance Port Without Watchdog Changes
 
 **Symptom/cause:** Operational skills recommended retired memory routes and blind

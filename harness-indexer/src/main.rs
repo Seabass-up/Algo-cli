@@ -24,6 +24,7 @@ struct Record {
     path: String,
     relative_path: String,
     description: String,
+    skill_name: String,
     runtime_contract: String,
     tags: Vec<String>,
     updated: String,
@@ -582,6 +583,7 @@ fn make_record(root: &SourceRoot, path: &Path) -> io::Result<Record> {
         path: path.to_string_lossy().to_string(),
         relative_path,
         description,
+        skill_name: frontmatter_value(&text, "name").unwrap_or_default(),
         runtime_contract: frontmatter_value(&text, "runtime_contract").unwrap_or_default(),
         tags,
         updated,
@@ -790,7 +792,7 @@ fn render_root(root: &SourceRoot) -> String {
 
 fn render_record(record: &Record) -> String {
     format!(
-        "{{\"id\":\"{}\",\"harness\":\"{}\",\"kind\":\"{}\",\"title\":\"{}\",\"path\":\"{}\",\"relative_path\":\"{}\",\"description\":\"{}\",\"runtime_contract\":\"{}\",\"tags\":[{}],\"updated\":\"{}\",\"file_size\":{},\"file_mtime_ns\":{},\"links\":[{}],\"summary\":\"{}\",\"search_text\":\"{}\"}}",
+        "{{\"id\":\"{}\",\"harness\":\"{}\",\"kind\":\"{}\",\"title\":\"{}\",\"path\":\"{}\",\"relative_path\":\"{}\",\"description\":\"{}\",\"skill_name\":\"{}\",\"runtime_contract\":\"{}\",\"tags\":[{}],\"updated\":\"{}\",\"file_size\":{},\"file_mtime_ns\":{},\"links\":[{}],\"summary\":\"{}\",\"search_text\":\"{}\"}}",
         json_escape(&record.id),
         json_escape(&record.harness),
         json_escape(&record.kind),
@@ -798,6 +800,7 @@ fn render_record(record: &Record) -> String {
         json_escape(&record.path),
         json_escape(&record.relative_path),
         json_escape(&record.description),
+        json_escape(&record.skill_name),
         json_escape(&record.runtime_contract),
         render_string_array(&record.tags),
         json_escape(&record.updated),
@@ -927,15 +930,17 @@ mod tests {
     #[test]
     fn operational_skill_contract_survives_native_serialization() {
         let root_path = temporary_directory("skill-contract");
-        let path = root_path.join("memory-recall-ritual.md");
+        let path = root_path.join("SKILL.md");
         fs::write(
             &path,
-            "---\nruntime_contract: continuum-memory-v1\n---\n# Memory\n",
+            "---\nname: memory-recall-ritual\nruntime_contract: continuum-memory-v1\n---\n# Memory\n",
         )
         .unwrap();
         let source = root("algo-cli", "skill", root_path.clone(), vec!["*.md"], 20);
         let record = make_record(&source, &path).unwrap();
         assert_eq!(record.runtime_contract, "continuum-memory-v1");
+        assert_eq!(record.skill_name, "memory-recall-ritual");
+        assert!(render_record(&record).contains("\"skill_name\":\"memory-recall-ritual\""));
         assert!(render_record(&record).contains("\"runtime_contract\":\"continuum-memory-v1\""));
         fs::write(&path, "# Legacy memory skill\n").unwrap();
         let legacy = make_record(&source, &path).unwrap();

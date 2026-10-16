@@ -35,7 +35,11 @@ Global and applicable mandatory records are retained. Unknown IDs (including a
 fresh private scope with no declarations) retain the native explicit diagnostic
 and global selection; they must not be reported as successfully narrowed context.
 An ignored/mismatched selection or validation refusal never becomes injected
-context. Do not reclassify a required record merely to reduce prompt size.
+context. Known requested projects must remain in the effective selection; required
+dependency closure may expand it. A global effective selection is accepted only
+with explicit, canonical unknown IDs drawn from the request. Malformed, duplicate,
+missing or contradictory selection metadata is refused rather than guessed.
+Do not reclassify a required record merely to reduce prompt size.
 
 Prompt context normally requests 12,000 serialized bytes for shared state and
 6,000 for private state. If Continuum reports that required records and their

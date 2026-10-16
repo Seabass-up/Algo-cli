@@ -14,6 +14,13 @@ checking for two known skills, not semantic validation of arbitrary third-party
 instructions and not an authorization boundary. Historical reference documents
 are not suppressed merely for mentioning retired terms.
 
+Contracts apply only to skill sources, using declared skill identity as well as
+the known legacy filename. Wiki filename collisions are not skills. Cached skill
+records without identity metadata are rebuilt from configured sources even if
+their file signature is unchanged. Older native binaries lacking this metadata
+fall back to the Python indexer before publication; current native records carry
+both declared identity and contract.
+
 Continuum is the sole mutable memory authority. Reference refresh is lexical;
 it does not reload Python code, refresh memory or select an embedding service.
 Unknown mutation outcomes require read-only reconciliation before replay.

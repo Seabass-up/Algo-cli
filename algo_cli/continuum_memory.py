@@ -330,10 +330,8 @@ def _context_packet(cfg: Any, query: str, *, scope: str, budget: int) -> dict[st
         if packet.get("ok") is True:
             context = packet.get("context")
             selection = context.get("project_selection") if type(context) is dict else None
-            if _project_selection(cfg) and (
-                type(selection) is not dict or type(selection.get("unknown_projects")) is not list
-                or selection.get("requested") != _project_selection(cfg)["active_projects"]
-            ):
+            requested = _project_selection(cfg).get("active_projects")
+            if requested and not _valid_project_selection(selection, requested):
                 raise ContinuumMemoryError("Continuum project selection could not be verified; no context was injected.")
             return packet
         details = packet.get("details")
@@ -376,6 +374,24 @@ def _project_selection(cfg: Any) -> dict[str, Any]:
         or len(set(projects)) != len(projects)):
         raise ContinuumMemoryError("Invalid Continuum project selection; no context request was sent.")
     return {"active_projects": sorted(projects)} if projects else {}
+
+
+def _valid_project_selection(selection: Any, requested: list[str]) -> bool:
+    def canonical_ids(value: Any, *, nonempty: bool = False) -> bool:
+        return (type(value) is list and (not nonempty or bool(value))
+                and all(type(item) is str and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", item) for item in value)
+                and len(set(value)) == len(value) and value == sorted(value))
+
+    if type(selection) is not dict or selection.get("requested") != requested or "effective" not in selection:
+        return False
+    unknown = selection.get("unknown_projects")
+    if not canonical_ids(unknown) or not set(unknown) <= set(requested):
+        return False
+    effective = selection["effective"]
+    if unknown:
+        return effective is None
+    # Required dependency closure may legitimately activate additional projects.
+    return canonical_ids(effective, nonempty=True) and set(requested) <= set(effective)
 
 
 def prompt_context(cfg: Any, query: str) -> str:
