@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling==1.31.0"]
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [project]
@@ -51,7 +51,7 @@ dev = [
 ]
 release = [
     "build==1.5.0",
-    "hatchling==1.31.0",
+    "hatchling==1.32.4",
     "twine==6.2.0",
 ]
 supply-chain = [
