@@ -4592,6 +4592,15 @@
           "timestamp": "2026-10-17T22:17:11Z",
           "scope": "Local fixed-resource catalog discoverability repair; final frozen source sha256:1f489b2a140d28844dedf98c08b0019b76eb47b8668df6b7b18c648b93e907e9",
           "limitations": "Finite local tests are not external browser/signing/public delivery qualification; existing blockers and requirement status remain unchanged."
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:c91527a156da98157253daabda3b94ab0e1d4dbb11241fb837fb2379f6fd01be",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-18T01:56:02Z",
+          "scope": "PR94 serialized catalog pagination repair; frozen source sha256:130380c9bea62f930fa785c6fd7bae567331068cc69acbdadf45353ae8cb0540",
+          "limitations": "The initial unchanged-deadline producer timed out; this same-source rerun completed. Local evidence does not qualify external browser/signing/platform gates or publication."
         }
       ]
     },
@@ -7624,6 +7633,24 @@
           "timestamp": "2026-10-17T22:17:11Z",
           "scope": "Local fixed-resource catalog discoverability repair; final frozen source sha256:e213ffb9604e0268c88c46bec0105cac22a57fee2504625c6000f91dc6c4b56d",
           "limitations": "Finite local tests are not external browser/signing/public delivery qualification; existing blockers and requirement status remain unchanged."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:c91527a156da98157253daabda3b94ab0e1d4dbb11241fb837fb2379f6fd01be",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-18T01:56:02Z",
+          "scope": "PR94 serialized catalog pagination repair; frozen source sha256:130380c9bea62f930fa785c6fd7bae567331068cc69acbdadf45353ae8cb0540",
+          "limitations": "The initial unchanged-deadline producer timed out; this same-source rerun completed. Local evidence does not qualify external browser/signing/platform gates or publication."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:b2495f21d0209881fe7c824967ebf3644d51005ebffcacfce41fc1a851cd1f19",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-10-18T01:56:02Z",
+          "scope": "PR94 serialized catalog pagination repair; frozen source sha256:d28490c9280a7920e10d5a0a89415adf90b9bdb2bf8b6818d420d0c99270cc12",
+          "limitations": "Local runtime fixtures and timing do not establish native Windows/Linux, external browser/signing qualification or publication."
         }
       ]
     },

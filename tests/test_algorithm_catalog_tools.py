@@ -37,6 +37,56 @@ def test_paged_owner_catalog_read_is_lossless_and_hash_bound():
     assert "".join(pieces) == text
 
 
+@pytest.mark.parametrize("limit", [16_000, 32_000])
+@pytest.mark.parametrize("unit", ["x", '"\\\n\t\r\x00', "\N{GREEK SMALL LETTER ALPHA}\N{GRINNING FACE}"],
+                         ids=["plain", "json-escapes", "unicode"])
+def test_runtime_catalog_pagination_preserves_all_delivered_characters(tmp_path, limit, unit):
+    text = "# Synthetic transport fixture\n" + unit * 24_000
+    path = _owner_catalog(text)
+    cfg = Config(cwd=str(tmp_path), continuum_enabled=True)
+    cfg._algo_program_authorization = authorization_for_actions(("algorithm_catalog_read",))
+    cfg._nathan_approval_mode = "never"
+    digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    pieces, offset = [], 0
+    for _ in range(200):
+        result = dispatch_action("algorithm_catalog_read", {"offset": offset, "limit": limit}, cfg, render=False)
+        assert result.outcome.invoked and result.status == "worked"
+        assert len(result.result) <= nathan_runtime.TOOL_RESULT_CONTENT_LIMIT
+        assert result.message["content"] == result.result
+        page = json.loads(result.message["content"])
+        assert page["offset"] == offset and page["sha256"] == digest
+        assert page["total_chars"] == len(text)
+        pieces.append(page["content"])
+        if page["next_offset"] is None:
+            break
+        assert page["next_offset"] == offset + len(page["content"])
+        assert offset < page["next_offset"] <= offset + limit
+        offset = page["next_offset"]
+    else:
+        pytest.fail("catalog pagination made insufficient progress")
+    assert "".join(pieces) == text
+
+
+def test_catalog_page_budget_includes_metadata_and_refuses_no_progress(monkeypatch):
+    text = "# Synthetic metadata fixture\n" + '"\\\n' * 1000
+    _owner_catalog(text)
+    monkeypatch.setattr(nathan_runtime, "TOOL_RESULT_CONTENT_LIMIT", 512)
+    result = catalog.algorithm_catalog_read(limit=32_000)
+    assert len(result) <= 512
+    page = json.loads(result)
+    assert 0 < page["next_offset"] == len(page["content"]) < len(text)
+    assert text.startswith(page["content"])
+    monkeypatch.setattr(nathan_runtime, "TOOL_RESULT_CONTENT_LIMIT", 64)
+    assert catalog.algorithm_catalog_read(limit=32_000).startswith("Error:")
+
+
+@pytest.mark.parametrize("offset", [6, 100])
+def test_catalog_page_at_or_beyond_end_is_complete(offset):
+    _owner_catalog("# End\n")
+    result = json.loads(catalog.algorithm_catalog_read(offset=offset, limit=32_000))
+    assert result["offset"] == offset and result["next_offset"] is None and result["content"] == ""
+
+
 @pytest.mark.parametrize("args", [{"offset": -1}, {"offset": True}, {"limit": 0}, {"limit": 32_001}, {"limit": True}])
 def test_invalid_page_never_reads(monkeypatch, args):
     monkeypatch.setattr(catalog, "_read", lambda: pytest.fail("invalid input read catalog"))

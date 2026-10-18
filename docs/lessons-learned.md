@@ -1,5 +1,47 @@
 # Lessons Learned
 
+## 2026-10-17: Catalog Pagination Must Survive The Runtime Transport
+
+**Symptom/confirmed cause:** PR #94's direct catalog paging test reconstructed
+the source, but the real dispatcher passes results through a 20,000-character
+message cap. A permitted 32,000-character request returned a 24,377-character
+JSON result on a synthetic fixture; the consumer truncated it. JSON escapes can
+also overflow the cap at the default 16,000-character request. The old
+`next_offset` described undelivered content, so direct-function correctness did
+not establish lossless agent pagination.
+
+**Repair:** Retain the existing global result cap and requested character bound.
+Size the entire serialized page, including metadata and escapes; shorten content
+with a bounded binary search when needed. Derive `next_offset` from the actual
+included characters. Fail explicitly if metadata leaves no room for progress.
+Use the runtime's shared cap at invocation time without a top-level import
+cycle. No arbitrary file access, permission widening or owner-data publication.
+
+**Actual verification:** A new real-dispatcher regression first failed on the
+old installed package (one passed/one failed before stopping). After reinstall,
+all 47 catalog cases pass, including six full reconstructions across default/
+maximum page requests with plain, Unicode and JSON-escape-heavy text. Additional
+tests cover metadata budgeting, a no-progress refusal and at/beyond-EOF reads.
+The assertions consume the model-facing message, require unchanged transport
+content and verify every offset and full-file digest. Final local CI results and
+the review/merge state are recorded separately after source-bound qualification.
+
+**Prevention/limits:** Test typed tool results after the real consumer's
+transformation, not only before it. Keep privacy, exact operation and serialized
+transport checks distinct. Preserve the private catalog and separate watchdog;
+local tests do not qualify external platforms, native signing or publication.
+
+**Local-CI admission:** The owner explicitly approved replacing the ten
+GitHub-Actions-bound merge checks with one verified local-CI gate. Retain active
+PR/thread-resolution, up-to-date-branch, deletion and force-push protections,
+with no bypass actors. Bind the local status to the exact reviewed commit and
+link the actual commands/results; never impersonate hosted platform checks or
+post success before qualification. Keep the initial 300-second M8 timeout
+distinct from its completed same-source retry: nine local metrics pass, five
+external metrics remain blocked and none fail. Machine load was observed, but
+the exact timeout cause remains unknown. Gate approval is not applied policy,
+a merge receipt, independent attestation or permission to publish.
+
 ## 2026-10-17: Catalog Discoverability Needs Real Protected-Mode Readback
 
 **Symptom/cause:** Original queries `decision intervention budget` and
