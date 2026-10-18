@@ -13,6 +13,13 @@ catalog. Algo CLI ships without anyone's catalog; you build your own.
 When `~/.algo_cli/ALGO.md` exists, Algo indexes it instead of this template. Your
 catalog stays on your machine and is never part of a release.
 
+Agents use `algorithm_catalog_read` to read the live catalog in bounded pages,
+then `algorithm_catalog_edit` for an approved exact edit. Edits require the
+current SHA-256 and a unique text anchor, and are atomically written and read
+back. General filesystem tools cannot read the protected config directory,
+even in YOLO; these fixed-resource tools do not expose credentials or memory.
+Discover them through `action_search` if they are not initially visible.
+
 ## Entry format
 
 Group entries under a track heading (`## Track <letter> — <name>`). Each entry is a

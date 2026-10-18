@@ -1247,6 +1247,18 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         True,
     ),
     _spec(
+        "algorithm_catalog_read", "tool", "Read a bounded page of the owner's live ALGO.md catalog.",
+        "harness", ("catalog", "ALGO.md", "algorithm", "read-only"),
+        "Admits only the fixed owner catalog; leaves general protected-root access closed.",
+        "low", False, False, True,
+    ),
+    _spec(
+        "algorithm_catalog_edit", "tool", "Apply one approved exact, hash-bound edit to the owner's ALGO.md.",
+        "harness", ("catalog", "ALGO.md", "algorithm", "mutation", "approval"),
+        "Rejects stale/nonunique edits and verifies atomic catalog publication without granting arbitrary paths.",
+        "high", True, True, False,
+    ),
+    _spec(
         "cobalt_open",
         "tool",
         "Open a URL in the local Camoufox browser service.",

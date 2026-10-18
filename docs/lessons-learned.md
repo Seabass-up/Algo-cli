@@ -1,5 +1,82 @@
 # Lessons Learned
 
+## 2026-10-17: Catalog Discoverability Needs Real Protected-Mode Readback
+
+**Symptom/cause:** Original queries `decision intervention budget` and
+`context reduction specialization` ranked P5/H20 at 21/13 in the complete
+catalog. BM25 keeps hyphenated compounds, while curated field matching already
+splits them; natural subsection labels alone improved only P5 to eighth. Title
+and heading weighting left the relevant subcontracts undiscoverable. Separately,
+Continuum correctly excluded the config root, so an isolated unprotected index
+did not prove the real tools could search the owner catalog after refresh.
+
+**Repair:** Keep IDs/statuses and main title phrases; make both titles describe
+their actual subcontracts and use natural subsection labels. For explicit
+reference-tool search/read only, reconstruct the fixed owner catalog with the
+existing descriptor-bound reader, current source hash and shared catalog parser.
+Read by exact typed pattern ID, never a cached path. The public index is still
+refreshed normally; owner records are a disclosed query-time projection, not
+persisted bodies, automatic context, arbitrary root access or mutable memory.
+Unsafe existing files fail closed; missing files do not restore stale records.
+Search/read policies classify reference output as sensitive and suppress raw
+tool logs, matching the fixed catalog tools rather than logging private bodies.
+No new embedding calls, thresholds, providers or public personal-data payloads.
+
+**Verification:** Red tests reproduce missing protected-mode search/read and
+refresh counts on the prior installed package. New synthetic cases cover the
+original query strings, source replacement/removal, path-forged index rows,
+unsafe links/encoding/duplicate IDs, kind/harness filters, nonpersistence and
+exclusion from automatic context. Final exact-source tests, installed readback
+and refresh receipt are reported separately after qualification; source edits
+or a model judgment alone are not live repair proof.
+
+**Prevention/limits:** Exercise the actual installed protected-mode tools with
+the original queries, not just a constructed index. Keep historical failure
+measurements, semantic relevance and exact operation/permission tests distinct.
+The two catalog methods remain proposed; better retrieval is not evidence their
+algorithms are implemented or effective. Preserve the separate CI watchdog.
+
+## 2026-10-16: Owner Catalog Access Must Have An Admitted Native Path
+
+**Symptom/cause:** The prompt advertised reading/updating `<config>/ALGO.md`,
+but ordinary filesystem tools correctly denied both workspace escape and the
+protected config root. YOLO did not and should not waive protected-root rules.
+The prior live test covered synthetic workspace files, not this owner-catalog
+workflow. A catalog move alone would leave normal workspace scope unresolved.
+
+**Repair:** Keep the owner file in place. Register `algorithm_catalog_read`
+and `algorithm_catalog_edit` as fixed-resource native tools without arbitrary
+path arguments. Reuse bounded no-follow/single-link state reads, private atomic
+writes and cross-platform locking. Reads page by Unicode character offset and
+return the complete byte hash. Edits require action-time approval, the expected
+hash and exactly one old-text match; reject stale/ambiguous/oversized edits and
+read back the published bytes. Discovery, prompt guidance and harness tool class
+agree. No general filesystem exception, new memory backend, migration, catalog
+publication or custom kernel inclusion. Preserve reference-only evidence states.
+
+**Verification:** New runtime tests exercise execute/YOLO, action-time versus
+session approval, protected siblings, paging, symlink/hardlink/special-file
+rejection, a descriptor-open swap, concurrent stale edits, input/size limits and
+post-write mismatch reporting. Initial targeted runs passed 267 surrounding
+cases (one platform skip) and 87 context/tool cases (three existing JUnit
+warnings). The first full run passed 7,566/skipped 45 and correctly failed two
+stale source-bound reports plus a prompt wording assertion. Restore the truthful
+read/update wording and regenerate reports through their real producers after
+source freeze; never paste new digests into old measurements. Local mypy and
+Ruff passed. Final qualification and installed-runtime results are recorded in
+the scoped delivery receipt, not inferred from these intermediate checks.
+An additional red/green regression caught overlapping anchors (`aa` in `aaa`):
+`str.count` counts only nonoverlapping matches. Check for a second match starting
+one character after the first; reject ambiguity before publication. Stop the
+old-source test run and regenerate the exact-source reports after this repair.
+
+**Prevention/limits:** Test advertised resource operations through the real
+dispatcher, not only file existence or prompt text. Exact hash/lock protection
+serializes cooperating writers, not arbitrary hostile same-UID programs. Failed
+or uncertain writes require reconciliation before retry. Missing owner catalogs
+are explicit; the empty public starter is never silently used as personal data.
+The existing shell/browser/memory restrictions and routing thresholds remain.
+
 ## 2026-10-16: Task-Specific Prompt Guidance And Content-Free Diagnostics
 
 **Symptom/cause:** A conversational question received unrelated PDF, xAI and

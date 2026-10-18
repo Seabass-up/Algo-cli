@@ -73,6 +73,8 @@ _CLASS_TO_TOOLS: dict[str, frozenset[str]] = {
             "harness_competitive_rating",
             "harness_search",
             "harness_read",
+            "algorithm_catalog_read",
+            "algorithm_catalog_edit",
         }
     ),
     "session": frozenset({"available_actions", "session_slash", "session_command"}),

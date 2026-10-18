@@ -4565,6 +4565,33 @@
           "timestamp": "2026-10-16T22:25:14Z",
           "scope": "PR93 review repair over cd04893; current working-tree source sha256:ee7c17493c5d72c4c9b65e668e9abc91078cfc512ed63ec66acb86185c5b1f07",
           "limitations": "Finite local regressions are not hosted Windows, browser containment, signing or public delivery qualification; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:9d12425cdff5027c7d18132c0f0e33a701e4416cc98027b60a04feca8295512d",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-17T01:28:02Z",
+          "scope": "Local owner-catalog access repair over 4ac096b; frozen working-tree source sha256:6a98b5d49e825f489019bf60cdc9d95035b64a84af1ac8c37757352929168570",
+          "limitations": "Finite local regressions are not hosted Windows, browser containment, signing or public delivery qualification; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:f3bc047a416e3fa84f9e98616a087ad2ad3385585db0496d83a674d62f62b1dd",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-17T01:33:16Z",
+          "scope": "Owner-catalog access with overlapping-anchor regression; final frozen source sha256:29c524ab2d544b667d65572188e58a1d9e3969c95b840e30cb1d36a86b2f5be1",
+          "limitations": "Finite local regressions are not hosted Windows, browser containment, signing or public delivery qualification; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:1512e347cd4c391071b9c4f5c5eacd040c5497e270348add60c06675dcf1ac5f",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-17T22:17:11Z",
+          "scope": "Local fixed-resource catalog discoverability repair; final frozen source sha256:1f489b2a140d28844dedf98c08b0019b76eb47b8668df6b7b18c648b93e907e9",
+          "limitations": "Finite local tests are not external browser/signing/public delivery qualification; existing blockers and requirement status remain unchanged."
         }
       ]
     },
@@ -7543,6 +7570,60 @@
           "timestamp": "2026-10-16T22:25:14Z",
           "scope": "PR93 review repair over cd04893; current working-tree source sha256:27abed003b44484c408075acb69927c3bc84a5ef1dd2dfee41496bc729197eae",
           "limitations": "Finite local regressions are not hosted Windows, browser containment, signing or public delivery qualification; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:9d12425cdff5027c7d18132c0f0e33a701e4416cc98027b60a04feca8295512d",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-17T01:28:02Z",
+          "scope": "Local owner-catalog access repair over 4ac096b; frozen working-tree source sha256:6a98b5d49e825f489019bf60cdc9d95035b64a84af1ac8c37757352929168570",
+          "limitations": "Finite local regressions are not hosted Windows, browser containment, signing or public delivery qualification; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:973b546fa720cfec1c1a862509c8e3896771bc2909cb33e86801f25453ba435d",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-10-17T01:28:02Z",
+          "scope": "Local owner-catalog access repair over 4ac096b; frozen working-tree source sha256:2fd874d317311074c5a614143df474e0634d496b79bccd2fb7409d16ae591207",
+          "limitations": "Finite local regressions are not hosted Windows, browser containment, signing or public delivery qualification; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:f3bc047a416e3fa84f9e98616a087ad2ad3385585db0496d83a674d62f62b1dd",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-17T01:33:16Z",
+          "scope": "Owner-catalog access with overlapping-anchor regression; final frozen source sha256:29c524ab2d544b667d65572188e58a1d9e3969c95b840e30cb1d36a86b2f5be1",
+          "limitations": "Finite local regressions are not hosted Windows, browser containment, signing or public delivery qualification; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:820af35946d28fe8cd18f272adf5504827d335b5c3d0828b9247db1c13f5adbd",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-10-17T01:33:16Z",
+          "scope": "Owner-catalog access with overlapping-anchor regression; final frozen source sha256:e3de2afcca932c29d32b9675296009a5e629f925d9bb4cbdbe235fdefa2920ed",
+          "limitations": "Finite local regressions are not hosted Windows, browser containment, signing or public delivery qualification; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:1512e347cd4c391071b9c4f5c5eacd040c5497e270348add60c06675dcf1ac5f",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-17T22:17:11Z",
+          "scope": "Local fixed-resource catalog discoverability repair; final frozen source sha256:1f489b2a140d28844dedf98c08b0019b76eb47b8668df6b7b18c648b93e907e9",
+          "limitations": "Finite local tests are not external browser/signing/public delivery qualification; existing blockers and requirement status remain unchanged."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:379c6d24c926e551f78fc62fcb3766381910e962545bef62db58d122e0f6a953",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-10-17T22:17:11Z",
+          "scope": "Local fixed-resource catalog discoverability repair; final frozen source sha256:e213ffb9604e0268c88c46bec0105cac22a57fee2504625c6000f91dc6c4b56d",
+          "limitations": "Finite local tests are not external browser/signing/public delivery qualification; existing blockers and requirement status remain unchanged."
         }
       ]
     },
