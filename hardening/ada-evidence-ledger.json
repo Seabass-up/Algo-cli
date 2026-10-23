@@ -4610,6 +4610,24 @@
           "timestamp": "2026-10-23T20:21:19Z",
           "scope": "Runtime read/compaction/search repairs without speech feature changes; frozen source sha256:a95e69173ffdca895ca653f2811a4c5f2f6a1e59a046e33b8dbbf28d44e61eda",
           "limitations": "Finite local macOS qualification is not native Windows/Linux, external browser/signing or publication proof; HARD-080 remains in progress"
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:a69005bad3197afd6986baffc3a19398a14eb21bfa282adc5c625d44b01b0d90",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-23T21:05:13Z",
+          "scope": "PR94 reviewed owner-pattern transport bound and independently passing prerequisite dependency gates; frozen source sha256:ed75ad2f8981638da83ae2611e9eeb5dce9a65d00b2ac1a50f74baff147b7e3e",
+          "limitations": "Finite local qualification does not establish native Windows/Linux, external browser/signing or publication. Requirement remains in progress; earlier failed parity/M8 and audit attempts retained separately."
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:f750e2bca1f083a657d0447c8a6d418b0d41e4db4439595cbaa42c74e9e0c0fb",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-23T21:19:36Z",
+          "scope": "PR95 combined runtime repairs with reviewed PR94 catalog/source and security regressions on merged main; frozen source sha256:2544abb34cb324c4e4573d02b66a3dbe0ce1596093fb43980808091647864298",
+          "limitations": "Finite local qualification is not native Windows/Linux, external browser/signing or publication proof. Both parent evidence histories retained; requirement remains in progress."
         }
       ]
     },
@@ -7672,12 +7690,48 @@
         },
         {
           "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:a69005bad3197afd6986baffc3a19398a14eb21bfa282adc5c625d44b01b0d90",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-23T21:05:13Z",
+          "scope": "PR94 reviewed owner-pattern transport bound and independently passing prerequisite dependency gates; frozen source sha256:ed75ad2f8981638da83ae2611e9eeb5dce9a65d00b2ac1a50f74baff147b7e3e",
+          "limitations": "Finite local qualification does not establish native Windows/Linux, external browser/signing or publication. Requirement remains in progress; earlier failed parity/M8 and audit attempts retained separately."
+        },
+        {
+          "kind": "benchmark",
           "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
           "digest": "sha256:0243d5c2dc66a8b301c8c2efffe8198a5e2e7b7ea192c8f13813918e2988b361",
           "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
           "timestamp": "2026-10-23T20:21:19Z",
           "scope": "Runtime read/compaction/search repairs without speech feature changes; frozen source sha256:ea4fceb065622c5f0d25a86ee75a34861d02c293c59a3057f47dcc8586499662",
           "limitations": "Finite local macOS qualification is not native Windows/Linux, external browser/signing or publication proof; HARD-081 remains in progress"
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:3938216ba9faf231ea180c42a61c25330687f87bd698116a1ff59a925dae75ce",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-10-23T21:05:13Z",
+          "scope": "PR94 reviewed owner-pattern transport bound and independently passing prerequisite dependency gates; frozen source sha256:83791f1b2a8f95dfd09557b1152d70ebcd9654577e3617254b3fea3cd2f2beda",
+          "limitations": "Finite local qualification does not establish native Windows/Linux, external browser/signing or publication. Requirement remains in progress; earlier failed parity/M8 and audit attempts retained separately."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:f750e2bca1f083a657d0447c8a6d418b0d41e4db4439595cbaa42c74e9e0c0fb",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-23T21:19:36Z",
+          "scope": "PR95 combined runtime repairs with reviewed PR94 catalog/source and security regressions on merged main; frozen source sha256:2544abb34cb324c4e4573d02b66a3dbe0ce1596093fb43980808091647864298",
+          "limitations": "Finite local qualification is not native Windows/Linux, external browser/signing or publication proof. Both parent evidence histories retained; requirement remains in progress."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:74e8f85043ba1f8f0a2bfc0cc5b4935d5990d0004f9e252544904d58f4f1124f",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-10-23T21:19:36Z",
+          "scope": "PR95 combined runtime repairs with reviewed PR94 catalog/source and security regressions on merged main; frozen source sha256:eff35bcff81efe540de717dd4776eb4d8a3df0d9ff0167a1a82dba3bb0e7ae75",
+          "limitations": "Finite local qualification is not native Windows/Linux, external browser/signing or publication proof. Both parent evidence histories retained; requirement remains in progress."
         }
       ]
     },

@@ -6,6 +6,26 @@ import test from "node:test";
 const require = createRequire(import.meta.url);
 const yaml = createRequire(require.resolve("@eslint/eslintrc"))("js-yaml");
 
+test("bounded Zod collections reject size before walking elements", () => {
+  const consumerRequire = createRequire(require.resolve("eslint-plugin-react-hooks"));
+  const { z } = consumerRequire("zod");
+  let visited = 0;
+  const element = z.string().refine(() => { visited += 1; return true; });
+  for (const [schema, input] of [
+    [z.array(element).max(1), ["a", "b"]],
+    [z.array(element).length(1), ["a", "b"]],
+    [z.set(element).max(1), new Set(["a", "b"])],
+    [z.map(element, element).max(1), new Map([["a", "a"], ["b", "b"]])],
+  ]) {
+    const result = schema.safeParse(input);
+    assert.equal(result.success, false);
+    assert.deepEqual(result.error.issues.map((issue) => issue.code), ["too_big"]);
+  }
+  assert.equal(visited, 0);
+  assert.deepEqual(z.array(element).max(1).parse(["ok"]), ["ok"]);
+  assert.equal(visited, 1);
+});
+
 test("non-Linux Rolldown bindings do not inherit Linux libc restrictions", () => {
   const lock = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
   for (const [name, entry] of Object.entries(lock.packages)) {

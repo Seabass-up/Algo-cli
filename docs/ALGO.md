@@ -21,6 +21,9 @@ current SHA-256 and a unique text anchor, and are atomically written and read
 back. General filesystem tools cannot read the protected config directory,
 even in YOLO; these fixed-resource tools do not expose credentials or memory.
 Discover them through `action_search` if they are not initially visible.
+An oversized `harness_read` pattern excerpt is explicitly marked truncated;
+use `algorithm_catalog_read` pages for the complete source rather than treating
+the excerpt as a complete pattern.
 
 ## Entry format
 
