@@ -226,10 +226,15 @@ def _run_typed_program_benchmark(repeats: int) -> dict[str, Any]:
     ]
     raw = json.dumps({"rows": rows}, ensure_ascii=False, separators=(",", ":"))
     baseline_tokens = estimate_text_tokens(raw)
+    # Retain the complete fixture and gates; bounded file reads must finish
+    # before JSON parsing, rather than silently consuming an incomplete prefix.
+    split_at = len(raw) // 2
     plan = {
         "version": 1,
         "steps": [
-            {"id": "source", "kind": "action", "action": "read_file", "args": {"path": "rows.json"}},
+            {"id": "part_a", "kind": "action", "action": "read_file", "args": {"path": "rows-part-a.txt"}},
+            {"id": "part_b", "kind": "action", "action": "read_file", "args": {"path": "rows-part-b.txt"}},
+            {"id": "source", "kind": "transform", "op": "join", "input": [{"$ref": "part_a"}, {"$ref": "part_b"}], "args": {"separator": ""}},
             {"id": "parsed", "kind": "transform", "op": "json_parse", "input": {"$ref": "source"}},
             {"id": "rows", "kind": "transform", "op": "get", "input": {"$ref": "parsed"}, "args": {"path": ["rows"]}},
             {"id": "ready", "kind": "transform", "op": "filter_eq", "input": {"$ref": "rows"}, "args": {"path": ["ready"], "equals": True}},
@@ -246,7 +251,8 @@ def _run_typed_program_benchmark(repeats: int) -> dict[str, Any]:
     for _repeat in range(repeats):
         with tempfile.TemporaryDirectory(prefix="algo-program-benchmark-") as temporary:
             root = Path(temporary)
-            (root / "rows.json").write_text(raw, encoding="utf-8")
+            (root / "rows-part-a.txt").write_text(raw[:split_at], encoding="utf-8")
+            (root / "rows-part-b.txt").write_text(raw[split_at:], encoding="utf-8")
             capture = io.StringIO()
             with redirect_stdout(capture), redirect_stderr(capture):
                 result = execute_program(

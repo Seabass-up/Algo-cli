@@ -11,7 +11,7 @@
     "unknown_trials": 1000
   },
   "fixture_digest": "sha256:5d94b7afade9ce7aab941948a6120fb8090a3c2d9bf6e600f2d92b9d9372b659",
-  "generated_at": "2026-10-23T21:05:13Z",
+  "generated_at": "2026-10-23T21:19:36Z",
   "limitations": [
     "Zero observed failures in a finite local sample is not zero risk.",
     "No production browser, selected-Chrome, Developer ID, notarization, Gatekeeper, or live TCC claim is made.",
@@ -45,8 +45,8 @@
       "measurements": {
         "dispatches": 0,
         "mutations": 0,
-        "p50_ms": 5.661,
-        "p95_ms": 9.495,
+        "p50_ms": 6.269,
+        "p95_ms": 10.84,
         "seed": 310400406105
       },
       "numerator": 10000,
@@ -141,8 +141,8 @@
       "limitations": "Finite adapters do not establish that a future native or browser adapter observes a real external target correctly.",
       "measurements": {
         "mutations": 1000,
-        "p50_ms": 7.467,
-        "p95_ms": 24.718
+        "p50_ms": 6.911,
+        "p95_ms": 7.696
       },
       "numerator": 1000,
       "rate": 1.0,
@@ -159,7 +159,7 @@
       "id": "local_token_efficiency",
       "limitations": "Synthetic local token estimates do not establish task completion, model quality, screenshot reduction, or cross-harness advantage.",
       "measurements": {
-        "median_schema_reduction_pct": 84.158,
+        "median_schema_reduction_pct": 83.831,
         "typed_program_reduction_pct": 96.644
       },
       "numerator": 5,
@@ -231,7 +231,7 @@
   "public_claim_eligible": false,
   "qualification": "henry-m8-local-v1",
   "schema_version": 1,
-  "source_digest": "sha256:ed75ad2f8981638da83ae2611e9eeb5dce9a65d00b2ac1a50f74baff147b7e3e",
+  "source_digest": "sha256:2544abb34cb324c4e4573d02b66a3dbe0ce1596093fb43980808091647864298",
   "status": "blocked",
   "summary": {
     "blocked": 5,

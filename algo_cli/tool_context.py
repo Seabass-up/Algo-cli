@@ -470,7 +470,14 @@ def select_tools_for_prompt(
     available_names = {str(getattr(tool, "__name__", "") or "") for tool in tools}
     selected_names = set(CORE_TOOL_NAMES & available_names)
     selected_names.update(DEFERRED_TOOL_NAMES & available_names)
-    if decision_coordinator or {"decision", "decide", "clef", "clef_flash", "clm", "decider", "tev1"} & set(_expanded_query_terms(prompt)):
+    query_terms = set(_expanded_query_terms(prompt))
+    if "jev" in query_terms:
+        # Explicit Jev requests need the capability boundary even when schemas grow.
+        selected_names.update({"jev_kernel_status"} & available_names)
+        if {"email", "mail", "gmail", "inbox"} & query_terms:
+            # Keep native mail access discoverable beside the advisory-only boundary.
+            selected_names.update({"session_command"} & available_names)
+    if decision_coordinator or {"decision", "decide", "clef", "clef_flash", "clm", "decider", "tev1"} & query_terms:
         selected_names.update({"decision_decide"} & available_names)
     if "action_search" not in available_names and "available_actions" in available_names:
         selected_names.add("available_actions")

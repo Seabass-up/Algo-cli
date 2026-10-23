@@ -1,5 +1,54 @@
 # Lessons Learned
 
+## 2026-10-23: Preserve Meaning Across Runtime Truncation And Compaction
+
+**Symptom/cause:** Text reads could exceed the actual tool transport and lose
+their continuation marker. Malformed summary payloads were accepted as successful
+strings, and fallback degradation disappeared after persistence. Managed worktree
+exclusions differed between ripgrep and the Python fallback.
+
+**Repair:** Bound the read body and continuation together; count only delivered
+characters in the resumable cursor and keep protected descriptor reads. Validate
+nonempty string summaries and persist a model-visible degradation marker through
+later compaction without weakening Continuum projection rules. Share managed
+directory exclusions without hiding unrelated hidden source directories.
+
+**Integration:** Reserve the explicit Jev boundary and native mail bridge within
+the existing declared-class ceiling. Preserve the complete 420-row benchmark by
+joining two bounded reads before parsing, without loosening thresholds. Accept
+only the two known host-side Continuum pagination operations in the compatibility
+test; do not expose them as model tools. Refresh the verified Certifi, Go, Next,
+and Vite security pins without unrelated dependency upgrades.
+
+**Clean-install catch:** A cold `npm ci` omitted the locked macOS Rolldown
+binding because the lock assigned it a Linux musl restriction; Android also
+incorrectly carried glibc. Published npm metadata has neither restriction.
+The exact origin of the contaminated lock metadata is not established. A new
+regression failed before removing only those two fields; a fresh install then
+resolved the native binding. Do not infer clean-install success from a warm
+dependency directory, broaden install-script permissions, or remove Linux's
+legitimate GNU/musl selectors to make a build pass.
+
+**Verification:** The new runtime regression file has 45 cases. Qualify this
+repair-only review tree separately from the locally installed tree containing
+speech changes; never reuse a report digest from a different source. Local CI
+results and source-bound qualification are recorded with the review. Existing
+external browser/signing and platform qualification limits remain in force.
+Executed `pytest tests/test_runtime_review_regressions.py
+tests/test_continuum_tools.py -q -o addopts=''`: 63 passed. Clean `npm ci` followed
+by `npm test`, `npm run lint` and `npm audit`: build/21 tests/lint pass, zero known
+vulnerabilities. Real Nathan `--refresh` passes 17 correctness probes/31 workloads;
+the real M8 runner reports nine local passes/five external blockers/zero failures.
+The first full Python run had 7,632 passes and one stale-report failure; preserve
+it as failed evidence, refresh through the producers, then run the final suite
+including all currency checks. Do not change assertions to admit stale reports.
+
+**Prevention:** Test whole-file reconstruction after the actual tool-message
+transformation, malformed success payloads, durable degradation, and tool-schema
+budget interactions. Use a separate review worktree for overlapping unrelated
+changes. Keep private catalogs, credentials, installed runtimes and watchdog work
+out of the patch. Local CI is not hosted qualification or publication.
+
 ## 2026-10-23: Qualify Every Catalog Read Route And Each Stacked PR
 
 **Symptom/confirmed cause:** The fixed catalog pager was transport-safe, but the
@@ -41,6 +90,12 @@ refresh; earlier failures remain separate evidence, not passing results.
 **Prevention/limits:** Review every route to a resource, not only the newest
 typed pager. Preserve separate test/qualification evidence for each stacked head.
 Use CI-skip messages for both pushes and merge commits under local-only CI.
+Inspect workflow names/events before claiming that all Actions were skipped:
+the reviewed merge skipped repository CI, but GitHub still created two dynamic
+Go/Python dependency-graph bookkeeping runs. Both completed before cancellation;
+their timing API reports zero billable milliseconds each. Do not disable
+dependency-security coverage or alter unrelated watchdog controls to hide these
+platform jobs. Keep them distinct from locally executed qualification gates.
 No owner catalog, speech work or watchdog changes; no publication or external
 platform/browser/signing qualification is inferred.
 

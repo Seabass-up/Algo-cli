@@ -4,6 +4,12 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+- Reject malformed compaction summaries and retain a model-visible warning when
+  conversation history has been compressed with a lossy fallback.
+- Make partial text reads explicit and resumable, including long lines, within
+  the actual tool-message limit. Align managed-worktree exclusions across search
+  backends while retaining ordinary hidden source files.
+
 ### 0.20.3 Core CLI Candidate
 
 - Prepare the Continuum-only runtime, bounded Jev coordinator and interrupted
