@@ -4601,6 +4601,15 @@
           "timestamp": "2026-10-18T01:56:02Z",
           "scope": "PR94 serialized catalog pagination repair; frozen source sha256:130380c9bea62f930fa785c6fd7bae567331068cc69acbdadf45353ae8cb0540",
           "limitations": "The initial unchanged-deadline producer timed out; this same-source rerun completed. Local evidence does not qualify external browser/signing/platform gates or publication."
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:a69005bad3197afd6986baffc3a19398a14eb21bfa282adc5c625d44b01b0d90",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-23T21:05:13Z",
+          "scope": "PR94 reviewed owner-pattern transport bound and independently passing prerequisite dependency gates; frozen source sha256:ed75ad2f8981638da83ae2611e9eeb5dce9a65d00b2ac1a50f74baff147b7e3e",
+          "limitations": "Finite local qualification does not establish native Windows/Linux, external browser/signing or publication. Requirement remains in progress; earlier failed parity/M8 and audit attempts retained separately."
         }
       ]
     },
@@ -7651,6 +7660,24 @@
           "timestamp": "2026-10-18T01:56:02Z",
           "scope": "PR94 serialized catalog pagination repair; frozen source sha256:d28490c9280a7920e10d5a0a89415adf90b9bdb2bf8b6818d420d0c99270cc12",
           "limitations": "Local runtime fixtures and timing do not establish native Windows/Linux, external browser/signing qualification or publication."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:a69005bad3197afd6986baffc3a19398a14eb21bfa282adc5c625d44b01b0d90",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-10-23T21:05:13Z",
+          "scope": "PR94 reviewed owner-pattern transport bound and independently passing prerequisite dependency gates; frozen source sha256:ed75ad2f8981638da83ae2611e9eeb5dce9a65d00b2ac1a50f74baff147b7e3e",
+          "limitations": "Finite local qualification does not establish native Windows/Linux, external browser/signing or publication. Requirement remains in progress; earlier failed parity/M8 and audit attempts retained separately."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:3938216ba9faf231ea180c42a61c25330687f87bd698116a1ff59a925dae75ce",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-10-23T21:05:13Z",
+          "scope": "PR94 reviewed owner-pattern transport bound and independently passing prerequisite dependency gates; frozen source sha256:83791f1b2a8f95dfd09557b1152d70ebcd9654577e3617254b3fea3cd2f2beda",
+          "limitations": "Finite local qualification does not establish native Windows/Linux, external browser/signing or publication. Requirement remains in progress; earlier failed parity/M8 and audit attempts retained separately."
         }
       ]
     },

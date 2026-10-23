@@ -375,3 +375,43 @@ def test_owner_reference_routes_do_not_log_private_bodies():
         policy = policy_for_action(name)
         assert policy.suppress_logs is True
         assert any(item.value == "sensitive" for item in policy.data_classes)
+
+
+@pytest.mark.parametrize("maximum", [512, 20_000, 50_000])
+@pytest.mark.parametrize("unit", ["x", "\u03bb\U0001f642"], ids=["plain", "unicode"])
+def test_owner_pattern_partial_read_is_honest_after_transport(monkeypatch, maximum, unit):
+    _owner_catalog("### P5. Synthetic long pattern\nStatus: proposed\n" + unit * 50_000 + "PATTERN_END_CANARY\n")
+    cfg, _ = _protected_reference_tools(monkeypatch)
+    output = tools.harness_read("algo-cli:algorithm:ALGO.md#P5", max_chars=maximum, cfg=cfg)
+    delivered = nathan_runtime.tool_result_message("harness_read", output)["content"]
+    assert delivered == output
+    assert len(delivered) <= min(maximum, nathan_runtime.TOOL_RESULT_CONTENT_LIMIT)
+    assert delivered.endswith("...[truncated; use algorithm_catalog_read for complete catalog pages]")
+    assert "PATTERN_END_CANARY" not in delivered
+
+
+def test_owner_pattern_reader_respects_dynamic_transport_cap(monkeypatch):
+    _owner_catalog("### P5. Synthetic pattern\nStatus: proposed\n" + "x" * 2000)
+    cfg, _ = _protected_reference_tools(monkeypatch)
+    monkeypatch.setattr(nathan_runtime, "TOOL_RESULT_CONTENT_LIMIT", 512)
+    output = tools.harness_read("algo-cli:algorithm:ALGO.md#P5", max_chars=20_000, cfg=cfg)
+    assert len(output) <= 512
+    assert "[truncated; use algorithm_catalog_read" in output
+    assert nathan_runtime.tool_result_message("harness_read", output)["content"] == output
+
+
+def test_owner_pattern_tiny_budget_refuses_without_private_body(monkeypatch):
+    _owner_catalog("### P5. Synthetic pattern\nStatus: proposed\nPATTERN_BODY_CANARY\n" + "x" * 2000)
+    cfg, _ = _protected_reference_tools(monkeypatch)
+    output = tools.harness_read("algo-cli:algorithm:ALGO.md#P5", max_chars=32, cfg=cfg)
+    assert output.startswith("Error:")
+    assert "PATTERN_BODY_CANARY" not in output
+
+
+def test_owner_pattern_complete_read_is_not_marked_truncated(monkeypatch):
+    _owner_catalog("### P5. Synthetic short pattern\nStatus: proposed\nPATTERN_END_CANARY\n")
+    cfg, _ = _protected_reference_tools(monkeypatch)
+    output = tools.harness_read("algo-cli:algorithm:ALGO.md#P5", max_chars=1000, cfg=cfg)
+    assert "PATTERN_END_CANARY" in output
+    assert "[truncated" not in output
+    assert len(output) <= 1000

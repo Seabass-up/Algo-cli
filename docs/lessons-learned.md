@@ -1,5 +1,49 @@
 # Lessons Learned
 
+## 2026-10-23: Qualify Every Catalog Read Route And Each Stacked PR
+
+**Symptom/confirmed cause:** The fixed catalog pager was transport-safe, but the
+separate owner-pattern reader sliced only its body. Provenance headers overflowed
+the requested budget, and long patterns lost text at the runtime cap without a
+partial-result warning. Nine synthetic tests produced eight failures and one
+complete-read control pass before repair; no private owner catalog was inspected.
+
+**Repair:** Budget the complete redacted pattern result against both caller and
+runtime limits. Keep an explicit truncation notice and point to bounded catalog
+pages; refuse an unusably small budget without returning private body content.
+Descriptor-bound fixed-resource reads, approvals and log suppression are unchanged.
+
+**Stacked-PR admission:** A later PR contained verified dependency fixes while
+its prerequisite still had the old vulnerable pins. Move those exact dependency
+updates, native-binding metadata regression and known Continuum host-transport
+compatibility test into the prerequisite so its own local gates can pass before
+merging it. Do not waive its audits in anticipation of a later merge.
+
+**Fresh-audit follow-up:** The later npm audit newly reported
+GHSA-mrhx-c7xc-m3w5 for Zod below 4.6.6. Its installed ESLint consumer's
+bounded arrays/sets/maps still walked ten elements before reporting size
+failure on a tiny fixture. Update only the transitive Zod lock to 4.6.7 and
+verify the actual consumer rejects oversize before visiting elements while
+accepting in-bound input. The regression failed before reinstall and passes
+afterward. No deployed exploit or safety for unbounded schemas is claimed.
+Maintainer fix: https://github.com/colinhacks/zod/commit/a0ebf970f2d752e5f58527cd2942ff48be4f46bd.
+Also retain the initial install-parity/M8 refusal caused by editing the shipped
+template after installation; reinstall after all mapped source edits before
+running qualification. Neither failure is relabeled as a pass.
+
+**Verification:** `pytest tests/test_algorithm_catalog_tools.py
+tests/test_continuum_tools.py -q -o addopts=''` passes 74 cases after reinstall.
+The new cases cover caller/default/maximum/dynamic transport bounds, Unicode,
+tiny-budget refusal, honest partial results and complete reads. Full local CI
+and exact-commit source binding are recorded with each PR after real report
+refresh; earlier failures remain separate evidence, not passing results.
+
+**Prevention/limits:** Review every route to a resource, not only the newest
+typed pager. Preserve separate test/qualification evidence for each stacked head.
+Use CI-skip messages for both pushes and merge commits under local-only CI.
+No owner catalog, speech work or watchdog changes; no publication or external
+platform/browser/signing qualification is inferred.
+
 ## 2026-10-17: Catalog Pagination Must Survive The Runtime Transport
 
 **Symptom/confirmed cause:** PR #94's direct catalog paging test reconstructed

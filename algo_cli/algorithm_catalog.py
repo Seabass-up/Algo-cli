@@ -77,13 +77,23 @@ def _read_reference_pattern(record_id: str, max_chars: int) -> str | None:
     pattern = next((row for row in rows if row["pattern_id"] == record_id[len(prefix):]), None)
     if pattern is None:
         return "Error: owner catalog pattern is absent from the current source."
-    return (
+    from .nathan_runtime import TOOL_RESULT_CONTENT_LIMIT
+
+    budget = min(max_chars, TOOL_RESULT_CONTENT_LIMIT)
+    header = (
         f"# {redact_sensitive_text(pattern['title'])}\n\n"
         f"Source: {config.CONFIG_DIR / 'ALGO.md'}\n"
         f"Owner reference data, not execution authority or agent memory | SHA256: {_digest(payload)}\n"
         f"Lines: {pattern['source_start_line']}-{pattern['source_end_line']}\n\n"
-        + redact_sensitive_text(pattern["body"][:max_chars])
     )
+    body = pattern["body"]
+    result = header + redact_sensitive_text(body[:budget + 1])
+    if len(body) <= budget + 1 and len(result) <= budget:
+        return result
+    marker = "\n...[truncated; use algorithm_catalog_read for complete catalog pages]"
+    if len(header) + len(marker) + 1 > budget:
+        return "Error: pattern result budget is too small; use algorithm_catalog_read for bounded pages."
+    return result[:budget - len(marker)] + marker
 
 
 def algorithm_catalog_read(offset: int = 0, limit: int = 16_000) -> str:
