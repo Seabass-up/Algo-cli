@@ -79,6 +79,7 @@ _BASELINE_ACTIONS = frozenset(
     {
         "action_search",
         "available_actions",
+        "algorithm_catalog_read",
         "capability_mask_describe",
         "extensions_manifest_build",
         "find_unique_anchor",

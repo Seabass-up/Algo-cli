@@ -72,6 +72,7 @@ SOURCE_PATHS = (
     "hardening/ada-signing-lifecycle-authorities.json",
     "algo_cli/__init__.py",
     "algo_cli/action_registry.py",
+    "algo_cli/algorithm_catalog.py",
     "algo_cli/david_control_kernel.py",
     "algo_cli/david_control_runtime.py",
     "algo_cli/ada_control_journal.py",
@@ -268,6 +269,7 @@ SOURCE_PATHS = (
     "tests/test_arthur_control_readiness.py",
 )
 FOCUSED_TESTS = (
+    "tests/test_algorithm_catalog_tools.py",
     "tests/test_guidance_coherence.py",
     "tests/test_oauth_loopback_deadlines.py",
     "tests/test_harness_native_privacy.py",

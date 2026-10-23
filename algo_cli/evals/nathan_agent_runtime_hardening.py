@@ -61,6 +61,8 @@ SOURCE_PATHS = (
     "pyproject.toml",
     "uv.lock",
     "algo_cli/action_registry.py",
+    "algo_cli/algorithm_catalog.py",
+    "tests/test_algorithm_catalog_tools.py",
     "algo_cli/continuum_memory.py",
     "algo_cli/agent_blocks.py",
     "algo_cli/agent_context.py",

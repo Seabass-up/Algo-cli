@@ -1,5 +1,168 @@
 # Lessons Learned
 
+## 2026-10-23: Qualify Every Catalog Read Route And Each Stacked PR
+
+**Symptom/confirmed cause:** The fixed catalog pager was transport-safe, but the
+separate owner-pattern reader sliced only its body. Provenance headers overflowed
+the requested budget, and long patterns lost text at the runtime cap without a
+partial-result warning. Nine synthetic tests produced eight failures and one
+complete-read control pass before repair; no private owner catalog was inspected.
+
+**Repair:** Budget the complete redacted pattern result against both caller and
+runtime limits. Keep an explicit truncation notice and point to bounded catalog
+pages; refuse an unusably small budget without returning private body content.
+Descriptor-bound fixed-resource reads, approvals and log suppression are unchanged.
+
+**Stacked-PR admission:** A later PR contained verified dependency fixes while
+its prerequisite still had the old vulnerable pins. Move those exact dependency
+updates, native-binding metadata regression and known Continuum host-transport
+compatibility test into the prerequisite so its own local gates can pass before
+merging it. Do not waive its audits in anticipation of a later merge.
+
+**Fresh-audit follow-up:** The later npm audit newly reported
+GHSA-mrhx-c7xc-m3w5 for Zod below 4.6.6. Its installed ESLint consumer's
+bounded arrays/sets/maps still walked ten elements before reporting size
+failure on a tiny fixture. Update only the transitive Zod lock to 4.6.7 and
+verify the actual consumer rejects oversize before visiting elements while
+accepting in-bound input. The regression failed before reinstall and passes
+afterward. No deployed exploit or safety for unbounded schemas is claimed.
+Maintainer fix: https://github.com/colinhacks/zod/commit/a0ebf970f2d752e5f58527cd2942ff48be4f46bd.
+Also retain the initial install-parity/M8 refusal caused by editing the shipped
+template after installation; reinstall after all mapped source edits before
+running qualification. Neither failure is relabeled as a pass.
+
+**Verification:** `pytest tests/test_algorithm_catalog_tools.py
+tests/test_continuum_tools.py -q -o addopts=''` passes 74 cases after reinstall.
+The new cases cover caller/default/maximum/dynamic transport bounds, Unicode,
+tiny-budget refusal, honest partial results and complete reads. Full local CI
+and exact-commit source binding are recorded with each PR after real report
+refresh; earlier failures remain separate evidence, not passing results.
+
+**Prevention/limits:** Review every route to a resource, not only the newest
+typed pager. Preserve separate test/qualification evidence for each stacked head.
+Use CI-skip messages for both pushes and merge commits under local-only CI.
+No owner catalog, speech work or watchdog changes; no publication or external
+platform/browser/signing qualification is inferred.
+
+## 2026-10-17: Catalog Pagination Must Survive The Runtime Transport
+
+**Symptom/confirmed cause:** PR #94's direct catalog paging test reconstructed
+the source, but the real dispatcher passes results through a 20,000-character
+message cap. A permitted 32,000-character request returned a 24,377-character
+JSON result on a synthetic fixture; the consumer truncated it. JSON escapes can
+also overflow the cap at the default 16,000-character request. The old
+`next_offset` described undelivered content, so direct-function correctness did
+not establish lossless agent pagination.
+
+**Repair:** Retain the existing global result cap and requested character bound.
+Size the entire serialized page, including metadata and escapes; shorten content
+with a bounded binary search when needed. Derive `next_offset` from the actual
+included characters. Fail explicitly if metadata leaves no room for progress.
+Use the runtime's shared cap at invocation time without a top-level import
+cycle. No arbitrary file access, permission widening or owner-data publication.
+
+**Actual verification:** A new real-dispatcher regression first failed on the
+old installed package (one passed/one failed before stopping). After reinstall,
+all 47 catalog cases pass, including six full reconstructions across default/
+maximum page requests with plain, Unicode and JSON-escape-heavy text. Additional
+tests cover metadata budgeting, a no-progress refusal and at/beyond-EOF reads.
+The assertions consume the model-facing message, require unchanged transport
+content and verify every offset and full-file digest. Final local CI results and
+the review/merge state are recorded separately after source-bound qualification.
+
+**Prevention/limits:** Test typed tool results after the real consumer's
+transformation, not only before it. Keep privacy, exact operation and serialized
+transport checks distinct. Preserve the private catalog and separate watchdog;
+local tests do not qualify external platforms, native signing or publication.
+
+**Local-CI admission:** The owner explicitly approved replacing the ten
+GitHub-Actions-bound merge checks with one verified local-CI gate. Retain active
+PR/thread-resolution, up-to-date-branch, deletion and force-push protections,
+with no bypass actors. Bind the local status to the exact reviewed commit and
+link the actual commands/results; never impersonate hosted platform checks or
+post success before qualification. Keep the initial 300-second M8 timeout
+distinct from its completed same-source retry: nine local metrics pass, five
+external metrics remain blocked and none fail. Machine load was observed, but
+the exact timeout cause remains unknown. Gate approval is not applied policy,
+a merge receipt, independent attestation or permission to publish.
+
+## 2026-10-17: Catalog Discoverability Needs Real Protected-Mode Readback
+
+**Symptom/cause:** Original queries `decision intervention budget` and
+`context reduction specialization` ranked P5/H20 at 21/13 in the complete
+catalog. BM25 keeps hyphenated compounds, while curated field matching already
+splits them; natural subsection labels alone improved only P5 to eighth. Title
+and heading weighting left the relevant subcontracts undiscoverable. Separately,
+Continuum correctly excluded the config root, so an isolated unprotected index
+did not prove the real tools could search the owner catalog after refresh.
+
+**Repair:** Keep IDs/statuses and main title phrases; make both titles describe
+their actual subcontracts and use natural subsection labels. For explicit
+reference-tool search/read only, reconstruct the fixed owner catalog with the
+existing descriptor-bound reader, current source hash and shared catalog parser.
+Read by exact typed pattern ID, never a cached path. The public index is still
+refreshed normally; owner records are a disclosed query-time projection, not
+persisted bodies, automatic context, arbitrary root access or mutable memory.
+Unsafe existing files fail closed; missing files do not restore stale records.
+Search/read policies classify reference output as sensitive and suppress raw
+tool logs, matching the fixed catalog tools rather than logging private bodies.
+No new embedding calls, thresholds, providers or public personal-data payloads.
+
+**Verification:** Red tests reproduce missing protected-mode search/read and
+refresh counts on the prior installed package. New synthetic cases cover the
+original query strings, source replacement/removal, path-forged index rows,
+unsafe links/encoding/duplicate IDs, kind/harness filters, nonpersistence and
+exclusion from automatic context. Final exact-source tests, installed readback
+and refresh receipt are reported separately after qualification; source edits
+or a model judgment alone are not live repair proof.
+
+**Prevention/limits:** Exercise the actual installed protected-mode tools with
+the original queries, not just a constructed index. Keep historical failure
+measurements, semantic relevance and exact operation/permission tests distinct.
+The two catalog methods remain proposed; better retrieval is not evidence their
+algorithms are implemented or effective. Preserve the separate CI watchdog.
+
+## 2026-10-16: Owner Catalog Access Must Have An Admitted Native Path
+
+**Symptom/cause:** The prompt advertised reading/updating `<config>/ALGO.md`,
+but ordinary filesystem tools correctly denied both workspace escape and the
+protected config root. YOLO did not and should not waive protected-root rules.
+The prior live test covered synthetic workspace files, not this owner-catalog
+workflow. A catalog move alone would leave normal workspace scope unresolved.
+
+**Repair:** Keep the owner file in place. Register `algorithm_catalog_read`
+and `algorithm_catalog_edit` as fixed-resource native tools without arbitrary
+path arguments. Reuse bounded no-follow/single-link state reads, private atomic
+writes and cross-platform locking. Reads page by Unicode character offset and
+return the complete byte hash. Edits require action-time approval, the expected
+hash and exactly one old-text match; reject stale/ambiguous/oversized edits and
+read back the published bytes. Discovery, prompt guidance and harness tool class
+agree. No general filesystem exception, new memory backend, migration, catalog
+publication or custom kernel inclusion. Preserve reference-only evidence states.
+
+**Verification:** New runtime tests exercise execute/YOLO, action-time versus
+session approval, protected siblings, paging, symlink/hardlink/special-file
+rejection, a descriptor-open swap, concurrent stale edits, input/size limits and
+post-write mismatch reporting. Initial targeted runs passed 267 surrounding
+cases (one platform skip) and 87 context/tool cases (three existing JUnit
+warnings). The first full run passed 7,566/skipped 45 and correctly failed two
+stale source-bound reports plus a prompt wording assertion. Restore the truthful
+read/update wording and regenerate reports through their real producers after
+source freeze; never paste new digests into old measurements. Local mypy and
+Ruff passed. Final qualification and installed-runtime results are recorded in
+the scoped delivery receipt, not inferred from these intermediate checks.
+An additional red/green regression caught overlapping anchors (`aa` in `aaa`):
+`str.count` counts only nonoverlapping matches. Check for a second match starting
+one character after the first; reject ambiguity before publication. Stop the
+old-source test run and regenerate the exact-source reports after this repair.
+
+**Prevention/limits:** Test advertised resource operations through the real
+dispatcher, not only file existence or prompt text. Exact hash/lock protection
+serializes cooperating writers, not arbitrary hostile same-UID programs. Failed
+or uncertain writes require reconciliation before retry. Missing owner catalogs
+are explicit; the empty public starter is never silently used as personal data.
+The existing shell/browser/memory restrictions and routing thresholds remain.
+
 ## 2026-10-16: Task-Specific Prompt Guidance And Content-Free Diagnostics
 
 **Symptom/cause:** A conversational question received unrelated PDF, xAI and

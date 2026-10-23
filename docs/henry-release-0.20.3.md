@@ -12,7 +12,7 @@ updater. Existing immutable tags, normal launchers and owner state stay unchange
   retired embedding/reference backends do not become memory fallbacks.
 - Backend-independent protected-root enforcement, credential redaction, bounded
   OAuth callback deadlines, connector-value redaction and gateway authentication.
-- Go 1.26.9 pins and qualified website dependency repairs with real caller tests.
+- Go 1.26.10 pins and qualified website dependency repairs with real caller tests.
 - Jev semantic regressions and shared prompt/tool guidance: type-valid model
   advice is not correctness or machine verification. Shell approvals and routing
   thresholds are unchanged; no improved provider weights/calibration is claimed.

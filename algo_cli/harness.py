@@ -1748,7 +1748,10 @@ def _source_watermark_ns(index: dict[str, Any] | None = None) -> int:
     return watermark
 
 
-def _merge_pattern_records(index: dict[str, Any], *, previous: dict[str, Any] | None = None) -> dict[str, Any]:
+def _merge_pattern_records(
+    index: dict[str, Any], *, previous: dict[str, Any] | None = None,
+    catalog_text: str | None = None,
+) -> dict[str, Any]:
     records = [row for row in index.get("records", []) if not row.get("pattern_id")]
     parents = [row for row in records if row.get("id") == "algo-cli:algorithm:ALGO.md"]
     prior = {row["id"]: row for row in (previous or {}).get("records", []) if row.get("pattern_id") and row.get("id")}
@@ -1756,8 +1759,11 @@ def _merge_pattern_records(index: dict[str, Any], *, previous: dict[str, Any] | 
     errors: list[str] = []
     for parent in parents:
         try:
-            with Path(parent["path"]).open(encoding="utf-8", newline="") as handle:
-                text = handle.read(pattern_catalog.MAX_CATALOG_BYTES + 1)
+            if catalog_text is None:
+                with Path(parent["path"]).open(encoding="utf-8", newline="") as handle:
+                    text = handle.read(pattern_catalog.MAX_CATALOG_BYTES + 1)
+            else:
+                text = catalog_text
             patterns = pattern_catalog.parse_patterns(text)
         except (OSError, UnicodeError, ValueError) as exc:
             errors.append(type(exc).__name__)

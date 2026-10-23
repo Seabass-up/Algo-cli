@@ -75,7 +75,13 @@ def test_local_canonical_contract_matches_registry_when_available() -> None:
         pytest.skip("canonical Continuum checkout is not installed")
     upstream = json.loads(contract.read_text(encoding="utf-8"))
     by_name = {item["name"]: item["inputSchema"] for item in upstream}
-    assert set(by_name) == set(CONTINUUM_TOOL_NAMES)
+    # The native service added authenticated pagination operations for host-side
+    # context acquisition. This pinned model adapter still exposes 16 tools;
+    # verify every exposed schema, without granting the new transport operations.
+    host_only_transport = {"memory_context_page", "memory_validate_context_pages"}
+    assert set(CONTINUUM_TOOL_NAMES) <= set(by_name)
+    assert set(by_name) - set(CONTINUUM_TOOL_NAMES) <= host_only_transport
+    assert not host_only_transport & set(tools.TOOL_MAP)
     for name, required in CANONICAL_REQUIRED.items():
         assert set(by_name[name]["required"]) == required
         assert by_name[name]["properties"]["scope"]["enum"] == ["shared", "private"]

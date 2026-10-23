@@ -35,6 +35,15 @@ starter. No user catalog or custom kernel is copied into the public starter.
 Automatic lexical reference retrieval reports `harness-lexical-index`, derived
 from its query snapshot's backend metadata, rather than a hybrid-index label.
 
+The catalog has a fixed-resource native interface: `algorithm_catalog_read`
+returns bounded character-offset pages and a full-file SHA-256;
+`algorithm_catalog_edit` replaces one unique anchor only after normal mutating
+authorization and an unchanged hash. Writes are locked, atomic and read back.
+These tools have no arbitrary path argument, use the no-follow state reader and
+never substitute the public template. They do not relax workspace or protected
+root restrictions for filesystem tools, shell, credentials or memory. Catalog
+edits do not refresh the reference index or establish an algorithm's correctness.
+
 See [Continuum Memory](continuum-memory.md) for explicit project selection and
 the difference between narrowed, global and unknown-project context. This repair
 does not demote global required records or rewrite remembered historical counts.

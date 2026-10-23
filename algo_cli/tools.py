@@ -64,6 +64,7 @@ from .continuum_tools import (
 from .marcus_authority import CuratedToolRegistry
 from .jev_kernel import jev_kernel_status, jev_question_contract
 from .decision_layer import decision_decide, decision_status
+from .algorithm_catalog import algorithm_catalog_edit, algorithm_catalog_read
 from ollama import Client
 
 from .chat_protocol import get_attr
@@ -3220,6 +3221,8 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
             "harness_search",
             "harness_read",
             "harness_refresh",
+            "algorithm_catalog_read",
+            "algorithm_catalog_edit",
         ],
         "models": ["model_show", "model_pull", "model_copy", "model_create", "model_delete"],
         "decision": ["decision_status", "decision_decide"],
@@ -3761,8 +3764,22 @@ def session_command(command: str, cfg: Any = None) -> str:
 
 
 def harness_refresh(cfg: Config | None = None) -> str:
+    from .continuum_memory import selected
+
+    protected = cfg is not None and selected(cfg)
+    if protected and not harness._PROTECTED_MEMORY_AUTHORITY:
+        return "Error: harness source policy is unavailable while Continuum Memory is authoritative."
     index = harness.load_index(refresh=True)
-    return f"Refreshed lexical reference index. Records: {index.get('record_count', 0)}. Memory authority: native Continuum. No embedding calls."
+    owner = ""
+    if protected:
+        from .algorithm_catalog import _reference_index
+
+        try:
+            projection = _reference_index(index)
+        except (OSError, UnicodeError, ValueError):
+            return "Error: public reference index refreshed, but owner catalog validation failed; no owner projection was used."
+        owner = f" Owner catalog patterns: {projection.get('owner_catalog_patterns', 0)} (query-time projection; not persisted)."
+    return f"Refreshed lexical reference index. Records: {index.get('record_count', 0)}.{owner} Memory authority: native Continuum. No embedding calls."
 
 
 def _harness_stats_for_config(cfg: Config | None) -> dict[str, Any]:
@@ -4452,6 +4469,10 @@ def harness_search(
     filter_line = "Active filters: " + (", ".join(filters) or "none")
     try:
         index = harness.retrieval_index(protected_memory=protected_memory)
+        if protected_memory and kind in {None, "algorithm"} and (not harness_names or "algo-cli" in harness_names):
+            from .algorithm_catalog import _reference_index
+
+            index = _reference_index(index)
     except (OSError, ValueError):
         return "Error: harness source policy is unavailable while Continuum Memory is authoritative."
     records = index.get("records", [])
@@ -4516,6 +4537,12 @@ def harness_read(
         protected = selected(cfg)
         if protected and not harness._PROTECTED_MEMORY_AUTHORITY:
             return "Error: harness source policy is unavailable while Continuum Memory is authoritative."
+        if protected and record_id.startswith("algo-cli:algorithm:ALGO.md#"):
+            from .algorithm_catalog import _read_reference_pattern
+
+            owner_result = _read_reference_pattern(record_id, _bounded_int(max_chars, 20_000, 1, 50_000))
+            if owner_result is not None:
+                return owner_result
         record = harness.get_record(record_id)
         if protected and isinstance(record, dict) and not harness._protected_memory_record_allowed(record):
             return (
@@ -5346,6 +5373,8 @@ ALL_TOOLS = [
     _hide_cfg_param(harness_competitive_rating),
     _hide_cfg_param(harness_search),
     _hide_cfg_param(harness_read),
+    algorithm_catalog_read,
+    algorithm_catalog_edit,
     model_pull,
     model_delete,
     model_create,

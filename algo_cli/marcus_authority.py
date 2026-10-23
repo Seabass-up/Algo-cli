@@ -412,6 +412,10 @@ CURATED_TOOL_POLICIES: dict[str, CuratedActionPolicy] = {
     # Readiness is a local companion check that never contacts the provider.
     "jev_kernel_status": _read(target=TargetScope.RUNTIME, suppress_logs=True),
     "decision_status": _read(target=TargetScope.RUNTIME, suppress_logs=True),
+    "algorithm_catalog_read": _read(data=(DataClass.LOCAL_CONTENT, DataClass.SENSITIVE),
+                                    target=TargetScope.RUNTIME, suppress_logs=True),
+    "algorithm_catalog_edit": _local(data=(DataClass.LOCAL_CONTENT, DataClass.SENSITIVE),
+                                     target=TargetScope.RUNTIME, suppress_logs=True),
     "decision_decide": CuratedActionPolicy(
         EffectClass.OBSERVE, "medium", ConfirmationMode.SESSION_PREAPPROVAL,
         (Capability.READ, Capability.MODEL, Capability.NETWORK, Capability.DATA_EGRESS),
@@ -430,7 +434,8 @@ CURATED_TOOL_POLICIES: dict[str, CuratedActionPolicy] = {
     "git_diff": _read(target=TargetScope.WORKSPACE),
     "git_status": _read(target=TargetScope.WORKSPACE),
     "harness_competitive_rating": _read(target=TargetScope.RUNTIME),
-    "harness_read": _read(target=TargetScope.RUNTIME),
+    "harness_read": _read(data=(DataClass.LOCAL_CONTENT, DataClass.SENSITIVE),
+                          target=TargetScope.RUNTIME, suppress_logs=True),
     "harness_refresh": _local(
         data=(DataClass.LOCAL_CONTENT,),
         target=TargetScope.RUNTIME,
@@ -448,7 +453,8 @@ CURATED_TOOL_POLICIES: dict[str, CuratedActionPolicy] = {
         idempotency=IdempotencyClass.NON_IDEMPOTENT,
         suppress_logs=True,
     ),
-    "harness_search": _read(target=TargetScope.RUNTIME),
+    "harness_search": _read(data=(DataClass.LOCAL_CONTENT, DataClass.SENSITIVE),
+                            target=TargetScope.RUNTIME, suppress_logs=True),
     "harness_stats": _read(target=TargetScope.RUNTIME),
     "list_directory": _read(target=TargetScope.WORKSPACE),
     "model_copy": _local(

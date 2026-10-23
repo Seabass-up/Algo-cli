@@ -47,9 +47,10 @@ def catalog_guidance(config_dir: Path | None = None) -> str:
     from .config import CONFIG_DIR
 
     return (
-        f"Read and update the live algorithm/pattern catalog at {(config_dir or CONFIG_DIR) / 'ALGO.md'}. "
-        "If absent, it is an unpopulated user catalog. docs/ALGO.md is only the empty "
-        "public template, not the live catalog. Never publish the user's catalog or custom kernels."
+        f"Read/update catalog: {(config_dir or CONFIG_DIR) / 'ALGO.md'}. "
+        "Use algorithm_catalog_read/algorithm_catalog_edit (action_search), not filesystem tools. "
+        "Absent means unpopulated; docs/ALGO.md is only the empty public template. "
+        "Never publish the user's catalog or custom kernels."
     )
 
 
