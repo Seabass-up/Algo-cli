@@ -650,6 +650,12 @@ def context_status(
     return used, display_total, remaining, runtime_cap, native_ctx
 
 
+LOSSY_SUMMARY_MARKER = (
+    "[Degraded summary: summarizer unavailable or invalid; older context is incomplete. "
+    "Re-read source evidence before relying on omitted history.]"
+)
+
+
 class FallbackSummary(str):
     """A lossy summary built locally because the summarizer model failed."""
 
@@ -709,10 +715,13 @@ def summarize_message_batch(
         )
         content = get_attr(get_attr(response, "message", {}), "content", "")
         if content:
-            try:
-                return str(json.loads(content).get("summary", content)).strip()
-            except (json.JSONDecodeError, AttributeError):
-                return str(content).strip()
+            decoded = json.loads(content)
+            summary = decoded.get("summary") if isinstance(decoded, dict) else None
+            if isinstance(summary, str) and summary.strip():
+                summary = summary.strip()
+                if LOSSY_SUMMARY_MARKER in persisted_summary and LOSSY_SUMMARY_MARKER not in summary:
+                    summary = LOSSY_SUMMARY_MARKER + "\n" + summary
+                return summary
     except Exception:
         pass
     fallback = []
@@ -722,7 +731,10 @@ def summarize_message_batch(
         role = item.get("role", "message")
         content = (item.get("content") or item.get("thinking") or "")[:240]
         fallback.append(f"{role}: {content}")
-    return FallbackSummary("\n".join(fallback).strip())
+    text = "\n".join(fallback).strip()
+    if not text.startswith(LOSSY_SUMMARY_MARKER):
+        text = LOSSY_SUMMARY_MARKER + "\n" + text
+    return FallbackSummary(text)
 
 
 def _tool_call_id(call: Any) -> str | None:
@@ -872,7 +884,7 @@ def _split_for_compaction(
 
 def _fallback_summary_notice(compacted: int) -> str:
     return (
-        f"Summarizer model unavailable; compacted {compacted} older messages into a lossy fallback "
+        f"Summarizer model unavailable or returned an invalid summary; compacted {compacted} older messages into a lossy fallback "
         "summary (the last 4 messages, truncated). Check the maintenance model."
     )
 

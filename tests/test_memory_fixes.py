@@ -378,7 +378,7 @@ def test_summarizer_failure_returns_marked_fallback_summary() -> None:
     )
 
     assert isinstance(summary, context_budget.FallbackSummary)
-    assert summary == "user: hello"
+    assert summary == context_budget.LOSSY_SUMMARY_MARKER + "\nuser: hello"
 
 
 def test_fallback_compaction_warns_user(monkeypatch) -> None:

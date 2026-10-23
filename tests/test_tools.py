@@ -1689,7 +1689,10 @@ def test_read_file_caps_model_requested_max_chars(tmp_path):
 
     out = tools.read_file(str(target), max_chars=10**9)
 
-    assert len(out) == tools.MAX_READ_CHARS
+    from algo_cli.nathan_runtime import TOOL_RESULT_CONTENT_LIMIT
+
+    assert len(out) <= min(tools.MAX_READ_CHARS, TOOL_RESULT_CONTENT_LIMIT)
+    assert "[truncated; read_file(" in out
 
 
 def test_unpack_embed_response_dict_and_object():

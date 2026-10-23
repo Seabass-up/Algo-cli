@@ -1,9 +1,21 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
 const yaml = createRequire(require.resolve("@eslint/eslintrc"))("js-yaml");
+
+test("non-Linux Rolldown bindings do not inherit Linux libc restrictions", () => {
+  const lock = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
+  for (const [name, entry] of Object.entries(lock.packages)) {
+    if (name.startsWith("node_modules/@rolldown/binding-") && !entry.os?.includes("linux")) {
+      assert.equal(entry.libc, undefined, `${name} must not be filtered by Linux libc`);
+    }
+  }
+  assert.deepEqual(lock.packages["node_modules/@rolldown/binding-linux-x64-gnu"].libc, ["glibc"]);
+  assert.deepEqual(lock.packages["node_modules/@rolldown/binding-linux-x64-musl"].libc, ["musl"]);
+});
 
 test("YAML empty merge sources consume the configured work budget", () => {
   const emptySources = Array.from({ length: 20 }, () => "{}").join(",");

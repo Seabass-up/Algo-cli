@@ -108,6 +108,8 @@ _WEB_FETCH_SLOTS = threading.BoundedSemaphore(WEB_FETCH_MAX_INFLIGHT)
 SESSION_COMMAND_OUTPUT_LIMIT = MAX_TOOL_RESULT
 SEARCH_FALLBACK_SKIP_DIRS = {
     ".git",
+    ".claude",
+    ".algo-cli-worktrees",
     "node_modules",
     ".venv",
     "venv",
@@ -603,15 +605,17 @@ def read_file(
     start_line: int = 1,
     offset: int | None = None,
     cfg: Any = None,
+    start_char: int = 0,
 ) -> str:
     """Read a text file.
 
     Args:
         path: File path to read.
         cwd: Optional working directory for relative paths.
-        max_chars: Maximum characters to return.
+        max_chars: Maximum result characters, including continuation, capped by transport.
         start_line: One-based line number to begin reading from.
         offset: Compatibility alias for start_line.
+        start_char: Zero-based character offset after start_line; follow partial-read cursors.
     """
     from .continuum_memory import selected
     from .irene_memory_path_policy import ProtectedMemoryPathError, require_allowed_path
@@ -638,12 +642,17 @@ def read_file(
             if stat.S_ISDIR(information.st_mode):
                 return f"Error: {p} is a directory. Use list_directory."
             return f"Error: {p} is not a regular file."
-        max_chars = _bounded_int(max_chars, MAX_READ_CHARS, 1, MAX_READ_CHARS)
+        from .nathan_runtime import TOOL_RESULT_CONTENT_LIMIT
+
+        max_chars = min(_bounded_int(max_chars, MAX_READ_CHARS, 1, MAX_READ_CHARS), TOOL_RESULT_CONTENT_LIMIT)
+        if type(start_char) is not int or start_char < 0:
+            return "Error: read_file start_char must be a non-negative integer."
         requested_line = offset if offset is not None else start_line
         line_number = max(1, int(requested_line))
         remaining_newlines = line_number - 1
         chunks: list[str] = []
-        remaining_chars = max_chars
+        remaining_chars = max_chars + 1
+        remaining_skip = start_char
         with ExitStack() as stack:
             handle: io.TextIOBase
             if protected:
@@ -670,11 +679,31 @@ def read_file(
                     if remaining_newlines:
                         continue
                     chunk = chunk[cursor:]
+                if remaining_skip:
+                    skipped = min(remaining_skip, len(chunk))
+                    remaining_skip -= skipped
+                    chunk = chunk[skipped:]
                 if chunk:
                     fragment = chunk[:remaining_chars]
                     chunks.append(fragment)
                     remaining_chars -= len(fragment)
-        return "".join(chunks)
+        text = "".join(chunks)
+        if len(text) <= max_chars:
+            return text
+
+        def continuation(included: int) -> str:
+            return f"\n...[truncated; read_file(start_line={line_number}, start_char={start_char + included})]"
+
+        if len(continuation(1)) + 1 > max_chars:
+            return "Error: read_file max_chars is too small for continuation; use at least 128."
+        low, high = 1, max_chars
+        while low < high:
+            middle = (low + high + 1) // 2
+            if middle + len(continuation(middle)) <= max_chars:
+                low = middle
+            else:
+                high = middle - 1
+        return text[:low] + continuation(low)
     except Exception as exc:
         return f"Error reading {p}: {exc}"
 
@@ -1521,7 +1550,7 @@ def search_files(
             cmd = [
                 rg, "--no-config", "--line-number", "--with-filename", "--no-heading",
                 "--color=never", "--line-buffered", "--hidden", "--glob",
-                "!{.git,node_modules,.venv,venv,dist,build,__pycache__}",
+                "!{" + ",".join(sorted(SEARCH_FALLBACK_SKIP_DIRS)) + "}",
             ]
             if glob:
                 cmd.extend(["--glob", glob])
