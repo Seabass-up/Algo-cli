@@ -50,7 +50,7 @@ dev = [
     "mypy>=1.0",
 ]
 release = [
-    "build==1.5.0",
+    "build==1.6.1",
     "hatchling==1.31.0",
     "twine==6.2.0",
 ]
