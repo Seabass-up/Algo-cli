@@ -1,5 +1,55 @@
 # Lessons Learned
 
+## 2026-11-07: Isolate Runtime Repairs From Local Speech Work
+
+**Scope:** Prepare the already-tested completion, inference-recovery, evidence-
+progress and explicit startup-mode repairs for code review. The source checkout
+also contains independent speech adapters and LFM3 audio work. A separate worktree
+keeps those changes, the active installed runtime, private owner catalog and the
+watchdog worktree untouched. Do not stage the whole original dirty checkout.
+
+**Confirmed repairs:** Empty/reasoning-only replies need bounded inference-only
+recovery before delivered output, never action replay. Automatic structural
+verification needs a fresh final answer, not discarded or stale progress text.
+Interrupted text needs an incomplete marker. A liveness guard must count new
+evidence and effects, warn for an independent permitted route, and hand off
+persistent repetition without claiming completion. An interactive startup-mode
+preference cannot become an inherited model/one-shot/delegated authority grant.
+
+**Dependency boundary:** Preserve Python 3.10 runtime/dev support while requiring
+Python 3.11 for the opt-in repository audit group. Retain the patched filelock
+and msgpack lock entries and exercise the actual cache consumer. Runtime exports
+must not gain audit-only dependencies. No advisory ignores or weakened flags.
+
+**Verification contract:** Test this extracted branch rather than copying the
+installed runtime's historical receipts. Register new source/test dependencies
+in every enclosing qualification manifest, run the real producers, append only
+fresh content-free evidence, and keep external browser/signing gates blocked.
+Use the existing verified local-CI status for the exact pushed commit; no hosted
+Actions, tags, release publication, launcher replacement or speech generation.
+Fresh producers passed 17 correctness probes and 31 workloads; M8 reports nine
+local passes, five external blockers and zero failures. M9 accepts their fresh
+ledger bindings while remaining blocked. The initial overlapping full-suite run
+had 7,694 passes, 45 skips and two stale-artifact failures; retain that failed
+receipt separately rather than treating it as a successful final run.
+
+**Executed checks:** Ruff, the declared mypy contract plus the new stream module
+(80 files), compile, public source/history/artifact scans, wheel/sdist metadata
+and isolated wheel installation pass. Locked and installed modern dependency
+audits report no known vulnerabilities. Python 3.10 has 49 focused passes and
+three audit-only skips; auditing all 47 installed target distributions reports
+zero vulnerabilities, with no missing or skipped distributions. Content-free
+before/after inventories match the original working trees, launcher, owner
+catalog, speech sources and both LFM3 model manifests. These preservation checks
+are not a new speech-generation or live-model qualification.
+
+**Final settled-tree gate:** `ALGO_TEST_REQUIRE_RIPGREP=1 .venv/bin/pytest tests
+-o addopts='' -q --cov --cov-branch --cov-fail-under=57` passed 7,696 tests with
+45 skips and 71.32% branch-aware coverage. Three existing JUnit property-format
+warnings remain non-failing. New qualification artifacts retain their current
+source digests and external blockers. This result supersedes neither the failed
+pre-refresh receipt nor the separate installed speech-enabled runtime identity.
+
 ## 2026-10-23: Preserve Meaning Across Runtime Truncation And Compaction
 
 **Symptom/cause:** Text reads could exceed the actual tool transport and lose

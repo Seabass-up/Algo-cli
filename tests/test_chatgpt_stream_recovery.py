@@ -738,7 +738,7 @@ def test_actual_agent_continues_partial_text_without_replaying_tool(posts, monke
     main.agent_loop(chatgpt_client.ChatGptClient(), cfg, "Read README.md and summarize it")
     assert dispatched == ["read_file"] and len(requests) == 3
     assert "tools" not in requests[-1]
-    assert cfg.messages[-1]["content"] == "Read result: " + ("" if failed else "Observed fixture.")
+    assert cfg.messages[-1]["content"] == "Read result: " + (main.STREAM_INTERRUPTED_MARKER if failed else "Observed fixture.")
     assert captures == [not failed]
     assert bool(errors) == failed
     assert any("Continuing interrupted answer" in info for info in infos)

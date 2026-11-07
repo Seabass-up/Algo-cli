@@ -565,6 +565,8 @@ def test_m8_execution_dependencies_are_source_bound_and_exercised() -> None:
     assert {
         "algo_cli/ada_control_journal.py",
         "algo_cli/chatgpt_client.py",
+        "algo_cli/model_stream.py",
+        "algo_cli/tool_progress.py",
         "algo_cli/evals/tool_context_efficiency.py",
         "algo_cli/evelyn_context_supersession.py",
         "algo_cli/model_aliases.py",
@@ -573,6 +575,11 @@ def test_m8_execution_dependencies_are_source_bound_and_exercised() -> None:
     assert {
         "tests/test_ada_control_journal.py",
         "tests/test_chatgpt_client.py",
+        "tests/test_model_stream.py",
+        "tests/test_tool_progress.py",
+        "tests/test_tool_progress_runtime.py",
+        "tests/test_startup_mode_default.py",
+        "tests/test_runtime_stream_recovery.py",
         "tests/test_evelyn_context_supersession.py",
         "tests/test_model_info.py",
         "tests/test_tool_context_efficiency.py",

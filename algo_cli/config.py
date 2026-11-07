@@ -2602,6 +2602,7 @@ class Config:
     reasoning_auto_verify: bool = False  # Auto-verify implement blocks with neuro-symbolic
     index_compute_lab_auto_inject: bool = False
     session_mode: str = "explore"  # execute | explore | publish | yolo (transient)
+    default_session_mode: str = ""  # explicit user preference; activated only at interactive startup
     keep_alive: str = "30m"
     cwd: str = field(default_factory=lambda: str(Path.cwd()))
     session_summary: str = ""

@@ -112,7 +112,7 @@ def test_allowed_alternative_resets_denied_round_budget(monkeypatch, tmp_path):
 def test_empty_final_answer_is_not_a_completed_turn(monkeypatch, tmp_path, message):
     code, events, client, invoked, captures = run_script(monkeypatch, tmp_path, lambda _turn: message)
     assert code == 2
-    assert len(client.calls) == 1
+    assert len(client.calls) == 3
     assert invoked == []
     assert events[-1]["status"] == "partial"
     assert captures[-1]["completed"] is False

@@ -3749,6 +3749,8 @@ def session_command(command: str, cfg: Any = None) -> str:
     command, argument = normalize_session_command(normalized)
     if (command, argument) == ("/mode", "yolo"):
         return "Error: only the user may enter YOLO with /mode yolo in the interactive CLI."
+    if command == "/mode" and argument.startswith("default"):
+        return "Error: only direct user input may change the startup mode default."
     if command in {"/exit", "/quit"}:
         return "Error: only the user may exit the interactive CLI."
     from .oliver_slash_dispatch import handle_command, unknown_command_message

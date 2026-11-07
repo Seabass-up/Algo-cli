@@ -25,6 +25,11 @@ python scripts/oliver_smoke_wheel_install.py dist  # after python -m build
 
 Run `cargo test --manifest-path harness-indexer/Cargo.toml --locked` or `go test ./...` from `harness-gateway/` when changing a native helper.
 
+The CLI and regular development tests retain Python 3.10 support. Locked security
+audits use the Python 3.11+ repository dependency group, not a runtime extra:
+see [Python dependency audits](docs/python-dependency-audits.md) for modern and
+cross-interpreter audit commands.
+
 ## Public-data rule
 
 Never commit user profiles, memories, credentials, real customer or business data, machine-specific absolute paths, generated indexes, local agent stores, or copied private documents. Use neutral fixtures such as `example`, `PROJECT-001`, and `example.test`.

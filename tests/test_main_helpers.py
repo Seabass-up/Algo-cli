@@ -835,7 +835,7 @@ def test_agent_loop_retains_partial_output_when_stream_interrupts(monkeypatch):
 
     main.agent_loop(InterruptedClient(), cfg, "review the wiki")  # type: ignore[arg-type]
 
-    assert cfg.messages[-1] == {"role": "assistant", "content": "Partial answer."}
+    assert cfg.messages[-1] == {"role": "assistant", "content": "Partial answer." + main.STREAM_INTERRUPTED_MARKER}
     assert any("Response stream interrupted after partial output" in error for error in errors)
     assert memory_calls == [
         {
@@ -1644,7 +1644,9 @@ def test_agent_loop_reserves_tool_free_finalization_after_iteration_cap(monkeypa
                                         "id": f"read-{len(self.calls)}",
                                         "function": {
                                             "name": "read_file",
-                                            "arguments": {"path": "README.md"},
+                                            # Exercise a productive run reaching its cap;
+                                            # unchanged rereads have a separate stall boundary.
+                                            "arguments": {"path": "README.md", "start_char": len(self.calls) * 100},
                                         },
                                     }
                                 ]

@@ -162,7 +162,7 @@ lint and clean install on Node 22.23.3/npm 10.9.9.
 From this independent checkout:
 
 ```sh
-uv sync --frozen --no-editable --extra dev --extra supply-chain --reinstall-package algo-cli-runtime --link-mode copy --python 3.11
+uv sync --frozen --no-editable --extra dev --group supply-chain --reinstall-package algo-cli-runtime --link-mode copy --python 3.11
 .venv/bin/python -I scripts/oliver_installed_source_parity.py
 .venv/bin/python scripts/check_public_release.py
 .venv/bin/python scripts/check_public_history.py --allow-contributor-identities

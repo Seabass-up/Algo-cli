@@ -34,6 +34,8 @@ from . import task_router
 from . import samuel_policy as tool_policy
 from . import worktree_runtime
 from . import model_info as _model_info_module
+from . import model_stream
+from . import tool_progress
 from . import nathan_provider_protocol
 from . import chatgpt_client
 from . import context_budget
@@ -475,6 +477,7 @@ def run_agent_block(
     completion_nudged = False
     completion_recovery_rounds = 0
     loop_state = AgentLoopState()
+    progress_guard = tool_progress.ToolProgressGuard(str(cfg.cwd))
 
     def record_protocol_dispatch(
         name: str,
@@ -493,11 +496,12 @@ def run_agent_block(
             mutating=mutating,
         )
 
-    def finish_with_partial_output() -> None:
+    def finish_with_partial_output(*, progress_boundary: tool_progress.ProgressBoundary | None = None) -> None:
         messages.append(
             {
                 "role": "user",
                 "content": (
+                    progress_boundary.prompt() if progress_boundary is not None else
                     "The block has reached its tool-iteration budget. Do not call any more tools. "
                     "Produce a partial but useful ## Block Output summary from evidence gathered so far. "
                     "State any incomplete checks explicitly."
@@ -506,6 +510,7 @@ def run_agent_block(
         )
         partial_text = ""
         partial_tool_calls: list[Any] = []
+        stream = None
         wrap_round = loop_state.round_number + 1
         loop_state.begin_model_round(wrap_round)
         try:
@@ -519,6 +524,7 @@ def run_agent_block(
                 options=_model_chat_options(block_model, cfg),
             )
             for chunk in stream:
+                _raise_if_team_cancelled(cfg)
                 record_chat_metrics(cfg, chunk)
                 message = get_attr(chunk, "message", {})
                 thinking = get_attr(message, "thinking", "")
@@ -551,6 +557,9 @@ def run_agent_block(
             )
             logger.debug("Agent block partial wrap-up failed for %s: %s", block.role, exc)
         finally:
+            close_stream = getattr(stream, "close", None)
+            if callable(close_stream):
+                close_stream()
             finish_thinking_block()
         if partial_text.strip():
             block.output = partial_text.strip()
@@ -559,8 +568,9 @@ def run_agent_block(
                 "## Block Output\n\nPartial review: tool budget reached before a written summary was produced."
             )
         block.status = "partial"
-        block.status_code = "max_iterations"
+        block.status_code = "tool_progress_stalled" if progress_boundary is not None else "max_iterations"
         block.status_reason = (
+            progress_boundary.reason if progress_boundary is not None else
             f"Iteration budget exhausted after {iteration_limit} cycles; showing a tool-free partial summary."
         )
 
@@ -692,21 +702,33 @@ def run_agent_block(
             thinking_text = ""
             content_text = ""
             tool_calls: list[Any] = []
+            stream = None
             try:
                 chat_options = _model_chat_options(block_model, cfg)
                 if run_contract is None and routes_to_chatgpt(cfg, block_model):
                     chat_options["recover_partial_answer"] = True
-                stream = block_client.chat(
-                    model=block_model,
-                    messages=request_messages,
-                    tools=provider_tools(round_tools),
-                    stream=True,
-                    think=cfg.show_thinking,
-                    keep_alive=cfg.keep_alive,
-                    options=chat_options,
+                stream = model_stream.recover_model_stream(
+                    lambda: block_client.chat(
+                        model=block_model,
+                        messages=request_messages,
+                        tools=provider_tools(round_tools),
+                        stream=True,
+                        think=cfg.show_thinking,
+                        keep_alive=cfg.keep_alive,
+                        options=chat_options,
+                    ),
+                    retries=run_contract is None and not routes_to_chatgpt(cfg, block_model),
                 )
                 for chunk in stream:
                     _raise_if_team_cancelled(cfg)
+                    retry = get_attr(chunk, "model_retry", None)
+                    if isinstance(retry, dict):
+                        finish_thinking_block()
+                        thinking_text = ""
+                        show_info(
+                            f"{block.role}: retrying inference ({retry['attempt']}/{retry['max_retries']}); "
+                            "no tool actions will be replayed."
+                        )
                     record_chat_metrics(cfg, chunk)
                     message = get_attr(chunk, "message", {})
                     thinking = get_attr(message, "thinking", "")
@@ -735,8 +757,11 @@ def run_agent_block(
                 block.status = "failed"
                 block.status_code = "model_error"
                 block.status_reason = f"{type(exc).__name__}: {exc}"
+                block.output = f"## Block Output\n\nINCOMPLETE: {block.status_reason}"
                 raise
             finally:
+                if stream is not None:
+                    stream.close()
                 finish_thinking_block()
             serialized_calls = loop_state.complete_model_round(tool_calls)
 
@@ -803,7 +828,7 @@ def run_agent_block(
                     )
                     block.verification_warning = block.status_reason
                     block.output = f"## Block Output\n\nUNVERIFIED: {block.status_reason}"
-                elif block.output.strip():
+                elif content_text.strip():
                     block.status = "complete"
                 else:
                     block.status = "failed"
@@ -929,6 +954,20 @@ def run_agent_block(
                 receipt_name = normalized_batch[index][0] if index < len(normalized_batch) else "unknown"
                 status = _pipeline_outcome_status(execution, result, name=receipt_name)
                 outcome = getattr(execution, "outcome", None)
+                try:
+                    observation = resolve_action(
+                        receipt_name, normalized_batch[index][1], cwd=cfg.cwd,
+                    ).effect_class is EffectClass.OBSERVE
+                except Exception:
+                    observation = False
+                progress_guard.observe(
+                    receipt_name, normalized_batch[index][1],
+                    str(getattr(outcome, "result", result)),
+                    status=status,
+                    invoked=bool(getattr(outcome, "invoked", status == "succeeded")),
+                    observation=observation,
+                    deduplicated=bool(getattr(outcome, "deduplicated", False)),
+                )
                 block.tool_call_receipts.append(
                     {
                         "name": receipt_name,
@@ -1090,6 +1129,18 @@ def run_agent_block(
                 raise dispatch_interruption
             if block.status == "failed" or journal_result_failed:
                 break
+            progress_boundary = progress_guard.finish_batch()
+            if progress_boundary is not None:
+                if progress_boundary.stop:
+                    block.status = "partial"
+                    block.status_code = "tool_progress_stalled"
+                    block.status_reason = progress_boundary.reason
+                    block.output = "## Block Output\n\nINCOMPLETE: " + progress_boundary.reason
+                    # A signed contract cannot gain an unbudgeted summary call.
+                    if run_contract is None:
+                        finish_with_partial_output(progress_boundary=progress_boundary)
+                    break
+                messages.append({"role": "user", "content": progress_boundary.prompt(runtime_tool_names)})
         else:
             finish_with_partial_output()
     except KeyboardInterrupt:

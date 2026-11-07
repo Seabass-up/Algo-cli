@@ -58,8 +58,31 @@ Offline regression gate:
 ```
 
 After installing the repair in the actual launcher environment, run a bounded
-authenticated model smoke with required Echo protection and memory auto-capture
+authenticated model smoke with required Continuum protection and memory auto-capture
 disabled. A version/help check alone does not qualify stream recovery.
+
+## Other Provider Stream Recovery
+
+Ordinary chat and non-contractual Agent Blocks also recover empty, whitespace-only
+or reasoning-only responses from Ollama-compatible providers. They retry only the
+same inference request, at most twice with 1/2-second backoff, while retaining
+previous completed tool results. Pre-answer timeouts, connection failures, and
+Ollama HTTP 429/500/502/503/504 responses share that budget. Permanent request,
+authentication and missing-model errors do not qualify.
+
+No retry occurs after usable answer text or any tool call is delivered. Closing
+or cancelling the consumer closes the provider stream. Codex retains its own
+adapter recovery without another generic retry budget. Contractual Agent Blocks
+do not gain hidden inference requests beyond their declared budget.
+
+An interrupted partial answer is retained with an explicit incomplete marker in
+conversation history. A later empty response cannot promote earlier Agent Block
+progress text into a completed result. Automatic tracked-diff verification requests
+a fresh tool-free final answer; it does not silently finish or promote a withheld
+functional-success claim. Structural verification is not a functional test.
+
+Regressions: `tests/test_model_stream.py`, `tests/test_runtime_stream_recovery.py`,
+`tests/test_chatgpt_stream_recovery.py` and `tests/test_agent_progress_recovery.py`.
 
 ## Native SQLite Failures Are Separate
 
