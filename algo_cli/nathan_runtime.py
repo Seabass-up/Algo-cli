@@ -709,7 +709,10 @@ def _mode_tool_error(name: str, args: dict[str, Any], cfg: Config) -> str | None
     from .session_mode import active_mode
 
     if name in {"session_command", "session_slash"}:
-        if normalize_session_command(str(args.get("command") or "")) == ("/mode", "yolo"):
+        command, argument = normalize_session_command(str(args.get("command") or ""))
+        if command == "/mode" and argument.startswith("default"):
+            return "Only direct user input may change the startup mode default."
+        if (command, argument) == ("/mode", "yolo"):
             return "Only the user may enter YOLO with /mode yolo in the interactive CLI."
     if active_mode(cfg) == "yolo":
         if name in {"session_command", "session_slash"}:
@@ -1683,6 +1686,9 @@ def reflection_checkpoint(client: Client, cfg: Config, user_message: str, tool_c
         "confidence (float 0.0-1.0: how certain you are the completed work is correct), "
         "and unverified_claims (list of specific facts stated but not confirmed by tool results).\n"
         "The alignment_check must state whether completed work and next_action still match the user's objective.\n"
+        "If the current route is blocked, identify a different permitted tool or evidence source. "
+        "Repeated unchanged observations are not progress. If no available alternative advances the task, "
+        "state the missing capability and recommend an incomplete handoff.\n"
         "Keep each value short. Do not include chain-of-thought or hidden reasoning. "
         "The result will be fed back into the conversation as an internal continuation note."
     )
@@ -1728,8 +1734,8 @@ def reflection_checkpoint(client: Client, cfg: Config, user_message: str, tool_c
         unverified = parsed.get("unverified_claims", [])
         if confidence < 0.6:
             low_confidence_note = (
-                "\n⚠ Low confidence detected. Verify uncertain claims with "
-                "read_file, search_files, or harness_search before providing the final answer."
+                "\n⚠ Low confidence detected. Seek new evidence from a different permitted source. "
+                "Do not reread unchanged files; retain uncertainty if verification is unavailable."
             )
         elif unverified:
             low_confidence_note = (
@@ -1742,10 +1748,11 @@ def reflection_checkpoint(client: Client, cfg: Config, user_message: str, tool_c
         f"[Internal checkpoint after {tool_calls_seen} tool calls]\n"
         f"{content}{low_confidence_note}\n\n"
         "Use this only to align the next step with the user's goal. Do not answer this checkpoint directly. "
-        "Continue the active task with the next necessary tool call, or provide the final answer only if the task is complete."
+        "Continue through a productive permitted route, or report an incomplete blocker when alternatives cannot "
+        "advance the task. Do not repeat unchanged inspection merely to keep working."
     )
     cfg.messages.append({"role": "user", "content": note})
-    show_info(f"Checkpoint after {tool_calls_seen} tool calls: progress reviewed.")
+    show_info(f"Checkpoint after {tool_calls_seen} tool calls: advisory checkpoint recorded.")
 
 
 def execute_tool_call_for_pipeline(

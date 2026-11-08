@@ -938,7 +938,19 @@ def handle_command(
         from . import session_mode
 
         sub = arg.strip().lower() or "status"
-        if sub in session_mode.VALID_MODES:
+        if sub.startswith("default "):
+            try:
+                notes = session_mode.select_startup_default(
+                    cfg, sub.split(maxsplit=1)[1], user_initiated=user_initiated,
+                )
+            except ValueError as exc:
+                m.show_error(str(exc))
+                return True, client
+            cfg.save()
+            for note in notes:
+                m.show_info(note)
+            m.show_info(session_mode.status_line(cfg))
+        elif sub in session_mode.VALID_MODES:
             try:
                 notes = session_mode.select_mode(cfg, sub, user_initiated=user_initiated)
             except ValueError as exc:
@@ -951,7 +963,7 @@ def handle_command(
         elif sub == "status":
             m.console.print(session_mode.describe(cfg))
         else:
-            m.show_error("Usage: /mode [execute|explore|publish|yolo|status]")
+            m.show_error("Usage: /mode [execute|explore|publish|yolo|status|default MODE]")
     elif command == "/plugins":
         from .william_plugins import discover_plugins, plugin_status
 

@@ -153,6 +153,24 @@ def select_mode(cfg: Any, mode: str, *, user_initiated: bool = False) -> list[st
     return apply_mode_side_effects(cfg, mode, previous=previous)
 
 
+def select_startup_default(cfg: Any, mode: str, *, user_initiated: bool = False) -> list[str]:
+    """Save explicit user intent separately from a live, workspace-bound grant."""
+    if not user_initiated or _DELEGATED.get():
+        raise ValueError("Only direct user input may change the startup mode default.")
+    notes = select_mode(cfg, mode, user_initiated=True)
+    cfg.default_session_mode = mode
+    return [f"Startup default saved: {mode}.", *notes]
+
+
+def activate_startup_default(cfg: Any) -> list[str]:
+    """Called by the interactive entry point, never by Config.load or children."""
+    mode = getattr(cfg, "default_session_mode", "")
+    if _DELEGATED.get() or mode not in MODE_POLICIES:
+        return []
+    select_mode(cfg, mode, user_initiated=True)
+    return [f"Startup default: {mode}. Evidence-progress detection remains active."]
+
+
 @contextmanager
 def delegated_scope() -> Iterator[None]:
     """Child execution may use its declared block policy, never parent YOLO."""
@@ -219,6 +237,7 @@ def describe(cfg: Any) -> str:
     mercury_source = "Mercury" if external else "built-in"
     lines = [
         status_line(cfg),
+        f"Startup default: {getattr(cfg, 'default_session_mode', '') or 'last saved ordinary mode'}",
         "",
         f"execute — file/permit work: compact {mercury_source} gates, reflex off by default, prefer session_slash /read.",
         (
@@ -233,7 +252,7 @@ def describe(cfg: Any) -> str:
         ),
         "",
         "yolo — registered actions preapproved; unlimited tool calls and turns; scoped paths, safe mode, memory protections, and forced reviews remain.",
-        "Usage: /mode execute | /mode explore | /mode publish | /mode yolo",
+        "Usage: /mode execute | /mode explore | /mode publish | /mode yolo | /mode default MODE",
     ]
     if mode == "execute":
         lines.insert(2, "Active: compact gates, read live files before refusing.")

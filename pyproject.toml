@@ -54,14 +54,17 @@ release = [
     "hatchling==1.31.0",
     "twine==6.2.0",
 ]
-supply-chain = [
-    "pip-audit==2.10.1",
-]
 pdf = [
     "PyMuPDF>=1.24",
 ]
 quantization = [
     "turbovec>=0.7",
+]
+
+[dependency-groups]
+supply-chain = [
+    "pip-audit==2.10.1",
+    "filelock>=4.2.1,<5",
 ]
 
 [project.scripts]
@@ -78,6 +81,9 @@ addopts = "-q"
 
 [tool.uv]
 required-version = "==0.11.26"
+
+[tool.uv.dependency-groups]
+supply-chain = { requires-python = ">=3.11" }
 
 [tool.ruff]
 target-version = "py310"

@@ -53,6 +53,8 @@ from . import code_rag  # noqa: F401 - rejection-only compatibility for old call
 from . import execution_guardrails
 from . import model_info as _model_info_module
 from . import model_profile
+from . import model_stream
+from . import tool_progress
 from . import nathan_provider_protocol
 from . import julia_memory_runtime as memory_runtime
 from . import reasoning_bridge
@@ -2793,6 +2795,7 @@ def _model_round_indices(max_iterations: int | None) -> Iterator[int]:
 
 
 GENERATION_INTERRUPTED_MARKER = "\n\n[response interrupted by user]"
+STREAM_INTERRUPTED_MARKER = "\n\n[response incomplete: provider stream interrupted; no final answer accepted]"
 
 
 def generation_interrupted_message(exc: BaseException) -> str:
@@ -3142,7 +3145,11 @@ def _agent_loop_body(
     small_context_notified = False
     completion_nudged = False
     completion_recovery_rounds = 0
+    structural_finalization_pending = False
     no_progress_tool_rounds = 0
+    progress_guard = tool_progress.ToolProgressGuard(str(cfg.cwd))
+    progress_stop_reason = ""
+    setattr(cfg, "_tool_progress_stop_reason", "")
     # Progress is counted per action: an identical call blocked repeatedly stalls
     # the turn even when other calls in the same batch execute.
     blocked_action_counts: dict[str, int] = {}
@@ -3290,8 +3297,8 @@ def _agent_loop_body(
         # one tool-free response turn when the final capped iteration leaves a
         # verified state. This prevents a correct run from being reported as
         # partial solely because its verifier consumed the last work turn.
-        # YOLO leaves the work and verification-recovery ceilings unset so the
-        # model can keep calling tools until it finishes or the user interrupts.
+        # YOLO leaves work ceilings unset. Evidence-progress detection still
+        # redirects repetitive inspection and ends a persistently stalled turn.
         for _ in _model_round_indices(max_iterations):
             checkpoints.start_if_due()
             context_build_started = agent_loop_started if iterations_used == 0 else time.perf_counter()
@@ -3300,7 +3307,7 @@ def _agent_loop_body(
                 and recovery_limit is not None
                 and completion_recovery_rounds >= recovery_limit
             )
-            if recovery_finalization and (max_iterations is None or _ < max_iterations):
+            if recovery_finalization and not progress_stop_reason and (max_iterations is None or _ < max_iterations):
                 completion = execution_guardrails.completion_decision()
                 if not completion.allowed:
                     completion = execution_guardrails.auto_verify_working_tree(cfg.cwd)
@@ -3314,11 +3321,11 @@ def _agent_loop_body(
                         "no successful task completion is claimed."
                     )
                     break
-            finalization_turn = recovery_finalization or (
+            finalization_turn = bool(progress_stop_reason) or structural_finalization_pending or recovery_finalization or (
                 max_iterations is not None and _ == max_iterations
             )
             if finalization_turn:
-                if no_progress_tool_rounds:
+                if no_progress_tool_rounds and not progress_stop_reason:
                     show_error(
                         "Max tool iterations reached "
                         f"({max_iterations if max_iterations is not None else 'unlimited'}) "
@@ -3326,7 +3333,7 @@ def _agent_loop_body(
                     )
                     break
                 completion = execution_guardrails.completion_decision()
-                if not completion.allowed:
+                if not completion.allowed and not progress_stop_reason:
                     limit_hint = (
                         "Verification recovery is exhausted before a passing workspace verifier."
                         if recovery_limit is not None and max_iterations is None
@@ -3340,9 +3347,13 @@ def _agent_loop_body(
                     {
                         "role": "user",
                         "content": (
-                            "[Internal finalization turn] The "
-                            + ("verification recovery" if recovery_finalization else "configured work-iteration")
-                            + " budget is exhausted. The mutation-completion gate has no outstanding check; "
+                            tool_progress.ProgressBoundary(True, progress_stop_reason).prompt()
+                            if progress_stop_reason else
+                            "[Internal finalization turn] "
+                            + ("Automatic structural verification has finished. " if structural_finalization_pending else
+                               "The " + ("verification recovery" if recovery_finalization else "configured work-iteration")
+                               + " budget is exhausted. ")
+                            + "The mutation-completion gate has no outstanding check; "
                             "this alone does not prove the user's task is complete. Do not call more tools. "
                             "Describe the observed result, verification actually performed, and remaining blockers. "
                             "Never describe an unexecuted action as completed."
@@ -3430,7 +3441,9 @@ def _agent_loop_body(
             content_text = ""
             tool_calls: list[Any] = []
             message_signature: str | None = None
-            completion_pending_before_response = not execution_guardrails.completion_decision().allowed
+            completion_pending_before_response = (
+                not progress_stop_reason and not execution_guardrails.completion_decision().allowed
+            )
 
             # Use the model's real context window when known; cap at the
             # model-adaptive window (which already honors user overrides and the
@@ -3480,14 +3493,17 @@ def _agent_loop_body(
             loop_state.begin_model_round(_)
             stream: Any = None
             try:
-                stream = client.chat(
-                    model=cfg.model,
-                    messages=request_messages,
-                    tools=[] if finalization_turn else provider_tools(active_tools),
-                    stream=True,
-                    think=_think,
-                    keep_alive=cfg.keep_alive,
-                    options=chat_options,
+                stream = model_stream.recover_model_stream(
+                    lambda: client.chat(
+                        model=cfg.model,
+                        messages=request_messages,
+                        tools=[] if finalization_turn else provider_tools(active_tools),
+                        stream=True,
+                        think=_think,
+                        keep_alive=cfg.keep_alive,
+                        options=chat_options,
+                    ),
+                    retries=not routes_to_chatgpt(cfg),
                 )
 
                 for chunk in stream:
@@ -3495,6 +3511,15 @@ def _agent_loop_body(
                         status.stop()
                         status = None
                     response_retry = get_attr(chunk, "response_retry", None)
+                    model_retry = get_attr(chunk, "model_retry", None)
+                    if isinstance(model_retry, dict):
+                        finish_thinking_block()
+                        thinking_text = ""
+                        show_info(
+                            f"Model returned no usable answer ({model_retry['reason']}); "
+                            f"retrying inference ({model_retry['attempt']}/{model_retry['max_retries']}). "
+                            "No tool actions will be replayed."
+                        )
                     if get_attr(chunk, "response_recovery", None):
                         finish_thinking_block()
                         show_info("Continuing interrupted answer once, without tools. Completed actions will not be replayed.")
@@ -3573,6 +3598,8 @@ def _agent_loop_body(
             except Exception as exc:
                 stream_error = exc
             finally:
+                if stream is not None:
+                    stream.close()
                 if status is not None:
                     status.stop()
                 finish_thinking_block()
@@ -3648,7 +3675,7 @@ def _agent_loop_body(
                 serialized_calls = loop_state.complete_model_round(tool_calls)
             assistant: dict[str, Any] = {"role": "assistant"}
             if content_text:
-                assistant["content"] = content_text
+                assistant["content"] = content_text + (STREAM_INTERRUPTED_MARKER if stream_error is not None else "")
                 final_content = content_text
                 turn_text_received = True
             if thinking_text:
@@ -3657,23 +3684,34 @@ def _agent_loop_body(
                 assistant["tool_calls"] = serialized_calls
             if message_signature:
                 assistant["thought_signature"] = message_signature
-            cfg.messages.append(assistant)
+            if len(assistant) > 1:
+                cfg.messages.append(assistant)
 
             if stream_error is not None:
+                retained = bool(content_text.strip())
                 show_error(
-                    "Response stream interrupted after partial output: "
-                    f"{str(stream_error).rstrip('.')}. Partial response retained; retry the request to continue."
+                    ("Response stream interrupted after partial output: " if retained else "Model response failed before an answer: ")
+                    + f"{str(stream_error).rstrip('.')}. "
+                    + ("Partial response retained; " if retained else "No answer or tool call was accepted; ")
+                    + "retry the request to continue."
                 )
                 break
 
             if finalization_turn and tool_calls:
                 loop_state.cancel("finalization turn attempted a tool call")
+                assistant.pop("tool_calls", None)
+                if len(assistant) == 1 and cfg.messages and cfg.messages[-1] is assistant:
+                    cfg.messages.pop()
                 final_content = ""
                 show_error("Finalization turn attempted an additional tool call; completion withheld.")
                 break
 
             if not tool_calls:
                 loop_state.finish_without_tools()
+                if progress_stop_reason:
+                    # A useful blocker report is still an incomplete task, even
+                    # if the model writes a confident completion claim.
+                    break
                 if not content_text.strip():
                     final_content = ""
                     show_error("Model returned no final answer or valid tool call; completion withheld.")
@@ -3713,8 +3751,18 @@ def _agent_loop_body(
                         show_info("Auto-verified the last workspace mutation with git diff --check.")
                     else:
                         show_info(f"{auto_decision.reason}.")
-                    turn_completed_normally = True
-                    break
+                    structural_finalization_pending = True
+                    cfg.messages.append({
+                        "role": "user",
+                        "content": (
+                            "[Internal structural-verification result] Automatic verification passed: "
+                            f"{auto_decision.reason}. This is only structural evidence, not a functional test "
+                            "or proof the task is finished. The previous withheld completion claim was not "
+                            "accepted. Give a fresh final answer stating the actual changes, checks and "
+                            "remaining limitations. No more tools are available."
+                        ),
+                    })
+                    continue
                 final_content = ""
                 if (max_iterations is None or _ + 1 < max_iterations) and (
                     recovery_limit is None or completion_recovery_rounds < recovery_limit
@@ -3798,6 +3846,17 @@ def _agent_loop_body(
                     next_round_trigger
 
                 batch_has_execution = batch_has_execution or dispatched.outcome.invoked or dispatched.status == "worked"
+                try:
+                    observation = resolve_action(name, args, cwd=cfg.cwd).effect_class is EffectClass.OBSERVE
+                except Exception:
+                    observation = False
+                progress_guard.observe(
+                    name, args, dispatched.outcome.result,
+                    status=dispatched.outcome.status.value,
+                    invoked=dispatched.outcome.invoked,
+                    observation=observation,
+                    deduplicated=dispatched.outcome.deduplicated,
+                )
                 if dispatched.status == "denied":
                     next_round_trigger = "policy_or_approval"
                 if not dispatched.outcome.invoked and dispatched.status in {"denied", "skipped"}:
@@ -3940,6 +3999,21 @@ def _agent_loop_body(
                     "no task completion is claimed."
                 )
                 break
+            progress_boundary = progress_guard.finish_batch()
+            if progress_boundary is not None:
+                if progress_boundary.stop:
+                    progress_stop_reason = progress_boundary.reason
+                    setattr(cfg, "_tool_progress_stop_reason", progress_stop_reason)
+                    final_content = ""
+                    optional_context_blocks.clear()
+                    show_error(progress_stop_reason)
+                    # Reserve exactly the next tool-free inference round for a
+                    # partial handoff. YOLO cannot disable this liveness guard.
+                    continue
+                cfg.messages.append({
+                    "role": "user",
+                    "content": progress_boundary.prompt(tool.__name__ for tool in active_tools),
+                })
             if no_progress_tool_rounds != 1 and batch_blocked and not blocked_boundary_sent:
                 blocked_boundary_sent = True
                 cfg.messages.append(
@@ -3973,6 +4047,16 @@ def _agent_loop_body(
                     reflection_checkpoint(client, cfg, persisted_user_message, reflection_interval)
                 tool_calls_since_reflection -= reflection_interval
     finally:
+        if progress_stop_reason and not final_content.strip():
+            final_content = (
+                progress_stop_reason + " The task remains incomplete. Existing results and changes are retained. "
+                "Resolve the reported capability or approval blocker before retrying; "
+                "no new execution or successful task completion is claimed."
+            )
+            cfg.messages.append({"role": "assistant", "content": final_content})
+            start_streaming_response()
+            show_stream_text(final_content)
+            finish_streaming_response()
         checkpoints.close()
         end_tool_turn(cfg)
         try:
@@ -4133,6 +4217,7 @@ def _drive_goal(client: Client, cfg: Config, record: task_ledger.GoalRecord, *, 
         round_number = record.rounds_done + 1
         show_info(f"Goal round {round_number}/{record.max_rounds}")
         try:
+            setattr(cfg, "_tool_progress_stop_reason", "")
             agent_loop(client, cfg, prompt)
         except KeyboardInterrupt:
             record.status = task_ledger.STATUS_STOPPED
@@ -4143,6 +4228,13 @@ def _drive_goal(client: Client, cfg: Config, record: task_ledger.GoalRecord, *, 
             return
         final = _last_assistant_content(cfg)
         record.add_round(final[:500])
+        progress_stop_reason = getattr(cfg, "_tool_progress_stop_reason", "")
+        if progress_stop_reason:
+            record.status = task_ledger.STATUS_BLOCKED
+            record.reason = progress_stop_reason
+            persist_goal()
+            show_error(f"Goal blocked: {progress_stop_reason}")
+            return
         if GOAL_COMPLETE_MARKER in final:
             record.status = task_ledger.STATUS_COMPLETE
             if not persist_goal():
@@ -4838,7 +4930,12 @@ def main() -> None:
         cfg.theme = set_theme(cfg.theme)
     except ValueError:
         cfg.theme = current_theme_name()
+    from .session_mode import activate_startup_default
+
+    startup_mode_notes = activate_startup_default(cfg)
     show_banner()
+    for note in startup_mode_notes:
+        show_info(note)
     show_info("Ask naturally. Type / for commands or /status for runtime details.")
 
     # Report migration after banner/theme initialization so the message is visible.

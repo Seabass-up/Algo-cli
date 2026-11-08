@@ -1,5 +1,106 @@
 # Lessons Learned
 
+## 2026-11-07: Review Partial Handoffs At Every Exit
+
+**Confirmed issues (PR #96):** A signed Agent Block that exhausted its work
+iterations called the tool-free summary helper outside its contract tracker and
+model-round journal. The progress-stall path already withheld that call, but the
+ordinary exhaustion path did not. Separately, an ordinary exception from the
+partial stream's `close()` escaped its `finally`, replacing either the useful
+partial answer or the original `KeyboardInterrupt` and its cancelled status.
+
+**Repair:** Contracted blocks return an explicit host-generated incomplete
+outcome instead of an unbudgeted summary inference. Retain earlier progress
+under an explicit unverified label for the authorized downstream finalizer.
+Ordinary, non-contractual
+blocks retain their tool-free partial summary. Catch and debug-log ordinary
+teardown errors without swallowing cancellation or replacing the partial result.
+Authorization, mutation verification, protected memory and speech integrations
+are unchanged.
+
+**Executed regression evidence:** Four new cases in
+`tests/test_runtime_stream_recovery.py` initially produced three failures and
+one non-contractual control pass. After repair, the recovery/progress/startup
+group passes all 48 cases, including signed exhaustion, preserved ordinary
+summaries, teardown failure and cancellation. Repository Ruff and the 80-file
+runtime mypy contract pass. Refresh all enclosing producer artifacts before
+the final full suite; never reuse the earlier review head's CI status.
+
+The first M8 producer and its unchanged focused-command diagnostic failed the
+existing pipeline-finalizer fixture, which indexed a third call for the now-
+forbidden summary inference. The isolated failure was reproduced. Update that
+fixture to two authorized calls and assert preserved progress, explicit
+unverified/incomplete labeling, partial status and the downstream finalizer.
+Keep the failed report and diagnostic; no gate or trial count is reduced.
+
+**Final local qualification:** The complete Python 3.11 suite passes 7,700
+tests with 45 skips, three existing JUnit-format warnings and 71.32% branch-aware
+coverage (57% required). Python 3.10 passes 54 focused cases with three audit-only
+skips. Actual installed-source parity, Ruff, 80-file mypy, compile, locked and
+installed Python audits, package/privacy checks and isolated wheel installation
+pass. The target audit covers all 47 Python 3.10 distributions with no missing
+or skipped packages. Fresh Nathan passes 17 probes and 31 workloads. M8 passes
+nine local metrics with five external blockers and zero failures; M9 accepts the
+fresh bindings while remaining blocked. The original owner inputs still match
+their preservation inventory. This is local review qualification, not native
+Windows/Linux, live-provider/speech, browser/signing or public-release evidence.
+
+**Prevention and limits:** Check every loop-exhaustion and recovery exit against
+the same budget/journal invariants. Resource cleanup must not replace the
+primary outcome. These synthetic provider regressions exercise the real runtime
+state machine, not live provider or speech-generation behavior. External
+browser/signing gates remain separate, and no release or installation is implied.
+
+## 2026-11-07: Isolate Runtime Repairs From Local Speech Work
+
+**Scope:** Prepare the already-tested completion, inference-recovery, evidence-
+progress and explicit startup-mode repairs for code review. The source checkout
+also contains independent speech adapters and LFM3 audio work. A separate worktree
+keeps those changes, the active installed runtime, private owner catalog and the
+watchdog worktree untouched. Do not stage the whole original dirty checkout.
+
+**Confirmed repairs:** Empty/reasoning-only replies need bounded inference-only
+recovery before delivered output, never action replay. Automatic structural
+verification needs a fresh final answer, not discarded or stale progress text.
+Interrupted text needs an incomplete marker. A liveness guard must count new
+evidence and effects, warn for an independent permitted route, and hand off
+persistent repetition without claiming completion. An interactive startup-mode
+preference cannot become an inherited model/one-shot/delegated authority grant.
+
+**Dependency boundary:** Preserve Python 3.10 runtime/dev support while requiring
+Python 3.11 for the opt-in repository audit group. Retain the patched filelock
+and msgpack lock entries and exercise the actual cache consumer. Runtime exports
+must not gain audit-only dependencies. No advisory ignores or weakened flags.
+
+**Verification contract:** Test this extracted branch rather than copying the
+installed runtime's historical receipts. Register new source/test dependencies
+in every enclosing qualification manifest, run the real producers, append only
+fresh content-free evidence, and keep external browser/signing gates blocked.
+Use the existing verified local-CI status for the exact pushed commit; no hosted
+Actions, tags, release publication, launcher replacement or speech generation.
+Fresh producers passed 17 correctness probes and 31 workloads; M8 reports nine
+local passes, five external blockers and zero failures. M9 accepts their fresh
+ledger bindings while remaining blocked. The initial overlapping full-suite run
+had 7,694 passes, 45 skips and two stale-artifact failures; retain that failed
+receipt separately rather than treating it as a successful final run.
+
+**Executed checks:** Ruff, the declared mypy contract plus the new stream module
+(80 files), compile, public source/history/artifact scans, wheel/sdist metadata
+and isolated wheel installation pass. Locked and installed modern dependency
+audits report no known vulnerabilities. Python 3.10 has 49 focused passes and
+three audit-only skips; auditing all 47 installed target distributions reports
+zero vulnerabilities, with no missing or skipped distributions. Content-free
+before/after inventories match the original working trees, launcher, owner
+catalog, speech sources and both LFM3 model manifests. These preservation checks
+are not a new speech-generation or live-model qualification.
+
+**Final settled-tree gate:** `ALGO_TEST_REQUIRE_RIPGREP=1 .venv/bin/pytest tests
+-o addopts='' -q --cov --cov-branch --cov-fail-under=57` passed 7,696 tests with
+45 skips and 71.32% branch-aware coverage. Three existing JUnit property-format
+warnings remain non-failing. New qualification artifacts retain their current
+source digests and external blockers. This result supersedes neither the failed
+pre-refresh receipt nor the separate installed speech-enabled runtime identity.
+
 ## 2026-10-23: Preserve Meaning Across Runtime Truncation And Compaction
 
 **Symptom/cause:** Text reads could exceed the actual tool transport and lose

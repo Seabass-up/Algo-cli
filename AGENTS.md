@@ -48,8 +48,15 @@ Run `pytest tests` for Python changes, plus a focused test for the affected comm
 For the full qualification suite, match `.github/workflows/oliver-ci.yml` rather
 than relying on a dev-extra-only environment:
 
+The CLI and regular `dev` extra support Python 3.10. The repository-only
+`supply-chain` dependency group requires Python 3.11+ for patched audit tooling;
+use `--group supply-chain`, not the retired published extra. Audit a separate
+Python 3.10 environment's actual installed paths as described in
+`docs/python-dependency-audits.md`; a modern interpreter's marker-filtered
+requirements audit alone does not cover the older interpreter's dependencies.
+
 ```bash
-uv sync --frozen --no-editable --extra dev --extra supply-chain --reinstall-package algo-cli-runtime --link-mode copy
+uv sync --frozen --no-editable --extra dev --group supply-chain --reinstall-package algo-cli-runtime --link-mode copy
 .venv/bin/python -I scripts/oliver_installed_source_parity.py
 ALGO_TEST_REQUIRE_RIPGREP=1 .venv/bin/pytest tests
 ```

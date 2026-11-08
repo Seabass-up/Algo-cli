@@ -29,35 +29,36 @@ jobs:
           version: "0.11.26"
           enable-cache: true
       - name: Install locked project and quality tools
-        run: uv sync --frozen --no-editable --extra dev --extra supply-chain --reinstall-package algo-cli-runtime --link-mode copy
+        run: uv sync --frozen --no-editable --extra dev --group supply-chain --reinstall-package algo-cli-runtime --link-mode copy
       - name: Install locked search backend
         shell: bash
         run: |
           cargo install ripgrep --version 15.2.0 --locked --root "$RUNNER_TEMP/algo-ci-ripgrep"
           printf '%s\n' "$RUNNER_TEMP/algo-ci-ripgrep/bin" >> "$GITHUB_PATH"
       - name: Installed-source parity (blocking)
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain python -I scripts/oliver_installed_source_parity.py
+        run: uv run --frozen --no-editable --extra dev --group supply-chain python -I scripts/oliver_installed_source_parity.py
       - name: Ruff (blocking)
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain ruff check algo_cli tests scripts
+        run: uv run --frozen --no-editable --extra dev --group supply-chain ruff check algo_cli tests scripts
       - name: Public source scan (blocking)
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain python scripts/check_public_release.py
+        run: uv run --frozen --no-editable --extra dev --group supply-chain python scripts/check_public_release.py
       - name: Reachable history scan (blocking)
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain python scripts/check_public_history.py --allow-contributor-identities
+        run: uv run --frozen --no-editable --extra dev --group supply-chain python scripts/check_public_history.py --allow-contributor-identities
       - name: Release version source (blocking)
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain python scripts/check_release_version.py
+        run: uv run --frozen --no-editable --extra dev --group supply-chain python scripts/check_release_version.py
       - name: Locked Python dependency audit (blocking)
         run: |
           uv export --quiet --frozen --format requirements-txt \
-            --extra dev --extra supply-chain --no-emit-project \
+            --extra dev --group supply-chain --no-emit-project \
             --output-file "${RUNNER_TEMP}/algo-cli-auditable-requirements.txt"
-          uv run --frozen --no-editable --extra dev --extra supply-chain \
+          uv run --frozen --no-editable --extra dev --group supply-chain \
             pip-audit \
             --requirement "${RUNNER_TEMP}/algo-cli-auditable-requirements.txt" \
             --require-hashes --disable-pip --strict --progress-spinner off
       - name: Runtime mypy contract (blocking)
         run: >-
-          uv run --frozen --no-editable --extra dev --extra supply-chain mypy
+          uv run --frozen --no-editable --extra dev --group supply-chain mypy
           algo_cli/main.py
+          algo_cli/tool_progress.py
           algo_cli/sticky_status.py
           algo_cli/tools.py
           algo_cli/harness.py
@@ -141,13 +142,13 @@ jobs:
           --show-error-codes
       - name: Agent runtime hardening qualification (blocking)
         run: >-
-          uv run --frozen --no-editable --extra dev --extra supply-chain
+          uv run --frozen --no-editable --extra dev --group supply-chain
           python scripts/nathan_agent_runtime_qualification.py --quiet
       - name: Compile check
-        run: uv run --frozen --no-editable --extra dev --extra supply-chain python -m compileall -q algo_cli ollama_cli
+        run: uv run --frozen --no-editable --extra dev --group supply-chain python -m compileall -q algo_cli ollama_cli
       - name: Full suite with branch coverage floor
         run: >-
-          uv run --frozen --no-editable --extra dev --extra supply-chain --link-mode copy pytest tests
+          uv run --frozen --no-editable --extra dev --group supply-chain --link-mode copy pytest tests
           --cov
           --cov-branch
           --cov-report=term-missing:skip-covered

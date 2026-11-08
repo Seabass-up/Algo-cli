@@ -4628,6 +4628,24 @@
           "timestamp": "2026-10-23T21:19:36Z",
           "scope": "PR95 combined runtime repairs with reviewed PR94 catalog/source and security regressions on merged main; frozen source sha256:2544abb34cb324c4e4573d02b66a3dbe0ce1596093fb43980808091647864298",
           "limitations": "Finite local qualification is not native Windows/Linux, external browser/signing or publication proof. Both parent evidence histories retained; requirement remains in progress."
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:6711fd07594cbf3393a01142cf708c2dafd1594834329a80b81ad88ab8eaec22",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-11-07T20:05:49Z",
+          "scope": "Isolated runtime completion/progress and repository-only audit repairs for review; frozen source sha256:e2828ba3a8a4da63fe23afe37740f18d4a4c59570868e5b081ab337950924926",
+          "limitations": "Finite local qualification does not establish native Windows/Linux, live browser/signing, release eligibility or publication. Historical evidence retained; requirement status unchanged."
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:8923ad83ac341ab5614d2b624ca8e0f14bd6c76551f248367d3d738bf6faec4e",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-11-08T00:32:24Z",
+          "scope": "Isolated runtime completion/progress and repository-only audit repairs for review; frozen source sha256:ea684343df75ed80da7e99a6dec4ffff1a16a30ca75017872df37f9dff722d54",
+          "limitations": "Finite local qualification does not establish native Windows/Linux, live browser/signing, release eligibility or publication. Historical evidence retained; requirement status unchanged."
         }
       ]
     },
@@ -7732,6 +7750,42 @@
           "timestamp": "2026-10-23T21:19:36Z",
           "scope": "PR95 combined runtime repairs with reviewed PR94 catalog/source and security regressions on merged main; frozen source sha256:eff35bcff81efe540de717dd4776eb4d8a3df0d9ff0167a1a82dba3bb0e7ae75",
           "limitations": "Finite local qualification is not native Windows/Linux, external browser/signing or publication proof. Both parent evidence histories retained; requirement remains in progress."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:6711fd07594cbf3393a01142cf708c2dafd1594834329a80b81ad88ab8eaec22",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-11-07T20:05:49Z",
+          "scope": "Isolated runtime completion/progress and repository-only audit repairs for review; frozen source sha256:e2828ba3a8a4da63fe23afe37740f18d4a4c59570868e5b081ab337950924926",
+          "limitations": "Finite local qualification does not establish native Windows/Linux, live browser/signing, release eligibility or publication. Historical evidence retained; requirement status unchanged."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:40a23695e01bdf2b4a3c691e375fa7bef99452bfaae01d91ffdc14b0a2fec770",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-11-07T20:05:49Z",
+          "scope": "Isolated runtime completion/progress and repository-only audit repairs for review; frozen source sha256:3d73214017b8284151719d6e6197dfd79189118929bf665bbc937bf742c9789d",
+          "limitations": "Finite local qualification does not establish native Windows/Linux, live browser/signing, release eligibility or publication. Historical evidence retained; requirement status unchanged."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:8923ad83ac341ab5614d2b624ca8e0f14bd6c76551f248367d3d738bf6faec4e",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-11-08T00:32:24Z",
+          "scope": "Isolated runtime completion/progress and repository-only audit repairs for review; frozen source sha256:ea684343df75ed80da7e99a6dec4ffff1a16a30ca75017872df37f9dff722d54",
+          "limitations": "Finite local qualification does not establish native Windows/Linux, live browser/signing, release eligibility or publication. Historical evidence retained; requirement status unchanged."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:a4620e7c51fc7e51161209620e21370890b2046f21ddd3dff45d65b49d04fada",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-11-08T00:32:24Z",
+          "scope": "Isolated runtime completion/progress and repository-only audit repairs for review; frozen source sha256:398bb14c8500338bb431ad8b66e4bd4108d9e5ac6d5f9aa5ab16848acce0c8cd",
+          "limitations": "Finite local qualification does not establish native Windows/Linux, live browser/signing, release eligibility or publication. Historical evidence retained; requirement status unchanged."
         }
       ]
     },

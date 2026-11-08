@@ -107,6 +107,21 @@ and incompatible runtime state are explicit outcomes. Fallbacks must remain
 bounded and observable; swallowed exceptions and silent policy downgrades are
 not valid recovery.
 
+A blocked tool is not necessarily a blocked task. Try a different registered,
+permitted capability or evidence source before concluding that execution cannot
+continue. An always-on, per-turn evidence-progress guard distinguishes novel
+sources, read ranges and changed results from repeated unchanged observations.
+It first requests another route; new evidence or a successful effect resets the
+warning. Persistent unchanged inspection ends tools and produces an explicitly
+partial handoff, including in YOLO. This is not a total work cap or verification
+of task success. Signed Agent Blocks gain no extra unbudgeted summary call,
+and goal mode must not automatically restart a host-detected stalled turn.
+
+`/mode default yolo` records a direct user's interactive startup preference.
+Startup creates a fresh activation for the chosen workspace. Ordinary config
+loads, one-shot calls and child execution do not inherit that activation.
+`/mode default execute` changes the startup preference back.
+
 Agent plan recovery is typed and single-attempt. Only a contract-listed failure code may
 open a reduced-budget plan/retry cycle, and high-risk mutations do not recover
 automatically. Provider fallback never replays an uncertain mutation.
@@ -116,6 +131,14 @@ request twice after a transient failure or reasoning-only completion, with bound
 backoff. It does not replay completed tools. Delivered answer text or a valid tool
 call prevents automatic retry; permanent auth, policy, and certificate failures
 remain explicit failures.
+
+Providers without that adapter use the same two-retry inference-only boundary
+for empty/reasoning-only output and recognized transient transport errors. It
+does not restart the agent or tool batch, add a second Codex retry budget, or
+increase a signed Agent Block's inference budget. Interrupted partial text is
+marked incomplete in history. Only current-round final text can finish an Agent
+Block; earlier progress text is not a final answer. A passing automatic structural
+check is followed by a fresh tool-free answer that states its verification limits.
 
 User cancellation is not a tool retry signal. Ctrl-C stops subsequent tools and
 model rounds after recording the interrupted action's typed outcome. Queued
