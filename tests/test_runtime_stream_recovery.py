@@ -129,3 +129,87 @@ def test_agent_block_hidden_retries_cannot_expand_a_signed_budget(monkeypatch, t
     main.run_agent_block(block, task="Review a public fixture", completed=[], cfg=cfg, client=client, **kwargs)
     assert len(client.calls) == (1 if contracted else 2)
     assert (block.status == "complete") is (not contracted)
+
+
+@pytest.fixture
+def one_read_block(monkeypatch, tmp_path):
+    _quiet_display(monkeypatch)
+    cfg = Config(cwd=str(tmp_path), model="test-model", decision_checkpoints_enabled=False)
+    cfg._nathan_approval_mode = "never"
+    block = agent_blocks.AgentBlock(
+        role="review", prompt="Inspect a fixture", allowed_tools=frozenset({"read_file"}), max_iterations=1,
+    )
+
+    def execute(_name, _args, _cfg, **_kwargs):
+        execution_guardrails.record_read("fixture.txt", success=True)
+        return {"role": "tool", "content": "public fixture"}, "public fixture"
+
+    monkeypatch.setattr(agent_pipeline, "execute_tool_call_for_pipeline", execute)
+    return cfg, block
+
+
+@pytest.mark.parametrize("contracted", [False, True])
+def test_iteration_exhaustion_cannot_add_an_untracked_signed_summary(one_read_block, contracted):
+    cfg, block = one_read_block
+    client = ScriptedClient([
+        {"content": "Unverified progress claim.", **call("read_file", {"path": "fixture.txt"}, 1)},
+        {"content": "## Block Output\nPartial fixture inspection."},
+    ])
+    kwargs = {}
+    if contracted:
+        contract = run_contract.compile_agent_run_contract(
+            task="Review a public fixture", route=task_router.route_task("Review a fixture"),
+            pipeline_name="review", blocks=[block], cfg=cfg, approval_mode="never",
+            snapshot=git_evidence.GitSnapshot(False, "not git", None, "", "", ()),
+        )
+        tracker = run_contract.RunContractTracker(contract)
+        tracker.start_block(0)
+        kwargs = {"run_contract": contract, "block_contract": contract.block(0), "contract_tracker": tracker}
+    agent_pipeline.run_agent_block(block, task="Review a public fixture", completed=[], cfg=cfg, client=client, **kwargs)
+    assert block.status == "partial"
+    assert block.status_code == "max_iterations"
+    assert len(client.calls) == (1 if contracted else 2)
+    if contracted:
+        assert tracker.model_rounds == len(client.calls)
+        assert "INCOMPLETE" in block.output
+        assert "Unverified reported output:\nUnverified progress claim." in block.output
+    else:
+        assert client.calls[-1]["tools"] == []
+        assert "Partial fixture inspection" in block.output
+        assert "Unverified progress claim" not in block.output
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_partial_summary_close_failure_preserves_handoff_or_cancellation(one_read_block, cancelled):
+    cfg, block = one_read_block
+    closed = []
+
+    class PartialStream:
+        def __iter__(self):
+            if cancelled:
+                raise KeyboardInterrupt
+            yield {"message": {"content": "## Block Output\nPartial fixture inspection."}}
+
+        def close(self):
+            closed.append(True)
+            raise RuntimeError("synthetic provider teardown failure")
+
+    class ClosingClient(ScriptedClient):
+        def chat(self, **kwargs):
+            if not self.calls:
+                return super().chat(**kwargs)
+            self.calls.append(kwargs)
+            return PartialStream()
+
+    client = ClosingClient([call("read_file", {"path": "fixture.txt"}, 1)])
+    if cancelled:
+        with pytest.raises(KeyboardInterrupt):
+            agent_pipeline.run_agent_block(block, task="Inspect", completed=[], cfg=cfg, client=client)
+        assert block.status == "cancelled"
+    else:
+        agent_pipeline.run_agent_block(block, task="Inspect", completed=[], cfg=cfg, client=client)
+        assert block.status == "partial"
+        assert block.status_code == "max_iterations"
+        assert "Partial fixture inspection" in block.output
+    assert closed == [True]
+    assert len(client.calls) == 2

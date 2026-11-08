@@ -497,6 +497,19 @@ def run_agent_block(
         )
 
     def finish_with_partial_output(*, progress_boundary: tool_progress.ProgressBoundary | None = None) -> None:
+        if run_contract is not None:
+            reported_output = block.output.strip()
+            block.status = "partial"
+            block.status_code = "tool_progress_stalled" if progress_boundary is not None else "max_iterations"
+            block.status_reason = (
+                progress_boundary.reason if progress_boundary is not None else
+                f"Iteration budget exhausted after {iteration_limit} cycles; "
+                "no unbudgeted summary inference was requested."
+            )
+            block.output = f"## Block Output\n\nINCOMPLETE: {block.status_reason}"
+            if reported_output:
+                block.output += f"\n\nUnverified reported output:\n{reported_output}"
+            return
         messages.append(
             {
                 "role": "user",
@@ -559,7 +572,10 @@ def run_agent_block(
         finally:
             close_stream = getattr(stream, "close", None)
             if callable(close_stream):
-                close_stream()
+                try:
+                    close_stream()
+                except Exception:
+                    logger.debug("Agent Block partial stream close failed", exc_info=True)
             finish_thinking_block()
         if partial_text.strip():
             block.output = partial_text.strip()

@@ -1826,8 +1826,9 @@ def test_partial_block_allows_pipeline_finalizer_to_run(monkeypatch):
     final = agent_blocks.AgentBlock(role="final", prompt="final")
     client = ScriptedClient(
         [
-            {"tool_calls": [{"function": {"name": "read_file", "arguments": {"path": "notes.md"}}}]},
-            {"content": "## Block Output\n\nPartial evidence summary."},
+            {"content": "Partial evidence summary.", "tool_calls": [
+                {"function": {"name": "read_file", "arguments": {"path": "notes.md"}}},
+            ]},
             {"content": "## Block Output\n\nFinal answer from partial evidence."},
         ]
     )
@@ -1843,9 +1844,14 @@ def test_partial_block_allows_pipeline_finalizer_to_run(monkeypatch):
 
     assert review.status == "partial"
     assert final.status == "complete"
-    assert "Partial evidence summary." in client.calls[2]["messages"][1]["content"]
-    assert "## Block Status\nStatus: PARTIAL" in client.calls[2]["messages"][1]["content"]
-    assert "Iteration budget exhausted" in client.calls[2]["messages"][1]["content"]
+    assert len(client.calls) == 2
+    assert client.calls[1]["tools"] == []
+    final_context = client.calls[1]["messages"][1]["content"]
+    assert "Partial evidence summary." in final_context
+    assert "Unverified reported output:" in final_context
+    assert "INCOMPLETE" in final_context
+    assert "## Block Status\nStatus: PARTIAL" in final_context
+    assert "Iteration budget exhausted" in final_context
 
 
 def test_pipeline_recovery_runs_one_replan_and_reduced_budget_retry(monkeypatch):
