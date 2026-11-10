@@ -42,7 +42,7 @@ function commonJsPlugin(root, extensions = [".js", ".ts"]) {
 test("both actual callers resolve the bounded adapter rather than braces", () => {
   for (const resolver of [nextRequire, dynamicRequire]) {
     assert.equal(resolver("fast-glob/package.json").name, "@algo-cli/bounded-glob");
-    assert.equal(resolver("fast-glob/package.json").dependencies.glob, "13.0.6");
+    assert.equal(resolver("fast-glob/package.json").dependencies.glob, "14.0.4");
     assert.equal(resolver("fast-glob/package.json").dependencies["brace-expansion"], "5.0.12");
     const installed = path.relative(fileURLToPath(new URL("../", import.meta.url)), realpathSync(resolver.resolve("fast-glob"))).replaceAll("\\", "/");
     assert.ok(installed.startsWith("node_modules/"), "adapter must be packed under node_modules, not linked into source");

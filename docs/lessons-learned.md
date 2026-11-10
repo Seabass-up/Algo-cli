@@ -3607,6 +3607,35 @@ scans, the dependency audit, `twine check` and the isolated wheel install pass.
 injection list, and its tests must call it through `run_tool`, not only
 directly. Report a missing input as unknown rather than as a default value.
 
+## 2026-11-10: New Website Advisories Failed Hosted CI On An Unrelated Change
+
+**Symptom:** Hosted CI on the 0.20.4 pull request failed "Website build and
+safety gates" at `npm audit` although the change did not touch `website/`.
+
+**Confirmed cause:** Advisories published since the last hosted run: `undici`
+below 7.30.1 (high, through `wrangler`/`miniflare`), `glob` 14.0.1 and below and
+`minimatch` below 11.0.1 (through the vendored glob adapter and
+`typescript-eslint`), `satori` below 0.33.5 and `fflate` below 0.7.5 (through
+`vinext`'s unused OG-image package), and `fast-uri` below 3.1.9. `main` would
+fail the same gate, and the release verification runs it too.
+
+**Repair:** `@cloudflare/vite-plugin` 1.68.0 with `wrangler` 4.157.0 (fixed
+`miniflare`/`undici`); the vendored adapter moves to `glob` 14.0.4; scoped
+overrides give `typescript-estree` `minimatch` 11.0.5 and `@vercel/og` `satori`
+0.33.5; `fflate` is overridden to 0.7.5 and `fast-uri` updated within range. No
+major-version jump of `vinext`. The adapter test's exact `glob` pin moves to
+14.0.4; every behavioural adapter test is unchanged.
+
+**Verification:** Clean `npm ci`, `npm test` (build plus 22 render, route,
+dependency-security and adapter tests: 22 passed), `npm run lint` and
+`npm audit` (0 vulnerabilities), locally on Node 26/npm 11. The first run failed
+only the exact version pin; that failure is retained here. Hosted Node 22 CI is
+still to run.
+
+**Prevention:** An audit gate on a lockfile fails on new advisories without a
+code change; expect it on any release that has been idle for weeks, and check
+it before preparing the release rather than after the pull request.
+
 ## Repair Log Checklist
 
 - Date and component.
