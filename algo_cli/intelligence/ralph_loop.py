@@ -5,6 +5,7 @@ Source: CCASP pattern.
 """
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -27,6 +28,7 @@ class TestRun:
     duration_s: float = 0.0
     failures: list[str] = field(default_factory=list)
     output: str = ""
+    exit_code: int | None = None
 
 
 @dataclass
@@ -67,7 +69,7 @@ class RalphLoop:
             result.runs.append(run)
             result.iterations = i + 1
 
-            if run.failed == 0 and run.errors == 0:
+            if run.failed == 0 and run.errors == 0 and run.exit_code in (None, 0):
                 result.status = LoopStatus.PASSING
                 result.final_passed = run.passed
                 result.final_failed = 0
@@ -92,26 +94,30 @@ class RalphLoop:
         return result
 
     @staticmethod
-    def parse_pytest_output(output: str) -> TestRun:
-        """Parse pytest output to extract pass/fail counts."""
+    def parse_pytest_output(output: str, exit_code: int | None = None) -> TestRun:
+        """Parse pytest output to extract pass/fail/error counts from the summary line."""
         run = TestRun(iteration=0)
         run.output = output
+        run.exit_code = exit_code
 
         for line in output.splitlines():
             line = line.strip()
-            if "passed" in line and "failed" in line:
-                # "5 passed, 2 failed in 0.3s"
-                parts = line.split(",")
-                for part in parts:
-                    part = part.strip()
-                    if "passed" in part:
-                        run.passed = int(part.split()[0])
-                    elif "failed" in part:
-                        run.failed = int(part.split()[0])
-                        # Extract failure names
-            elif "passed" in line and "failed" not in line:
-                run.passed = int(line.split()[0])
+            match = _PYTEST_SUMMARY_RE.match(line)
+            if match:
+                # "=== 5 passed, 2 failed, 1 xfailed in 0.3s ===" — xfailed/xpassed/warnings are not failures
+                for part in match.group("body").split(","):
+                    count_text, _, word = part.strip().partition(" ")
+                    count = int(count_text)
+                    if word == "passed":
+                        run.passed = count
+                    elif word == "failed":
+                        run.failed = count
+                    elif word in ("error", "errors"):
+                        run.errors = count
             elif "error" in line.lower():
                 run.failures.append(line)
 
         return run
+
+
+_PYTEST_SUMMARY_RE = re.compile(r"^=*\s*(?P<body>\d+ [a-z]+(?:, \d+ [a-z]+)*) in \d+(?:\.\d+)?s\b")

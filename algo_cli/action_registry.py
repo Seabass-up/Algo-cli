@@ -1691,10 +1691,18 @@ def render_action_registry_runtime_audit(report: DoctorReport) -> str:
 
 
 def _check_ollama_host(host: str) -> bool:
+    # Probe the address the runtime actually connects to: OLLAMA_HOST may omit
+    # the scheme. HTTPException covers an invalid port and a non-HTTP listener,
+    # which must degrade the report instead of crashing it.
+    from http.client import HTTPException
+
+    from .theodore_runtime_services import normalize_ollama_host
+
     try:
-        with urlopen(f"{host.rstrip('/')}/api/tags", timeout=0.5) as response:  # nosec: local readiness probe
+        target = normalize_ollama_host(host).rstrip("/")
+        with urlopen(f"{target}/api/tags", timeout=0.5) as response:  # nosec: local readiness probe
             return 200 <= int(response.status) < 300
-    except (OSError, URLError, ValueError):
+    except (OSError, URLError, ValueError, HTTPException):
         return False
 
 

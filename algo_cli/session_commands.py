@@ -55,10 +55,10 @@ def catalog_for_prompt() -> str:
 def execute(command_line: str, cfg: Any, *, max_read_chars: int | None = None) -> str:
     """Run one whitelisted slash command against cfg.cwd."""
     stripped = (command_line or "").strip()
-    if not stripped.startswith("/"):
-        stripped = f"/{stripped}"
     if not stripped:
         return "Error: empty command. Allowed: /read, /ls, /cd, /cwd"
+    if not stripped.startswith("/"):
+        stripped = f"/{stripped}"
 
     parts = stripped.split(None, 1)
     command = parts[0].lower()

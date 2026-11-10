@@ -169,7 +169,10 @@ def effective_params(cfg: Any, model_info: dict[str, Any] | None) -> EffectivePa
     current_ctx = int(getattr(cfg, "num_ctx", DEFAULT_NUM_CTX) or DEFAULT_NUM_CTX)
     native_ctx = _model_info_module.get_context_length(model_info or {})
     stale_remote_stamp = is_stale_remote_context_stamp(cfg, current_ctx, native_ctx)
-    if current_ctx == DEFAULT_NUM_CTX or stale_remote_stamp:
+    # `/ctx 8192` is an explicit choice even though it equals the default value;
+    # num_ctx_explicit is what distinguishes it from an untouched field.
+    ctx_untouched = current_ctx == DEFAULT_NUM_CTX and getattr(cfg, "num_ctx_explicit", False) is not True
+    if ctx_untouched or stale_remote_stamp:
         num_ctx = profile.num_ctx
         if num_ctx != current_ctx:
             adapted.append("num_ctx")

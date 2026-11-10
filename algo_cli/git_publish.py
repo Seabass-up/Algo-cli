@@ -77,13 +77,20 @@ def _run_program(
     # Keep line-oriented Git plumbing input byte-exact. Text-mode pipes convert
     # LF to CRLF on Windows, which ``git update-ref --stdin`` rejects.
     encoded_input = None if input_text is None else input_text.encode("utf-8")
+    workdir = Path(cwd).expanduser().resolve()
+    if not workdir.is_dir():
+        return 1, f"Working directory does not exist: {workdir}"
+    # Fail fast on a missing credential instead of letting git block on a terminal prompt.
+    environment = dict(os.environ, GIT_TERMINAL_PROMPT="0")
     try:
         proc = subprocess.run(
             [program, *args],
-            cwd=Path(cwd).expanduser().resolve(),
+            cwd=workdir,
             capture_output=True,
             timeout=timeout,
             input=encoded_input,
+            env=environment,
+            stdin=None if encoded_input is not None else subprocess.DEVNULL,
         )
     except FileNotFoundError:
         return 127, f"{program} is not installed or is not available on PATH"
@@ -128,10 +135,13 @@ def _push_bound_destination(
         remote_name,
         refspec,
     ]
+    workdir = Path(cwd).expanduser().resolve()
+    if not workdir.is_dir():
+        raise PublishError(f"Working directory does not exist: {workdir}")
     try:
         proc = subprocess.run(
             args,
-            cwd=Path(cwd).expanduser().resolve(),
+            cwd=workdir,
             capture_output=True,
             text=True,
             encoding="utf-8",

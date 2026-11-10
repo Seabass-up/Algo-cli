@@ -205,8 +205,12 @@ def run_mcts(
     for _ in range(max_iterations):
         # 1. Select
         node = reasoner._select()
-        if node is None or node.terminal:
+        if node is None:
             break
+        if node.terminal:
+            # A terminal node cannot expand, but it is still a leaf worth evaluating.
+            reasoner._backpropagate(node, reasoner._simulate(node, client, model))
+            continue
 
         # 2. Expand
         child = reasoner._expand(node, client, model)

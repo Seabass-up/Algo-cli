@@ -56,10 +56,14 @@ def _run_git(
     cwd: str | Path,
     timeout: int = 30,
 ) -> tuple[int, str]:
+    workdir = Path(cwd).expanduser().resolve()
+    # A missing working directory raises FileNotFoundError too; check it so the message names the directory.
+    if not workdir.is_dir():
+        raise WorktreeError(f"Working directory does not exist: {workdir}")
     try:
         proc = subprocess.run(
             ["git", *args],
-            cwd=Path(cwd).expanduser().resolve(),
+            cwd=workdir,
             capture_output=True,
             text=True,
             encoding="utf-8",

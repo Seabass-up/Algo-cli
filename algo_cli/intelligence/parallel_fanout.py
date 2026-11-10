@@ -6,7 +6,8 @@ Source: deep-research-agent pattern.
 from __future__ import annotations
 
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -53,22 +54,41 @@ class ParallelFanOut:
 
     def _execute(self, tasks: list[FanOutTask]) -> list[FanOutResult]:
         results: list[FanOutResult] = []
-
-        with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
-            future_to_task = {
-                pool.submit(self._run_task, task): task for task in tasks
-            }
+        pool = ThreadPoolExecutor(max_workers=self._max_workers)
+        future_to_task = {
+            pool.submit(self._run_task, task): task for task in tasks
+        }
+        seen: set[Future] = set()
+        try:
             for future in as_completed(future_to_task, timeout=self._timeout):
-                task = future_to_task[future]
-                try:
-                    results.append(future.result())
-                except Exception as e:
+                seen.add(future)
+                results.append(self._collect(future, future_to_task[future]))
+        except FuturesTimeoutError:
+            for future, task in future_to_task.items():
+                if future in seen:
+                    continue
+                future.cancel()
+                if future.done() and not future.cancelled():
+                    results.append(self._collect(future, task))
+                else:
                     results.append(FanOutResult(
-                        question=task.question, source=task.source,
-                        query=task.query, error=str(e), success=False,
+                        question=task.question, source=task.source, query=task.query,
+                        error=f"timed out after {self._timeout}s", success=False,
                     ))
+        finally:
+            # A handler that is already running cannot be interrupted; do not wait for it.
+            pool.shutdown(wait=False, cancel_futures=True)
 
         return results
+
+    def _collect(self, future: Future, task: FanOutTask) -> FanOutResult:
+        try:
+            return future.result()
+        except Exception as e:
+            return FanOutResult(
+                question=task.question, source=task.source,
+                query=task.query, error=str(e), success=False,
+            )
 
     def _run_task(self, task: FanOutTask) -> FanOutResult:
         handler = self._source_handlers.get(task.source)

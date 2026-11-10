@@ -1171,6 +1171,34 @@ def write_file(
         return f"Error writing {p}: {exc}"
 
 
+def _read_text_for_edit(p: Path) -> tuple[str | None, str | None]:
+    """Read a file for an in-place edit without changing bytes outside the match.
+
+    ``Path.read_text`` translates CRLF to LF and ``errors="replace"`` turns
+    undecodable bytes into U+FFFD; a whole-file rewrite then makes both changes
+    permanent. Edits therefore read the raw bytes and refuse non-UTF-8 files.
+    """
+    try:
+        raw = p.read_bytes()
+    except Exception as exc:
+        return None, f"Error reading {p}: {exc}"
+    try:
+        return raw.decode("utf-8"), None
+    except UnicodeDecodeError as exc:
+        return None, (
+            f"Error: {p} is not valid UTF-8 (first invalid byte at offset {exc.start}). "
+            "Editing it would rewrite the undecodable bytes, so no change was made."
+        )
+
+
+def _match_file_newlines(content: str, text: str) -> str:
+    """Give edit text the line endings of a file that is predominantly CRLF."""
+    crlf = content.count("\r\n")
+    if crlf == 0 or crlf <= content.count("\n") - crlf:
+        return text
+    return text.replace("\r\n", "\n").replace("\n", "\r\n")
+
+
 def edit_file(
     path: str,
     old_string: str,
@@ -1224,10 +1252,12 @@ def edit_file(
     if p.is_dir():
         return f"Error: {p} is a directory. edit_file only works on text files."
 
-    try:
-        original = p.read_text(encoding="utf-8", errors="replace")
-    except Exception as exc:
-        return f"Error reading {p}: {exc}"
+    original, read_error = _read_text_for_edit(p)
+    if original is None:
+        return str(read_error)
+    if old_string not in original:
+        old_string = _match_file_newlines(original, old_string)
+    new_string = _match_file_newlines(original, new_string)
 
     occurrences = original.count(old_string)
     if occurrences == 0:
@@ -1415,18 +1445,19 @@ def batch_edit(
     if p.is_dir():
         return f"Error: {p} is a directory."
 
-    try:
-        original = p.read_text(encoding="utf-8", errors="replace")
-    except Exception as exc:
-        return f"Error reading {p}: {exc}"
+    original, read_error = _read_text_for_edit(p)
+    if original is None:
+        return str(read_error)
 
     working = original
     applied: list[str] = []
     for index, edit in enumerate(edits, 1):
         old = str(edit.get("old_string", ""))
-        new = str(edit.get("new_string", ""))
+        new = _match_file_newlines(original, str(edit.get("new_string", "")))
         if not old:
             return f"Error: edit #{index} has empty old_string. Refusing to apply batch."
+        if old not in working:
+            old = _match_file_newlines(original, old)
         count = working.count(old)
         if count == 0:
             return (
@@ -1950,11 +1981,17 @@ def x_search(
     if not query or not query.strip():
         return "Error: query is empty."
 
+    # Coerce once: the request and the citation slice below must agree, and a
+    # model may send the count as a string.
+    try:
+        result_limit = max(1, min(int(max_results), 30))
+    except (TypeError, ValueError):
+        return "Error running x_search: max_results must be an integer from 1 to 30."
     try:
         result = xai_client.active_xai_client().search(
             query=query.strip(),
             sources=[{"type": "x"}],
-            max_results=max(1, min(int(max_results), 30)),
+            max_results=result_limit,
         )
     except Exception as exc:
         return f"Error running x_search: {exc}"
@@ -2008,7 +2045,7 @@ def x_search(
     if citations:
         out_parts.append("")
         out_parts.append("Sources:")
-        out_parts.extend(f"- {url}" for url in citations[:max_results])
+        out_parts.extend(f"- {url}" for url in citations[:result_limit])
     if cached:
         out_parts.append("")
         out_parts.append(f"(cached to {path.name})")

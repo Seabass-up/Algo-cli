@@ -1636,7 +1636,7 @@ def _parse_add(parts: list[str]) -> tuple[str, str, str, str]:
             continue
         content_parts.extend(parts[index:])
         break
-    if tier == "pinned":
+    if tier.lower() == "pinned":
         raise MemorySystemError(
             "Use /remember for pinned always-on facts; /memory add accepts curated or history records."
         )

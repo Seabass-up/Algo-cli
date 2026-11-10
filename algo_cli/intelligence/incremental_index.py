@@ -208,10 +208,11 @@ class IncrementalIndex:
                 ))
 
         # Detect deletions (files in watermarks but not in current_files)
+        current_inodes = {wm.inode for wm in current_files.values() if wm.inode}
         for old_path, old_wm in self.watermarks.items():
             if old_path not in current_files:
-                # Check if it was moved (inode exists under new path)
-                if not self._inode_exists_elsewhere(old_wm.inode, old_path):
+                # Moved if its inode is present in this scan under another path
+                if not (old_wm.inode and old_wm.inode in current_inodes):
                     changes.append(ChangeRecord(
                         path=old_path,
                         change_type=ChangeType.DELETED,
@@ -232,10 +233,6 @@ class IncrementalIndex:
             if path != exclude_path and wm.inode == inode:
                 return path
         return None
-
-    def _inode_exists_elsewhere(self, inode: int, exclude_path: str) -> bool:
-        """Check if inode exists in current scan under a different path."""
-        return self._find_by_inode(inode, exclude_path) is not None
 
     # --- query ------------------------------------------------------------
 

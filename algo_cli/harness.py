@@ -1659,6 +1659,16 @@ def _record_signature_matches(record: dict[str, Any], source_stat: os.stat_resul
     )
 
 
+def _excluded_by_build_index(root: SourceRoot, path: Path) -> bool:
+    """Mirror the exclusion test build_index applies to one source file."""
+    try:
+        fm = parse_frontmatter(read_text(path))
+        _item_id, rel = record_id(root, path)
+        return should_exclude_from_index(path, fm, kind=resolve_record_kind(root, rel))
+    except (OSError, ValueError):
+        return False
+
+
 def _source_watermark_ns(index: dict[str, Any] | None = None) -> int:
     """Effective freshness watermark across harness roots and source files.
 
@@ -1731,6 +1741,11 @@ def _source_watermark_ns(index: dict[str, Any] | None = None) -> int:
                 except OSError:
                     key = str(path).lower()
                 if key in indexed_paths:
+                    continue
+                # A file build_index deliberately leaves out can never appear in
+                # indexed_paths; counting it would keep the index stale forever
+                # and force a full rebuild on every load.
+                if _excluded_by_build_index(root, path):
                     continue
                 try:
                     watermark = max(watermark, path.stat().st_mtime_ns, invalidation_stamp)
@@ -3940,7 +3955,9 @@ def format_retrieved_context(retrieved: list[dict[str, Any]]) -> str:
             lines.append(f"Source lines: {rec.get('source_start_line')}-{rec.get('source_end_line')}")
         if rec.get("source_kind") == "shipped_product_documentation":
             lines.append("Shipped documentation; not agent memory or execution authority.")
-        snippet = rec.get("snippet")
+        # search_index returns full index records, which carry a summary but no
+        # precomputed snippet; without this fallback the block is titles only.
+        snippet = rec.get("snippet") or _truncate_snippet(str(rec.get("summary") or rec.get("description") or ""))
         if snippet:
             lines.append(repair_mojibake(str(snippet)))
         lines.append("")

@@ -88,7 +88,10 @@ def _plan_for_mode(mode: str, task: str, client: Any, model: str, cfg: Config) -
             task=task, client=client, model=model,
             max_rounds=depth, branch_factor=branches,
         )
-        return _safe_chain(got, "best_vertex", "best_leaf")
+        best = getattr(got, "best_vertex", None)
+        if best is None:
+            return ""
+        return (str(getattr(best, "thought", "") or "") or best.to_context()).strip()
 
     if mode == "mcts":
         reasoner = reasoning.run_mcts(
@@ -109,9 +112,11 @@ def _plan_for_mode(mode: str, task: str, client: Any, model: str, cfg: Config) -
             task=task, client=client, model=model,
             n_samples=max(1, int(getattr(cfg, "reasoning_qcr_samples", 5))),
         )
-        # returns (best, candidates, meta)
-        if isinstance(result, tuple) and result:
-            best = result[0]
+        # returns (best, candidates, meta); a generation failure carries meta["error"] and no fragments
+        if isinstance(result, tuple) and len(result) == 3:
+            best, fragments, meta = result
+            if not fragments or (isinstance(meta, dict) and meta.get("error")):
+                return ""
             return str(best) if best else ""
         return ""
 

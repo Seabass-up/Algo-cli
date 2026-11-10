@@ -87,6 +87,8 @@ class ChangelogManager:
         for f in sorted(d.glob("*.json")):
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    continue
                 loaded.append(ChangeFile(
                     filename=f.name,
                     kind=data.get("kind", ChangeKind.MAINTENANCE),
@@ -96,7 +98,7 @@ class ChangelogManager:
                     created_at=data.get("created_at", datetime.now().isoformat()),
                     version_bump=data.get("version_bump", "patch"),
                 ))
-            except (json.JSONDecodeError, KeyError):
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError):
                 continue
         self._changes.extend(loaded)
         return loaded

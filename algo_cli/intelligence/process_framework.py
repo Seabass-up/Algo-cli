@@ -71,7 +71,7 @@ class Process:
             # Condition gate
             if step.condition and not step.condition(self.context):
                 step.state = ProcessState.SKIPPED
-                current = step.on_success
+                current = step.on_failure
                 continue
             step.state = ProcessState.RUNNING
             try:
@@ -122,7 +122,7 @@ class Process:
                 continue
             if step.condition and not step.condition(self.context):
                 step.state = ProcessState.SKIPPED
-                current = step.on_success
+                current = step.on_failure
                 continue
             step.state = ProcessState.RUNNING
             try:
@@ -211,7 +211,9 @@ def make_permit_process() -> Process:
         on_success="approval",
         on_failure="corrections",
     ))
-    p.add_step(ProcessStep(name="corrections", action=corrections, on_success="review"))
+    # No on_success: returning to review here would loop forever on a rejected permit.
+    # Re-review after corrections is resumed with resume_from("review").
+    p.add_step(ProcessStep(name="corrections", action=corrections))
     p.add_step(ProcessStep(name="approval", action=approval, on_success="schedule_inspection"))
     p.add_step(ProcessStep(name="schedule_inspection", action=schedule_inspection))
     return p

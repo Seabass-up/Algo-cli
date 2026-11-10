@@ -12,6 +12,7 @@ MAX_STATUS_LINES = 40
 MAX_TRACKED_DIFF_CHARS = 8_000
 MAX_UNTRACKED_FILES = 30
 _HASH_CHUNK_BYTES = 1024 * 1024
+_EMPTY_TREE_SHA1 = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
 def readonly_git_command(args: list[str]) -> list[str]:
@@ -139,12 +140,21 @@ def capture_git_snapshot(cwd: str | None = None, *, protected_memory: bool = Fal
 
     head_rc, head_output = _run_git(["rev-parse", "--verify", "HEAD"], cwd)
     head = head_output if head_rc == 0 else None
+    # Without commits there is no HEAD to diff against; Git's empty tree (SHA-1 repositories) stands in for it.
+    diff_base = "HEAD" if head_rc == 0 else _EMPTY_TREE_SHA1
 
     status_rc, full_status = _run_git(["status", "--short", "--branch", "--ignore-submodules=all"], cwd)
-    diff_rc, full_diff = _run_git(["diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "HEAD"], cwd)
+    diff_rc, full_diff = _run_git(
+        ["diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", diff_base], cwd
+    )
     untracked_args = ["ls-files", "--others", "--exclude-standard"]
     if protected_memory:
         untracked_args.append("-z")
+    else:
+        # Without this Git C-quotes non-ASCII names ("caf\303\251.md"); the
+        # quoted text is not a path, so the file would hash as missing and an
+        # edit to it would leave the untracked digest unchanged.
+        untracked_args = ["-c", "core.quotePath=false", *untracked_args]
     untracked_rc, untracked_output = _run_git(untracked_args, cwd)
     if status_rc != 0 or diff_rc != 0 or untracked_rc != 0:
         error = full_status if status_rc != 0 else full_diff if diff_rc != 0 else untracked_output

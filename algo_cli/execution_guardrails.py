@@ -672,6 +672,7 @@ def classify_verification_command(command: str) -> VerificationCommand:
             "--showconfig",
             "--dry-run",
             "--print-config",
+            "--no-run",
         }
     ):
         return VerificationCommand(False, None, "command does not execute verification")
@@ -681,6 +682,7 @@ def classify_verification_command(command: str) -> VerificationCommand:
             "--exit-zero",
             "--no-error-on-unmatched-pattern",
             "--pass-with-no-tests",
+            "--passwithnotests",
         }
     ):
         return VerificationCommand(False, None, "command disables verifier failure status")
@@ -705,6 +707,8 @@ def classify_verification_command(command: str) -> VerificationCommand:
     if executable in {"pytest", "py.test", "unittest", "tox", "nox"}:
         return VerificationCommand(True, "test", "command executes a test runner")
     if executable in {"go", "cargo", "dotnet"}:
+        if executable == "go" and "-n" in lowered[1:]:
+            return VerificationCommand(False, None, "go -n prints commands without running them")
         if executable == "go" and len(lowered) >= 2 and lowered[1] == "vet":
             return VerificationCommand(True, "lint", "go vet is a static-analysis check")
         if executable == "go" and (len(lowered) < 2 or lowered[1] != "test"):
@@ -717,12 +721,22 @@ def classify_verification_command(command: str) -> VerificationCommand:
             return VerificationCommand(False, None, "dotnet command is not a test")
         return VerificationCommand(True, "test", "command executes a test runner")
     if executable in {"mvn", "mvnw"}:
+        if any(
+            token.startswith(("-dskiptests", "-dmaven.test.skip")) and not token.endswith("=false")
+            for token in lowered[1:]
+        ):
+            return VerificationCommand(False, None, "build command skips tests")
         goals = {token for token in lowered[1:] if not token.startswith("-")}
         if goals & {"test", "verify"}:
             return VerificationCommand(True, "test", "build goal executes tests")
         return VerificationCommand(False, None, "build command lacks a test goal")
     if executable in {"gradle", "gradlew"}:
-        tasks = {token for token in lowered[1:] if not token.startswith("-")}
+        excluded = {
+            lowered[index + 1]
+            for index, token in enumerate(lowered[:-1])
+            if token in {"-x", "--exclude-task"}
+        }
+        tasks = {token for token in lowered[1:] if not token.startswith("-")} - excluded
         if tasks & {"test", "check"}:
             return VerificationCommand(True, "test", "build task executes tests")
         return VerificationCommand(False, None, "build command lacks a test task")
@@ -738,6 +752,8 @@ def classify_verification_command(command: str) -> VerificationCommand:
         return VerificationCommand(False, None, "package command is not a test or lint script")
 
     if executable in {"make", "just"}:
+        if {"-n", "--just-print", "--recon"} & set(lowered[1:]):
+            return VerificationCommand(False, None, "dry run does not execute verification")
         targets = {token for token in lowered[1:] if not token.startswith("-")}
         if "test" in targets:
             return VerificationCommand(True, "test", "build target executes tests")

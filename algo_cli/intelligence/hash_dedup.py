@@ -77,13 +77,18 @@ class HashDeduplicator:
         changes: list[HashChange] = []
         old_paths = set(old._by_path.keys())
         new_paths = set(self._by_path.keys())
+        moved_to: set[str] = set()
 
         # Deleted
         for path in old_paths - new_paths:
             old_rec = old._by_path[path]
-            # Check if content moved to a new path
-            new_locs = self._by_hash.get(old_rec.content_hash, [])
+            # A move needs a path that did not exist before and was not already claimed
+            new_locs = [
+                p for p in self._by_hash.get(old_rec.content_hash, [])
+                if p not in old_paths and p not in moved_to
+            ]
             if new_locs:
+                moved_to.add(new_locs[0])
                 changes.append(HashChange(
                     kind=ChangeKind.MOVED,
                     path=new_locs[0],
@@ -101,15 +106,14 @@ class HashDeduplicator:
 
         # New or modified
         for path in new_paths - old_paths:
+            if path in moved_to:
+                continue  # already reported as MOVED
             rec = self._by_path[path]
-            # Check if content existed at old path (already handled as MOVED)
-            old_locs = old._by_hash.get(rec.content_hash, [])
-            if not old_locs:
-                changes.append(HashChange(
-                    kind=ChangeKind.NEW,
-                    path=path,
-                    content_hash=rec.content_hash,
-                ))
+            changes.append(HashChange(
+                kind=ChangeKind.NEW,
+                path=path,
+                content_hash=rec.content_hash,
+            ))
 
         for path in new_paths & old_paths:
             old_rec = old._by_path[path]

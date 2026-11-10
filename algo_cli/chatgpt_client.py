@@ -707,6 +707,11 @@ def _stream_iter(resp: Any) -> Iterator[dict[str, Any]]:
     for event in _parse_sse_events(resp):
         choices = event.get("choices") or []
         if not choices:
+            if event.get("error") is not None:
+                error = event["error"]
+                message = error.get("message") if isinstance(error, dict) else error
+                detail = chatgpt_auth.safe_error_message(message or "(no message)")
+                raise ChatGptOAuthAccessError(f"ChatGPT OAuth stream returned an error: {detail}")
             continue
         choice = choices[0]
         delta = choice.get("delta") or {}

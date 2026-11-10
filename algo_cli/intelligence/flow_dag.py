@@ -107,7 +107,10 @@ def _build_adjacency(flow: FlowDefinition) -> tuple[dict[str, list[str]], dict[s
         in_deg.setdefault(n.id, 0)
         for val in n.inputs.values():
             if isinstance(val, str) and "${" in val:
-                ref = _extract_ref(val)
+                try:
+                    ref = _extract_ref(val)
+                except FlowError as e:
+                    raise FlowError(f"node {n.id!r}: {e}") from None
                 if ref and ref in node_ids:
                     adj[ref].append(n.id)
                     in_deg[n.id] += 1
@@ -119,7 +122,9 @@ def _extract_ref(expr: str) -> str | None:
     if "${" not in expr:
         return None
     start = expr.index("${") + 2
-    end = expr.index("}", start)
+    end = expr.find("}", start)
+    if end == -1:
+        raise FlowError(f"unterminated reference {expr!r}: missing '}}'")
     ref = expr[start:end]
     # strip field accessor
     return ref.split(".")[0]
@@ -200,7 +205,9 @@ def _resolve_value(expr: Any, context: dict[str, Any]) -> Any:
     if not isinstance(expr, str) or "${" not in expr:
         return expr
     start = expr.index("${") + 2
-    end = expr.index("}", start)
+    end = expr.find("}", start)
+    if end == -1:
+        raise FlowError(f"unterminated reference {expr!r}: missing '}}'")
     ref = expr[start:end]
     parts = ref.split(".")
     val: Any = context

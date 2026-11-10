@@ -70,6 +70,19 @@ if TYPE_CHECKING:
 
 PROGRAM_SCHEMA_VERSION = 1
 RECEIPT_SCHEMA_VERSION = 3
+# A failed step's output becomes ProgramResult.error. The serialized result is
+# later cut at the tool-result limit, so an unbounded error both produces JSON
+# cut mid-string and pushes requires_reconciliation and the receipts off the end.
+MAX_STEP_ERROR_CHARS = 4_000
+
+
+def _bounded_step_error(text: str) -> str:
+    if len(text) <= MAX_STEP_ERROR_CHARS:
+        return text
+    head = MAX_STEP_ERROR_CHARS * 2 // 3
+    tail = MAX_STEP_ERROR_CHARS - head
+    omitted = len(text) - head - tail
+    return f"{text[:head]}\n[... {omitted} characters omitted ...]\n{text[-tail:]}"
 ZERO_RECEIPT_HASH = "0" * 64
 _STEP_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -1929,7 +1942,7 @@ def execute_program(
                 error = (
                     f"{operation} returned {step_status}; protected details were omitted"
                     if step_taint.protected
-                    else str(value)
+                    else _bounded_step_error(str(value))
                 )
             last_clock = max(last_clock, finished)
 

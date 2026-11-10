@@ -57,7 +57,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/status", "Show current model, context usage, and active features"),
     ("/identity", "Show identity file status"),
     ("/lesson", "Store an explicit lesson in the active memory authority"),
-    ("/lessons", "Show legacy lesson status or 'reindex' when Continuum is off"),
+    ("/lessons", "Show legacy lesson file and index status (embedding reindex is retired)"),
     ("/skills", "Review quarantined skills; 'crystallize' / 'approve' / 'reject'"),
     ("/intelligence", "Inspect repository intelligence and your library: status, query, reindex, init"),
     ("/intel", "Alias for /intelligence"),
@@ -707,10 +707,8 @@ def handle_command(
         if selected(cfg):
             if lessons_sub in {"", "status", "show", "?"}:
                 m.show_info("Legacy plaintext lesson retrieval is inactive while Continuum Memory is authoritative.")
-            elif lessons_sub == "reindex":
-                m.show_error("Legacy lesson reindexing is disabled while Continuum Memory is authoritative.")
             else:
-                m.show_error("Usage: /lessons [status|reindex]")
+                m.show_error("Usage: /lessons [status]")
         elif lessons_sub in {"", "status", "show", "?"}:
             status = identity.lessons_index_status()
             m.console.print(f"[muted]Lessons file:[/] {identity.LESSONS_PATH}")
@@ -719,9 +717,11 @@ def handle_command(
             m.console.print(f"  chunks       : [text]{status['chunk_count']}[/]")
             m.console.print(f"  model        : [text]{status['model'] or '-'}[/]")
             m.console.print(f"  stale        : [{'warning' if status['stale'] else 'text'}]{status['stale']}[/]")
-            m.console.print("[muted]Use /lessons reindex to rebuild.[/]")
+            # /lessons reindex is intercepted as a retired embedding route before
+            # this branch runs, so the status must not send the user to it.
+            m.console.print("[muted]Embedding reindex is retired; the index fields describe legacy state only.[/]")
         else:
-            m.show_error("Usage: /lessons [status|reindex]")
+            m.show_error("Usage: /lessons [status]")
     elif command == "/skills":
         from .continuum_memory import selected
 

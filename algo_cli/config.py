@@ -2767,6 +2767,14 @@ class Config:
             preserve_corrupt=False,
         )
         if loaded is missing:
+            # _load_json_file returns the default for a missing file and for one
+            # it cannot read or parse; saying "no saved conversation" for a file
+            # that exists makes a damaged save look deleted.
+            if os.path.lexists(path):
+                raise ValueError(
+                    f"Saved conversation '{safe_name}' exists but could not be read "
+                    f"(invalid JSON, an unsafe file, or a read error): {path}"
+                )
             raise FileNotFoundError(f"No saved conversation named '{safe_name}'")
         if isinstance(loaded, list):
             projected_messages = project_messages_for_persistence(

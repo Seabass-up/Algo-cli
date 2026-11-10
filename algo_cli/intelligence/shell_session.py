@@ -7,7 +7,9 @@ metadata, and timeout/cancellation.
 
 from __future__ import annotations
 
+import os
 import re
+import signal
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -89,6 +91,21 @@ class CommandRecord:
         return normalize_vt("".join(f.data for f in self.frames if f.stream == "stderr"))
 
 
+def _as_text(data: bytes | str) -> str:
+    return data.decode("utf-8", errors="replace") if isinstance(data, bytes) else str(data)
+
+
+def _kill_process_tree(proc: Any) -> None:
+    """Kill the shell and everything it started (POSIX: its process group)."""
+    if os.name == "nt":
+        proc.kill()
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 # ── shell session ─────────────────────────────────────────────────────
 
 
@@ -120,34 +137,44 @@ class ShellSession:
         effective_timeout = timeout or self.default_timeout
 
         try:
-            proc = subprocess.run(
+            # A new session makes the shell the group leader, so a timeout can kill its children too.
+            proc = subprocess.Popen(
                 command,
                 cwd=self.cwd or None,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=effective_timeout,
                 shell=True,
+                start_new_session=os.name != "nt",
             )
-            rec.frames.append(OutputFrame(
-                stream="stdout", data=proc.stdout,
-                raw_bytes=proc.stdout.encode("utf-8", errors="replace"),
-                frame_index=0,
-            ))
-            rec.frames.append(OutputFrame(
-                stream="stderr", data=proc.stderr,
-                raw_bytes=proc.stderr.encode("utf-8", errors="replace"),
-                frame_index=1,
-            ))
-            rec.exit_code = proc.returncode
-            rec.finished_at = time.time()
-        except subprocess.TimeoutExpired as e:
-            rec.timeout_hit = True
-            rec.exit_code = -1
-            rec.finished_at = time.time()
-            if e.stdout:
-                rec.frames.append(OutputFrame(stream="stdout", data=e.stdout.decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else str(e.stdout), frame_index=0))
-            if e.stderr:
-                rec.frames.append(OutputFrame(stream="stderr", data=e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else str(e.stderr), frame_index=1))
+            try:
+                stdout, stderr = proc.communicate(timeout=effective_timeout)
+            except subprocess.TimeoutExpired:
+                _kill_process_tree(proc)
+                try:
+                    stdout, stderr = proc.communicate(timeout=1)
+                except subprocess.TimeoutExpired as e:
+                    stdout, stderr = e.stdout, e.stderr
+                rec.timeout_hit = True
+                rec.exit_code = -1
+                rec.finished_at = time.time()
+                if stdout:
+                    rec.frames.append(OutputFrame(stream="stdout", data=_as_text(stdout), frame_index=0))
+                if stderr:
+                    rec.frames.append(OutputFrame(stream="stderr", data=_as_text(stderr), frame_index=1))
+            else:
+                rec.frames.append(OutputFrame(
+                    stream="stdout", data=stdout,
+                    raw_bytes=stdout.encode("utf-8", errors="replace"),
+                    frame_index=0,
+                ))
+                rec.frames.append(OutputFrame(
+                    stream="stderr", data=stderr,
+                    raw_bytes=stderr.encode("utf-8", errors="replace"),
+                    frame_index=1,
+                ))
+                rec.exit_code = proc.returncode
+                rec.finished_at = time.time()
         except Exception as e:
             rec.exit_code = -1
             rec.finished_at = time.time()

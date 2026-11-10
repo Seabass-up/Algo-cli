@@ -212,7 +212,7 @@ class XenonEgressPolicy:
             if split.query or split.fragment or split.username is not None or split.password is not None:
                 _reject("policy_redirect_allowlist")
             host = _canonical_host(split.hostname or "")
-            port = split.port or (443 if scheme == "https" else 80)
+            port = split.port if split.port is not None else (443 if scheme == "https" else 80)
             if port not in self.allowed_ports:
                 _reject("policy_redirect_allowlist")
             canonical_allowlist.append(_origin(scheme, host, port))
@@ -270,7 +270,7 @@ def resolve_public_url(
     if split.username is not None or split.password is not None:
         _reject("userinfo_denied")
     host = _canonical_host(split.hostname or "")
-    port = split.port or (443 if scheme == "https" else 80)
+    port = split.port if split.port is not None else (443 if scheme == "https" else 80)
     if port not in policy.allowed_ports:
         _reject("port_denied")
     addresses = _public_addresses(

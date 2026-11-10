@@ -3458,6 +3458,86 @@ separate capability, compatibility, identity, inference and resource-preservatio
 gates. Metadata diagnostics are not execution or functional verification.
 No watchdog, private catalog, original speech checkout or public release change.
 
+## 2026-11-09: Whole-Codebase Bug Hunt (Runtime Paths, Tools, Retrieval, Library Modules)
+
+**Scope:** Local candidate in `Algo-cli-bughunt-20261109` (base `8883022` plus the
+qualified diagnostics patch). 28 code slices were audited by read-only subagents;
+every accepted finding was reproduced first. Installed as a separate local runtime
+on the owner's instruction (see "Local delivery" below); not committed or published.
+
+**Symptoms and confirmed causes (fixed):**
+
+- `edit_file`/`batch_edit` read with universal newlines and `errors="replace"`, then
+  rewrote the whole file: CRLF files became LF and non-UTF-8 bytes became U+FFFD.
+- The harness index was judged stale on every check when any source file was one
+  `build_index` deliberately excludes (clipping notes, contract-mismatched skills):
+  the excluded file never entered `indexed_paths`, so every load rebuilt and
+  rewrote the index.
+- The per-turn "Relevant References" block used `rec["snippet"]`, which lexical
+  search results do not carry, so only titles reached the model.
+- A local Ollama server that never became ready caused another `ollama serve`
+  spawn and a 12 s wait on every prompt; the status footer also tried to start it.
+  Model listing had no timeout; readiness probes let `HTTPException` escape.
+- The completion gate accepted commands that run no tests as test verification
+  (`cargo test --no-run`, `go test -n`, `make -n test`, `mvn -DskipTests`,
+  `--passWithNoTests`, `gradle -x test`).
+- Goal mode read the last assistant message after a turn; text the completion gate
+  had withheld could mark the goal complete.
+- A model with no reported context length re-ran the `ollama show` chain on every
+  prompt; an explicit `/ctx 8192` was overridden by the adaptive profile; a
+  `TypeError` inside a tool body was reported as a wrong-arguments error; a failed
+  program step's unbounded output cut the result JSON mid-string.
+- Task routing matched terms as substrings ("add" in "address"), so plain questions
+  were routed as mutating code changes; `_REVIEW_RE` missed inflected forms.
+- Smaller defects: `--version` printed `index vunknown`; a corrupt saved
+  conversation was reported as missing; a corrupt thread store had no backup before
+  rewrite; agent-block previews flattened Markdown; `/lessons` advertised a retired
+  reindex; `x_search` failed on a string count after the search ran; doctor crashed
+  on an invalid host port; Git evidence mishandled non-ASCII untracked names and
+  repositories without commits; publish calls could block on a credential prompt;
+  provider streams ignored in-band error events; Google Docs text extraction
+  returned only the title; deep-link, egress-port and browser-service error
+  handling; reasoning bridge, tree search, MCTS and reflexion scoring; and 23
+  defects in `algo_cli/intelligence` library modules with no runtime caller.
+
+**Repair:** Minimal local fixes per defect; refusals and integrity checks were not
+loosened (egress port 0 is now rejected rather than defaulted). Regression tests
+are in `tests/test_bughunt_*_20261109.py`.
+
+**Executed verification:** 170 new tests in ten files; 136 fail when run against
+the pre-change tree and all pass on the candidate (the rest are guards for
+behaviour that must not change). On a non-editable install with source parity
+(278 Python files, `sha256:6591e77b…3de1`): full pytest 7,902 passed, 45 skipped,
+0 failed, 72.61% branch-aware coverage; Ruff, compile and the 79-file mypy contract
+pass. Nathan passes 17 probes and 31 workloads; M8 reports nine local passes, five
+external blockers and no failures (its first run failed only because the dev
+environment was an editable install, which the parity step rejects); M9 accepts
+the fresh bindings and still reports the external blockers. A later source edit
+invalidates these results.
+
+**Local delivery:** On the owner's instruction this candidate was installed as a
+separate local runtime with a rollback launcher. Installed parity equals the
+qualified digest; staged and normal-launcher console smokes (scripted loopback
+provider, isolated configuration) match the previous runtime's shapes, and the
+owner's preserved local inputs are byte-identical before and after. No live
+provider or speech inference, daemon restart, index refresh or settings change
+was made; sessions started before activation keep the old code until restarted.
+
+**Not fixed (reported to the owner):** `/ship commit --files` from a repository
+subdirectory (reproduced; can leave a file staged); lessons are never inlined in
+non-Continuum mode (design decision needed); seven memory-CLI subprocess calls per
+turn with Continuum on; token-refresh network failures reported as "not
+authenticated"; uninstall re-run reports `recovery_required`; one unreadable
+artifact-store manifest blocks PDF rendering; symlinked-ancestor refusals use the
+protected-memory message.
+
+**Prevention:** Any whole-file rewrite must read bytes and preserve what it did
+not change. A freshness check must apply the same exclusions as the build it
+guards. A status path may observe a service but never start one. A verification
+classifier needs negative cases for dry-run and skip flags. Evidence that a step
+"completed" must come from the step, not from the last message in history.
+Model-ranked triage is advisory: the lowest-ranked candidate here reproduced.
+
 ## Repair Log Checklist
 
 - Date and component.

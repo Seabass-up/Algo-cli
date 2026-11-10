@@ -441,7 +441,7 @@ def test_invalid_knowledge_subcommands_report_usage(monkeypatch):
     main_module.handle_command("/reflex wat", cfg, None)
 
     assert errors == [
-        "Usage: /lessons [status|reindex]",
+        "Usage: /lessons [status]",
         "Usage: /skills [status|crystallize|approve NAME|reject NAME|on|off]",
         "Usage: /reflex [on|off|status|reset]",
     ]

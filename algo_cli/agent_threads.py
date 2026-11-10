@@ -929,7 +929,9 @@ def _load_threads_unlocked(
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise ElsieReceiptError("protected agent thread store is malformed") from exc
     else:
-        loaded = config._load_json_file(target, _empty_store(), preserve_corrupt=False)
+        # Keep a .corrupt copy: an unparseable store loads as empty, and the next
+        # mutation rewrites the file, which would otherwise erase every thread.
+        loaded = config._load_json_file(target, _empty_store(), preserve_corrupt=True)
     if not isinstance(loaded, dict) or loaded.get("version") not in _COMPATIBLE_SCHEMA_VERSIONS:
         loaded = _empty_store()
     records = loaded.get("threads", [])

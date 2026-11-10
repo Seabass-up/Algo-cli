@@ -18,7 +18,7 @@ from . import decision_layer as decisions, harness
 
 
 _TRIVIAL_TASK_RE = re.compile(r"^\s*(?:hi|hello|hey|thanks|thank you|ok|okay|good (?:morning|afternoon|evening)|what is your version\??)[.!\s]*$", re.I)
-_REVIEW_RE = re.compile(r"\b(review|revei\w*|audit|scan|investigate|debug)\b|\breport\s+(?:back\s+)?(?:issues|bugs|findings)\b", re.I)
+_REVIEW_RE = re.compile(r"\b(review(?:s|ed|ing)?|revei\w*|audit(?:s|ed|ing)?|scan(?:s|ned|ning)?|investigat(?:e|es|ed|ing|ion|ions)|debug(?:s|ged|ging)?)\b|\breport\s+(?:back\s+)?(?:issues|bugs|findings)\b", re.I)
 _DIRECTIVE_START = r"(?:please\s+)?(?:review|audit|scan|check|test|run|perform|conduct|do|keep|process|work|research|investigate)\b(?!\s+(?:why|how|whether|what)\b)"
 _LOCAL_DIRECTIVES = tuple(re.compile(pattern, re.I) for pattern in (
     r"^(?:local[- ]only|offline|no (?:internet|network|remote|cloud)(?: (?:access|calls))?)[.!?]*$",
