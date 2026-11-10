@@ -3523,8 +3523,39 @@ owner's preserved local inputs are byte-identical before and after. No live
 provider or speech inference, daemon restart, index refresh or settings change
 was made; sessions started before activation keep the old code until restarted.
 
-**Not fixed (reported to the owner):** `/ship commit --files` from a repository
-subdirectory (reproduced; can leave a file staged); lessons are never inlined in
+**Follow-up repair, same day (`/ship commit --files` from a subdirectory):** Built on the
+candidate above and installed locally the same day on the owner's instruction. *Symptom:* with the session
+directory below the repository root, `--files src/x.py` failed with Git's
+"pathspec did not match", and `--files y.py` staged `sub/y.py`, refused with
+"Staging escaped the selected-file scope" and left that file staged.
+`--files .` committed only the current directory while the scope check treated
+it as the whole workspace. *Confirmed cause:* `git_publish._validated_paths`
+resolves each path against the workspace root, but the pathspecs were
+`:(literal)PATH`, which Git resolves against the process directory. A second
+defect on the same line: the helper returns stderr when stdout is empty, so a
+status that printed only "warning: could not open directory" counted as a
+change. *Repair:* pathspecs are `:(top,literal)PATH` (the root itself is the
+empty pattern, because a top-anchored `.` matches nothing); warning-only status
+output counts as no changes; when a selected path has changes only relative to
+the current directory the refusal names the root-relative path to use; `.` from
+a subdirectory is refused with both alternatives named, rather than silently
+widening to the whole workspace. *Verification:* `tests/test_bughunt_ship_files_20261109.py`
+(11 tests; 7 fail on the pre-fix code, all pass now); with the two existing
+publish test files 62 passed. On a non-editable install with parity
+`sha256:183dcb4d…4d99`: full suite 7,913 passed, 45 skipped, 0 failed, 72.65%
+coverage; Ruff, compile and the 79-file mypy contract pass (`git_publish.py`
+is outside that contract and type-checks alone); Nathan 17 probes and 31
+workloads; M8 nine local passes, five external blockers, no failures; M9
+accepts the fresh bindings. No live Git remote, push or pull-request run.
+*Remaining:* a refusal after staging (scrub or scope) still leaves the index
+staged, as before; Git older than the `top` and `literal` pathspec magic is not
+tested. *Local delivery:* installed as a further local runtime with rollback to the
+previous one; installed parity equals the qualified digest, console smokes keep
+their shapes, and the installed package committed a root-relative file from a
+subdirectory of a throwaway repository and refused the two ambiguous forms with
+nothing staged. No live provider, speech or remote Git run.
+
+**Not fixed (reported to the owner):** lessons are never inlined in
 non-Continuum mode (design decision needed); seven memory-CLI subprocess calls per
 turn with Continuum on; token-refresh network failures reported as "not
 authenticated"; uninstall re-run reports `recovery_required`; one unreadable
@@ -3537,6 +3568,9 @@ guards. A status path may observe a service but never start one. A verification
 classifier needs negative cases for dry-run and skip flags. Evidence that a step
 "completed" must come from the step, not from the last message in history.
 Model-ranked triage is advisory: the lowest-ranked candidate here reproduced.
+A path that is validated against one base directory must be handed to the tool
+anchored to that same base; test path-taking commands from a subdirectory as
+well as the root. Text captured from stderr is not evidence of output.
 
 ## Repair Log Checklist
 

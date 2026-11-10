@@ -924,6 +924,13 @@ def _validated_paths(cwd: str | Path, paths: list[str] | tuple[str, ...]) -> tup
             raise PublishError(f"Selected path escapes the active workspace: {value}") from exc
         if relative == ".git" or relative.startswith(".git/"):
             raise PublishError("Git metadata cannot be selected for a commit.")
+        if relative == ".":
+            prefix = _workspace_prefix(cwd)
+            if prefix:
+                raise PublishError(
+                    f"--files {value} selects the whole workspace, not this directory. "
+                    f"Use --files {prefix} for this directory, or omit --files to commit every change."
+                )
         if relative not in normalized:
             normalized.append(relative)
     if not normalized:
@@ -932,7 +939,51 @@ def _validated_paths(cwd: str | Path, paths: list[str] | tuple[str, ...]) -> tup
 
 
 def _literal_pathspecs(paths: tuple[str, ...]) -> list[str]:
-    return [f":(literal){path}" for path in paths]
+    # Selected paths are validated against the workspace root, but Git resolves a
+    # plain pathspec against the process directory. "top" anchors both to the root
+    # so a commit started from a subdirectory acts on the path that was validated.
+    # A top-anchored "." matches nothing; the empty pattern is the whole workspace.
+    return [f":(top,literal){'' if path == '.' else path}" for path in paths]
+
+
+def _workspace_prefix(cwd: str | Path) -> str:
+    """Directory of ``cwd`` below the workspace root as Git reports it; empty at the root."""
+
+    return _try_git(["rev-parse", "--show-prefix"], cwd=cwd).strip().rstrip("/")
+
+
+def _status_entries(output: str) -> list[str]:
+    # ``_run_program`` returns stderr when stdout is empty, so a status with nothing
+    # to report can still carry a Git warning about a directory it could not read.
+    return [
+        line
+        for line in output.splitlines()
+        if line.strip() and not line.startswith("warning: ")
+    ]
+
+
+def _subdirectory_relative_matches(cwd: str | Path, selected: tuple[str, ...]) -> tuple[str, ...]:
+    """Return the selected paths that have changes only when read from ``cwd``."""
+
+    prefix = _workspace_prefix(cwd)
+    if not prefix:
+        return ()
+    matches: list[str] = []
+    for path in selected[:10]:
+        candidate = f"{prefix}/{path}"
+        status = _try_git(
+            [
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=normal",
+                "--",
+                *_literal_pathspecs((candidate,)),
+            ],
+            cwd=cwd,
+        )
+        if _status_entries(status):
+            matches.append(candidate)
+    return tuple(matches)
 
 
 def _path_within_scopes(path: str, scopes: tuple[str, ...]) -> bool:
@@ -1040,7 +1091,13 @@ def commit_all(
     if selected:
         status_args.extend(["--", *literal_selected])
     selected_status = _git(status_args, cwd=cwd, operation="Git status", timeout=30)
-    if not selected_status.strip():
+    if not _status_entries(selected_status):
+        nearby = _subdirectory_relative_matches(cwd, selected) if selected else ()
+        if nearby:
+            raise PublishError(
+                "There are no changes to commit at the selected paths. --files paths are "
+                "relative to the workspace root; from this directory use: " + ", ".join(nearby)
+            )
         raise PublishError("There are no changes to commit.")
     if selected:
         pre_staged = _nul_git_paths(
