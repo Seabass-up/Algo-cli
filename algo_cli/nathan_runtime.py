@@ -1103,6 +1103,7 @@ def run_tool(name: str, args: dict[str, Any], cfg: Config) -> str:
         "harness_read",
         "harness_scorecard",
         "harness_competitive_rating",
+        "runtime_diagnostics",
     ):
         call_args["cfg"] = cfg
     if name == "session_slash":

@@ -15,13 +15,21 @@ def protected_diagnostic_command(command: str) -> str | None:
     return None
 
 
+LIMIT_MINIMUM = 1
+LIMIT_MAXIMUM = 10
+_UNAVAILABLE = {'configuration': 'unavailable'}
+
+
 def _context(cfg: Any) -> dict[str, Any]:
+    if cfg is None:
+        return dict(_UNAVAILABLE)
     messages = getattr(cfg, 'messages', [])
     summary = getattr(cfg, 'session_summary', '')
     context_tokens = getattr(cfg, 'num_ctx', None)
     if type(context_tokens) is not int or not 256 <= context_tokens <= 2_000_000:
         context_tokens = None
-    return {'messages': len(messages) if isinstance(messages, list) else 0,
+    return {'configuration': 'live',
+            'messages': len(messages) if isinstance(messages, list) else 0,
             'summary_active': bool(summary),
             'configured_context_tokens': context_tokens,
             'token_usage': 'not_evaluated_without_building_private_context'}
@@ -31,33 +39,49 @@ def runtime_diagnostics(section: str = 'selfcheck', query: str = '', provider: s
                         offset: int = 0, limit: int = 3, cfg: Any = None) -> str:
     """Read bounded public/runtime metadata; never memory bodies or arbitrary files.
 
-    Sections: selfcheck, context, harness, search, decisions. Search returns only
-    public product record identities, never snippets, paths or owner algorithms.
-    Follow next_offset for another bounded page. This is not a functional test.
+    Search returns only public product record identities, never snippets, paths
+    or owner algorithms. This is not a functional test.
+
+    Args:
+        section: One of selfcheck, context, harness, search or decisions.
+        query: Search text for the search section, at most 1024 bytes.
+        provider: Decision provider name for the decisions section.
+        offset: Zero-based start of the page; pass next_offset from the previous page.
+        limit: Items per page, an integer from 1 to 10.
     """
     from . import continuum_memory, harness
     from .irene_memory_path_policy import protected_tool_policy_error
 
-    def error(code: str) -> str:
-        return json.dumps({'ok': False, 'error': code}, separators=(',', ':'))
+    def error(code: str, **detail: Any) -> str:
+        return json.dumps({'ok': False, 'error': code, **detail}, separators=(',', ':'))
 
     if section not in {'selfcheck', 'context', 'harness', 'search', 'decisions'}:
         return error('invalid_diagnostic_section')
-    if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 10:
-        return error('invalid_diagnostic_page')
+    if (type(offset) is not int or offset < 0 or type(limit) is not int
+            or not LIMIT_MINIMUM <= limit <= LIMIT_MAXIMUM):
+        return error('invalid_diagnostic_page', offset_minimum=0,
+                     limit_minimum=LIMIT_MINIMUM, limit_maximum=LIMIT_MAXIMUM)
     if not isinstance(query, str) or len(query.encode('utf-8')) > 1024:
         return error('invalid_diagnostic_query')
     try:
-        protected = continuum_memory.selected(cfg) if cfg is not None else False
+        # Without the session configuration the memory mode is unknown: report it as
+        # unknown, and filter retrieval as if protection were on.
+        selected = continuum_memory.selected(cfg) if cfg is not None else None
+        protected = selected is not False
         rows: list[dict[str, Any]] = []
         if section == 'context':
             data = _context(cfg)
         elif section in {'selfcheck', 'harness'}:
-            data = {'scope': 'bounded_metadata_not_full_audit', 'continuum_selected': protected}
+            data = {'scope': 'bounded_metadata_not_full_audit',
+                    'configuration': 'live' if cfg is not None else 'unavailable',
+                    'continuum_selected': selected}
             if section == 'selfcheck':
-                refusal = protected_tool_policy_error('run_shell', {}, cfg)
-                data.update({'shell': 'policy_blocked' if refusal else 'requires_runtime_preflight',
-                             'context': _context(cfg), 'functional_verification': 'not_run'})
+                if cfg is None:
+                    shell = 'unknown_without_configuration'
+                else:
+                    refusal = protected_tool_policy_error('run_shell', {}, cfg)
+                    shell = 'policy_blocked' if refusal else 'requires_runtime_preflight'
+                data.update({'shell': shell, 'context': _context(cfg), 'functional_verification': 'not_run'})
             else:
                 index = harness.retrieval_index(protected_memory=protected)
                 records = [r for r in index.get('records', []) if isinstance(r, dict)]
