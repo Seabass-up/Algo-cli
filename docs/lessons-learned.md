@@ -3636,6 +3636,33 @@ still to run.
 code change; expect it on any release that has been idle for weeks, and check
 it before preparing the release rather than after the pull request.
 
+## 2026-11-10: Catalog Tests Wrote Platform-Dependent Fixture Bytes
+
+**Symptom:** Hosted Windows CI on the 0.20.4 pull request failed 11 tests in
+`tests/test_algorithm_catalog_tools.py` (lengths off by one per line, `\r\n`
+where `\n` was expected). Ubuntu and macOS passed.
+
+**Confirmed cause:** Those tests were added after the last hosted run and had
+only run on macOS. Owner-catalog reads are deliberately byte-lossless and
+hash-bound, but the fixture helper used `Path.write_text`, which writes `\r\n`
+on Windows. The product was correct; the fixture differed by platform.
+
+**Repair:** The helper writes `text.encode("utf-8")` with `write_bytes`.
+
+**Verification:** A pytest plugin that makes `Path.write_text` translate
+newlines as Windows does reproduced exactly the same 11 failures on macOS; after
+the change all 56 catalog tests pass with and without it. The file is in the M8
+and Nathan source sets, so the evidence was regenerated: full suite 7,908
+passed, 45 skipped, 0 failed, 74.97% branch coverage; Nathan 17/31; M8 nine
+passes, five external blockers, no failures; M9 accepts. The same emulation over
+the whole suite also flags a Git staging test that passes on real Windows
+(Git converts line endings there), so the emulation is a reproduction aid, not a
+substitute for the hosted Windows job.
+
+**Prevention:** Fixtures for byte-exact readers must be written as bytes. Code
+merged with local-only CI has not run on Windows; expect platform failures the
+first time hosted CI runs again.
+
 ## Repair Log Checklist
 
 - Date and component.
