@@ -162,6 +162,15 @@ class ShellSession:
                     rec.frames.append(OutputFrame(stream="stdout", data=_as_text(stdout), frame_index=0))
                 if stderr:
                     rec.frames.append(OutputFrame(stream="stderr", data=_as_text(stderr), frame_index=1))
+            except BaseException:
+                # In its own session the shell never sees the terminal's Ctrl-C, so an
+                # interrupted call would otherwise leave the command running.
+                _kill_process_tree(proc)
+                try:
+                    proc.communicate(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
+                raise
             else:
                 rec.frames.append(OutputFrame(
                     stream="stdout", data=stdout,

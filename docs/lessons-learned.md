@@ -3663,6 +3663,31 @@ substitute for the hosted Windows job.
 merged with local-only CI has not run on Windows; expect platform failures the
 first time hosted CI runs again.
 
+## 2026-11-10: A Timeout Fix Left Interrupted Shell Commands Running
+
+**Symptom:** Automated review of the 0.20.4 pull request reported that
+interrupting `ShellSession.execute()` with Ctrl-C left the command running.
+
+**Confirmed cause:** A bug-hunt repair in this same release started the shell in
+its own session so a timeout could kill the whole process group. In its own
+session the shell no longer receives the terminal's SIGINT, and the new `Popen`
+path cleaned up only on `TimeoutExpired`; the previous `subprocess.run` call had
+killed the child on any interruption. The repair's tests covered the timeout
+only.
+
+**Repair:** On any `BaseException` while waiting, kill the process group, reap
+it briefly and re-raise.
+
+**Verification:** `tests/test_shell_session_interrupt.py` starts a shell with a
+background child and interrupts the wait: before the repair the shell was still
+running; after it both the shell and the child are gone and `KeyboardInterrupt`
+propagates. A companion test keeps the timeout behaviour. POSIX only; the
+Windows path kills the direct child as before.
+
+**Prevention:** Moving a child process into its own session or process group
+takes over responsibility for every way the wait can end, not only the timeout.
+Test interruption alongside timeout whenever process-group handling changes.
+
 ## Repair Log Checklist
 
 - Date and component.
