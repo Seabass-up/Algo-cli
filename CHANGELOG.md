@@ -4,11 +4,42 @@ All notable changes to Algo CLI are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.20.4] - 2026-11-10
+
+A patch release of repairs found by a whole-codebase review, plus bounded
+runtime diagnostics. See `docs/henry-release-0.20.4.md` for scope and gates.
+
+### Added
+
+- Bounded public/runtime metadata diagnostics (`runtime_diagnostics`, exact
+  read-only `/selfcheck` and `/context` forms) and native MLX decision-model
+  compatibility checks. Diagnostics report the live session configuration and
+  say "unavailable" rather than false or zero when it is missing.
+
+### Fixed
+
+- `edit_file` and `batch_edit` keep CRLF line endings and refuse non-UTF-8
+  files unchanged instead of rewriting them with replacement characters.
+- No-test commands (`cargo test --no-run`, `go test -n`, `make -n`,
+  `-DskipTests`, `gradle -x test`) no longer count as test verification, and
+  goal mode no longer completes from text the completion gate withheld.
+- A local model server that never becomes ready is not respawned on every
+  prompt, and the status footer no longer starts it.
+- The harness index no longer rebuilds on every load when a source file is one
+  the build excludes; retrieved context keeps record summaries.
+- Plain questions are no longer routed as code changes by substring matches.
+- `/ship commit --files` from a repository subdirectory acts on the
+  workspace-root path it validated, instead of failing or staging another file.
+- Smaller repairs in model metadata caching, explicit `/ctx`, tool argument
+  errors, git evidence, provider stream errors, Google Docs text, deep links,
+  browser egress, reasoning search and library modules.
 - Reject malformed compaction summaries and retain a model-visible warning when
   conversation history has been compressed with a lossy fallback.
 - Make partial text reads explicit and resumable, including long lines, within
   the actual tool-message limit. Align managed-worktree exclusions across search
   backends while retaining ordinary hidden source files.
+
+## [0.20.3] - 2026-10-16
 
 ### 0.20.3 Core CLI Candidate
 
