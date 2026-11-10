@@ -3572,6 +3572,41 @@ A path that is validated against one base directory must be handed to the tool
 anchored to that same base; test path-taking commands from a subdirectory as
 well as the root. Text captured from stderr is not evidence of output.
 
+## 2026-11-09: Model-Called Diagnostics Ran Without The Session Configuration
+
+**Symptom:** A harness review through the live runtime got
+`continuum_selected: false`, shell `requires_runtime_preflight` and a zero-message
+context from `runtime_diagnostics`, while the session had Continuum selected and
+shell blocked. A `limit: 15` request failed with `invalid_diagnostic_page` although
+the tool schema only said "integer".
+
+**Confirmed cause:** `nathan_runtime.run_tool` passes the session configuration
+only to a fixed list of tools; `runtime_diagnostics` was not on it, so the model
+path called it with `cfg=None`, which the module rendered as false and zero. The
+slash-command path did pass the configuration, so the defect only showed through
+model tool calls. The schema had no argument descriptions.
+
+**Repair:** Add the tool to the configuration list. Without configuration, report
+`configuration: unavailable`, `continuum_selected: null` and an unavailable
+context, and filter retrieval as if protection were on. Describe each argument
+in the docstring (limit 1 to 10) and return the permitted range with
+`invalid_diagnostic_page`. The review's third finding, a privacy-safe summary of
+the protected scorecard, is a separate design decision and is not part of this
+repair.
+
+**Verification:** `tests/test_runtime_diagnostics_config.py` (9 tests) fails on
+the pre-fix package and passes after it; the diagnostics, Continuum and tool
+tests pass (288). Release 0.20.4 tree (the commits above, without the owner's
+private local adapter): non-editable install with parity, full suite 7,908
+passed, 45 skipped, 0 failed, 74.97% branch coverage; Ruff, compile and the
+mypy contract pass; Nathan 17 probes/31 workloads; M8 nine local passes, five
+external blockers, no failures; M9 accepts. Source, history and package privacy
+scans, the dependency audit, `twine check` and the isolated wheel install pass.
+
+**Prevention:** A tool that takes the runtime configuration must be on the
+injection list, and its tests must call it through `run_tool`, not only
+directly. Report a missing input as unknown rather than as a default value.
+
 ## Repair Log Checklist
 
 - Date and component.
