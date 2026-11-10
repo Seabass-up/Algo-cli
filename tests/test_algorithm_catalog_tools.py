@@ -17,7 +17,9 @@ from algo_cli.session_mode import restore_yolo_activation
 
 def _owner_catalog(text="# My catalog\n\n### A1. Exact boundary\nStatus: proposed\n"):
     path = config.CONFIG_DIR / "ALGO.md"
-    path.write_text(text, encoding="utf-8")
+    # Exact bytes: catalog reads are byte-lossless, and write_text would turn
+    # "\n" into "\r\n" on Windows.
+    path.write_bytes(text.encode("utf-8"))
     return path
 
 
