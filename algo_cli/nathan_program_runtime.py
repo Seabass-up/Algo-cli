@@ -409,6 +409,7 @@ class ProgramOutput:
     preview: str
     taint: ProgramTaint
     artifact: ArtifactRef | None = None
+    preview_truncated: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -417,7 +418,18 @@ class ProgramOutput:
             "bytes": self.byte_count,
             "preview": self.preview,
             "taint": self.taint.to_dict(),
+            "content_visibility": "protected" if self.taint.protected else "truncated" if self.preview_truncated else "complete",
         }
+        if self.taint.protected:
+            payload["continuation"] = {
+                "tool": "runtime_diagnostics",
+                "note": "Only public search/context/provider metadata is available there; private bodies remain protected.",
+            }
+        elif self.preview_truncated:
+            payload["continuation"] = {
+                "method": "narrow_output",
+                "note": "Select bounded fields with outputs $ref/path, or request a paged runtime_diagnostics section.",
+            }
         if not self.taint.protected:
             payload["sha256"] = self.sha256
         if self.artifact is not None:
@@ -1673,6 +1685,7 @@ def _program_output(
         preview,
         taint,
         artifact,
+        preview_truncated=not taint.protected and len(rendered) > limits.output_preview_chars,
     )
 
 

@@ -42,6 +42,7 @@ from algo_cli.henry_hardening_qualification import (  # noqa: E402
 FUZZER = ROOT / "scripts" / "david_control_kernel_fuzzer.py"
 INSTALLED_PARITY = ROOT / "scripts" / "oliver_installed_source_parity.py"
 SOURCE_PATHS = (
+    "algo_cli/runtime_diagnostics.py",
     "skills/memory-recall-ritual.md",
     "skills/smart-error-recovery.md",
     "docs/harness-guidance-coherence.md",
@@ -271,6 +272,7 @@ SOURCE_PATHS = (
     "tests/test_arthur_control_readiness.py",
 )
 FOCUSED_TESTS = (
+    "tests/test_protected_diagnostics.py",
     "tests/test_algorithm_catalog_tools.py",
     "tests/test_guidance_coherence.py",
     "tests/test_oauth_loopback_deadlines.py",

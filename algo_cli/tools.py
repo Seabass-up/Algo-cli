@@ -64,6 +64,7 @@ from .continuum_tools import (
 from .marcus_authority import CuratedToolRegistry
 from .jev_kernel import jev_kernel_status, jev_question_contract
 from .decision_layer import decision_decide, decision_status
+from .runtime_diagnostics import runtime_diagnostics
 from .algorithm_catalog import algorithm_catalog_edit, algorithm_catalog_read
 from ollama import Client
 
@@ -3202,6 +3203,7 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
             "session_command: any registered slash command such as /status, /mode execute, /context status, /harness status, /harness refresh, /harness score, /harness compare, /route TASK (session control; may require approval)",
         ],
         "shell": ["run_shell"],
+        "verification": ["runtime_diagnostics", "run_shell", "git_diff", "read_file"],
         "web": ["web_search", "web_fetch"],
         "browser": [
             "cobalt_open",
@@ -3302,6 +3304,25 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
     ]
     from .oliver_slash_dispatch import SLASH_COMMAND_ALIASES, SLASH_COMMANDS
     from .kernels.manifest import kernel_discovery_snapshot
+    from .irene_memory_path_policy import protected_tool_policy_error
+
+    def effective_policy(groups: dict[str, list[str]]) -> dict[str, Any]:
+        states = {}
+        for items in groups.values():
+            for item in items:
+                name = item.split(":", 1)[0].strip()
+                if name not in TOOL_MAP:
+                    continue
+                refusal = protected_tool_policy_error(name, {}, cfg) if cfg is not None else None
+                states[name] = {"status": "policy_blocked" if refusal else "requires_runtime_preflight"}
+                if refusal:
+                    states[name]["reason"] = refusal
+        return states
+
+    shell_refusal = protected_tool_policy_error("run_shell", {}, cfg) if cfg is not None else None
+    if shell_refusal:
+        verification_layer = [line for line in verification_layer if "Use run_shell" not in line]
+        verification_layer.append(shell_refusal + " Use runtime_diagnostics for bounded metadata; it is not a test runner.")
 
     stats = _harness_stats_for_config(cfg)
 
@@ -3391,6 +3412,7 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
                 indent=2,
             )
         matching["match"] = "matched"
+        matching["effective_tool_policy"] = effective_policy(matching["model_callable_tools"])
         if slash_focus:
             matching["when_to_use"] = slash_guidance
             matching["slash_command_guidance"] = slash_guidance
@@ -3704,7 +3726,8 @@ def session_command(command: str, cfg: Any = None) -> str:
 
     Use this for session control when the user asks for it or the next step depends
     on CLI state. Do not call it just to perform normal work: use write_file for
-    edits, run_shell for tests/builds, and session_slash for /read, /ls, /cd, /cwd.
+    edits, run_shell for tests/builds only when effective policy admits it, and
+    session_slash for /read, /ls, /cd, /cwd. Continuum protection disables shell.
     If you merely type a slash command in a final answer, it will not execute.
 
     Prefer idempotent commands with explicit state when available:
@@ -3744,6 +3767,12 @@ def session_command(command: str, cfg: Any = None) -> str:
     if cfg is None:
         return "Error: session_command must be invoked by the algo CLI runtime (not called directly)."
     normalized = command.strip()
+    from .continuum_memory import selected
+    from .runtime_diagnostics import protected_diagnostic_command
+
+    diagnostic = protected_diagnostic_command(normalized)
+    if diagnostic is not None and selected(cfg):
+        return runtime_diagnostics(section=diagnostic, cfg=cfg)
     from .samuel_policy_engine import normalize_session_command
 
     command, argument = normalize_session_command(normalized)
@@ -5343,6 +5372,7 @@ def action_program(plan: dict, cfg: Any = None) -> str:
 
 
 ALL_TOOLS = [
+    _hide_cfg_param(runtime_diagnostics),
     _hide_cfg_param(read_file),
     edit_file,
     read_pdf,

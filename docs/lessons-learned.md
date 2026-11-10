@@ -3420,6 +3420,44 @@ used.
 
 **Prevention:** Enforce terminal-state ordering where the record is written, not only in the callers' lock protocol; a lock wait with a timeout is not a guarantee that no writer remains inside.
 
+## 2026-11-09: Protected Diagnostics And Native MLX Decision Compatibility
+
+**Symptom and confirmed causes:** Discovery and YOLO guidance advertised shell
+verification even where Continuum policy denies it. Protected slash diagnostics
+had no narrow metadata route; encrypted/truncated program output lacked explicit
+continuation guidance. Decision inspection assumed GGUF despite native MLX
+System One support; admitting the supported format exposed a separate stale pin.
+
+**Repair:** Add bounded public/runtime metadata diagnostics, exact read-only
+slash forms, conditional verification discovery, explicit output visibility and
+pagination, and decision-capability/format/runner/version checks for MLX. Retain
+shell denials, protected bodies, static program arguments and digest checks.
+Rebuild and activate a separate local wheel with the existing speech overlay and
+rollback; refresh only the generated public lexical index.
+
+**Executed verification:** A local audit record retains pre-fix failures and
+the commands/results. Full pytest: 7,732 passed, 45 skipped, 71.35% branch-aware
+coverage. Focused group: 342 passed, one skipped; staged installed regressions:
+32 passed; required search backend: 74 passed. Ruff, 80-file mypy, compile,
+locked dependency audit, wheel privacy and installed parity pass. Nathan passes
+17 probes/31 workloads; M8 passes nine local metrics with five external blockers;
+M9 accepts fresh bindings. Both actual launcher aliases pass scripted-provider
+stall, productive-alternative and startup checks. All 1,614 preservation inputs
+match at activation; later only the declared generated index changes (262 records).
+
+**Live limitation:** Ollama client/server 0.40.15 served one public Clef-flash MLX
+Choice/Noul/Score fixture in 11.446 seconds with valid typed semantics. The
+additional resident-model preservation assertion failed: another resident model
+disappeared from residency; eviction versus expiry is not established. Other resident local
+services were unchanged, but this does not prove non-interference. Retain the failed receipt, keep the saved pin unchanged, and
+defer promotion until a controlled resource window. No cold-load retry,
+explicit unload, speech generation or settings change was performed.
+
+**Prevention:** Test exact terminal state and Unicode pagination progress;
+separate capability, compatibility, identity, inference and resource-preservation
+gates. Metadata diagnostics are not execution or functional verification.
+No watchdog, private catalog, original speech checkout or public release change.
+
 ## Repair Log Checklist
 
 - Date and component.

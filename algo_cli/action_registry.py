@@ -190,6 +190,10 @@ def _spec(
 
 
 ACTION_SPECS: tuple[ActionSpec, ...] = (
+    _spec('runtime_diagnostics', 'tool', 'Read bounded public runtime, context and search metadata.',
+          'harness', ('diagnostics', 'selfcheck', 'context', 'search', 'verification'),
+          'Metadata only; never private memory, owner catalog bodies, shell or a functional test.',
+          'low', False, False, True),
     _spec(
         "jev.status", "kernel", "Inspect Jev question-contract companion readiness.",
         "kernel", ("jev", "read-only", "local"), "Checks compatibility without contacting TypeSafe.",

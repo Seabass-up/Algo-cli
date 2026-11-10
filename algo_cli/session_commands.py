@@ -30,7 +30,7 @@ def catalog_for_prompt() -> str:
         "When to use common slash commands:",
         "  - /status or /info: check active model, cwd, context, and toggles before giving configuration advice.",
         "  - /mode execute|explore|publish: switch operating posture only when the user's task clearly needs it or they ask.",
-        "  - /mode yolo: only the user may enter it in the interactive CLI. Registered actions, including shell and file edits, are preapproved within scope; forced reviews and handoffs remain. Do not invoke it through a tool.",
+        "  - /mode yolo: only the user may enter it in the interactive CLI. Eligible actions are preapproved within scope; backend denials, forced reviews and handoffs remain. Continuum protection still disables run_shell. Check effective capabilities; do not invoke yolo through a tool.",
         "  - /context status|rebuild|clear: inspect or repair compressed context when context quality/length is the issue.",
         "  - /reason status|guide: inspect the active reasoning posture or show mode guidance before changing it.",
         "  - /reason react|reflexion|tot|got|mcts|qcr|neuro_symbolic: change reasoning posture for complex work only; do not switch modes for routine reads/edits.",
@@ -46,7 +46,7 @@ def catalog_for_prompt() -> str:
         "    Delegate only when work has genuinely independent angles. Keep mutations in the integration pipeline; never ask child threads to edit the same workspace.",
         "  - /kernel list: list promoted kernels available in this runtime.",
         "  - /kernel show NAME inspects metadata. /kernel check [NAME] imports trusted modules and validates slash/action wiring; module initializers execute, but workloads are not run.",
-        "Do not use slash commands for file edits; use write_file. Do not use slash commands for build/test; use run_shell.",
+        "Do not use slash commands for file edits; use write_file. For build/test use run_shell only when effective policy admits it. Continuum protection disables shell; metadata diagnostics are not functional verification.",
         "For the full command/tool catalog and focused examples, call available_actions(topic='slash').",
     ]
     return "\n".join(lines)

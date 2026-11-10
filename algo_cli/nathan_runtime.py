@@ -89,6 +89,7 @@ _BASELINE_ACTIONS = frozenset(
         "harness_read",
         "harness_scorecard",
         "harness_search",
+        "runtime_diagnostics",
         "harness_stats",
         "jev_kernel_status",
         "jev_question_contract",

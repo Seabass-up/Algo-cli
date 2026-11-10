@@ -357,7 +357,10 @@ def protected_tool_policy_error(
             if command_name and not command_name.startswith("/"):
                 command_name = "/" + command_name
             if name == "session_command":
-                if command_name not in _PROTECTED_MODEL_SESSION_COMMANDS:
+                from .runtime_diagnostics import protected_diagnostic_command
+
+                diagnostic = protected_diagnostic_command(str(args.get("command") or ""))
+                if diagnostic is None and command_name not in _PROTECTED_MODEL_SESSION_COMMANDS:
                     return "Error: protected memory paths are unavailable through this broad session command; it is not qualified. Use an admitted typed tool."
                 # Broad slash dispatch includes implicit-cwd readers such as
                 # repository intelligence and code/diff helpers. Validate its
