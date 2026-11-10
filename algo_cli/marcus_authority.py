@@ -412,6 +412,7 @@ CURATED_TOOL_POLICIES: dict[str, CuratedActionPolicy] = {
     # Readiness is a local companion check that never contacts the provider.
     "jev_kernel_status": _read(target=TargetScope.RUNTIME, suppress_logs=True),
     "decision_status": _read(target=TargetScope.RUNTIME, suppress_logs=True),
+    "runtime_diagnostics": _read(target=TargetScope.RUNTIME, suppress_logs=True),
     "algorithm_catalog_read": _read(data=(DataClass.LOCAL_CONTENT, DataClass.SENSITIVE),
                                     target=TargetScope.RUNTIME, suppress_logs=True),
     "algorithm_catalog_edit": _local(data=(DataClass.LOCAL_CONTENT, DataClass.SENSITIVE),

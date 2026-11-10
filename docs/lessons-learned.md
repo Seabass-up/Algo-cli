@@ -3420,6 +3420,274 @@ used.
 
 **Prevention:** Enforce terminal-state ordering where the record is written, not only in the callers' lock protocol; a lock wait with a timeout is not a guarantee that no writer remains inside.
 
+## 2026-11-09: Protected Diagnostics And Native MLX Decision Compatibility
+
+**Symptom and confirmed causes:** Discovery and YOLO guidance advertised shell
+verification even where Continuum policy denies it. Protected slash diagnostics
+had no narrow metadata route; encrypted/truncated program output lacked explicit
+continuation guidance. Decision inspection assumed GGUF despite native MLX
+System One support; admitting the supported format exposed a separate stale pin.
+
+**Repair:** Add bounded public/runtime metadata diagnostics, exact read-only
+slash forms, conditional verification discovery, explicit output visibility and
+pagination, and decision-capability/format/runner/version checks for MLX. Retain
+shell denials, protected bodies, static program arguments and digest checks.
+Rebuild and activate a separate local wheel with the existing speech overlay and
+rollback; refresh only the generated public lexical index.
+
+**Executed verification:** A local audit record retains pre-fix failures and
+the commands/results. Full pytest: 7,732 passed, 45 skipped, 71.35% branch-aware
+coverage. Focused group: 342 passed, one skipped; staged installed regressions:
+32 passed; required search backend: 74 passed. Ruff, 80-file mypy, compile,
+locked dependency audit, wheel privacy and installed parity pass. Nathan passes
+17 probes/31 workloads; M8 passes nine local metrics with five external blockers;
+M9 accepts fresh bindings. Both actual launcher aliases pass scripted-provider
+stall, productive-alternative and startup checks. All 1,614 preservation inputs
+match at activation; later only the declared generated index changes (262 records).
+
+**Live limitation:** Ollama client/server 0.40.15 served one public Clef-flash MLX
+Choice/Noul/Score fixture in 11.446 seconds with valid typed semantics. The
+additional resident-model preservation assertion failed: another resident model
+disappeared from residency; eviction versus expiry is not established. Other resident local
+services were unchanged, but this does not prove non-interference. Retain the failed receipt, keep the saved pin unchanged, and
+defer promotion until a controlled resource window. No cold-load retry,
+explicit unload, speech generation or settings change was performed.
+
+**Prevention:** Test exact terminal state and Unicode pagination progress;
+separate capability, compatibility, identity, inference and resource-preservation
+gates. Metadata diagnostics are not execution or functional verification.
+No watchdog, private catalog, original speech checkout or public release change.
+
+## 2026-11-09: Whole-Codebase Bug Hunt (Runtime Paths, Tools, Retrieval, Library Modules)
+
+**Scope:** Local candidate in `Algo-cli-bughunt-20261109` (base `8883022` plus the
+qualified diagnostics patch). 28 code slices were audited by read-only subagents;
+every accepted finding was reproduced first. Installed as a separate local runtime
+on the owner's instruction (see "Local delivery" below); not committed or published.
+
+**Symptoms and confirmed causes (fixed):**
+
+- `edit_file`/`batch_edit` read with universal newlines and `errors="replace"`, then
+  rewrote the whole file: CRLF files became LF and non-UTF-8 bytes became U+FFFD.
+- The harness index was judged stale on every check when any source file was one
+  `build_index` deliberately excludes (clipping notes, contract-mismatched skills):
+  the excluded file never entered `indexed_paths`, so every load rebuilt and
+  rewrote the index.
+- The per-turn "Relevant References" block used `rec["snippet"]`, which lexical
+  search results do not carry, so only titles reached the model.
+- A local Ollama server that never became ready caused another `ollama serve`
+  spawn and a 12 s wait on every prompt; the status footer also tried to start it.
+  Model listing had no timeout; readiness probes let `HTTPException` escape.
+- The completion gate accepted commands that run no tests as test verification
+  (`cargo test --no-run`, `go test -n`, `make -n test`, `mvn -DskipTests`,
+  `--passWithNoTests`, `gradle -x test`).
+- Goal mode read the last assistant message after a turn; text the completion gate
+  had withheld could mark the goal complete.
+- A model with no reported context length re-ran the `ollama show` chain on every
+  prompt; an explicit `/ctx 8192` was overridden by the adaptive profile; a
+  `TypeError` inside a tool body was reported as a wrong-arguments error; a failed
+  program step's unbounded output cut the result JSON mid-string.
+- Task routing matched terms as substrings ("add" in "address"), so plain questions
+  were routed as mutating code changes; `_REVIEW_RE` missed inflected forms.
+- Smaller defects: `--version` printed `index vunknown`; a corrupt saved
+  conversation was reported as missing; a corrupt thread store had no backup before
+  rewrite; agent-block previews flattened Markdown; `/lessons` advertised a retired
+  reindex; `x_search` failed on a string count after the search ran; doctor crashed
+  on an invalid host port; Git evidence mishandled non-ASCII untracked names and
+  repositories without commits; publish calls could block on a credential prompt;
+  provider streams ignored in-band error events; Google Docs text extraction
+  returned only the title; deep-link, egress-port and browser-service error
+  handling; reasoning bridge, tree search, MCTS and reflexion scoring; and 23
+  defects in `algo_cli/intelligence` library modules with no runtime caller.
+
+**Repair:** Minimal local fixes per defect; refusals and integrity checks were not
+loosened (egress port 0 is now rejected rather than defaulted). Regression tests
+are in `tests/test_bughunt_*_20261109.py`.
+
+**Executed verification:** 170 new tests in ten files; 136 fail when run against
+the pre-change tree and all pass on the candidate (the rest are guards for
+behaviour that must not change). On a non-editable install with source parity
+(278 Python files, `sha256:6591e77b…3de1`): full pytest 7,902 passed, 45 skipped,
+0 failed, 72.61% branch-aware coverage; Ruff, compile and the 79-file mypy contract
+pass. Nathan passes 17 probes and 31 workloads; M8 reports nine local passes, five
+external blockers and no failures (its first run failed only because the dev
+environment was an editable install, which the parity step rejects); M9 accepts
+the fresh bindings and still reports the external blockers. A later source edit
+invalidates these results.
+
+**Local delivery:** On the owner's instruction this candidate was installed as a
+separate local runtime with a rollback launcher. Installed parity equals the
+qualified digest; staged and normal-launcher console smokes (scripted loopback
+provider, isolated configuration) match the previous runtime's shapes, and the
+owner's preserved local inputs are byte-identical before and after. No live
+provider or speech inference, daemon restart, index refresh or settings change
+was made; sessions started before activation keep the old code until restarted.
+
+**Follow-up repair, same day (`/ship commit --files` from a subdirectory):** Built on the
+candidate above and installed locally the same day on the owner's instruction. *Symptom:* with the session
+directory below the repository root, `--files src/x.py` failed with Git's
+"pathspec did not match", and `--files y.py` staged `sub/y.py`, refused with
+"Staging escaped the selected-file scope" and left that file staged.
+`--files .` committed only the current directory while the scope check treated
+it as the whole workspace. *Confirmed cause:* `git_publish._validated_paths`
+resolves each path against the workspace root, but the pathspecs were
+`:(literal)PATH`, which Git resolves against the process directory. A second
+defect on the same line: the helper returns stderr when stdout is empty, so a
+status that printed only "warning: could not open directory" counted as a
+change. *Repair:* pathspecs are `:(top,literal)PATH` (the root itself is the
+empty pattern, because a top-anchored `.` matches nothing); warning-only status
+output counts as no changes; when a selected path has changes only relative to
+the current directory the refusal names the root-relative path to use; `.` from
+a subdirectory is refused with both alternatives named, rather than silently
+widening to the whole workspace. *Verification:* `tests/test_bughunt_ship_files_20261109.py`
+(11 tests; 7 fail on the pre-fix code, all pass now); with the two existing
+publish test files 62 passed. On a non-editable install with parity
+`sha256:183dcb4d…4d99`: full suite 7,913 passed, 45 skipped, 0 failed, 72.65%
+coverage; Ruff, compile and the 79-file mypy contract pass (`git_publish.py`
+is outside that contract and type-checks alone); Nathan 17 probes and 31
+workloads; M8 nine local passes, five external blockers, no failures; M9
+accepts the fresh bindings. No live Git remote, push or pull-request run.
+*Remaining:* a refusal after staging (scrub or scope) still leaves the index
+staged, as before; Git older than the `top` and `literal` pathspec magic is not
+tested. *Local delivery:* installed as a further local runtime with rollback to the
+previous one; installed parity equals the qualified digest, console smokes keep
+their shapes, and the installed package committed a root-relative file from a
+subdirectory of a throwaway repository and refused the two ambiguous forms with
+nothing staged. No live provider, speech or remote Git run.
+
+**Not fixed (reported to the owner):** lessons are never inlined in
+non-Continuum mode (design decision needed); seven memory-CLI subprocess calls per
+turn with Continuum on; token-refresh network failures reported as "not
+authenticated"; uninstall re-run reports `recovery_required`; one unreadable
+artifact-store manifest blocks PDF rendering; symlinked-ancestor refusals use the
+protected-memory message.
+
+**Prevention:** Any whole-file rewrite must read bytes and preserve what it did
+not change. A freshness check must apply the same exclusions as the build it
+guards. A status path may observe a service but never start one. A verification
+classifier needs negative cases for dry-run and skip flags. Evidence that a step
+"completed" must come from the step, not from the last message in history.
+Model-ranked triage is advisory: the lowest-ranked candidate here reproduced.
+A path that is validated against one base directory must be handed to the tool
+anchored to that same base; test path-taking commands from a subdirectory as
+well as the root. Text captured from stderr is not evidence of output.
+
+## 2026-11-09: Model-Called Diagnostics Ran Without The Session Configuration
+
+**Symptom:** A harness review through the live runtime got
+`continuum_selected: false`, shell `requires_runtime_preflight` and a zero-message
+context from `runtime_diagnostics`, while the session had Continuum selected and
+shell blocked. A `limit: 15` request failed with `invalid_diagnostic_page` although
+the tool schema only said "integer".
+
+**Confirmed cause:** `nathan_runtime.run_tool` passes the session configuration
+only to a fixed list of tools; `runtime_diagnostics` was not on it, so the model
+path called it with `cfg=None`, which the module rendered as false and zero. The
+slash-command path did pass the configuration, so the defect only showed through
+model tool calls. The schema had no argument descriptions.
+
+**Repair:** Add the tool to the configuration list. Without configuration, report
+`configuration: unavailable`, `continuum_selected: null` and an unavailable
+context, and filter retrieval as if protection were on. Describe each argument
+in the docstring (limit 1 to 10) and return the permitted range with
+`invalid_diagnostic_page`. The review's third finding, a privacy-safe summary of
+the protected scorecard, is a separate design decision and is not part of this
+repair.
+
+**Verification:** `tests/test_runtime_diagnostics_config.py` (9 tests) fails on
+the pre-fix package and passes after it; the diagnostics, Continuum and tool
+tests pass (288). Release 0.20.4 tree (the commits above, without the owner's
+private local adapter): non-editable install with parity, full suite 7,908
+passed, 45 skipped, 0 failed, 74.97% branch coverage; Ruff, compile and the
+mypy contract pass; Nathan 17 probes/31 workloads; M8 nine local passes, five
+external blockers, no failures; M9 accepts. Source, history and package privacy
+scans, the dependency audit, `twine check` and the isolated wheel install pass.
+
+**Prevention:** A tool that takes the runtime configuration must be on the
+injection list, and its tests must call it through `run_tool`, not only
+directly. Report a missing input as unknown rather than as a default value.
+
+## 2026-11-10: New Website Advisories Failed Hosted CI On An Unrelated Change
+
+**Symptom:** Hosted CI on the 0.20.4 pull request failed "Website build and
+safety gates" at `npm audit` although the change did not touch `website/`.
+
+**Confirmed cause:** Advisories published since the last hosted run: `undici`
+below 7.30.1 (high, through `wrangler`/`miniflare`), `glob` 14.0.1 and below and
+`minimatch` below 11.0.1 (through the vendored glob adapter and
+`typescript-eslint`), `satori` below 0.33.5 and `fflate` below 0.7.5 (through
+`vinext`'s unused OG-image package), and `fast-uri` below 3.1.9. `main` would
+fail the same gate, and the release verification runs it too.
+
+**Repair:** `@cloudflare/vite-plugin` 1.68.0 with `wrangler` 4.157.0 (fixed
+`miniflare`/`undici`); the vendored adapter moves to `glob` 14.0.4; scoped
+overrides give `typescript-estree` `minimatch` 11.0.5 and `@vercel/og` `satori`
+0.33.5; `fflate` is overridden to 0.7.5 and `fast-uri` updated within range. No
+major-version jump of `vinext`. The adapter test's exact `glob` pin moves to
+14.0.4; every behavioural adapter test is unchanged.
+
+**Verification:** Clean `npm ci`, `npm test` (build plus 22 render, route,
+dependency-security and adapter tests: 22 passed), `npm run lint` and
+`npm audit` (0 vulnerabilities), locally on Node 26/npm 11. The first run failed
+only the exact version pin; that failure is retained here. Hosted Node 22 CI is
+still to run.
+
+**Prevention:** An audit gate on a lockfile fails on new advisories without a
+code change; expect it on any release that has been idle for weeks, and check
+it before preparing the release rather than after the pull request.
+
+## 2026-11-10: Catalog Tests Wrote Platform-Dependent Fixture Bytes
+
+**Symptom:** Hosted Windows CI on the 0.20.4 pull request failed 11 tests in
+`tests/test_algorithm_catalog_tools.py` (lengths off by one per line, `\r\n`
+where `\n` was expected). Ubuntu and macOS passed.
+
+**Confirmed cause:** Those tests were added after the last hosted run and had
+only run on macOS. Owner-catalog reads are deliberately byte-lossless and
+hash-bound, but the fixture helper used `Path.write_text`, which writes `\r\n`
+on Windows. The product was correct; the fixture differed by platform.
+
+**Repair:** The helper writes `text.encode("utf-8")` with `write_bytes`.
+
+**Verification:** A pytest plugin that makes `Path.write_text` translate
+newlines as Windows does reproduced exactly the same 11 failures on macOS; after
+the change all 56 catalog tests pass with and without it. The file is in the M8
+and Nathan source sets, so the evidence was regenerated: full suite 7,908
+passed, 45 skipped, 0 failed, 74.97% branch coverage; Nathan 17/31; M8 nine
+passes, five external blockers, no failures; M9 accepts. The same emulation over
+the whole suite also flags a Git staging test that passes on real Windows
+(Git converts line endings there), so the emulation is a reproduction aid, not a
+substitute for the hosted Windows job.
+
+**Prevention:** Fixtures for byte-exact readers must be written as bytes. Code
+merged with local-only CI has not run on Windows; expect platform failures the
+first time hosted CI runs again.
+
+## 2026-11-10: A Timeout Fix Left Interrupted Shell Commands Running
+
+**Symptom:** Automated review of the 0.20.4 pull request reported that
+interrupting `ShellSession.execute()` with Ctrl-C left the command running.
+
+**Confirmed cause:** A bug-hunt repair in this same release started the shell in
+its own session so a timeout could kill the whole process group. In its own
+session the shell no longer receives the terminal's SIGINT, and the new `Popen`
+path cleaned up only on `TimeoutExpired`; the previous `subprocess.run` call had
+killed the child on any interruption. The repair's tests covered the timeout
+only.
+
+**Repair:** On any `BaseException` while waiting, kill the process group, reap
+it briefly and re-raise.
+
+**Verification:** `tests/test_shell_session_interrupt.py` starts a shell with a
+background child and interrupts the wait: before the repair the shell was still
+running; after it both the shell and the child are gone and `KeyboardInterrupt`
+propagates. A companion test keeps the timeout behaviour. POSIX only; the
+Windows path kills the direct child as before.
+
+**Prevention:** Moving a child process into its own session or process group
+takes over responsibility for every way the wait can end, not only the timeout.
+Test interruption alongside timeout whenever process-group handling changes.
+
 ## Repair Log Checklist
 
 - Date and component.

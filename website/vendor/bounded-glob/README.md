@@ -6,7 +6,7 @@ The two supported exports are `sync` and `globSync`; supported options are `cwd`
 and `onlyDirectories`. Unknown options and mixed absolute/relative arrays fail
 explicitly rather than silently changing filesystem semantics.
 
-The engine is exact-pinned `glob` 13.0.6 with patched `brace-expansion` 5.0.12,
+The engine is exact-pinned `glob` 14.0.4 with patched `brace-expansion` 5.0.12,
 not the affected recursive `braces` dependency. Preserve absolute paths,
 directory symlink roots and lexical dot/dot-dot prefixes used as CommonJS runtime
 switch keys. Pattern length, count, nesting and expanded alternative count are

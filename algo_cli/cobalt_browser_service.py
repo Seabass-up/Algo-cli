@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener
 
 DEFAULT_BROWSER_URL = "http://localhost:9377"
@@ -30,6 +30,18 @@ def _timeout() -> float:
         return max(1.0, min(float(os.environ.get("ALGO_BROWSER_TIMEOUT", "30")), 120.0))
     except (TypeError, ValueError):
         return DEFAULT_TIMEOUT
+
+
+def _http_error_result(exc: HTTPError) -> dict[str, Any]:
+    """Structured result for a non-2xx reply from a live service (not a connection failure)."""
+    message = f"browser service returned HTTP {exc.code}"
+    try:
+        detail = json.loads(exc.read())
+    except Exception:  # body may be absent, binary or non-JSON
+        detail = None
+    if isinstance(detail, dict) and isinstance(detail.get("error"), str) and detail["error"]:
+        message = f"{message}: {detail['error']}"
+    return {"error": message, "code": f"http_{exc.code}"}
 
 
 def _request(
@@ -52,6 +64,8 @@ def _request(
     try:
         resp = opener.open(req, timeout=timeout or _timeout())
         raw = resp.read()
+    except HTTPError as exc:
+        return _http_error_result(exc)
     except URLError as exc:
         return {"error": f"browser service unreachable: {exc.reason}", "code": "unreachable"}
     except Exception as exc:  # pragma: no cover - defensive
@@ -133,6 +147,8 @@ def screenshot(tab_id: str, user_id: str = "algo-cli") -> dict[str, Any]:
     try:
         resp = opener.open(req, timeout=_timeout())
         data = resp.read()
+    except HTTPError as exc:
+        return _http_error_result(exc)
     except URLError as exc:
         return {"error": f"browser service unreachable: {exc.reason}", "code": "unreachable"}
     except Exception as exc:  # pragma: no cover - defensive

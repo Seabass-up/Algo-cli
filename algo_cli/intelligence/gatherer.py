@@ -96,6 +96,10 @@ class GathererQueue:
             # Preserve retry count and crawl number on re-enqueue
             entry.failure_attempts = existing.failure_attempts
             entry.crawl_number = existing.crawl_number
+            if existing.transaction_flags & TransactionFlags.RETRY_PENDING:
+                # Keep the backoff window so a re-enqueue cannot bypass it
+                entry.transaction_flags = existing.transaction_flags
+                entry.last_requested_run = existing.last_requested_run
         self.entries[entry.path] = entry
 
     def enqueue_many(self, paths: list[str], priority: int = 5) -> None:
@@ -120,7 +124,7 @@ class GathererQueue:
         for entry in self.entries.values():
             if entry.is_in_progress():
                 continue
-            if entry.is_rolled_back():
+            if entry.is_committed() or entry.is_rolled_back():
                 continue
             if not entry.should_retry():
                 continue

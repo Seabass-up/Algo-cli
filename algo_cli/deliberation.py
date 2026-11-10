@@ -20,6 +20,8 @@ _DEEP_CUES = (
     "ambiguous requirements",
 )
 
+_DEEP_CUE_RES = {cue: re.compile(r"(?<!\w)" + re.escape(cue) + r"(?!\w)") for cue in _DEEP_CUES}
+
 _EXACT_RESPONSE_TASK = re.compile(
     r"\A\s*(?:reply|respond|return|output|say)\s+"
     r"(?:with\s+)?exactly\s*:?\s*"
@@ -33,7 +35,7 @@ def needs_deliberation(prompt: str) -> bool:
     """Enable model reasoning only when a one-shot task signals depth."""
 
     lowered = (prompt or "").casefold()
-    return any(cue in lowered for cue in _DEEP_CUES)
+    return any(_DEEP_CUE_RES[cue].search(lowered) for cue in _DEEP_CUES)
 
 
 def is_exact_response_task(prompt: str) -> bool:

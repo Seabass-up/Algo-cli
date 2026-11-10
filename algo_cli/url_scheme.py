@@ -63,21 +63,21 @@ def parse_deep_link(url: str) -> ParsedDeepLink | None:
     if not url:
         return None
 
-    # Accept both algo-cli:// and algo-cli: for flexibility
-    if url.startswith(f"{URL_SCHEME}://"):
-        remainder = url[len(f"{URL_SCHEME}://"):]
-    elif url.startswith(f"{URL_SCHEME}:"):
-        remainder = url[len(f"{URL_SCHEME}:"):]
+    # Accept both algo-cli:// and algo-cli: for flexibility; URI schemes are case-insensitive
+    if url[: len(URL_SCHEME) + 3].lower() == f"{URL_SCHEME}://":
+        remainder = url[len(URL_SCHEME) + 3:]
+    elif url[: len(URL_SCHEME) + 1].lower() == f"{URL_SCHEME}:":
+        remainder = url[len(URL_SCHEME) + 1:]
     else:
         return None
 
-    # Strip leading slashes
-    remainder = remainder.lstrip("/")
+    # Strip leading slashes and any fragment, which is never part of the route
+    remainder = remainder.lstrip("/").split("#", 1)[0]
 
     # Parse query string if present
     if "?" in remainder:
         path_part, query_part = remainder.split("?", 1)
-        query = dict(urllib.parse.parse_qsl(query_part))
+        query = dict(urllib.parse.parse_qsl(query_part, keep_blank_values=True))
     else:
         path_part = remainder
         query = {}
@@ -86,10 +86,10 @@ def parse_deep_link(url: str) -> ParsedDeepLink | None:
     if not path_part:
         return ParsedDeepLink(route="", path="", query=query, raw_url=url)
 
-    # Split into route and sub-path
+    # Split into route and sub-path; decode the sub-path only so an encoded "/" cannot change the split
     parts = path_part.split("/", 1)
     route = parts[0].lower()
-    sub_path = parts[1] if len(parts) > 1 else ""
+    sub_path = urllib.parse.unquote(parts[1]) if len(parts) > 1 else ""
 
     return ParsedDeepLink(
         route=route,

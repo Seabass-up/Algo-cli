@@ -10,6 +10,7 @@ Extends the base reflex module with:
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -123,6 +124,8 @@ def _parse_critique(response_text: str) -> tuple[float, str]:
     try:
         data = json.loads(text)
         score = float(data.get("score", 0.5))
+        if not math.isfinite(score):
+            raise ValueError("non-finite critique score")
         critique = str(data.get("critique", ""))
         return max(0.0, min(1.0, score)), critique
     except (json.JSONDecodeError, ValueError, TypeError):

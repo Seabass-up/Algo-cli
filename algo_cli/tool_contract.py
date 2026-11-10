@@ -63,9 +63,35 @@ def signature_hint(fn: Callable[..., Any]) -> str:
     return "; ".join(parts)
 
 
+def arguments_bind(fn: Callable[..., Any] | None, args: dict[str, Any]) -> bool:
+    """True when ``args`` satisfy ``fn``'s signature (names and required parameters)."""
+    if fn is None:
+        return False
+    try:
+        inspect.signature(fn).bind(**(args or {}))
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def correct_tool_error(name: str, args: dict[str, Any], exc: Exception, fn: Callable[..., Any] | None) -> str:
     """Build a corrective tool-result message for a failed call."""
     sent = sorted(k for k in (args or {}).keys() if k not in _RUNTIME_PARAMS)
+    if arguments_bind(fn, args):
+        # The call matched the signature, so the TypeError came from inside the
+        # tool: a wrong value type or a tool defect. Telling the model to
+        # re-issue "with the required parameters" would only repeat the failure.
+        lines = [f"Tool error for {name}: TypeError: {exc}"]
+        hint = signature_hint(fn) if fn is not None else ""
+        if hint:
+            lines.append(f"Signature — {name}({hint})")
+        if sent:
+            lines.append(f"You sent: {', '.join(sent)}")
+        lines.append(
+            "The parameter names were accepted. Check each value's type (for example a number sent as "
+            "text); if the types are right this is a tool failure, so do not repeat the same call."
+        )
+        return "\n".join(lines)
     lines = [f"Tool argument error for {name}: {exc}"]
 
     # Malformed-JSON signal: chat_protocol wraps unparseable arguments as {"raw": ...}.

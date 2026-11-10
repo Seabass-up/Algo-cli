@@ -28,7 +28,7 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.63.1",
+    "@cloudflare/vite-plugin": "1.68.0",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
@@ -44,12 +44,19 @@
     "typescript": "5.9.3",
     "vinext": "0.0.45",
     "vite": "8.1.6",
-    "wrangler": "4.149.0"
+    "wrangler": "4.157.0"
   },
   "overrides": {
     "postcss": "8.5.23",
     "sharp": "0.35.5",
-    "fast-glob": "$fast-glob"
+    "fast-glob": "$fast-glob",
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "11.0.5"
+    },
+    "@vercel/og": {
+      "satori": "0.33.5"
+    },
+    "fflate": "0.7.5"
   },
   "type": "module"
 }

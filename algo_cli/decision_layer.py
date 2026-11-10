@@ -406,7 +406,13 @@ class OllamaProvider:
         show = _http_json(self.base, "/api/show", {"model": self.model}, 5)
         capabilities, details = show.get("capabilities"), show.get("details")
         if (type(capabilities) is not list or "decision" not in capabilities
-                or type(details) is not dict or details.get("format") != "gguf"):
+                or type(details) is not dict):
+            raise DecisionError("incompatible_decision_model")
+        # MLX System One entered Ollama's 0.40 release line; older servers
+        # and unrelated safetensors runners remain unsupported.
+        native_mlx = (details.get("format") == "safetensors" and details.get("runner") == "mlx"
+                      and tuple(int(part) for part in match.groups()) >= (0, 40, 0))
+        if details.get("format") != "gguf" and not native_mlx:
             raise DecisionError("incompatible_decision_model")
         if self.pin and self.pin != tag.get("digest"):
             raise DecisionError("model_digest_mismatch")
@@ -414,6 +420,7 @@ class OllamaProvider:
         if type(loaded) is not list or any(type(model) is not dict for model in loaded):
             raise DecisionError("invalid_ollama_discovery")
         return {"available": True, "loaded": any(m.get("name") == self.model for m in loaded),
+                "model_format": details.get("format"), "runner": details.get("runner"),
                 "server_version": version, "model_digest": tag.get("digest"), "local": self.local,
                 "source": self.source, "inference": "not_probed_by_status", "images_enabled": False}
 
@@ -602,7 +609,15 @@ def decision_status(provider: str | None = None, cfg: Any = None, checkpoint: in
                               "capabilities": asdict(adapter.capabilities), "status": adapter.status()}
         except (DecisionError, OSError, ValueError, TypeError) as exc:
             statuses[name] = {"ok": False, "error": str(exc) if isinstance(exc, DecisionError) else "unavailable"}
-    return encoded({"ok": True, "default_provider": getattr(cfg, "decision_default_provider", "jev"),
+    failures = sum(item.get("ok") is False or any(item.get("status", {}).get(key) is False
+                   for key in ("ready", "available", "configured")) for item in statuses.values())
+    ready = sum(any(item.get("status", {}).get(key) is True for key in ("ready", "available"))
+                for item in statuses.values())
+    health = ("unavailable" if failures == len(statuses) else "degraded" if failures
+              else "available" if ready == len(statuses) else "not_verified")
+    return encoded({"ok": not failures if provider is not None else True,
+                    "provider_health": health,
+                    "default_provider": getattr(cfg, "decision_default_provider", "jev"),
                     "routing_mode": getattr(cfg, "decision_routing_mode", "direct"),
                     "online_coordinator": "jev", "offline_coordinators": getattr(cfg, "decision_offline_coordinators", []),
                     "coordinator_is_not_conversational_model": True,

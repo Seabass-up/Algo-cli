@@ -76,6 +76,7 @@ def reset_reflex_cycles(cfg: Any) -> None:
 def begin_agent_pipeline(cfg: Any) -> None:
     """Isolate reflex budget per /agent run (avoids burning cap during exploration)."""
     reset_reflex_cycles(cfg)
+    reset_error_retries(cfg)
 
 
 def count_signature_in_ledger(cfg: Any, signature: str) -> int:
@@ -376,6 +377,6 @@ def reset_error_retries(cfg: Any) -> None:
     """Clear all error-retry counters for a fresh session or /agent run."""
     state = getattr(cfg, "context_state", None)
     if isinstance(state, dict):
-        keys_to_remove = [k for k in state if k.startswith(str((REFLEX_ERROR_LEDGER_KEY,)))]
+        keys_to_remove = [k for k in state if isinstance(k, str) and k.startswith(f"('{REFLEX_ERROR_LEDGER_KEY}', ")]
         for key in keys_to_remove:
             state.pop(key, None)

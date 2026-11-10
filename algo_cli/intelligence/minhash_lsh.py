@@ -113,6 +113,7 @@ class LSHIndex:
                 f"{self._expected_sig_len} (bands={self.num_bands} * "
                 f"rows={self.rows_per_band})"
             )
+        self.remove(key)
         self._signatures[key] = signature
         for band_idx in range(self.num_bands):
             bh = self._band_hash(signature, band_idx)
@@ -166,7 +167,10 @@ class LSHIndex:
         candidates = self.query(signature)
         results: list[tuple[str, float]] = []
         for key in candidates:
-            sim = minhasher.similarity(signature, self._signatures[key])
+            stored = self._signatures.get(key)
+            if stored is None:
+                continue
+            sim = minhasher.similarity(signature, stored)
             if sim >= threshold:
                 results.append((key, sim))
         results.sort(key=lambda x: -x[1])

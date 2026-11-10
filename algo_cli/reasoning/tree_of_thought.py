@@ -158,11 +158,11 @@ class TreeOfThought:
                     self.nodes_explored += 1
                     if value >= self.value_threshold:
                         next_level.append(child)
+                        if value > self.best_score:
+                            self.best_score = value
+                            self.best_leaf = child
                     else:
                         child.pruned = True
-                    if value > self.best_score:
-                        self.best_score = value
-                        self.best_leaf = child
             # Keep top-K for next level
             next_level.sort(key=lambda n: n.value, reverse=True)
             current_level = next_level[:self.branch_factor]
@@ -189,11 +189,13 @@ class TreeOfThought:
                 )
                 node.children.append(child)
                 self.nodes_explored += 1
-                if value > self.best_score:
-                    self.best_score = value
-                    self.best_leaf = child
                 if value >= self.value_threshold:
                     children.append(child)
+                    if value > self.best_score:
+                        self.best_score = value
+                        self.best_leaf = child
+                else:
+                    child.pruned = True
             # Push best children first for DFS
             children.sort(key=lambda n: n.value, reverse=True)
             stack.extend(children)

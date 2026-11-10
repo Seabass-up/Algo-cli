@@ -4646,6 +4646,24 @@
           "timestamp": "2026-11-08T00:32:24Z",
           "scope": "Isolated runtime completion/progress and repository-only audit repairs for review; frozen source sha256:ea684343df75ed80da7e99a6dec4ffff1a16a30ca75017872df37f9dff722d54",
           "limitations": "Finite local qualification does not establish native Windows/Linux, live browser/signing, release eligibility or publication. Historical evidence retained; requirement status unchanged."
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:35f3ca4335daf376c8b6d156910b12a7aabd6bf48b709144584ab8801d7a17e4",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-11-10T01:25:17Z",
+          "scope": "Branch fix/bughunt-ship-files-20261109: protected diagnostics, 2026-11-09 bug-hunt repairs and the /ship --files fix; frozen source sha256:f8ac426be4df293e4e2c61a9255a3a6cb7db74c062d3c5f9235b8c44906209d6",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:434f0e3cffc733428951112e8af7de3548c331dba1db182d8e8e9144b79bbb71",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-11-10T02:40:11Z",
+          "scope": "Branch fix/bughunt-ship-files-20261109: protected diagnostics, 2026-11-09 bug-hunt repairs and the /ship --files fix; frozen source sha256:69828374d8c37dd7987cbc7635773528c2574d45e665cba9442e01e4bbe6e764",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
         }
       ]
     },
@@ -7786,6 +7804,42 @@
           "timestamp": "2026-11-08T00:32:24Z",
           "scope": "Isolated runtime completion/progress and repository-only audit repairs for review; frozen source sha256:398bb14c8500338bb431ad8b66e4bd4108d9e5ac6d5f9aa5ab16848acce0c8cd",
           "limitations": "Finite local qualification does not establish native Windows/Linux, live browser/signing, release eligibility or publication. Historical evidence retained; requirement status unchanged."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:35f3ca4335daf376c8b6d156910b12a7aabd6bf48b709144584ab8801d7a17e4",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-11-10T01:25:17Z",
+          "scope": "Branch fix/bughunt-ship-files-20261109: protected diagnostics, 2026-11-09 bug-hunt repairs and the /ship --files fix; frozen source sha256:f8ac426be4df293e4e2c61a9255a3a6cb7db74c062d3c5f9235b8c44906209d6",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:77e04c4185703159ffd546a5cbf30a9d822a7822671007791557ee1a10b2dac1",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-11-10T01:25:17Z",
+          "scope": "Branch fix/bughunt-ship-files-20261109: protected diagnostics, 2026-11-09 bug-hunt repairs and the /ship --files fix; frozen source sha256:efa37b042e03900b1843c3ae3fe32148393ef5da80d9e23be1528667a4f2d7a3",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:434f0e3cffc733428951112e8af7de3548c331dba1db182d8e8e9144b79bbb71",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-11-10T02:40:11Z",
+          "scope": "Branch fix/bughunt-ship-files-20261109: protected diagnostics, 2026-11-09 bug-hunt repairs and the /ship --files fix; frozen source sha256:69828374d8c37dd7987cbc7635773528c2574d45e665cba9442e01e4bbe6e764",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:477344335fa0210e4ad195def762836fde79e01e53dd3663525361a980a87938",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-11-10T02:40:11Z",
+          "scope": "Branch fix/bughunt-ship-files-20261109: protected diagnostics, 2026-11-09 bug-hunt repairs and the /ship --files fix; frozen source sha256:d8443cd3727912092784458a6d8133836e778b8423faae1b7832a522f8e0990e",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
         }
       ]
     },

@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field
-from typing import Any, Callable, get_type_hints
+from types import UnionType
+from typing import Any, Callable, Union, get_args, get_origin, get_type_hints
 
 
 @dataclass
@@ -139,6 +140,44 @@ class Kernel:
 # ── structured output support ─────────────────────────────────────────
 
 
+def _resolved_annotations(model_class: type) -> dict[str, Any]:
+    """Annotations with string forms resolved; unresolvable ones become Any (unchecked)."""
+    raw = dict(getattr(model_class, "__annotations__", {}) or {})
+    resolved: dict[str, Any] = {}
+    for name, value in raw.items():
+        if not isinstance(value, str):
+            resolved[name] = value
+            continue
+        # Resolve one field at a time so a single unknown name does not make
+        # every other field unchecked.
+        holder = type("_AnnotationHolder", (), {"__annotations__": {name: value}})
+        holder.__module__ = getattr(model_class, "__module__", holder.__module__)
+        try:
+            resolved[name] = get_type_hints(holder, localns=dict(vars(model_class)))[name]
+        except Exception:
+            resolved[name] = Any
+    return resolved
+
+
+def _accepted_types(annotation: Any) -> tuple[type, ...] | None:
+    """Concrete types an annotation accepts, or None when it cannot be checked with isinstance."""
+    if annotation is Any:
+        return None
+    if annotation is None or annotation is type(None):
+        return (type(None),)
+    origin = get_origin(annotation)
+    if origin is Union or origin is UnionType:
+        members: list[type] = []
+        for arg in get_args(annotation):
+            sub = _accepted_types(arg)
+            if sub is None:
+                return None
+            members.extend(sub)
+        return tuple(members)
+    target = origin or annotation
+    return (target,) if isinstance(target, type) else None
+
+
 def validate_structured_output(data: dict, model_class: type) -> dict:
     """Validate LLM output against a Pydantic-like BaseModel.
 
@@ -156,12 +195,16 @@ def validate_structured_output(data: dict, model_class: type) -> dict:
 
     # Fallback: simple annotation-based validation
     annotations = getattr(model_class, "__annotations__", {})
+    resolved = _resolved_annotations(model_class)
     errors: list[str] = []
     for field_name, field_type in annotations.items():
         if field_name not in data:
             errors.append(f"missing field: {field_name}")
-        elif not isinstance(data[field_name], field_type):
-            errors.append(f"{field_name}: expected {field_type.__name__}, got {type(data[field_name]).__name__}")
+            continue
+        accepted = _accepted_types(resolved.get(field_name, Any))
+        if accepted is not None and not isinstance(data[field_name], accepted):
+            expected = getattr(field_type, "__name__", None) or str(field_type)
+            errors.append(f"{field_name}: expected {expected}, got {type(data[field_name]).__name__}")
     if errors:
         return {"valid": False, "error": "; ".join(errors)}
     return {"valid": True, "data": data}

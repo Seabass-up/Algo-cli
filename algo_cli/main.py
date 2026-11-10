@@ -352,6 +352,7 @@ MAINTENANCE_CLOUD_MODEL = "glm-5.1:cloud"
 
 ATTEMPT_PROMPT_LIMIT = 24
 LOCAL_MODEL_LIST_TTL_SECONDS = 60.0  # increased: avoid re-querying Ollama after every generation
+LOCAL_MODEL_LIST_TIMEOUT_SECONDS = 5.0  # a stalled server must not freeze the prompt or the model picker
 
 RUNTIME_STATUS: dict[str, Any] = {}
 LOCAL_MODEL_CACHE: dict[str, tuple[float, list[str]]] = {}
@@ -500,7 +501,7 @@ def refresh_runtime_status(cfg: Config, client: Any | None = None, *, force: boo
 
     Skips redundant refreshes within _REFRESH_MIN_INTERVAL_S unless force=True.
     """
-    global _LAST_REFRESH_TIME
+    global _LAST_REFRESH_TIME, _MODEL_LISTING_OBSERVE_ONLY
     now = time.monotonic()
     if not force and (now - _LAST_REFRESH_TIME) < _REFRESH_MIN_INTERVAL_S:
         return
@@ -529,7 +530,11 @@ def refresh_runtime_status(cfg: Config, client: Any | None = None, *, force: boo
     is_xai = routes_to_xai(cfg)
     is_chatgpt = routes_to_chatgpt(cfg)
     if not cfg.cloud and not is_xai and not is_chatgpt:
-        local_models = local_model_names(cfg)
+        _MODEL_LISTING_OBSERVE_ONLY = True
+        try:
+            local_models = local_model_names(cfg)
+        finally:
+            _MODEL_LISTING_OBSERVE_ONLY = False
     if is_xai:
         mode = "xai"
     elif is_chatgpt:
@@ -1742,15 +1747,24 @@ def maybe_prompt_cloud_login() -> None:
         run_ollama_login()
 
 
+# Set only while the status footer refreshes. The footer runs before every
+# prompt, so it may observe the local server but must never spawn
+# `ollama serve` and wait for it.
+_MODEL_LISTING_OBSERVE_ONLY = False
+
+
 def local_model_names(cfg: Config) -> list[str]:
-    if not start_local_ollama_host(cfg.host):
+    if _MODEL_LISTING_OBSERVE_ONLY:
+        if host_is_local(cfg.host) and not ollama_server_ready(cfg.host):
+            return []
+    elif not start_local_ollama_host(cfg.host):
         return []
     cached = LOCAL_MODEL_CACHE.get(cfg.host)
     now = time.time()
     if cached and now - cached[0] <= LOCAL_MODEL_LIST_TTL_SECONDS:
         return cached[1]
     try:
-        models = Client(host=cfg.host).list()
+        models = Client(host=cfg.host, timeout=LOCAL_MODEL_LIST_TIMEOUT_SECONDS).list()
     except Exception as exc:
         show_error(f"Could not list local models: {exc}")
         return []
@@ -1771,7 +1785,11 @@ def cloud_model_names() -> list[str]:
     if not api_key:
         return []
     try:
-        models = Client(host="https://ollama.com", headers={"Authorization": f"Bearer {api_key}"}).list()
+        models = Client(
+            host="https://ollama.com",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=LOCAL_MODEL_LIST_TIMEOUT_SECONDS,
+        ).list()
     except Exception:
         return CLOUD_MODEL_CHOICES
     items = get_attr(models, "models", []) or []
@@ -2850,6 +2868,9 @@ def agent_loop(
 ) -> None:
     """Run one interactive turn; keep status bar visible for the whole generation."""
     from . import sticky_status
+
+    # False until the turn is accepted, so an early return is never read as success.
+    setattr(cfg, "_turn_completed_normally", False)
 
     show_sticky_status = json_sink() is None
     if show_sticky_status:
@@ -4078,6 +4099,10 @@ def _agent_loop_body(
             show_error(f"Session completed, but its local state could not be saved: {exc}")
         flush_perf_records()
 
+    # Callers such as goal mode must not treat withheld or stale assistant text
+    # as this turn's accepted answer.
+    setattr(cfg, "_turn_completed_normally", turn_completed_normally)
+
     # Tier-3: claim-grounding verify pass when verify_mode is active.
     if (
         turn_completed_normally
@@ -4218,6 +4243,7 @@ def _drive_goal(client: Client, cfg: Config, record: task_ledger.GoalRecord, *, 
         show_info(f"Goal round {round_number}/{record.max_rounds}")
         try:
             setattr(cfg, "_tool_progress_stop_reason", "")
+            setattr(cfg, "_turn_completed_normally", None)
             agent_loop(client, cfg, prompt)
         except KeyboardInterrupt:
             record.status = task_ledger.STATUS_STOPPED
@@ -4226,8 +4252,11 @@ def _drive_goal(client: Client, cfg: Config, record: task_ledger.GoalRecord, *, 
             persist_goal()
             show_info(f"Goal stopped after round {round_number}. Resume with /goal resume.")
             return
-        final = _last_assistant_content(cfg)
-        record.add_round(final[:500])
+        # The last assistant message in history can be text the completion gate
+        # withheld earlier in this round; only an accepted turn may complete or
+        # block the goal through its markers.
+        final = "" if getattr(cfg, "_turn_completed_normally", None) is False else _last_assistant_content(cfg)
+        record.add_round(final[:500] or "(no accepted final answer this round)")
         progress_stop_reason = getattr(cfg, "_tool_progress_stop_reason", "")
         if progress_stop_reason:
             record.status = task_ledger.STATUS_BLOCKED

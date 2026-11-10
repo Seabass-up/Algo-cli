@@ -403,6 +403,10 @@ def merge_model_hints(info: dict[str, Any], model: str, *, cloud: bool = False) 
     return merged
 
 
+UNRESOLVED_MODEL_INFO_TTL_SECONDS = 60.0
+_UNRESOLVED_MODEL_INFO: dict[tuple[str, bool], tuple[float, dict[str, Any]]] = {}
+
+
 def resolve_model_info(cfg: Any, client: Any | None) -> dict[str, Any]:
     """Best-effort model metadata for footer/status (xAI synth, ollama show, SDK, cache)."""
     model = str(getattr(cfg, "model", "") or "")
@@ -415,30 +419,45 @@ def resolve_model_info(cfg: Any, client: Any | None) -> dict[str, Any]:
         return synthesize_chatgpt_info(model)
 
     cloud = bool(getattr(cfg, "cloud", False))
+    unresolved_key = (model, cloud)
+    unresolved = _UNRESOLVED_MODEL_INFO.get(unresolved_key)
+    if unresolved is not None and time.monotonic() - unresolved[0] <= UNRESOLVED_MODEL_INFO_TTL_SECONDS:
+        return dict(unresolved[1])
     try:
         info = ensure_model_info(client, model, cloud=cloud) if client is not None else None
         if info and "error" not in info and get_context_length(info):
+            _UNRESOLVED_MODEL_INFO.pop(unresolved_key, None)
             return info
     except Exception:
         pass
+
+    def remember_unresolved(result: dict[str, Any]) -> dict[str, Any]:
+        # This runs before every prompt and every turn. Without a short
+        # negative cache a model that reports no context length costs several
+        # `ollama show` processes each time.
+        if get_context_length(result):
+            _UNRESOLVED_MODEL_INFO.pop(unresolved_key, None)
+        else:
+            _UNRESOLVED_MODEL_INFO[unresolved_key] = (time.monotonic(), dict(result))
+        return result
 
     cli_info = fetch_model_info_from_cli(model, cloud=cloud)
     if cli_info:
         merged = merge_model_hints(cli_info, model, cloud=cloud)
         if "error" not in merged:
             save_model_info(model, merged)
-        return merged
+        return remember_unresolved(merged)
 
     cached = load_model_info(model)
     if cached and "error" not in cached:
-        return merge_model_hints(cached, model, cloud=cloud)
+        return remember_unresolved(merge_model_hints(cached, model, cloud=cloud))
 
     fetched = fetch_model_info(client, model, cloud=cloud)
     if fetched and "error" not in fetched:
         if get_context_length(fetched):
             save_model_info(model, fetched)
-        return fetched
-    return {"name": model}
+        return remember_unresolved(fetched)
+    return remember_unresolved({"name": model})
 
 
 def is_cloud_model_name(name: str) -> bool:

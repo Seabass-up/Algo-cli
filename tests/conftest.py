@@ -157,6 +157,7 @@ def clean_state():
         from ollama_cli import model_info
 
         model_info._CACHE.clear()
+        model_info._UNRESOLVED_MODEL_INFO.clear()
     except ImportError:
         pass
     yield

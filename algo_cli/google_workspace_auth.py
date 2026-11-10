@@ -319,7 +319,7 @@ def revoke_token(token: str) -> bool:
             return 200 <= response.status < 300
     except urllib.error.HTTPError:
         return False
-    except urllib.error.URLError:
+    except (OSError, TimeoutError):
         return False
 
 
@@ -347,7 +347,7 @@ def load_tokens() -> dict[str, Any] | None:
         return None
     try:
         payload = json.loads(AUTH_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
 

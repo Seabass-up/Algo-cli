@@ -22,6 +22,13 @@ workflow, or when you are about to scan a large directory tree, run
 4. When writing your final answer, cite the harness record ids you used
    (e.g. "codex:skill:browser-qa/SKILL.md") so the user can find the source.
 
+If an action program withholds protected search output, call
+`runtime_diagnostics(section="search", query="harness search first")` for
+bounded public-product record identities. Follow `next_offset` for another page.
+This route does not expose paths, snippets, private ALGO entries or memory bodies.
+Use sections `context`, `harness` and `decisions` for compact metadata diagnostics;
+the latter accepts one explicit provider. Metadata is not functional verification.
+
 ## Key Discoveries
 
 - The harness can cover **seven** external harnesses when the user opts in:
@@ -32,9 +39,9 @@ workflow, or when you are about to scan a large directory tree, run
   routing.
 - `kind` is one of: skill, tool, prompt, memory, wiki, workflow, extension.
   Most retrieval questions are `skill` or `wiki` — start there.
-- For configured project/entity memory questions, prefer `query_knowledge_graph`
-  when the user has enabled index-compute-lab; it uses ranked associations and
-  can be faster and more relevant than raw `harness_search`.
+- For project/entity memory questions, use explicit scoped native Continuum
+  search/context tools. The reference index is not mutable memory; embedding and
+  index-compute-lab memory routes are retired.
 - The harness index is mtime-cached in `~/.algo_cli/harness_index.json`.
   After editing a skill file, call `harness_refresh` to update the index
   immediately (otherwise the next /harness refresh will pick it up via mtime).

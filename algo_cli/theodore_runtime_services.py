@@ -13,6 +13,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from http.client import HTTPException
 from urllib.error import URLError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import Request, urlopen
@@ -28,6 +29,10 @@ from .display import show_error, show_info
 from .model_routing import require_cloud_api_key, routes_to_chatgpt, routes_to_xai, uses_ollama_cloud
 
 LOCAL_STARTUP_TIMEOUT_SECONDS = 12
+# After a start attempt that never became ready, do not spawn or wait again
+# until this much time has passed; otherwise every prompt blocks for the full
+# startup timeout and leaves another `ollama serve` behind.
+LOCAL_START_RETRY_COOLDOWN_SECONDS = 30.0
 SERVER_READY_TTL_SECONDS = 5.0
 SERVER_NOT_READY_TTL_SECONDS = 0.25
 GATEWAY_READY_TTL_SECONDS = 5.0
@@ -188,6 +193,10 @@ def normalize_ollama_host(host: str) -> str:
     return value
 
 
+_LOCAL_SERVE_PROCESSES: dict[str, subprocess.Popen[Any]] = {}
+_LOCAL_START_FAILED_AT: dict[str, float] = {}
+
+
 def ollama_server_ready(host: str) -> bool:
     now = time.monotonic()
     with _SERVER_READY_CACHE_LOCK:
@@ -199,7 +208,9 @@ def ollama_server_ready(host: str) -> bool:
         request = Request(urljoin(normalize_ollama_host(host).rstrip("/") + "/", "api/version"), method="GET")
         with urlopen(request, timeout=1.5) as response:
             ready = 200 <= response.status < 500
-    except (OSError, URLError, ValueError):
+    except (OSError, URLError, ValueError, HTTPException):
+        # HTTPException covers a non-HTTP listener on the port and an invalid
+        # port in the configured host; neither is an OSError.
         ready = False
     with _SERVER_READY_CACHE_LOCK:
         SERVER_READY_CACHE[host] = (now, ready)
@@ -216,34 +227,51 @@ def start_local_ollama_host(host: str) -> bool:
     if not host_is_local(host):
         return True
     if ollama_server_ready(host):
+        _LOCAL_START_FAILED_AT.pop(host, None)
         return True
 
-    show_info("Local Ollama server is not responding; starting `ollama serve`.")
-    try:
-        kwargs: dict[str, Any] = {
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
-            "stdin": subprocess.DEVNULL,
-            "start_new_session": True,
-        }
-        if sys.platform.startswith("win"):
-            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
-        subprocess.Popen(["ollama", "serve"], **kwargs)
-        SERVER_READY_CACHE.pop(host, None)
-    except FileNotFoundError:
-        show_error("Could not find `ollama` on PATH. Install Ollama or add it to PATH.")
-        return False
-    except Exception as exc:
-        show_error(f"Could not start Ollama server: {exc}")
-        return False
+    failed_at = _LOCAL_START_FAILED_AT.get(host)
+    if failed_at is not None:
+        remaining = LOCAL_START_RETRY_COOLDOWN_SECONDS - (time.monotonic() - failed_at)
+        if remaining > 0:
+            show_error(
+                f"Ollama server at {host} is still not responding. Start it with `ollama serve`, "
+                f"or retry in {max(1, int(remaining))} seconds."
+            )
+            return False
+
+    previous = _LOCAL_SERVE_PROCESSES.get(host)
+    if previous is not None and previous.poll() is None:
+        show_info("Waiting for the local Ollama server that is already starting.")
+    else:
+        show_info("Local Ollama server is not responding; starting `ollama serve`.")
+        try:
+            kwargs: dict[str, Any] = {
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "stdin": subprocess.DEVNULL,
+                "start_new_session": True,
+            }
+            if sys.platform.startswith("win"):
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+            _LOCAL_SERVE_PROCESSES[host] = subprocess.Popen(["ollama", "serve"], **kwargs)
+            SERVER_READY_CACHE.pop(host, None)
+        except FileNotFoundError:
+            show_error("Could not find `ollama` on PATH. Install Ollama or add it to PATH.")
+            return False
+        except Exception as exc:
+            show_error(f"Could not start Ollama server: {exc}")
+            return False
 
     deadline = time.time() + LOCAL_STARTUP_TIMEOUT_SECONDS
     while time.time() < deadline:
         if ollama_server_ready(host):
+            _LOCAL_START_FAILED_AT.pop(host, None)
             show_info("Local Ollama server is running.")
             return True
         time.sleep(0.5)
 
+    _LOCAL_START_FAILED_AT[host] = time.monotonic()
     show_error(f"Ollama server did not become ready at {host}.")
     return False
 
@@ -292,7 +320,7 @@ def gateway_ready(url: str | None = None) -> bool:
         request = Request(url + "/healthz", method="GET")
         with urlopen(request, timeout=1.0) as response:
             ready = 200 <= response.status < 500
-    except (OSError, URLError, ValueError):
+    except (OSError, URLError, ValueError, HTTPException):
         ready = False
     GATEWAY_READY_CACHE[url] = (now, ready)
     return ready

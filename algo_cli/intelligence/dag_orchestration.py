@@ -94,15 +94,39 @@ class DependencyGraph:
                 ready.append(nid)
         return ready
 
+    def _skip_blocked_nodes(self) -> None:
+        """Mark pending nodes whose dependency FAILED or was SKIPPED as SKIPPED."""
+        changed = True
+        while changed:
+            changed = False
+            for nid, node in self._nodes.items():
+                if node.status != NodeStatus.PENDING:
+                    continue
+                for dep in self._dependencies(nid):
+                    dep_status = self._nodes[dep].status
+                    if dep_status in (NodeStatus.FAILED, NodeStatus.SKIPPED):
+                        node.status = NodeStatus.SKIPPED
+                        node.error = f"skipped: dependency '{dep}' {dep_status.name.lower()}"
+                        changed = True
+                        break
+
     def _dependencies(self, node_id: str) -> list[str]:
         return [e.source for e in self._edges if e.target == node_id]
 
     def run(self, initial_context: dict | None = None) -> dict[str, Any]:
         """Execute the DAG, returning results for all nodes."""
-        ctx = initial_context or {}
-        ctx.update(self._scratchboard)
+        self.topological_order()  # raises ValueError on a cycle created by add_edge
+        for node in self._nodes.values():
+            node.status = NodeStatus.PENDING
+            node.result = None
+            node.error = None
+
+        # Caller inputs win over values left on the scratchboard by earlier runs
+        ctx = dict(self._scratchboard)
+        ctx.update(initial_context or {})
 
         for _ in range(len(self._nodes) * 2):  # safety limit
+            self._skip_blocked_nodes()
             ready = self._get_ready_nodes()
             if not ready:
                 break

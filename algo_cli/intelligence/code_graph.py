@@ -73,6 +73,12 @@ class CodeGraph:
         )
         self._add_node(module_node)
 
+        # ast.walk also yields class-body methods; the ClassDef branch records those, so skip them here.
+        class_methods = {
+            id(item)
+            for cls in ast.walk(tree) if isinstance(cls, ast.ClassDef)
+            for item in cls.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
                 cls_id = self._node_id(filepath, node.name, node.lineno)
@@ -107,7 +113,7 @@ class CodeGraph:
                         self._edges.append(CodeEdge(source=cls_id, target=method_id, kind=EdgeKind.CONTAINS))
                         self._process_calls(method_id, item)
 
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and id(node) not in class_methods:
                 func_id = self._node_id(filepath, node.name, node.lineno)
                 func_node = CodeNode(
                     id=func_id, kind=NodeKind.FUNCTION, name=node.name,

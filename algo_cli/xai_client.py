@@ -351,6 +351,12 @@ def _stream_iter(resp: Any) -> Iterator[dict[str, Any]]:
         for event in _parse_sse_events(resp):
             choices = event.get("choices") or []
             if not choices:
+                if event.get("error") is not None:
+                    error = event["error"]
+                    message = error.get("message") if isinstance(error, dict) else error
+                    raise _api_access_error(
+                        None, f"{xai_auth.XAI_API_BASE}/chat/completions", str(message or "(no message)")
+                    )
                 continue
             choice = choices[0]
             delta = choice.get("delta") or {}

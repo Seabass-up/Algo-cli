@@ -217,26 +217,28 @@ class GoogleWorkspaceClient:
     def docs_to_plain_text(self, document: dict[str, Any]) -> str:
         """Flatten a docs.get response into a plain-text body for display."""
         body = document.get("body") or {}
-        chunks: list[str] = []
 
-        def walk(element: dict[str, Any]) -> None:
-            for child in element.get("content", []) or []:
-                kind = child.get("type")
-                if kind == "paragraph":
-                    walk(child)
-                    chunks.append("")
-                elif kind == "table":
-                    for row in child.get("tableRows", []) or []:
-                        for cell in row.get("tableCells", []) or []:
-                            walk(cell)
-                        chunks.append("")
-                elif kind == "textRun":
-                    content = (child.get("textRun") or {}).get("content", "")
-                    if content:
-                        chunks.append(content)
+        def collect(elements: list[Any] | None) -> str:
+            # Docs structural elements are keyed by type, not a "type" field.
+            # Text runs already carry their trailing newlines.
+            parts: list[str] = []
+            for child in elements or []:
+                if not isinstance(child, dict):
+                    continue
+                if "paragraph" in child:
+                    for element in (child["paragraph"] or {}).get("elements") or []:
+                        parts.append(((element or {}).get("textRun") or {}).get("content") or "")
+                elif "table" in child:
+                    for row in (child["table"] or {}).get("tableRows") or []:
+                        cells = [
+                            collect((cell or {}).get("content")).strip("\n") for cell in row.get("tableCells") or []
+                        ]
+                        parts.append("\t".join(cells) + "\n")
+                elif "tableOfContents" in child:
+                    parts.append(collect((child["tableOfContents"] or {}).get("content")))
+            return "".join(parts)
 
-        walk(body)
-        return "\n".join(chunks).rstrip() + "\n"
+        return collect(body.get("content")).rstrip() + "\n"
 
     # -- Sheets -----------------------------------------------------------
 

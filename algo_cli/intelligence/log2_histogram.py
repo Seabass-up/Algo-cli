@@ -39,9 +39,9 @@ BOUNDARIES_US: tuple[float, ...] = (
 
 # Human-readable labels for each bucket.
 BUCKET_LABELS: tuple[str, ...] = (
-    "<=128µs", "<=256µs", "<=512µs", "<=1ms", "<=4ms", "<=16ms",
-    "<=64ms", "<=128ms", "<=256ms", "<=512ms", "<=1s", "<=2s",
-    "<=10s", "<=20s", "<=30s", ">30s",
+    "<=128µs", "<=256µs", "<=512µs", "<=1.02ms", "<=4.10ms", "<=16.38ms",
+    "<=65.54ms", "<=131.07ms", "<=262.14ms", "<=524.29ms", "<=1.05s", "<=2.10s",
+    "<=10.49s", "<=20.97s", "<=31.46s", ">31.46s",
 )
 
 
@@ -105,7 +105,10 @@ class Log2Histogram:
                 upper = BOUNDARIES_US[i]
                 if bucket_count == 0:
                     return lower
-                frac = (target - (cumulative - bucket_count)) / bucket_count
+                if upper == float("inf"):
+                    # Overflow bucket has no finite upper bound; the largest observed value is the best estimate.
+                    return max(lower, self.max_us)
+                frac =(target - (cumulative - bucket_count)) / bucket_count
                 return lower + frac * (upper - lower)
         return BOUNDARIES_US[-2]  # second-to-last (last is inf)
 
@@ -185,7 +188,7 @@ class Log2Histogram:
                 continue
             bar_len = int(count / max_count * 40)
             bar = "█" * bar_len
-            lines.append(f"  {BUCKET_LABELS[i]:>8s} │{bar:<40s} │ {count}")
+            lines.append(f"  {BUCKET_LABELS[i]:>10s} │{bar:<40s} │ {count}")
         return "\n".join(lines)
 
 

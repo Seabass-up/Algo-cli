@@ -52,7 +52,13 @@ def _safe_get_harness_info() -> dict[str, Any]:
         index = json.loads(harness.INDEX_PATH.read_text(encoding="utf-8"))
         record_count = len(index.get("records", []))
         embed_model = ""  # Historical vectors are not a runtime provider.
-        index_version = index.get("version", "")
+        # The index records when and by which indexer it was built, not a
+        # "version" key; reading only that key always printed "index vunknown".
+        index_version = str(index.get("version") or "")
+        if not index_version:
+            generated = str(index.get("generated") or "")
+            indexer = str(index.get("indexer") or "")
+            index_version = " ".join(part for part in (indexer, generated) if part)
         return {
             "harness_index_version": index_version,
             "harness_record_count": record_count,
@@ -141,10 +147,14 @@ def format_version_string(manifest: VersionManifest | None = None) -> str:
     ]
 
     if manifest.harness_record_count > 0:
-        lines.append(
-            f"  Harness:     {manifest.harness_record_count} records"
-            f" (index v{manifest.harness_index_version or 'unknown'})"
-        )
+        index_label = manifest.harness_index_version
+        if not index_label:
+            index_detail = ""
+        elif index_label[:1].isdigit():
+            index_detail = f" (index v{index_label})"
+        else:
+            index_detail = f" (index built {index_label})"
+        lines.append(f"  Harness:     {manifest.harness_record_count} records{index_detail}")
         if manifest.harness_embed_model:
             lines.append(f"  Embed model: {manifest.harness_embed_model}")
 

@@ -157,7 +157,7 @@ reliability are not qualified. Tev1's upstream license issue remains unresolved.
 | Provider | Native Interface | Identity And Limits |
 | --- | --- | --- |
 | `jev` | Existing TypeSafe companion and credential handling | Jev 1.13.0; existing 20-second companion deadline; 32 questions, 16,000 state bytes, 10 Score levels |
-| `clef` | Ollama `POST /v1/systemone` | Compatible GGUF decision runner, Ollama 0.35.1+; installed manifest digest checked before/after inference |
+| `clef` | Ollama `POST /v1/systemone` | Compatible GGUF decision runner on Ollama 0.35.1+, or explicit MLX/safetensors decision runner on 0.40.0+; installed manifest digest checked before/after inference |
 | `clef-flash` | Ollama `POST /v1/systemone` | Separate 9B model; same compatibility checks, no substitution with CLM |
 | `tev1` | Ollama `POST /v1/systemone` | Explicit experimental Together model; 0.35+; 24-level training-range limit |
 | `clm` | Installed local CLM helper | Pinned native renderer/tokenizer admission rejects text above 2,048 tokens before inference; no truncation |
@@ -261,8 +261,9 @@ Jev/CLM/Decider adapters are not replaced.
 An additional Ollama System One provider can be configured with a reviewed JSON
 descriptor using `--descriptor PATH`. It requires a model name/digest, explicit
 source repository, immutable 40-character revision, license, hardware, inference
-interface and all capability limits/semantics. Runtime checks the served GGUF
-decision capability and installed digest. Descriptor source assertions are
+interface and all capability limits/semantics. Runtime checks explicit decision
+capability, a supported native format/runner/version, and the installed digest.
+Descriptor source assertions are
 operator-reviewed metadata, not an attestation that arbitrary Hub weights were
 loaded. Other serving protocols require their own registered adapter; a generic
 Hugging Face chat or hosted-inference endpoint is not silently substituted.

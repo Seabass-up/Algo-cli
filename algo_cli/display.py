@@ -825,6 +825,22 @@ def show_session_overview(
     console.print()
 
 
+def _markdown_preview(text: str, limit: int) -> str:
+    """Shorten Markdown for a preview without collapsing its line structure.
+
+    ``_short_value`` joins everything onto one line, which turns lists, headings
+    and fenced code into a single run-on paragraph once rendered.
+    """
+    cut = text[:limit]
+    boundary = cut.rfind("\n")
+    if boundary >= limit // 2:
+        cut = cut[:boundary]
+    cut = cut.rstrip()
+    if sum(1 for line in cut.splitlines() if line.lstrip().startswith("```")) % 2:
+        cut += "\n```"
+    return cut + "\n\n…"
+
+
 def _short_value(value: Any, limit: int = 80) -> str:
     text = str(value)
     text = " ".join(text.split())
@@ -1176,7 +1192,7 @@ def _render_agent_block_body(
         return themed_markdown(text), dump_path, dump_receipt
     if len(text) <= preview_limit:
         return themed_markdown(text), dump_path, dump_receipt
-    preview = _short_value(text, preview_limit)
+    preview = _markdown_preview(text, preview_limit)
     return (
         Group(
             themed_markdown(preview),

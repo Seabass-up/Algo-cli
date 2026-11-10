@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+import re
 from dataclasses import dataclass
 
 
@@ -136,8 +138,50 @@ _QUESTION_PREFIXES = (
 )
 
 
+_REQUEST_MARKERS = (
+    "please",
+    "can you",
+    "could you",
+    "would you",
+    "will you",
+    "i need",
+    "i want",
+    "help me",
+    "how do i",
+    "how can i",
+    "how should i",
+    "let's",
+)
+
+
+@functools.lru_cache(maxsize=None)
+def _term_regex(term: str) -> re.Pattern[str]:
+    core = term.strip()
+    body = r"\s+".join(re.escape(part) for part in core.split(" "))
+    # Single inflectable words also match their common suffixes (fix/fixes/fixed/fixing).
+    if term == core and " " not in core and core[-1].isalnum():
+        body += r"(?:s|es|ed|d|ing)?"
+    leading = r"(?<!\w)" if core[0].isalnum() else ""
+    trailing = r"(?!\w)" if core[-1].isalnum() else ""
+    return re.compile(leading + body + trailing)
+
+
 def _has_any(text: str, terms: tuple[str, ...]) -> bool:
-    return any(term in text for term in terms)
+    return any(_term_regex(term).search(text) for term in terms)
+
+
+def _is_plain_question(lowered: str) -> bool:
+    """A question asking how/what something works, with no request to change anything."""
+    if not (lowered.startswith(_QUESTION_PREFIXES) or lowered.rstrip().endswith("?")):
+        return False
+    if _has_any(lowered, _REQUEST_MARKERS):
+        return False
+    sentences = re.split(r"(?<=[.!?;])\s+|\n", lowered)
+    return not any(
+        _term_regex(term).match(sentence.strip())
+        for sentence in sentences
+        for term in _STRONG_MUTATION_TERMS + _CODING_TERMS
+    )
 
 
 def route_task(prompt: str) -> TaskRoute:
@@ -147,10 +191,12 @@ def route_task(prompt: str) -> TaskRoute:
     read_only = _has_any(lowered, _READ_ONLY_TERMS)
     review = _has_any(lowered, _REVIEW_TERMS)
     research = _has_any(lowered, _RESEARCH_TERMS)
-    coding = _has_any(lowered, _CODING_TERMS)
+    plain_question = _is_plain_question(lowered)
+    coding = _has_any(lowered, _CODING_TERMS) and not plain_question
     mutation_intent = (
         _has_any(lowered, _STRONG_MUTATION_TERMS)
         and not read_only
+        and not plain_question
     )
     external_side_effect = (
         _has_any(lowered, _EXTERNAL_SIDE_EFFECT_TERMS)

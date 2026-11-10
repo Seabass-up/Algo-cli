@@ -14,8 +14,12 @@ Version-1 programs allow multiple observations but at most one state-changing
 or code action, which must be final. For a write followed by a shell verifier,
 use separate calls or programs; this supported sequence needs no new permission.
 
-Registered actions, including shell execution and file edits, are preapproved
-by the user's explicit activation within the active scope. Tool-call and
+Eligible registered actions, including shell execution and file edits, are
+preapproved by the user's explicit activation within the active scope. This
+does not override backend policy: run_shell remains disabled when Continuum
+is the protected authority. Check effective capability reporting before planning
+shell-based verification; runtime_diagnostics supplies metadata, not test execution.
+Tool-call and
 model-round caps are lifted: keep working while making progress. If one tool
 is blocked, look for a different permitted route to the user's objective:
 registered typed tools, app/API adapters, or a different evidence source.

@@ -64,6 +64,7 @@ from .continuum_tools import (
 from .marcus_authority import CuratedToolRegistry
 from .jev_kernel import jev_kernel_status, jev_question_contract
 from .decision_layer import decision_decide, decision_status
+from .runtime_diagnostics import runtime_diagnostics
 from .algorithm_catalog import algorithm_catalog_edit, algorithm_catalog_read
 from ollama import Client
 
@@ -1170,6 +1171,34 @@ def write_file(
         return f"Error writing {p}: {exc}"
 
 
+def _read_text_for_edit(p: Path) -> tuple[str | None, str | None]:
+    """Read a file for an in-place edit without changing bytes outside the match.
+
+    ``Path.read_text`` translates CRLF to LF and ``errors="replace"`` turns
+    undecodable bytes into U+FFFD; a whole-file rewrite then makes both changes
+    permanent. Edits therefore read the raw bytes and refuse non-UTF-8 files.
+    """
+    try:
+        raw = p.read_bytes()
+    except Exception as exc:
+        return None, f"Error reading {p}: {exc}"
+    try:
+        return raw.decode("utf-8"), None
+    except UnicodeDecodeError as exc:
+        return None, (
+            f"Error: {p} is not valid UTF-8 (first invalid byte at offset {exc.start}). "
+            "Editing it would rewrite the undecodable bytes, so no change was made."
+        )
+
+
+def _match_file_newlines(content: str, text: str) -> str:
+    """Give edit text the line endings of a file that is predominantly CRLF."""
+    crlf = content.count("\r\n")
+    if crlf == 0 or crlf <= content.count("\n") - crlf:
+        return text
+    return text.replace("\r\n", "\n").replace("\n", "\r\n")
+
+
 def edit_file(
     path: str,
     old_string: str,
@@ -1223,10 +1252,12 @@ def edit_file(
     if p.is_dir():
         return f"Error: {p} is a directory. edit_file only works on text files."
 
-    try:
-        original = p.read_text(encoding="utf-8", errors="replace")
-    except Exception as exc:
-        return f"Error reading {p}: {exc}"
+    original, read_error = _read_text_for_edit(p)
+    if original is None:
+        return str(read_error)
+    if old_string not in original:
+        old_string = _match_file_newlines(original, old_string)
+    new_string = _match_file_newlines(original, new_string)
 
     occurrences = original.count(old_string)
     if occurrences == 0:
@@ -1414,18 +1445,19 @@ def batch_edit(
     if p.is_dir():
         return f"Error: {p} is a directory."
 
-    try:
-        original = p.read_text(encoding="utf-8", errors="replace")
-    except Exception as exc:
-        return f"Error reading {p}: {exc}"
+    original, read_error = _read_text_for_edit(p)
+    if original is None:
+        return str(read_error)
 
     working = original
     applied: list[str] = []
     for index, edit in enumerate(edits, 1):
         old = str(edit.get("old_string", ""))
-        new = str(edit.get("new_string", ""))
+        new = _match_file_newlines(original, str(edit.get("new_string", "")))
         if not old:
             return f"Error: edit #{index} has empty old_string. Refusing to apply batch."
+        if old not in working:
+            old = _match_file_newlines(original, old)
         count = working.count(old)
         if count == 0:
             return (
@@ -1949,11 +1981,17 @@ def x_search(
     if not query or not query.strip():
         return "Error: query is empty."
 
+    # Coerce once: the request and the citation slice below must agree, and a
+    # model may send the count as a string.
+    try:
+        result_limit = max(1, min(int(max_results), 30))
+    except (TypeError, ValueError):
+        return "Error running x_search: max_results must be an integer from 1 to 30."
     try:
         result = xai_client.active_xai_client().search(
             query=query.strip(),
             sources=[{"type": "x"}],
-            max_results=max(1, min(int(max_results), 30)),
+            max_results=result_limit,
         )
     except Exception as exc:
         return f"Error running x_search: {exc}"
@@ -2007,7 +2045,7 @@ def x_search(
     if citations:
         out_parts.append("")
         out_parts.append("Sources:")
-        out_parts.extend(f"- {url}" for url in citations[:max_results])
+        out_parts.extend(f"- {url}" for url in citations[:result_limit])
     if cached:
         out_parts.append("")
         out_parts.append(f"(cached to {path.name})")
@@ -3202,6 +3240,7 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
             "session_command: any registered slash command such as /status, /mode execute, /context status, /harness status, /harness refresh, /harness score, /harness compare, /route TASK (session control; may require approval)",
         ],
         "shell": ["run_shell"],
+        "verification": ["runtime_diagnostics", "run_shell", "git_diff", "read_file"],
         "web": ["web_search", "web_fetch"],
         "browser": [
             "cobalt_open",
@@ -3302,6 +3341,25 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
     ]
     from .oliver_slash_dispatch import SLASH_COMMAND_ALIASES, SLASH_COMMANDS
     from .kernels.manifest import kernel_discovery_snapshot
+    from .irene_memory_path_policy import protected_tool_policy_error
+
+    def effective_policy(groups: dict[str, list[str]]) -> dict[str, Any]:
+        states = {}
+        for items in groups.values():
+            for item in items:
+                name = item.split(":", 1)[0].strip()
+                if name not in TOOL_MAP:
+                    continue
+                refusal = protected_tool_policy_error(name, {}, cfg) if cfg is not None else None
+                states[name] = {"status": "policy_blocked" if refusal else "requires_runtime_preflight"}
+                if refusal:
+                    states[name]["reason"] = refusal
+        return states
+
+    shell_refusal = protected_tool_policy_error("run_shell", {}, cfg) if cfg is not None else None
+    if shell_refusal:
+        verification_layer = [line for line in verification_layer if "Use run_shell" not in line]
+        verification_layer.append(shell_refusal + " Use runtime_diagnostics for bounded metadata; it is not a test runner.")
 
     stats = _harness_stats_for_config(cfg)
 
@@ -3391,6 +3449,7 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
                 indent=2,
             )
         matching["match"] = "matched"
+        matching["effective_tool_policy"] = effective_policy(matching["model_callable_tools"])
         if slash_focus:
             matching["when_to_use"] = slash_guidance
             matching["slash_command_guidance"] = slash_guidance
@@ -3704,7 +3763,8 @@ def session_command(command: str, cfg: Any = None) -> str:
 
     Use this for session control when the user asks for it or the next step depends
     on CLI state. Do not call it just to perform normal work: use write_file for
-    edits, run_shell for tests/builds, and session_slash for /read, /ls, /cd, /cwd.
+    edits, run_shell for tests/builds only when effective policy admits it, and
+    session_slash for /read, /ls, /cd, /cwd. Continuum protection disables shell.
     If you merely type a slash command in a final answer, it will not execute.
 
     Prefer idempotent commands with explicit state when available:
@@ -3744,6 +3804,12 @@ def session_command(command: str, cfg: Any = None) -> str:
     if cfg is None:
         return "Error: session_command must be invoked by the algo CLI runtime (not called directly)."
     normalized = command.strip()
+    from .continuum_memory import selected
+    from .runtime_diagnostics import protected_diagnostic_command
+
+    diagnostic = protected_diagnostic_command(normalized)
+    if diagnostic is not None and selected(cfg):
+        return runtime_diagnostics(section=diagnostic, cfg=cfg)
     from .samuel_policy_engine import normalize_session_command
 
     command, argument = normalize_session_command(normalized)
@@ -5343,6 +5409,7 @@ def action_program(plan: dict, cfg: Any = None) -> str:
 
 
 ALL_TOOLS = [
+    _hide_cfg_param(runtime_diagnostics),
     _hide_cfg_param(read_file),
     edit_file,
     read_pdf,
