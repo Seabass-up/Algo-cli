@@ -499,7 +499,12 @@ class CompanionProvider:
         if self.name == "decider":
             extensions = {}
             canonical = {}
-            for key, answer in response["answers"].items():
+            native_answers = response.get("answers")
+            if type(native_answers) is not dict or set(native_answers) != set(questions):
+                raise DecisionError("answer_ids_mismatch")
+            for key, answer in native_answers.items():
+                if type(answer) is not dict:
+                    raise DecisionError("answer_type_mismatch")
                 kind = questions[key]["type"]
                 fields = {"type", "noul"} if kind == "noul" else {"type", "choice", "confidence", "probabilities"} if kind == "choice" else {"type", "score", "legend", "confidence", "probabilities"}
                 extras = {"certainty", "x_p_max"} if kind == "choice" else {"certainty", "x_p_max", "fit_mass", "level_fit"} if kind == "score" else set()

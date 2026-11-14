@@ -136,12 +136,16 @@ def runtime_diagnostics(section: str = 'selfcheck', query: str = '', provider: s
             status = json.loads(decision_status(provider=name, cfg=cfg))
             item = status['providers'][name]
             inner = item.get('status', {})
+            readiness = [inner.get(key) for key in ('available', 'ready', 'configured', 'enabled')]
+            available = (False if item.get('ok') is False or any(flag is False for flag in readiness)
+                         else True if any(inner.get(key) is True for key in ('available', 'ready'))
+                         else None)
             data = {'provider': name, 'provider_health': status['provider_health'],
-                    'available': item.get('ok') is not False,
+                    'available': available,
                     'inference': 'not_probed_by_status'}
             if item.get('ok') is False:
                 data['error'] = item.get('error', 'unavailable')
-            for key in ('available', 'loaded', 'local', 'ready'):
+            for key in ('loaded', 'local', 'ready'):
                 if type(inner.get(key)) is bool:
                     data[key] = inner[key]
         end = min(len(rows), offset + limit)
