@@ -1,10 +1,28 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
 const yaml = createRequire(require.resolve("@eslint/eslintrc"))("js-yaml");
+
+test("React Server Components and the actual plugin-vendored server are patched and aligned", () => {
+  const root = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const react = require("react/package.json").version;
+  const reactDom = require("react-dom/package.json").version;
+  const rsc = require("react-server-dom-webpack/package.json").version;
+  const pluginEntry = require.resolve("@vitejs/plugin-rsc");
+  const vendorPath = join(dirname(pluginEntry), "vendor/react-server-dom/package.json");
+  const vendor = JSON.parse(readFileSync(vendorPath, "utf8"));
+  assert.equal(react, "19.3.1");
+  assert.equal(reactDom, react);
+  assert.equal(rsc, react);
+  assert.equal(vendor.version, react, `unpatched or mismatched vendored RSC ${vendor.version}`);
+  assert.equal(root.devDependencies["@vitejs/plugin-rsc"], "0.5.38");
+  const core = readFileSync(join(dirname(pluginEntry), "core/rsc.js"), "utf8");
+  assert.match(core, /vendor\/react-server-dom\/server\.edge/);
+});
 
 test("bounded Zod collections reject size before walking elements", () => {
   const consumerRequire = createRequire(require.resolve("eslint-plugin-react-hooks"));

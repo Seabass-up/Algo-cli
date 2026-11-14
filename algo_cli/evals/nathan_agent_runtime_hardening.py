@@ -59,6 +59,7 @@ _UTC_RE = re.compile(
 SOURCE_PATHS = (
     "algo_cli/runtime_diagnostics.py",
     "tests/test_protected_diagnostics.py",
+    "tests/test_qc_fixes_20261114.py",
     ".gitattributes",
     "pyproject.toml",
     "uv.lock",

@@ -1,5 +1,44 @@
 # Lessons Learned
 
+## 2026-11-14: Validate Boundaries And Qualify Public Source Separately
+
+**Confirmed causes:** Decider normalization accessed `.items()` before checking
+the native answer container and its question IDs. Diagnostics treated a successful
+metadata lookup as proof of provider readiness. The website contained affected
+top-level and plugin-vendored RSC packages; Go's module and CI pins selected a
+toolchain flagged by the dependency audit.
+
+**Repair:** Reject malformed native answer containers, IDs and answer objects
+before normalization while retaining valid native uncertainty separately. Explicit
+false readiness wins over positive flags; unprobed availability remains null and
+status does not silently contact a remote provider. Align React, React DOM and RSC
+to 19.3.1 and the RSC plugin to 0.5.38, testing its actual vendored package and
+import. Align both Go toolchain pins to 1.26.11 without changing watchdog logic.
+
+**Verification:** Local Ruff, the 80-file mypy contract, compilation and installed
+source parity pass. Website build/23 tests/lint and npm audit pass with zero
+advisories; Go race/vet/vulnerability checks and Rust tests/format/clippy/audit
+pass. The public regression file contains 19 cases, including conflicting
+readiness flags, remote status without network access, valid native uncertainty
+and malformed answer boundaries. The exact public-source full suite passes
+7,929 tests with 45 platform skips and 72.67% branch-aware coverage. Python 3.10
+affected paths pass 96 cases; the audit matches all 47 installed distributions
+with no skipped packages or known vulnerabilities. Swift's three test runners
+pass 89 tests total and release compilation passes. Source, wheel and sdist
+privacy scans pass. Nathan passes 17 probes/31 workloads; M8 passes nine local
+metrics and retains five external blockers, with no local failures; M9 accepts
+fresh producer bindings. These are local results, not hosted-platform acceptance.
+
+**Prevention and delivery boundary:** A private integration commit must never
+become an ancestor of a public review branch, even if its files are later deleted.
+Extract an explicit generic-file allowlist onto public main; omit private modules,
+imports, tests, catalogs and machine-specific lessons. Execute qualification again
+for that public source, rather than relabeling private build evidence. Use local
+CI only for this review delivery. Approval, authorization and verification
+protections remain unchanged; this change is not a release or external-platform
+qualification. `govulncheck` text mode supplies a failing vulnerability exit code;
+JSON output alone must not be interpreted as a passing audit.
+
 ## 2026-11-07: Review Partial Handoffs At Every Exit
 
 **Confirmed issues (PR #96):** A signed Agent Block that exhausted its work

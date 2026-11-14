@@ -273,6 +273,7 @@ SOURCE_PATHS = (
 )
 FOCUSED_TESTS = (
     "tests/test_protected_diagnostics.py",
+    "tests/test_qc_fixes_20261114.py",
     "tests/test_algorithm_catalog_tools.py",
     "tests/test_guidance_coherence.py",
     "tests/test_oauth_loopback_deadlines.py",
