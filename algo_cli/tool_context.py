@@ -34,7 +34,8 @@ _CLASS_TO_TOOLS: dict[str, frozenset[str]] = {
             "git_diff",
         }
     ),
-    "shell": frozenset({"run_shell"}),
+    "shell": frozenset({"run_shell", "cli_anything_run", "cli_anything_manage"}),
+    "cli-anything": frozenset({"cli_anything_discover", "cli_anything_run", "cli_anything_manage"}),
     "jev": frozenset({"jev_kernel_status", "jev_question_contract"}),
     "decision": frozenset({"decision_status", "decision_decide"}),
     "web": frozenset({"web_search", "web_fetch"}),

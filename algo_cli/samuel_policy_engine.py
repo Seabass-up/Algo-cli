@@ -333,6 +333,8 @@ def resolve_action(
 
 
 def _target_for(name: str, args: dict[str, Any], *, cwd: str, target_scope: TargetScope) -> str:
+    if name in {"cli_anything_run", "cli_anything_manage"}:
+        return "plugin:cli-anything:" + str(args.get("adapter") or "unresolved")
     if name == "jev_question_contract":
         return "provider:typesafe:jev"
     if name == "decision_decide":

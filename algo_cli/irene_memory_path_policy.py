@@ -39,7 +39,10 @@ UNQUALIFIED_BROWSER_ACTIONS = frozenset({
     "cobalt_open", "cobalt_snapshot", "cobalt_screenshot", "cobalt_navigate",
     "cobalt_click", "cobalt_type", "cobalt_scroll", "cobalt_close",
 })
-GLOBALLY_DISABLED_PROTECTED_ACTIONS = UNQUALIFIED_BROWSER_ACTIONS | {"run_shell", "update_user_profile"}
+CLI_ANYTHING_EXECUTION_ACTIONS = frozenset({"cli_anything_run", "cli_anything_manage"})
+GLOBALLY_DISABLED_PROTECTED_ACTIONS = UNQUALIFIED_BROWSER_ACTIONS | {
+    "run_shell", "update_user_profile", *CLI_ANYTHING_EXECUTION_ACTIONS,
+}
 
 
 def _known_protected_roots() -> tuple[Path, ...]:
@@ -311,6 +314,17 @@ def protected_tool_policy_error(
         protected = selected(cfg)
     except ContinuumMemoryError:
         return "Error: memory configuration requires repair before tool execution."
+    if name in CLI_ANYTHING_EXECUTION_ACTIONS:
+        if cfg is None:
+            return "Error: runtime config was not injected; CLI-Anything execution is unavailable."
+        if protected:
+            return (
+                "Error: CLI-Anything execution, help, installs and updates are disabled while "
+                "Continuum Memory is protected; a qualified contained execution boundary is required. "
+                "cli_anything_discover remains available."
+            )
+        if bool(getattr(cfg, "safe_mode", True)):
+            return "Error: safe mode blocks CLI-Anything process and package changes; discovery remains available."
     if not protected:
         return None
     if name in UNQUALIFIED_BROWSER_ACTIONS:

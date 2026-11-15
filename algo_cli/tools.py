@@ -65,6 +65,7 @@ from .marcus_authority import CuratedToolRegistry
 from .jev_kernel import jev_kernel_status, jev_question_contract
 from .decision_layer import decision_decide, decision_status
 from .runtime_diagnostics import runtime_diagnostics
+from .cli_anything import cli_anything_discover, cli_anything_manage, cli_anything_run
 from .algorithm_catalog import algorithm_catalog_edit, algorithm_catalog_read
 from ollama import Client
 
@@ -3218,6 +3219,8 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
         topic: Optional focus area such as files, shell, web, memory, harness, verification, or models.
     """
     focus = (topic or "").strip().lower()
+    if focus in {"cli_anything", "cli-anything", "cli anything", "apps", "adapters"}:
+        focus = "cli-anything"
     commands = _slash_command_groups()
     tool_groups = {
         "files": [
@@ -3240,6 +3243,7 @@ def available_actions(topic: str | None = None, cfg: Config | None = None) -> st
             "session_command: any registered slash command such as /status, /mode execute, /context status, /harness status, /harness refresh, /harness score, /harness compare, /route TASK (session control; may require approval)",
         ],
         "shell": ["run_shell"],
+        "cli-anything": ["cli_anything_discover", "cli_anything_run", "cli_anything_manage"],
         "verification": ["runtime_diagnostics", "run_shell", "git_diff", "read_file"],
         "web": ["web_search", "web_fetch"],
         "browser": [
@@ -5409,6 +5413,9 @@ def action_program(plan: dict, cfg: Any = None) -> str:
 
 
 ALL_TOOLS = [
+    _hide_cfg_param(cli_anything_discover),
+    _hide_cfg_param(cli_anything_run),
+    _hide_cfg_param(cli_anything_manage),
     _hide_cfg_param(runtime_diagnostics),
     _hide_cfg_param(read_file),
     edit_file,

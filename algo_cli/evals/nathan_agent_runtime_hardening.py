@@ -57,6 +57,8 @@ _UTC_RE = re.compile(
 )
 
 SOURCE_PATHS = (
+    "algo_cli/cli_anything.py",
+    "tests/test_cli_anything.py",
     "algo_cli/runtime_diagnostics.py",
     "tests/test_protected_diagnostics.py",
     "tests/test_qc_fixes_20261114.py",

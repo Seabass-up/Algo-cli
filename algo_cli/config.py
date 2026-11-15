@@ -2545,6 +2545,7 @@ class Config:
     continuum_active_projects: list[str] = field(default_factory=list)  # Empty retains global selection.
     jev_kernel_enabled: bool = False
     jev_kernel_cli: str = ""  # Explicit absolute companion path; credentials stay in the companion.
+    cli_anything_bin_dir: str = ""  # Optional host-owned adapter/CLI-Hub environment bin directory.
     decision_default_provider: str = "jev"
     decision_routing_mode: str = "jev"
     decision_router_candidates: list[str] = field(default_factory=lambda: ["jev", "clef-flash", "clef", "decider", "clm", "tev1"])
