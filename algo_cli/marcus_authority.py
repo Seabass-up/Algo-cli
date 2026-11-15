@@ -316,6 +316,16 @@ CURATED_TOOL_POLICIES: dict[str, CuratedActionPolicy] = {
         estimated_cost=4.0,
     ),
     "action_search": _read(target=TargetScope.RUNTIME),
+    "cli_anything_discover": _read(target=TargetScope.RUNTIME),
+    **{
+        name: _local(
+            Capability.SHELL, Capability.NETWORK, Capability.DATA_EGRESS,
+            data=(DataClass.LOCAL_CONTENT, DataClass.SENSITIVE), target=TargetScope.PLUGIN,
+            effect=EffectClass.CODE_EXECUTION, idempotency=IdempotencyClass.NON_IDEMPOTENT,
+            verification=VerificationRequirement.INDEPENDENT_POSTCONDITION, suppress_logs=True,
+        )
+        for name in ("cli_anything_run", "cli_anything_manage")
+    },
     "append_lesson": _local(
         Capability.MEMORY,
         data=(DataClass.USER_PROFILE, DataClass.SENSITIVE),

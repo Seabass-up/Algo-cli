@@ -190,6 +190,18 @@ def _spec(
 
 
 ACTION_SPECS: tuple[ActionSpec, ...] = (
+    _spec('cli_anything_discover', 'tool', 'Discover installed CLI-Anything app adapters without execution.',
+          'cli-anything', ('cli-anything', 'cli_anything', 'apps', 'adapters', 'discovery'),
+          'Host PATH metadata only; no imports, network or package changes.', 'low', False, False, True),
+    _spec('cli_anything_run', 'tool', 'Run a CLI-Anything app adapter with gated automatic install/update.',
+          'cli-anything', ('cli-anything', 'cli_anything', 'apps', 'adapters', 'execution', 'install'),
+          'External code execution, not a sandbox; Continuum and safe mode block it.', 'high', True, True, False,
+          requires_network=True,
+          known_limitations=('Adapter presence is not backend qualification; output requires independent verification.',)),
+    _spec('cli_anything_manage', 'tool', 'Install or update one CLI-Anything adapter through CLI-Hub.',
+          'cli-anything', ('cli-anything', 'cli_anything', 'apps', 'adapters', 'install', 'update'),
+          'Runtime-gated package code and network access; no arbitrary URLs or bulk updates.', 'high', True, True, False,
+          requires_network=True, requires_binary=('cli-hub',)),
     _spec('runtime_diagnostics', 'tool', 'Read bounded public runtime, context and search metadata.',
           'harness', ('diagnostics', 'selfcheck', 'context', 'search', 'verification'),
           'Metadata only; never private memory, owner catalog bodies, shell or a functional test.',

@@ -62,6 +62,7 @@ class SearchProcessResult:
     truncated: bool
     stderr_truncated: bool
     timed_out: bool
+    cancelled: bool = False
 
 
 def _capture_pipe(pipe: BinaryIO, capture: _Capture, finished: queue.Queue[_Capture]) -> None:
@@ -105,9 +106,12 @@ def run_search_process(
     process_kwargs: dict[str, Any],
     terminate: Callable[[subprocess.Popen[Any]], None],
     input_bytes: bytes | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> SearchProcessResult:
     """Stop at a global byte/line cap without first buffering the entire stream."""
     deadline = time.monotonic() + timeout
+    if cancel_event is not None and cancel_event.is_set():
+        return SearchProcessResult(b"", b"", -1, False, False, False, True)
     proc = subprocess.Popen(
         command,
         stdin=subprocess.DEVNULL if input_bytes is None else subprocess.PIPE,
@@ -134,6 +138,7 @@ def run_search_process(
             )
         )
     timed_out = False
+    cancelled = False
     try:
         for reader in readers:
             reader.start()
@@ -142,18 +147,39 @@ def run_search_process(
             if remaining <= 0:
                 timed_out = True
                 break
-            try:
-                captured = finished.get(timeout=remaining)
-            except queue.Empty:
-                timed_out = True
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                try:
+                    captured = finished.get(timeout=min(remaining, 0.1) if cancel_event is not None else remaining)
+                    break
+                except queue.Empty:
+                    continue
+            if cancelled or timed_out:
                 break
             if captured.stopped or captured.error is not None:
                 break
         else:
-            try:
-                proc.wait(timeout=max(0.001, deadline - time.monotonic()))
-            except subprocess.TimeoutExpired:
-                timed_out = True
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                try:
+                    proc.wait(timeout=min(remaining, 0.1) if cancel_event is not None else remaining)
+                    break
+                except subprocess.TimeoutExpired:
+                    if cancel_event is None:
+                        timed_out = True
+                        break
     finally:
         # This also runs for Ctrl+C, a reader error, and a process wait failure.
         if proc.poll() is None or any(reader.is_alive() for reader in readers):
@@ -179,6 +205,7 @@ def run_search_process(
         stdout.truncated,
         stderr.truncated,
         timed_out,
+        cancelled,
     )
 
 

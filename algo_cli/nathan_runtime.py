@@ -78,6 +78,7 @@ _BASELINE_CAPABILITIES = CapabilityMask(Capability.READ.value | Capability.MODEL
 _BASELINE_ACTIONS = frozenset(
     {
         "action_search",
+        "cli_anything_discover",
         "available_actions",
         "algorithm_catalog_read",
         "capability_mask_describe",
@@ -1103,6 +1104,9 @@ def run_tool(name: str, args: dict[str, Any], cfg: Config) -> str:
         "harness_read",
         "harness_scorecard",
         "harness_competitive_rating",
+        "cli_anything_discover",
+        "cli_anything_run",
+        "cli_anything_manage",
         "runtime_diagnostics",
     ):
         call_args["cfg"] = cfg
@@ -1512,6 +1516,14 @@ def _record_tool_attempt_unlocked(
             success=mutation_succeeded,
             operation=name,
         )
+    elif name in {"cli_anything_run", "cli_anything_manage"}:
+        try:
+            native_result = json.loads(result)
+        except (TypeError, ValueError):
+            native_result = {}
+        if invoked and (not isinstance(native_result, dict) or native_result.get("invoked") is not False):
+            workspace_changed = True
+            execution_guardrails.record_workspace_mutation(success=False, possible=True)
     elif name == "run_shell":
         command = str(args.get("command") or "")
         exit_matches = _SHELL_EXIT_CODE_RE.findall(str(result))

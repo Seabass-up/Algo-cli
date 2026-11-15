@@ -1,5 +1,42 @@
 # Lessons Learned
 
+## 2026-11-14: Keep Native Adapter Discovery Separate From Code Execution
+
+**Gap and cause:** Installed CLI-Anything adapters had no native agent tool
+surface. A generic subprocess wrapper would incorrectly treat help/imports as
+observation or bypass existing process policy. Package-manager environments can
+also install successfully without exposing a command on the agent's PATH.
+
+**Implementation:** Add bounded offline discovery plus gated adapter execution
+and single-adapter installation/update. Use the same host-only bin-directory
+setting for discovery, command resolution and child PATH. Native approval,
+capability and protected-memory checks remain authoritative, including for help
+and package changes. Require an exact harness catalog entry before installation;
+never silently install an unrelated public CLI. Automatic install-on-missing is
+explicit in the tool contract; existing adapters update only when requested.
+
+**Prevention:** Preserve possible effects after partial failures, output errors,
+cancellation or package changes. A process exit is not application verification.
+Fixture package tests are not live installation or immutable-source qualification.
+Keep the frozen source and test corpus unchanged during qualification; reject and
+rerun a changed source rather than relabeling old reports. Extract public deltas
+without private ancestors, modules, tests, catalogs or owner-specific delivery
+records. Re-execute local CI and artifact scans on the public source before review.
+No watchdog, permission, hosted-CI or publication policy is changed.
+
+**Executed public-source verification:** The full Python suite passes 8,007
+tests with 45 skips and 72.74% branch-aware coverage. Python 3.10 affected
+paths pass 277 tests with 26 skips; its dependency audit covers all 47 installed
+distributions with no known vulnerabilities. Ruff, 82-file mypy, compilation,
+installed/source parity, Python dependency audit, website build/23 tests/lint
+and npm audit pass. Go race/vet/vulnerability checks, Rust tests/format/clippy/
+audit, Swift's 89 tests and release build pass. Source, wheel and sdist privacy
+scans pass. A scripted console-entry fixture advertises, invokes and consumes
+native discovery without executing the adapter. Nathan passes 17 checks/31
+workloads; M8 passes nine local metrics and retains five external blockers;
+M9 accepts the fresh producer bindings. These are local and fixture results,
+not hosted-platform, real package-change or protected-process qualification.
+
 ## 2026-11-14: Validate Boundaries And Qualify Public Source Separately
 
 **Confirmed causes:** Decider normalization accessed `.items()` before checking
