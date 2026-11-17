@@ -41,12 +41,13 @@ def test_discovery_offers_only_program_composable_actions(monkeypatch):
     assert all(row["schema"]["function"]["name"] == row["name"] for row in result["actions"])
 
 
-def test_discovery_respects_runtime_program_ceiling_and_echo_policy(monkeypatch, tmp_path):
+def test_discovery_respects_runtime_program_ceiling_and_containment(monkeypatch, tmp_path):
     cfg = Config(cwd=str(tmp_path), continuum_enabled=True)
     cfg._algo_program_authorization = authorization_for_actions(("run_shell", "read_file", "update_user_profile"))
     monkeypatch.setattr("algo_cli.tool_context.rank_tools_for_prompt", lambda _query, candidates: candidates)
     result = json.loads(nathan_runtime.run_tool("action_search", {"query": "verification"}, cfg))
-    assert [row["name"] for row in result["actions"]] == ["read_file"]
+    from algo_cli.contained_shell import preflight
+    assert {row["name"] for row in result["actions"]} == ({"read_file", "run_shell"} if preflight(cfg) is None else {"read_file"})
 
 
 def test_empty_discovery_does_not_advise_an_unavailable_program(tmp_path):
@@ -57,7 +58,7 @@ def test_empty_discovery_does_not_advise_an_unavailable_program(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "name,args", [("run_shell", {"command": "python -c 'assert True'"}), ("update_user_profile", {"content": "canary"})]
+    "name,args", [("update_user_profile", {"content": "canary"})]
 )
 def test_protected_globally_disabled_actions_are_denied_before_approval(tmp_path, name, args):
     cfg = Config(cwd=str(tmp_path), continuum_enabled=True)
@@ -121,7 +122,9 @@ def test_program_validation_is_a_known_pre_dispatch_denial(tmp_path, plan):
     assert "ProgramValidationError" in result.result
 
 
-def test_program_with_prohibited_echo_shell_is_denied_before_outer_dispatch(tmp_path):
+def test_program_with_unavailable_containment_is_denied_before_outer_dispatch(tmp_path, monkeypatch):
+    from algo_cli import contained_shell
+    monkeypatch.setattr(contained_shell, "preflight", lambda _: "Error: protected command containment unavailable.")
     cfg = Config(cwd=str(tmp_path), continuum_enabled=True)
     cfg._algo_program_authorization = authorization_for_actions(("run_shell",))
     plan = {
@@ -136,7 +139,7 @@ def test_program_with_prohibited_echo_shell_is_denied_before_outer_dispatch(tmp_
     result = dispatch_action("action_program", {"plan": plan}, cfg, dependencies=deps, render=False)
     assert approvals == []
     assert result.outcome.status is OutcomeStatus.DENIED and not result.outcome.invoked
-    assert "Continuum Memory" in result.result
+    assert "containment unavailable" in result.result
 
 
 def test_unavailable_browser_does_not_report_success(monkeypatch):

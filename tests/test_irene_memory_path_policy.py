@@ -571,7 +571,7 @@ def test_protected_path_policy_denies_legacy_backup_and_migration_residue(
     assert "protected memory paths are unavailable" in result
 
 
-def test_protected_shell_is_disabled_but_non_memory_typed_read_still_works(
+def test_protected_shell_is_contained_and_non_memory_typed_read_still_works(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -587,7 +587,10 @@ def test_protected_shell_is_disabled_but_non_memory_typed_read_still_works(
     shell = nathan_runtime.run_tool("run_shell", {"command": "printf unsafe"}, cfg)
     read = nathan_runtime.run_tool("read_file", {"path": "safe.txt"}, cfg)
 
-    assert "run_shell is disabled" in shell
+    if sys.platform == "darwin":
+        assert "contained workspace command" in shell and "[exit code: 0]" in shell
+    else:
+        assert "qualified macOS containment" in shell
     assert read == "SAFE_CONTENT"
 
 

@@ -167,7 +167,7 @@ def test_chatgpt_stream_still_skips_empty_choices_without_error():
     response = _FakeSseResponse(
         [
             {"choices": []},
-            {"choices": [{"delta": {"content": "ok"}}]},
+            {"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]},
         ]
     )
 

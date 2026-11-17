@@ -703,8 +703,17 @@ def _parse_sse_events(resp: Any) -> Generator[dict[str, Any], None, None]:
 
 
 def _stream_iter(resp: Any) -> Iterator[dict[str, Any]]:
+    with closing(_parse_sse_events(resp)) as events:
+        yield from _chat_completion_chunks(events)
+
+
+def _chat_completion_chunks(events: Iterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
     pending_calls: dict[int, dict[str, Any]] = {}
-    for event in _parse_sse_events(resp):
+    for event in events:
+        if event.get("type") == "[DONE]":
+            if pending_calls:
+                break
+            return
         choices = event.get("choices") or []
         if not choices:
             if event.get("error") is not None:
@@ -733,12 +742,13 @@ def _stream_iter(resp: Any) -> Iterator[dict[str, Any]]:
                 slot["function"]["name"] = fn_delta["name"]
             if fn_delta.get("arguments"):
                 slot["function"]["arguments"] += fn_delta["arguments"]
-        if finish_reason in {"tool_calls", "stop"} and pending_calls:
-            completed = [pending_calls[i] for i in sorted(pending_calls)]
-            pending_calls.clear()
-            yield {"message": {"tool_calls": completed}}
-    if pending_calls:
-        yield {"message": {"tool_calls": [pending_calls[i] for i in sorted(pending_calls)]}}
+        if finish_reason in {"tool_calls", "stop"}:
+            if pending_calls:
+                yield {"message": {"tool_calls": [pending_calls[i] for i in sorted(pending_calls)]}}
+            return
+        if finish_reason:
+            raise ChatGptOAuthAccessError("Chat Completions stream stopped without a complete answer (provider finish reason).")
+    raise ChatGptOAuthAccessError("Chat Completions stream ended before completion.")
 
 
 def _extract_responses_event_text(event: dict[str, Any]) -> str:

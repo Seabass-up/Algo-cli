@@ -16,9 +16,12 @@ use separate calls or programs; this supported sequence needs no new permission.
 
 Eligible registered actions, including shell execution and file edits, are
 preapproved by the user's explicit activation within the active scope. This
-does not override backend policy: run_shell remains disabled when Continuum
-is the protected authority. Check effective capability reporting before planning
-shell-based verification; runtime_diagnostics supplies metadata, not test execution.
+does not override backend policy: with Continuum protected, run_shell uses the
+qualified workspace-only OS containment runner. Commands, builds and tests can
+run without disabling memory. Protected stores, credentials and network remain
+denied; unsupported containment or missing offline dependencies are explicit
+blockers, never permission to use an uncontained shell. Check effective
+capability reporting; runtime_diagnostics supplies metadata, not test execution.
 Tool-call and
 model-round caps are lifted: keep working while making progress. If one tool
 is blocked, look for a different permitted route to the user's objective:

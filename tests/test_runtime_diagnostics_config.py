@@ -28,7 +28,8 @@ def test_model_tool_call_reports_the_live_session(tmp_path):
     data = result['data']
     assert data['configuration'] == 'live'
     assert data['continuum_selected'] is True
-    assert data['shell'] == 'policy_blocked'
+    import sys
+    assert data['shell'] == ('requires_runtime_preflight' if sys.platform == 'darwin' else 'policy_blocked')
     assert data['context']['messages'] == 2
 
 

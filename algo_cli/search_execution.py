@@ -107,6 +107,7 @@ def run_search_process(
     terminate: Callable[[subprocess.Popen[Any]], None],
     input_bytes: bytes | None = None,
     cancel_event: threading.Event | None = None,
+    on_started: Callable[[subprocess.Popen[Any]], None] | None = None,
 ) -> SearchProcessResult:
     """Stop at a global byte/line cap without first buffering the entire stream."""
     deadline = time.monotonic() + timeout
@@ -140,6 +141,8 @@ def run_search_process(
     timed_out = False
     cancelled = False
     try:
+        if on_started is not None:
+            on_started(proc)
         for reader in readers:
             reader.start()
         for _ in readers:

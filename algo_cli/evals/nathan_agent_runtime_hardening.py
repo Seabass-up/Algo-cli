@@ -57,6 +57,13 @@ _UTC_RE = re.compile(
 )
 
 SOURCE_PATHS = (
+    "algo_cli/contained_shell.py",
+    "algo_cli/contained_shell_worker.py",
+    "algo_cli/resources/ssea-runtime.json",
+    "algo_cli/ssea.py",
+    "algo_cli/ssea_sandbox.py",
+    "tests/test_contained_shell.py",
+    "tests/test_ssea.py",
     "algo_cli/cli_anything.py",
     "tests/test_cli_anything.py",
     "algo_cli/runtime_diagnostics.py",

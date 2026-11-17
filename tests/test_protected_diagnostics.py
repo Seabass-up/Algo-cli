@@ -66,7 +66,7 @@ def test_diagnostics_pagination_is_bounded_and_preserves_continuation(monkeypatc
     assert len(json.dumps(first).encode()) < 1800
 
 
-def test_verification_discovery_reports_effective_shell_denial(monkeypatch, tmp_path):
+def test_verification_discovery_reports_containment_preflight_not_execution(monkeypatch, tmp_path):
     from algo_cli import harness
     monkeypatch.setattr(harness, 'stats', lambda: {})
     monkeypatch.setattr('algo_cli.continuum_memory.doctor', lambda cfg: {})
@@ -74,8 +74,11 @@ def test_verification_discovery_reports_effective_shell_denial(monkeypatch, tmp_
     result = json.loads(tools.available_actions('verification', cfg=cfg))
     assert result['focused']['match'] == 'matched'
     state = result['focused']['effective_tool_policy']['run_shell']
-    assert state['status'] == 'policy_blocked'
-    assert 'Continuum' in state['reason']
+    import sys
+    expected = 'requires_runtime_preflight' if sys.platform == 'darwin' else 'policy_blocked'
+    assert state['status'] == expected
+    diagnostic = json.loads(tools.runtime_diagnostics('selfcheck', cfg=cfg))
+    assert diagnostic['data']['functional_verification'] == 'not_run'
     assert 'runtime_diagnostics' in result['focused']['model_callable_tools']['verification']
 
 
