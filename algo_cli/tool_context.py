@@ -36,6 +36,7 @@ _CLASS_TO_TOOLS: dict[str, frozenset[str]] = {
     ),
     "shell": frozenset({"run_shell", "cli_anything_run", "cli_anything_manage"}),
     "cli-anything": frozenset({"cli_anything_discover", "cli_anything_run", "cli_anything_manage"}),
+    "ssea": frozenset({"ssea_status", "ssea_catalog", "ssea_analyze", "ssea_investigate"}),
     "jev": frozenset({"jev_kernel_status", "jev_question_contract"}),
     "decision": frozenset({"decision_status", "decision_decide"}),
     "web": frozenset({"web_search", "web_fetch"}),
@@ -115,6 +116,7 @@ MAX_QUERY_TERMS = 64
 # into the prompt.  These gates apply before BM25 ranking and still allow
 # action_search to discover a deferred capability later.
 _SPECIALIZED_INTENT_GATES: tuple[tuple[str, frozenset[str], frozenset[str]], ...] = (
+    ("ssea_", frozenset(), frozenset({"ssea", "rea", "bytecode", "pyc", "elf", "binary", "reverse", "disassemble"})),
     ("jev_", frozenset(), frozenset({"jev", "classify", "classification", "triage", "rank", "review"})),
     (
         "memory_",

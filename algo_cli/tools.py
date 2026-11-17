@@ -66,6 +66,7 @@ from .jev_kernel import jev_kernel_status, jev_question_contract
 from .decision_layer import decision_decide, decision_status
 from .runtime_diagnostics import runtime_diagnostics
 from .cli_anything import cli_anything_discover, cli_anything_manage, cli_anything_run
+from .ssea import ssea_status, ssea_catalog, ssea_analyze, ssea_investigate
 from .algorithm_catalog import algorithm_catalog_edit, algorithm_catalog_read
 from ollama import Client
 
@@ -1708,8 +1709,14 @@ def run_shell(
     timeout: float = 30,
     safe_mode: bool = False,
     cancel_event: threading.Event | None = None,
+    cfg: Any = None,
 ) -> str:
-    """Run a shell command and return output.
+    """Run a workspace command and return its real output and exit status.
+
+    With protected Continuum, qualified macOS uses a default-deny OS runner:
+    workspace/scratch writes only, clean HOME/environment, no credentials,
+    protected stores or network. Unsupported boundaries fail closed, not back
+    to an uncontained shell. Existing safe-mode and destructive gates remain.
 
     On Windows this executes under cmd.exe: Unix tools like head, tail, grep,
     sed, and awk are NOT available. Use native equivalents (findstr, more),
@@ -1722,6 +1729,11 @@ def run_shell(
         timeout: Timeout in seconds (capped at 120). Do not pass milliseconds.
         safe_mode: When True, block shell commands that appear to mutate files or Git state. Default False for LLM autonomy — the approval gate in tool_runtime handles safety instead.
     """
+    if cfg is not None:
+        from .continuum_memory import selected
+        if selected(cfg):
+            from .contained_shell import run as run_contained
+            return run_contained(command, cfg, timeout, cancel_event)
     if safe_mode and shell_is_dangerous(command):
         return (
             "Blocked by safe mode: command appears destructive or may mutate files/Git state. "
@@ -5413,6 +5425,10 @@ def action_program(plan: dict, cfg: Any = None) -> str:
 
 
 ALL_TOOLS = [
+    _hide_cfg_param(ssea_status),
+    _hide_cfg_param(ssea_catalog),
+    _hide_cfg_param(ssea_analyze),
+    _hide_cfg_param(ssea_investigate),
     _hide_cfg_param(cli_anything_discover),
     _hide_cfg_param(cli_anything_run),
     _hide_cfg_param(cli_anything_manage),
@@ -5427,7 +5443,7 @@ ALL_TOOLS = [
     _hide_cfg_param(search_files),
     find_unique_anchor,
     batch_edit,
-    _hide_runtime_params(run_shell, "cwd", "safe_mode", "cancel_event"),
+    _hide_runtime_params(run_shell, "cwd", "safe_mode", "cancel_event", "cfg"),
     git_status,
     git_diff,
     web_search,

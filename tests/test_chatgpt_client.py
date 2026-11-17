@@ -147,6 +147,24 @@ def test_chat_completion_stream_tolerates_invalid_tool_call_index():
     assert chunks[-1]["message"]["tool_calls"][0]["id"] == "call_1"
 
 
+def test_chat_completion_unmarked_eof_preserves_text_but_reports_interruption():
+    response = _FakeStreamResponse([{"choices": [{"delta": {"content": "Partial"}, "finish_reason": None}]}])
+    stream = chatgpt_client._stream_iter(response)
+    assert next(stream)["message"]["content"] == "Partial"
+    with pytest.raises(chatgpt_client.ChatGptOAuthAccessError, match="before completion"):
+        next(stream)
+
+
+def test_chat_completion_finish_reason_accepts_text_without_done_marker():
+    response = _FakeStreamResponse([{"choices": [{"delta": {"content": "Finished"}, "finish_reason": "stop"}]}])
+    assert list(chatgpt_client._stream_iter(response)) == [{"message": {"content": "Finished"}}]
+
+
+def test_chat_completion_done_marker_accepts_text_only():
+    response = _FakeStreamResponse([{"choices": [{"delta": {"content": "Finished"}}]}, "[DONE]"])
+    assert list(chatgpt_client._stream_iter(response)) == [{"message": {"content": "Finished"}}]
+
+
 def test_gpt_56_aliases_and_reasoning_levels():
     assert chatgpt_client.normalize_codex_model("sol") == "gpt-5.6-sol"
     assert chatgpt_client.normalize_codex_model("lunna") == "gpt-5.6-luna"

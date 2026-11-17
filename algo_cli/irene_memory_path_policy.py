@@ -15,6 +15,8 @@ class ProtectedMemoryPathError(RuntimeError):
 
 
 _PATH_FIELDS: dict[str, tuple[str, ...]] = {
+    "ssea_analyze": ("target",),
+    "ssea_investigate": ("target",),
     "read_file": ("path",),
     "read_pdf": ("path",),
     "render_pdf_pages": ("path",),
@@ -41,7 +43,7 @@ UNQUALIFIED_BROWSER_ACTIONS = frozenset({
 })
 CLI_ANYTHING_EXECUTION_ACTIONS = frozenset({"cli_anything_run", "cli_anything_manage"})
 GLOBALLY_DISABLED_PROTECTED_ACTIONS = UNQUALIFIED_BROWSER_ACTIONS | {
-    "run_shell", "update_user_profile", *CLI_ANYTHING_EXECUTION_ACTIONS,
+    "update_user_profile", *CLI_ANYTHING_EXECUTION_ACTIONS,
 }
 
 
@@ -339,10 +341,8 @@ def protected_tool_policy_error(
             "authoritative; use an explicit scoped memory_remember action instead."
         )
     if name == "run_shell":
-        return (
-            "Error: run_shell is disabled while Continuum Memory is the protected "
-            "authority; use typed filesystem tools on non-memory paths."
-        )
+        from .contained_shell import preflight
+        return preflight(cfg)
     cwd = args.get("cwd") or getattr(cfg, "cwd", None) or os.getcwd()
     try:
         if name in _GIT_PATH_ACTIONS:

@@ -42,6 +42,13 @@ from algo_cli.henry_hardening_qualification import (  # noqa: E402
 FUZZER = ROOT / "scripts" / "david_control_kernel_fuzzer.py"
 INSTALLED_PARITY = ROOT / "scripts" / "oliver_installed_source_parity.py"
 SOURCE_PATHS = (
+    "algo_cli/contained_shell.py",
+    "algo_cli/contained_shell_worker.py",
+    "algo_cli/resources/ssea-runtime.json",
+    "algo_cli/ssea.py",
+    "algo_cli/ssea_sandbox.py",
+    "docs/contained-workspace-commands.md",
+    "docs/study-software-engineer-anything.md",
     "algo_cli/cli_anything.py",
     "algo_cli/runtime_diagnostics.py",
     "skills/memory-recall-ritual.md",
@@ -273,6 +280,8 @@ SOURCE_PATHS = (
     "tests/test_arthur_control_readiness.py",
 )
 FOCUSED_TESTS = (
+    "tests/test_contained_shell.py",
+    "tests/test_ssea.py",
     "tests/test_cli_anything.py",
     "tests/test_protected_diagnostics.py",
     "tests/test_qc_fixes_20261114.py",

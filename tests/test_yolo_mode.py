@@ -431,12 +431,14 @@ def test_yolo_external_symlink_to_sensitive_path_stays_denied(monkeypatch, tmp_p
     assert not preflight_runtime_tool("list_directory", {"path": "../alias"}, cfg).allowed
 
 
-def test_yolo_keeps_echo_shell_and_credential_denials(monkeypatch, tmp_path):
+def test_yolo_admits_contained_shell_but_keeps_memory_and_credential_denials(monkeypatch, tmp_path):
     cfg = Config(cwd=str(tmp_path), continuum_enabled=True)
     activate(cfg, monkeypatch)
     shell = preflight_runtime_tool("run_shell", {"command": "pytest -q"}, cfg)
-    assert not shell.allowed
-    assert "Continuum Memory" in shell.blocked_result
+    import sys
+    assert shell.allowed is (sys.platform == "darwin")
+    if sys.platform != "darwin":
+        assert "qualified macOS containment" in shell.blocked_result
     for name in ("credential_helpers_get", "credential_helpers_store", "send_email"):
         assert not preflight_runtime_tool(name, {}, cfg).allowed
     assert not preflight_runtime_tool("read_file", {"path": str(config.CONFIG_DIR / "memory.json")}, cfg).allowed

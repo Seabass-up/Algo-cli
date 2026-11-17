@@ -316,6 +316,16 @@ CURATED_TOOL_POLICIES: dict[str, CuratedActionPolicy] = {
         estimated_cost=4.0,
     ),
     "action_search": _read(target=TargetScope.RUNTIME),
+    "ssea_status": _read(target=TargetScope.RUNTIME),
+    "ssea_catalog": _read(target=TargetScope.RUNTIME),
+    **{
+        name: _local(
+            Capability.SHELL, target=TargetScope.RUNTIME, effect=EffectClass.CODE_EXECUTION,
+            idempotency=IdempotencyClass.NON_IDEMPOTENT,
+            verification=VerificationRequirement.INDEPENDENT_POSTCONDITION, suppress_logs=True,
+        )
+        for name in ("ssea_analyze", "ssea_investigate")
+    },
     "cli_anything_discover": _read(target=TargetScope.RUNTIME),
     **{
         name: _local(

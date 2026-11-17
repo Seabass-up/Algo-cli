@@ -32,6 +32,7 @@ from .arthur_outcomes import ActionOutcome, OutcomeStatus
 from .dorothy_perf_telemetry import record_perf_event
 from .theodore_runtime_qos import RuntimeHint, classify_tool_runtime
 from .tools import TOOL_MAP
+from .ssea import SSEA_INSPECTION_TOOLS, parse_result as parse_ssea_result
 from .marcus_authority import (
     Capability,
     CapabilityMask,
@@ -614,6 +615,18 @@ def tool_runtime_args(name: str, args: dict[str, Any], cfg: Config) -> dict[str,
     handle for cfg-bound tools is injected by run_tool at execution time.
     """
     call_args = dict(args)
+    if name in SSEA_INSPECTION_TOOLS:
+        # Bind the reviewed target before approval. Leave ".." and symlink
+        # components for the existing nofollow checks, not Path.resolve().
+        target = call_args.get("target")
+        if isinstance(target, str) and target and "\x00" not in target:
+            try:
+                path = Path(target).expanduser()
+                if not path.is_absolute():
+                    path = Path.cwd() / Path(cfg.cwd).expanduser() / path
+                call_args["target"] = str(path)
+            except (OSError, RuntimeError, ValueError):
+                pass  # The normal path validator will refuse invalid input.
     if name in {
         "read_file",
         "read_pdf",
@@ -669,10 +682,10 @@ def completion_recovery_prompt(cfg: Config, *, block_output: bool = False) -> st
 
     if selected(cfg):
         verifier = (
-            "Continuum Memory is authoritative, so run_shell is unavailable. "
-            "Do not seek shell approval, retry it, or route around this restriction. "
-            "Use git_diff only if admitted and able to verify the tracked workspace changes; "
-            "it cannot verify new untracked files. "
+            "Continuum Memory remains protected. Use admitted contained run_shell for a real "
+            "workspace test/build/lint/type check; network, credentials and protected stores remain denied. "
+            "If containment or dependencies are unavailable, report the actual blocker; never disable memory "
+            "or fall back to an uncontained shell. Git diffs verify edits, not execution. "
         )
     else:
         verifier = (
@@ -1000,7 +1013,7 @@ def ask_approval(
                         "target": action.target,
                         "confirmation": action.confirmation_mode.value,
                         "capabilities": list(current.policy.capability_names),
-                        "arguments": redact_tool_args(name, args),
+                        "arguments": redact_tool_args(name, current_args if name in SSEA_INSPECTION_TOOLS else args),
                     },
                     indent=2,
                 )
@@ -1104,10 +1117,13 @@ def run_tool(name: str, args: dict[str, Any], cfg: Config) -> str:
         "harness_read",
         "harness_scorecard",
         "harness_competitive_rating",
+        "run_shell",
         "cli_anything_discover",
         "cli_anything_run",
         "cli_anything_manage",
         "runtime_diagnostics",
+        "ssea_status",
+        *SSEA_INSPECTION_TOOLS,
     ):
         call_args["cfg"] = cfg
     if name == "session_slash":
@@ -1448,6 +1464,13 @@ def classify_tool_status(
         return "skipped"
     if not approved:
         return "denied"
+    if name in SSEA_INSPECTION_TOOLS:
+        payload = parse_ssea_result(result)
+        if payload is None:
+            return "failed"
+        if payload["status"] in {"cancelled", "timed_out", "unknown_outcome"}:
+            return str(payload["status"])
+        return "worked" if payload["ok"] and payload["status"] == "executed" else "failed"
     if name == "read_file":
         return "failed" if _is_read_file_error(str(result)) else "worked"
     lowered = str(result).strip().lower()

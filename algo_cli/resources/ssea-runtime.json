@@ -1,0 +1,9 @@
+{
+  "package": "rea-agents",
+  "version": "6.8.0",
+  "node_version": "24.22.2",
+  "node_sha256": "b6fb419f0f43bb2fbca273700294dd2f3b685a64b60e8417c295f47646a70e4a",
+  "file_count": 5241,
+  "tree_sha256": "c038f56dca5e54719c9c866b9c3af02a35c799d511a39ef08b8cf6cf59418b91",
+  "scope": "Sorted relative paths NUL then binary SHA256 of every js,mjs,cjs,json,node file except non-executable npm .bin links. Child creation denied."
+}

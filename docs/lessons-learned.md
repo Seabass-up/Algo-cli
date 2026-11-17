@@ -1,5 +1,28 @@
 # Lessons Learned
 
+## 2026-11-17: Contain Workspace Commands and Preserve Typed Inspection Evidence
+
+- A blanket ban on shell under Continuum prevented real build and test
+  verification. A generic subprocess fallback would re-expose protected
+  paths. Use the qualified macOS runner with workspace-bound approval, a
+  clean environment, scoped writes, and denied network and protected roots.
+  Unsupported environments fail closed.
+- Bind relative static inspection targets to the selected workspace before
+  approval. Preserve typed, bounded step outcomes when dispatch adds guidance,
+  and distinguish valid package metadata from verified runtime readiness.
+  An incomplete Chat Completions stream preserves partial output but never
+  promotes it or pending tool calls to a completed turn.
+- Extract shared-module hunks onto the already-public parent: matching the
+  final private module would copy unrelated overlays. Rebuild the wheel and
+  recheck ancestry, packaged contents and fresh source-bound qualification
+  before review. Run provider fixtures with an isolated home and verify
+  typed outcomes, not a model's description of its own actions.
+- A qualification virtualenv under a protected directory correctly failed
+  closed when the contained runner tried to open its trust bundle. Use a
+  checkout-local, Git-excluded virtualenv instead of allowing the protected
+  path. The focused Python 3.10 run and fresh local hardening passed; five
+  external hardening checks remain blocked.
+
 ## 2026-11-14: Keep Native Adapter Discovery Separate From Code Execution
 
 **Gap and cause:** Installed CLI-Anything adapters had no native agent tool

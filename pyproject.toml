@@ -119,6 +119,8 @@ path = "algo_cli/__init__.py"
 "docs/supervised-action-review.md" = "algo_cli/resources/docs/supervised-action-review.md"
 "docs/reflex-loop-v0.2.md" = "algo_cli/resources/docs/reflex-loop-v0.2.md"
 "docs/privacy-and-context.md" = "algo_cli/resources/docs/privacy-and-context.md"
+"docs/contained-workspace-commands.md" = "algo_cli/resources/docs/contained-workspace-commands.md"
+"docs/study-software-engineer-anything.md" = "algo_cli/resources/docs/study-software-engineer-anything.md"
 "docs/runtime-capability-catalog.md" = "algo_cli/resources/docs/runtime-capability-catalog.md"
 "docs/continuum-memory.md" = "algo_cli/resources/docs/continuum-memory.md"
 "docs/ada-algo-cli-memory-lifecycle-contract.md" = "algo_cli/resources/docs/ada-algo-cli-memory-lifecycle-contract.md"
@@ -152,6 +154,8 @@ include = [
     "/docs/supervised-action-review.md",
     "/docs/reflex-loop-v0.2.md",
     "/docs/privacy-and-context.md",
+    "/docs/contained-workspace-commands.md",
+    "/docs/study-software-engineer-anything.md",
     "/docs/runtime-capability-catalog.md",
     "/docs/continuum-memory.md",
     "/docs/ada-algo-cli-memory-lifecycle-contract.md",

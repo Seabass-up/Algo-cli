@@ -4682,6 +4682,15 @@
           "timestamp": "2026-11-15T00:15:18Z",
           "scope": "Public native CLI-Anything review branch stacked on the public QC repairs; frozen source sha256:f7655c71308ca6873c7c6e2cbed447b07d6fac513233450bde044756c10c4438",
           "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. Local CI only; no release publication. No policy waiver."
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:82d3583a5318bb68872f094d58e64aaf2b6623b5be1857d28980f73d0164e415",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-11-17T22:00:09Z",
+          "scope": "Public contained-command and static-inspection review stacked on native CLI-Anything; frozen source sha256:8250e72ad0d80c6f9c7f79ee48cdd46410568a7bef04ed95cce221c8a9a5e322",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. Local CI only; no release publication. No policy waiver."
         }
       ]
     },
@@ -7893,6 +7902,24 @@
           "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
           "timestamp": "2026-11-15T00:15:18Z",
           "scope": "Public native CLI-Anything review branch stacked on the public QC repairs; frozen source sha256:731a3dc46a24ce36dda266599c630ccc603d8d2d60d078c5b4294d1d58d02c64",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. Local CI only; no release publication. No policy waiver."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:82d3583a5318bb68872f094d58e64aaf2b6623b5be1857d28980f73d0164e415",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-11-17T22:00:09Z",
+          "scope": "Public contained-command and static-inspection review stacked on native CLI-Anything; frozen source sha256:8250e72ad0d80c6f9c7f79ee48cdd46410568a7bef04ed95cce221c8a9a5e322",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. Local CI only; no release publication. No policy waiver."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:65b4e4b361ae417cb3c5c28ef6e83e10e6a8bbf72a745d060fec3d7978a18a15",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-11-17T22:00:09Z",
+          "scope": "Public contained-command and static-inspection review stacked on native CLI-Anything; frozen source sha256:df18c239221a068800ff6d48622aaa253b18ed8ba1e4ae77a2ddeae34a08dfbc",
           "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. Local CI only; no release publication. No policy waiver."
         }
       ]

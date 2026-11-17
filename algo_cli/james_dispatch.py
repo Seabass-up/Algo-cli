@@ -26,6 +26,7 @@ from .marcus_authority import EffectClass, ResolvedAction
 from . import nathan_runtime as runtime
 from .theodore_runtime_services import scoped_tool_runtime_env
 from .samuel_policy_engine import resolve_action
+from .ssea import SSEA_INSPECTION_TOOLS, parse_result as parse_ssea_result, serialize_result as serialize_ssea_result
 
 
 EffectVerifier = Callable[[ResolvedAction, str], bool | None]
@@ -287,7 +288,15 @@ def _finalize(
         outcome = replace(outcome, explicit_memory_write=True)
     status = _attempt_status(outcome)
     result = outcome.model_text()
-    if outcome.invoked:
+    payload = parse_ssea_result(outcome.result) if outcome.invoked and name in SSEA_INSPECTION_TOOLS else None
+    if payload is not None:
+        # Native SSEA returns a bounded JSON object. Keep dispatch guidance
+        # inside it rather than making structured evidence invalid with prose.
+        payload["dispatch_status"] = outcome.status.value
+        payload["retry_allowed"] = outcome.retry_allowed
+        result = serialize_ssea_result(payload)
+        outcome = replace(outcome, result=result)
+    elif outcome.invoked:
         result = runtime.augment_tool_result_with_reflex(
             cfg,
             name,

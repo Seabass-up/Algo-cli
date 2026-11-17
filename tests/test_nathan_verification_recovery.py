@@ -109,15 +109,15 @@ def test_repeated_premature_answers_use_bounded_verification_recovery(monkeypatc
         assert any("verification recovery" in str(event).lower() for event in events if event["type"] == "error")
 
 
-def test_protected_completion_prompt_does_not_request_shell_approval():
+def test_protected_completion_prompt_requests_contained_verification():
     prompt = nathan_runtime.completion_recovery_prompt(
         Config(continuum_enabled=True)
     )
-    assert "Continuum" in prompt and "run_shell is unavailable" in prompt
-    assert "Do not seek shell approval" in prompt
-    assert "git_diff" in prompt and "tracked" in prompt
+    assert "Continuum Memory remains protected" in prompt
+    assert "contained run_shell" in prompt
+    assert "never disable memory" in prompt
+    assert "Git diffs verify edits, not execution" in prompt
     assert "read_file" in prompt and "not" in prompt
-    assert "Python -c" not in prompt
 
 
 @pytest.mark.parametrize("verifier_turn,extra_tool", [(None, False), (6, False), (6, True)])
