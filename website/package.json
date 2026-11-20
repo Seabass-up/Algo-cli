@@ -23,9 +23,9 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },
   "dependencies": {
-    "next": "16.4.3",
-    "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "next": "16.4.6",
+    "react": "19.2.9",
+    "react-dom": "19.2.9"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.68.0",
@@ -36,10 +36,10 @@
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.26",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.4.3",
+    "eslint-config-next": "16.4.6",
     "fast-glob": "file:./vendor/bounded-glob",
     "postcss": "8.5.23",
-    "react-server-dom-webpack": "19.2.8",
+    "react-server-dom-webpack": "19.2.9",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
     "vinext": "0.0.45",
