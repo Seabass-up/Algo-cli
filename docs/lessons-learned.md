@@ -3688,6 +3688,44 @@ Windows path kills the direct child as before.
 takes over responsibility for every way the wait can end, not only the timeout.
 Test interruption alongside timeout whenever process-group handling changes.
 
+## 2026-11-20: New Next.js, React And Go Advisories Failed Hosted CI On A README Change
+
+**Symptom:** Hosted CI on a README-only pull request (#101) failed "Website
+build and safety gates" at `npm audit` and "Native helper checks" at
+`govulncheck`. `main` last passed both on 2026-11-10.
+
+**Confirmed cause:** Advisories published since that run: `next` 16.0.0 through
+16.4.4 (moderate; seven cache, cookie and image-optimizer advisories),
+`react-server-dom-webpack` 19.2.0 through 19.2.8 (critical,
+GHSA-xqc2-xf4c-x3h3) and GO-2026-6859 in `net/http` of Go 1.26.10. `main` would
+fail the same gates. This repeats the 2026-11-10 website entry ten days later.
+
+**Repair:** `next` and `eslint-config-next` 16.4.6; `react`, `react-dom` and
+`react-server-dom-webpack` 19.2.9, the patched release in the 19.2 line, so no
+minor-version jump. The lockfile changes only those two families. The Go
+toolchain moves to 1.26.11 in `harness-gateway/go.mod`, the CI `go-version` and
+the pin assertions in `tests/test_david_hardening_gate.py`. The workflow,
+`go.mod` and that test are M8 sources, so the M8 report was regenerated, its
+digest appended to HARD-080 and HARD-081 and the M9 audit rewritten. The Nathan
+report was not regenerated; its source set is unchanged.
+
+**Verification:** Local, macOS arm64. Website on Node 26/npm 11: clean `npm ci`,
+`npm test` (22 passed), `npm run lint` and `npm audit` (0 vulnerabilities).
+Gateway on Go 1.26.11: `gofmt`, `go vet`, `go test -race` and `govulncheck`
+1.6.0 (no vulnerabilities). M8 keeps nine local passes, five external blockers
+and no failures; the hardening gate, M9 verification and Nathan verification
+pass. The first full pytest run after the Go bump failed one test,
+`test_recorded_local_evidence_is_current_complete_and_honestly_blocked`, on the
+stale M8 source digest; that failure is retained here. After the refresh the
+suite passes (7907 passed, 48 skipped). Hosted Node 22, Linux and Windows CI
+are still to run.
+
+**Prevention:** The Go toolchain pin lives in three places (`go.mod`, the CI
+workflow and the gate test) and all three are M8 sources, so a toolchain bump
+needs an M8 refresh in the same change. Run `npm audit` and `govulncheck`
+before opening a pull request on a tree that has been idle; an advisory
+failure then shows up before hosted CI reports it.
+
 ## Repair Log Checklist
 
 - Date and component.
