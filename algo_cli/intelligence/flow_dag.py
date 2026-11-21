@@ -219,6 +219,9 @@ def _lookup_ref(ref: str, context: dict[str, Any]) -> Any:
     for p in ref.split("."):
         if isinstance(val, dict):
             val = val.get(p)
+        elif p.startswith("_"):
+            # A reference must not walk object internals (``__class__`` and friends).
+            return None
         else:
             val = getattr(val, p, None)
     return val
@@ -240,7 +243,8 @@ def _resolve_value(expr: Any, context: dict[str, Any]) -> Any:
         tokens.append((idx, end + 1, expr[idx + 2 : end]))
         pos = end + 1
     if len(tokens) == 1 and tokens[0][0] == 0 and tokens[0][1] == len(expr):
-        return _lookup_ref(tokens[0][2], context)
+        val = _lookup_ref(tokens[0][2], context)
+        return str(val) if isinstance(val, (str, int, float)) else val
     out: list[str] = []
     cursor = 0
     for start, end, ref in tokens:
@@ -311,10 +315,26 @@ class FlowExecutor:
         "pow": pow, "range": range, "reversed": reversed, "round": round,
         "set": set, "sorted": sorted, "str": str, "sum": sum, "tuple": tuple,
         "zip": zip, "True": True, "False": False, "None": None,
+        "isinstance": isinstance, "repr": repr,
+        "Exception": Exception, "ValueError": ValueError, "TypeError": TypeError,
+        "KeyError": KeyError, "IndexError": IndexError, "RuntimeError": RuntimeError,
+        "ArithmeticError": ArithmeticError, "ZeroDivisionError": ZeroDivisionError,
+        "AssertionError": AssertionError,
     }
+    # Generator, coroutine, frame, traceback and code attributes lead back to the real
+    # builtins of the calling frame without any dunder name.
+    _INTROSPECTION_ATTRIBUTES = frozenset(
+        {
+            "gi_frame", "gi_code", "gi_yieldfrom", "cr_frame", "cr_code", "cr_await",
+            "ag_frame", "ag_code", "ag_await", "f_back", "f_builtins", "f_globals",
+            "f_locals", "f_code", "tb_frame", "tb_next", "func_globals", "func_code",
+        }
+    )
 
     @classmethod
     def _run_python(cls, source: str, inputs: dict) -> str:
+        # These checks reduce accidental misuse. They are not a sandbox: the module
+        # docstring's trusted-local rule still applies to every flow definition.
         import ast
         tree = ast.parse(source, mode="exec")
         for node in ast.walk(tree):
@@ -322,6 +342,8 @@ class FlowExecutor:
                 raise FlowError("imports are disallowed in python flow nodes")
             if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
                 raise FlowError("dunder attribute access is disallowed in python flow nodes")
+            if isinstance(node, ast.Attribute) and node.attr in cls._INTROSPECTION_ATTRIBUTES:
+                raise FlowError("frame introspection is disallowed in python flow nodes")
             if isinstance(node, ast.Name) and node.id.startswith("__"):
                 raise FlowError("dunder name access is disallowed in python flow nodes")
         local_ns = dict(inputs)

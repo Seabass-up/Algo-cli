@@ -809,6 +809,47 @@ def test_server_accepts_only_exact_private_listener_without_starting_it() -> Non
     assert server.listen_port == 3128
 
 
+def test_server_overflow_refusal_is_recorded_like_a_worker_refusal() -> None:
+    session = _verified_session(permit=_permit(maximum_active_connections=1))
+    server = XenonBrokerServer(session, listen_address="172.30.0.3")
+    # Slack above the session's own limit: a worker that is still exiting must not
+    # cause a false refusal, and begin_connection() stays authoritative.
+    assert server._worker_thread_limit() == 2
+    ours, theirs = socket.socketpair()
+    try:
+        server._refuse_overflow(ours)
+        theirs.settimeout(2)
+        assert theirs.recv(64).startswith(b"HTTP/1.1 403")
+    finally:
+        theirs.close()
+    evidence = session.evidence()
+    assert evidence.disposition is XenonBrokerDisposition.FAILED
+    assert evidence.reason_code == "active_connection_limit"
+    with pytest.raises(XenonBrokerRejected):
+        _qualify_accounting(session)
+
+
+def test_redirect_validation_does_not_hold_the_session_lock_across_resolution() -> None:
+    seen: list[bool] = []
+    holder: dict[str, XenonBrokerSession] = {}
+
+    def resolve(_host: str, _port: int) -> Iterable[str]:
+        session = holder.get("session")
+        if session is not None:
+            # Byte accounting must stay available while the egress check resolves DNS.
+            free = session._lock.acquire(blocking=False)
+            if free:
+                session._lock.release()
+            seen.append(free)
+        return (PUBLIC_IP,)
+
+    session = _verified_session(resolver=resolve)
+    holder["session"] = session
+    session.validate_redirect("https://example.com/a", "/b")
+    assert seen and all(seen)
+    assert session.evidence().redirect_count == 1
+
+
 def test_read_head_preserves_coalesced_final_response_bytes() -> None:
     class FakeSocket:
         def __init__(self) -> None:

@@ -2,29 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import sqlite3
-import sys
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 from unittest import mock
-
-# Ensure repo root is importable
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-if "ollama" not in sys.modules:
-    try:
-        import ollama  # noqa: F401
-    except ImportError:
-        import types
-        _stub = types.ModuleType("ollama")
-        _stub.Client = object
-        _stub.ResponseError = Exception
-        sys.modules["ollama"] = _stub
 
 
 class TestIrenePathPolicy(unittest.TestCase):
@@ -36,7 +20,7 @@ class TestIrenePathPolicy(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             ws = root / "workspace"
             secret_dir = root / "secret_memory"
             ws.mkdir()
@@ -44,7 +28,10 @@ class TestIrenePathPolicy(unittest.TestCase):
             secret_file = secret_dir / "private.txt"
             secret_file.write_text("top-secret", encoding="utf-8")
             link = ws / "alias_link"
-            os.symlink(secret_file, link)
+            try:
+                os.symlink(secret_file, link)
+            except OSError:
+                self.skipTest("symbolic links are unavailable")
 
             rules = ProtectedPathRules(
                 roots=(str(secret_dir),),
@@ -52,6 +39,8 @@ class TestIrenePathPolicy(unittest.TestCase):
                 residue_prefixes=(),
                 identities=(),
             )
+            # Control: the same shape without a link is still allowed.
+            require_allowed_path(ws / "nonexistent" / ".." / "report.txt", cwd=ws, rules=rules)
             traversal = ws / "nonexistent" / ".." / "alias_link"
             with self.assertRaises(ProtectedMemoryPathError):
                 require_allowed_path(traversal, cwd=ws, rules=rules)
@@ -90,7 +79,6 @@ class TestFlowDagSecurityAndTemplates(unittest.TestCase):
     def test_multi_reference_dependencies_cycles_and_resolution(self):
         from algo_cli.intelligence.flow_dag import (
             FlowDefinition,
-            FlowExecutor,
             FlowNode,
             detect_cycles,
             _resolve_value,
@@ -111,6 +99,64 @@ class TestFlowDagSecurityAndTemplates(unittest.TestCase):
         ctx = {"a": {"text": "alpha"}, "b": {"text": "beta"}}
         self.assertEqual(_resolve_value("${a.text} + ${b.text}", ctx), "alpha + beta")
         self.assertEqual(_resolve_value("hello ${a.missing}!", ctx), "hello !")
+        # A whole-string scalar reference keeps its pre-patch string type.
+        self.assertEqual(_resolve_value("${n.count}", {"n": {"count": 5}}), "5")
+        self.assertEqual(_resolve_value("${n.rows}", {"n": {"rows": [1, 2]}}), [1, 2])
+
+    def test_references_do_not_walk_object_internals(self):
+        from algo_cli.intelligence.flow_dag import FlowDefinition, FlowExecutor, FlowNode, _resolve_value
+
+        ctx = {"a": {"text": "x"}}
+        self.assertIsNone(_resolve_value("${a.text.__class__.__base__.__subclasses__}", ctx))
+        self.assertIsNone(_resolve_value("${a.text._private}", ctx))
+        flow = FlowDefinition(
+            name="ref-escape",
+            nodes=[
+                FlowNode(id="a", kind="python", source_code="result = 'x'"),
+                FlowNode(
+                    id="b",
+                    kind="python",
+                    inputs={"subs": "${a.text.__class__.__base__.__subclasses__}"},
+                    source_code="result = 'ESCAPED:' + str(len(subs()) > 10)",
+                ),
+            ],
+            outputs={"out": "${b.text}"},
+        )
+        res = FlowExecutor().run(flow)
+        self.assertFalse(res.success)
+        self.assertNotIn("ESCAPED", str(res.outputs.get("out")))
+
+    def test_python_node_blocks_frame_introspection_and_keeps_exceptions(self):
+        from algo_cli.intelligence.flow_dag import FlowDefinition, FlowExecutor, FlowNode
+
+        frame_walk = (
+            "box = []\n"
+            "def g(b):\n"
+            "    b.append(b[0].gi_frame.f_back)\n"
+            "    yield 1\n"
+            "G = g(box)\n"
+            "box.append(G)\n"
+            "for _ in G:\n"
+            "    pass\n"
+            "result = 'ESCAPED:' + str(box[1].f_back.f_builtins['__import__']('os').getpid() > 0)\n"
+        )
+        flow = FlowDefinition(
+            name="frames",
+            nodes=[FlowNode(id="n1", kind="python", source_code=frame_walk)],
+            outputs={"out": "${n1.text}"},
+        )
+        res = FlowExecutor().run(flow)
+        self.assertFalse(res.success)
+        self.assertIn("frame introspection", str(res.traces[0].error))
+
+        raising = FlowDefinition(
+            name="raises",
+            nodes=[FlowNode(id="n1", kind="python", source_code="raise ValueError('boom')")],
+            outputs={"out": "${n1.text}"},
+        )
+        res = FlowExecutor().run(raising)
+        self.assertFalse(res.success)
+        self.assertEqual(str(res.traces[0].error), "boom")
 
 
 class TestExecutionGuardrailsBypasses(unittest.TestCase):
@@ -126,7 +172,7 @@ class TestExecutionGuardrailsBypasses(unittest.TestCase):
             self.assertFalse(decision.qualifies, f"Should reject: {cmd}")
 
         # Legitimate inline assertion with semicolon inside quotes still qualifies
-        good = classify_verification_command("python3 -c 'x = 1; assert x == 1'")
+        good = classify_verification_command('python -c "x = 1; assert x == 1"')
         self.assertTrue(good.qualifies)
 
     def test_cd_prefix_injection_rejected(self):
@@ -139,6 +185,10 @@ class TestExecutionGuardrailsBypasses(unittest.TestCase):
         ):
             decision = classify_verification_command(cmd)
             self.assertFalse(decision.qualifies, f"Should reject: {cmd}")
+
+        # A plain working-directory wrapper still qualifies, alone and before a chain.
+        for cmd in ("cd tests && pytest", "cd tests && ruff check . && pytest -q"):
+            self.assertTrue(classify_verification_command(cmd).qualifies, f"Should accept: {cmd}")
 
 
 class TestSafeModeGitConfig(unittest.TestCase):
@@ -155,6 +205,27 @@ class TestSafeModeGitConfig(unittest.TestCase):
 
         # Benign allowlisted display config remains allowed
         self.assertFalse(shell_is_dangerous("git -c color.ui=false --no-pager diff --stat"))
+
+    def test_git_config_injected_through_environment_is_blocked(self):
+        from algo_cli.tools import shell_is_dangerous
+
+        for cmd in (
+            "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=/tmp/helper git status",
+            "GIT_EXTERNAL_DIFF=/tmp/helper git diff",
+            "GIT_CONFIG_GLOBAL=/tmp/evil.gitconfig git status",
+            "env GIT_SSH_COMMAND=/tmp/helper git status",
+            "export GIT_EXTERNAL_DIFF=/tmp/helper; git diff",
+            "GIT_PAGER=/tmp/helper git log",
+        ):
+            self.assertTrue(shell_is_dangerous(cmd), f"Should block: {cmd}")
+
+        for cmd in (
+            "git status",
+            "GIT_PAGER=cat git log --oneline",
+            "GIT_TERMINAL_PROMPT=0 git status",
+            "FOO=bar git status",
+        ):
+            self.assertFalse(shell_is_dangerous(cmd), f"Should allow: {cmd}")
 
 
 class TestBoronAndXenonIsolation(unittest.TestCase):
@@ -178,8 +249,7 @@ class TestBoronAndXenonIsolation(unittest.TestCase):
                 "AutoRemove": True,
                 "RestartPolicy": {"Name": "no"},
                 "Tmpfs": {
-                    "/tmp": "rw,noexec,nosuid,nodev,size=67108864",
-                    "/run": "rw,noexec,nosuid,nodev,size=16777216",
+                    "/tmp": "rw,noexec,nosuid,nodev,mode=0700,uid=1001,gid=1001,size=67108864",
                 },
             },
             "Mounts": [], "NetworkSettings": {"Networks": {"boron-net": {}}, "Ports": {}},
@@ -202,6 +272,8 @@ class TestBoronAndXenonIsolation(unittest.TestCase):
     def test_xenon_strict_content_length_parsing(self):
         from algo_cli.xenon_browser_broker import XenonBrokerRejected, parse_xenon_http_response
 
+        ok = parse_xenon_http_response(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n")
+        self.assertEqual(ok.content_length, 10)
         for bad_len in (b"1_0", b"+10", b"0x10", b"-1"):
             head = b"HTTP/1.1 200 OK\r\nContent-Length: " + bad_len + b"\r\n\r\n"
             with self.assertRaises(XenonBrokerRejected, msg=f"Should reject Content-Length {bad_len!r}"):

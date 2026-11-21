@@ -21,7 +21,8 @@ class Control(str, Enum):
 
     - REQUIRED: must pass; failure is recorded but the chain continues
       to gather full evidence (PAM "required" semantics).
-    - SUFFICIENT: pass short-circuits the chain to PASS (PAM "sufficient").
+    - SUFFICIENT: pass short-circuits the chain to PASS unless an earlier
+      required check already failed; a failure is ignored (PAM "sufficient").
     - REQUISITE: must pass; failure aborts the chain immediately
       (PAM "requisite" semantics — fail-fast).
     - INCLUDE: recursively evaluate a named chain. The chain name is

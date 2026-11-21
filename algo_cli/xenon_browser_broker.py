@@ -999,6 +999,8 @@ class XenonBrokerSession:
         self.ca = ca
         self._clock_ms = clock_ms
         self._lock = threading.Lock()
+        # Serializes the egress redirect budget check without holding _lock across DNS.
+        self._redirect_lock = threading.Lock()
         self._connections = 0
         self._active_connections: set[int] = set()
         self._active_peak = 0
@@ -1125,14 +1127,15 @@ class XenonBrokerSession:
         if location is None:
             return
         absolute = urljoin(request_url, location)
-        with self._lock:
+        with self._redirect_lock:
             try:
                 target = self.egress.redirect(self.target, absolute)
             except XenonEgressRejected as error:
                 _reject("redirect_" + error.reason_code)
             if target.origin != self.target.origin:
                 _reject("redirect_origin")
-            self._redirects += 1
+            with self._lock:
+                self._redirects += 1
 
     def mark(self, disposition: XenonBrokerDisposition, reason_code: str) -> None:
         if type(disposition) is not XenonBrokerDisposition or type(reason_code) is not str:
@@ -1234,8 +1237,8 @@ def _relay_fixed(
         _reject("response_framing")
     remaining = length
     if initial:
-        downstream.sendall(initial)
         session.add_bytes(len(initial))
+        downstream.sendall(initial)
         remaining -= len(initial)
     while remaining:
         try:
@@ -1244,8 +1247,8 @@ def _relay_fixed(
             _reject("upstream_read")
         if not chunk:
             _reject("response_truncated")
-        downstream.sendall(chunk)
         session.add_bytes(len(chunk))
+        downstream.sendall(chunk)
         remaining -= len(chunk)
 
 
@@ -1263,8 +1266,8 @@ def _relay_to_eof(
             transferred += len(pending)
             if transferred > session.permit.maximum_response_bytes:
                 _reject("response_byte_limit")
-            downstream.sendall(pending)
             session.add_bytes(len(pending))
+            downstream.sendall(pending)
         try:
             pending = upstream.recv(65_536)
         except (OSError, TimeoutError):
@@ -1404,8 +1407,8 @@ def handle_xenon_connection(
             response_head, response_extra = _read_head(upstream, initial=response_extra)
             response = parse_xenon_http_response(response_head)
         session.validate_redirect(request.canonical_url, response.location)
-        browser_tls.sendall(response.downstream_head)
         session.add_bytes(len(response.downstream_head))
+        browser_tls.sendall(response.downstream_head)
         if request.method == "HEAD" or response.status in {204, 304}:
             if response_extra:
                 _reject("response_unexpected_body")
@@ -1490,6 +1493,26 @@ class XenonBrokerServer:
             except OSError:
                 pass
 
+    def _worker_thread_limit(self) -> int:
+        # begin_connection() stays the authoritative active-connection limit. This bound
+        # only stops a connection flood from growing the worker list; the slack covers
+        # workers that have finished their connection but not yet exited.
+        return 2 * self.session.permit.maximum_active_connections
+
+    def _refuse_overflow(self, client: socket.socket) -> None:
+        # Leave the same record a worker's begin_connection() refusal would have left.
+        reason_code = "active_connection_limit"
+        self.session.record_denial(None, reason_code)
+        self.session.mark(_error_disposition(reason_code), reason_code)
+        try:
+            _send_error(client, 403)
+        except (OSError, XenonBrokerRejected):
+            pass
+        try:
+            client.close()
+        except OSError:
+            pass
+
     def _worker(self, client: socket.socket) -> None:
         try:
             handle_xenon_connection(client, self.session, connector=self.connector)
@@ -1517,11 +1540,8 @@ class XenonBrokerServer:
                         break
                     _reject("listener_accept")
                 self._threads = [t for t in self._threads if t.is_alive()]
-                if len(self._threads) >= self.session.permit.maximum_active_connections:
-                    try:
-                        client.close()
-                    except OSError:
-                        pass
+                if len(self._threads) >= self._worker_thread_limit():
+                    self._refuse_overflow(client)
                     continue
                 thread = threading.Thread(target=self._worker, args=(client,), daemon=False)
                 self._threads.append(thread)

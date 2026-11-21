@@ -161,6 +161,12 @@ NULL_REDIRECTION_RE = re.compile(r"\b\d?\s*>{1,2}\s*(?:\$null\b|nul\b|/dev/null\
 _GIT_EXECUTABLE_RE = re.compile(r"(?:^|[\\/])git(?:\.exe)?$", re.IGNORECASE)
 _GIT_TEXT_RE = re.compile(r"(?<![\w-])git(?:\.exe)?(?:\s|$)", re.IGNORECASE)
 _GIT_PARSE_MAX_CHARS = 32_768
+# GIT_CONFIG_COUNT/GIT_CONFIG_KEY_n, GIT_EXTERNAL_DIFF, GIT_SSH_COMMAND and similar make Git
+# run a helper even for read-only subcommands, exactly like `git -c core.fsmonitor=...`.
+_GIT_ENV_ASSIGNMENT_RE = re.compile(r"^(GIT_[A-Z0-9_]+)=(.*)$", re.IGNORECASE | re.DOTALL)
+_GIT_SAFE_ENV_ASSIGNMENTS = frozenset(
+    {("GIT_PAGER", "cat"), ("GIT_TERMINAL_PROMPT", "0"), ("GIT_OPTIONAL_LOCKS", "0")}
+)
 _GIT_PARSE_MAX_TOKENS = 512
 _GIT_PARSE_MAX_GLOBAL_OPTIONS = 32
 _GIT_PARSE_MAX_READ_ONLY_OPTIONS = 128
@@ -473,11 +479,22 @@ def _git_invocation_mutates(tokens: list[str], git_index: int) -> bool:
     return global_options > 0
 
 
+def _git_env_assignment_is_unsafe(token: str) -> bool:
+    match = _GIT_ENV_ASSIGNMENT_RE.match(token)
+    if match is None:
+        return False
+    return (match.group(1).upper(), match.group(2)) not in _GIT_SAFE_ENV_ASSIGNMENTS
+
+
 def _git_command_mutates_workspace(command: str, *, _depth: int = 0) -> bool:
     if not _GIT_TEXT_RE.search(command):
         return False
     tokens = _tokenize_shell_for_git(command)
     if tokens is None:
+        return True
+    if any(_GIT_EXECUTABLE_RE.search(token) for token in tokens) and any(
+        _git_env_assignment_is_unsafe(token) for token in tokens
+    ):
         return True
     for index, token in enumerate(tokens):
         if _GIT_EXECUTABLE_RE.search(token) and _git_invocation_mutates(tokens, index):

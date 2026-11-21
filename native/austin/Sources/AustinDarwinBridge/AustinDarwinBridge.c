@@ -1,5 +1,6 @@
 #include "AustinDarwinBridge.h"
 
+#include <bsm/audit.h>
 #include <bsm/libbsm.h>
 #include <libproc.h>
 #include <string.h>

@@ -623,8 +623,6 @@ def _verifier_chain(command: str) -> VerificationCommand | None:
             prefix = _shell_split(segments[0])
         except ValueError:
             prefix = []
-    else:
-        prefix = []
         if (len(prefix) == 2 and _executable_name(prefix[0]) == "cd" and prefix[1]) or (
             len(prefix) == 3 and _executable_name(prefix[0]) == "cd" and prefix[1] == "--" and prefix[2]
         ):
