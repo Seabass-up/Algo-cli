@@ -111,28 +111,32 @@ def _absolute_nofollow_path(raw: object, *, cwd: object) -> Path:
     if not candidate.is_absolute():
         candidate = Path.cwd() / candidate
 
-    # Do not resolve aliases. Reject every symlink in the existing prefix so
-    # neither a final link nor an ancestor can redirect a tool into memory.
-    current = Path(candidate.anchor)
-    parts = candidate.parts[1:] if candidate.anchor else candidate.parts
-    for index, part in enumerate(parts):
-        current /= part
-        try:
-            info = current.lstat()
-        except FileNotFoundError:
-            break
-        except OSError as exc:
-            raise ProtectedMemoryPathError("protected path authority could not validate path ancestry") from exc
-        if stat.S_ISLNK(info.st_mode):
-            raise ProtectedMemoryPathError("protected path authority rejects symlinked path ancestry")
-        if index == len(parts) - 1 and not stat.S_ISDIR(info.st_mode):
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                raise ProtectedMemoryPathError("protected path authority rejects aliased or special files")
-        if index < len(parts) - 1 and not stat.S_ISDIR(info.st_mode):
-            raise ProtectedMemoryPathError("protected path authority rejects invalid path ancestry")
-    # Collapse parent traversal only after inspecting the components it would
-    # erase. `link/../file` must not validate a different path from the reader.
-    return Path(os.path.abspath(os.fspath(candidate)))
+    def _validate_prefix(target: Path) -> None:
+        current = Path(target.anchor)
+        parts = target.parts[1:] if target.anchor else target.parts
+        for index, part in enumerate(parts):
+            current /= part
+            try:
+                info = current.lstat()
+            except FileNotFoundError:
+                break
+            except OSError as exc:
+                raise ProtectedMemoryPathError("protected path authority could not validate path ancestry") from exc
+            if stat.S_ISLNK(info.st_mode):
+                raise ProtectedMemoryPathError("protected path authority rejects symlinked path ancestry")
+            if index == len(parts) - 1 and not stat.S_ISDIR(info.st_mode):
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise ProtectedMemoryPathError("protected path authority rejects aliased or special files")
+            if index < len(parts) - 1 and not stat.S_ISDIR(info.st_mode):
+                raise ProtectedMemoryPathError("protected path authority rejects invalid path ancestry")
+
+    # Do not resolve aliases. Inspect both the raw prefix (so `link/../file`
+    # fails) and the lexically normalized path (so `nonexistent/../link` fails).
+    _validate_prefix(candidate)
+    normalized = Path(os.path.abspath(os.fspath(candidate)))
+    if normalized != candidate:
+        _validate_prefix(normalized)
+    return normalized
 
 
 def _path_within(candidate: Path, root: Path) -> bool:

@@ -420,8 +420,17 @@ def _git_invocation_mutates(tokens: list[str], git_index: int) -> bool:
             index += 1
             if index >= len(tokens) or _is_shell_control_token(tokens[index]) or not tokens[index]:
                 return True
-            if token == "-c" and ("=" not in tokens[index] or tokens[index].startswith("=")):
-                return True
+            if token == "-c":
+                if "=" not in tokens[index] or tokens[index].startswith("="):
+                    return True
+                cfg_key = tokens[index].split("=", 1)[0].strip().lower()
+                if cfg_key not in {
+                    "color.ui", "color.diff", "color.status", "color.branch",
+                    "core.quotepath", "core.autocrlf", "diff.algorithm",
+                    "diff.renames", "log.date", "status.showuntrackedfiles",
+                    "advice.detachedhead",
+                }:
+                    return True
             index += 1
         else:
             equals_option = _git_global_equals_option(token)
@@ -430,7 +439,7 @@ def _git_invocation_mutates(tokens: list[str], git_index: int) -> bool:
                 option, value = equals_option
                 if not value:
                     return True
-                if option == "--config-env" and ("=" not in value or value.startswith("=") or value.endswith("=")):
+                if option == "--config-env":
                     return True
                 index += 1
             elif token.startswith("-"):

@@ -636,7 +636,12 @@ def _assert_no_host_surface(row: Mapping[str, Any], network_name: str, *, broker
         item in {"no-new-privileges", "no-new-privileges=true"} for item in security
     ):
         _reject("no_new_privileges_missing")
-    if not any(type(item) is str and item.startswith("seccomp=") for item in security):
+    seccomp_opts = [
+        item.split("=", 1)[1].strip()
+        for item in security
+        if type(item) is str and item.startswith("seccomp=")
+    ]
+    if not seccomp_opts or any(not val or val.lower() == "unconfined" for val in seccomp_opts):
         _reject("seccomp_missing")
     pids = host.get("PidsLimit")
     memory = host.get("Memory")
@@ -647,7 +652,13 @@ def _assert_no_host_surface(row: Mapping[str, Any], network_name: str, *, broker
     if type(memory) is not int or not 1 <= memory <= maximum_memory:
         _reject("memory_limit_evidence")
     user = config.get("User")
-    if type(user) is not str or user in {"", "0", "root", "0:0"} or user.startswith("0:"):
+    if type(user) is not str or not user.strip():
+        _reject("root_user")
+    user_parts = [part.strip() for part in user.split(":")]
+    if len(user_parts) > 2 or any(
+        not part or part.lower() == "root" or (part.isdigit() and int(part) == 0)
+        for part in user_parts
+    ):
         _reject("root_user")
     if host.get("AutoRemove") is not True:
         _reject("auto_remove_missing")

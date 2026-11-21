@@ -64,7 +64,7 @@ class HyperLogLog:
     def _count_leading_zeros(value: int, bits: int) -> int:
         """Count leading zeros in the lower *bits* bits of value."""
         if value == 0:
-            return bits
+            return bits + 1
         count = 0
         for i in range(bits - 1, -1, -1):
             if (value >> i) & 1:
@@ -100,10 +100,7 @@ class HyperLogLog:
                     self.num_registers / zero_count
                 )
 
-        # Large range correction
-        if raw > (1 << 32) / 30:
-            return -(1 << 32) * math.log(1 - raw / (1 << 32))
-
+        # 64-bit hashes avoid 32-bit hash collisions; no 32-bit large-range correction.
         return raw
 
     def merge(self, other: HyperLogLog) -> None:

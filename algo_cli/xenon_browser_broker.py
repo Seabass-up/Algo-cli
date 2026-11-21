@@ -731,12 +731,9 @@ def parse_xenon_http_response(raw: bytes) -> XenonHttpResponse:
     lengths = mapped.get("content-length", [])
     content_length: int | None = None
     if lengths:
-        if len(set(lengths)) != 1:
+        if len(set(lengths)) != 1 or not re.fullmatch(rb"[0-9]+", lengths[0]):
             _reject("response_length")
-        try:
-            content_length = int(lengths[0])
-        except ValueError:
-            _reject("response_length")
+        content_length = int(lengths[0])
         if content_length < 0 or content_length > XENON_MAX_RESPONSE_BYTES:
             _reject("response_length")
     encodings = mapped.get("transfer-encoding", [])
@@ -1128,13 +1125,13 @@ class XenonBrokerSession:
         if location is None:
             return
         absolute = urljoin(request_url, location)
-        try:
-            target = self.egress.redirect(self.target, absolute)
-        except XenonEgressRejected as error:
-            _reject("redirect_" + error.reason_code)
-        if target.origin != self.target.origin:
-            _reject("redirect_origin")
         with self._lock:
+            try:
+                target = self.egress.redirect(self.target, absolute)
+            except XenonEgressRejected as error:
+                _reject("redirect_" + error.reason_code)
+            if target.origin != self.target.origin:
+                _reject("redirect_origin")
             self._redirects += 1
 
     def mark(self, disposition: XenonBrokerDisposition, reason_code: str) -> None:
@@ -1315,16 +1312,13 @@ def _relay_chunked(
     while True:
         line = need_line()
         raw_size = line.split(b";", 1)[0]
-        if not raw_size or len(raw_size) > 16:
+        if not re.fullmatch(rb"[0-9a-fA-F]{1,16}", raw_size):
             _reject("chunk_size")
-        try:
-            size = int(raw_size, 16)
-        except ValueError:
-            _reject("chunk_size")
+        size = int(raw_size, 16)
         if size < 0 or transferred + size > session.permit.maximum_response_bytes:
             _reject("response_byte_limit")
-        downstream.sendall(line + b"\r\n")
         session.add_bytes(len(line) + 2)
+        downstream.sendall(line + b"\r\n")
         if size == 0:
             # Bounded trailers terminate at an empty line.
             trailer_bytes = 0
@@ -1333,8 +1327,8 @@ def _relay_chunked(
                 trailer_bytes += len(trailer) + 2
                 if trailer_bytes > XENON_MAX_HEADER_BYTES:
                     _reject("trailer_size")
-                downstream.sendall(trailer + b"\r\n")
                 session.add_bytes(len(trailer) + 2)
+                downstream.sendall(trailer + b"\r\n")
                 if not trailer:
                     if buffer:
                         _reject("response_pipelining")
@@ -1342,8 +1336,9 @@ def _relay_chunked(
         data = need_bytes(size + 2)
         if not data.endswith(b"\r\n"):
             _reject("chunk_framing")
+        session.add_bytes(size)
+        session.add_bytes(2)
         downstream.sendall(data)
-        session.add_bytes(len(data))
         transferred += size
 
 
@@ -1398,9 +1393,14 @@ def handle_xenon_connection(
         upstream.sendall(request.upstream_head)
         response_head, response_extra = _read_head(upstream)
         response = parse_xenon_http_response(response_head)
+        informational_count = 0
         while 100 <= response.status < 200:
             if response.status == 101:
                 _reject("websocket_denied")
+            informational_count += 1
+            if informational_count > 4:
+                _reject("informational_limit")
+            session.assert_live()
             response_head, response_extra = _read_head(upstream, initial=response_extra)
             response = parse_xenon_http_response(response_head)
         session.validate_redirect(request.canonical_url, response.location)
@@ -1516,6 +1516,13 @@ class XenonBrokerServer:
                     if self._stop.is_set():
                         break
                     _reject("listener_accept")
+                self._threads = [t for t in self._threads if t.is_alive()]
+                if len(self._threads) >= self.session.permit.maximum_active_connections:
+                    try:
+                        client.close()
+                    except OSError:
+                        pass
+                    continue
                 thread = threading.Thread(target=self._worker, args=(client,), daemon=False)
                 self._threads.append(thread)
                 thread.start()

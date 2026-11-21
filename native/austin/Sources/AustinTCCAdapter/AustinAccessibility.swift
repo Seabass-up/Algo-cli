@@ -477,7 +477,7 @@ public final class AustinSystemAccessibilityBackend: AustinAccessibilityBackend,
         let session = sessionSafety.state(nowMilliseconds: AustinClock.nowMilliseconds())
         return try AustinAXElementState(
             process: process,
-            windowFingerprint: UInt64(bitPattern: Int64(CFHash(window))),
+            windowFingerprint: UInt64(CFHash(window)),
             role: role,
             subrole: subrole,
             enabled: enabled,
