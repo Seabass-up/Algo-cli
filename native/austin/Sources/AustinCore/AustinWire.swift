@@ -115,8 +115,8 @@ public enum AustinJSON {
         guard let number = value as? NSNumber,
               CFGetTypeID(number) != CFBooleanGetTypeID(),
               !CFNumberIsFloatType(number),
-              number.int64Value >= minimum,
-              number.int64Value <= maximum
+              number.compare(NSNumber(value: minimum)) != .orderedAscending,
+              number.compare(NSNumber(value: maximum)) != .orderedDescending
         else {
             throw AustinFailure(label)
         }
@@ -169,8 +169,8 @@ public enum AustinJSON {
                 return
             }
             guard !CFNumberIsFloatType(number),
-                  number.int64Value >= -austinMaximumSafeInteger,
-                  number.int64Value <= austinMaximumSafeInteger
+                  number.compare(NSNumber(value: -austinMaximumSafeInteger)) != .orderedAscending,
+                  number.compare(NSNumber(value: austinMaximumSafeInteger)) != .orderedDescending
             else {
                 throw AustinFailure("json_number")
             }

@@ -1225,7 +1225,9 @@ class ProgramArtifactStore:
         try:
             if os.name == "posix":
                 os.fchmod(descriptor, 0o600)
-            with os.fdopen(descriptor, "wb") as handle:
+            handle = os.fdopen(descriptor, "wb")
+            descriptor = -1
+            with handle:
                 handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -1238,10 +1240,11 @@ class ProgramArtifactStore:
                 os.chmod(path, 0o600)
             _fsync_program_directory(path.parent)
         finally:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
             try:
                 temporary.unlink()
             except OSError:
@@ -1957,20 +1960,23 @@ def execute_program(
                 and step_status == "worked"
                 and _SUCCESSFUL_SHELL_RESULT_RE.search(str(value))
             ):
-                verification = execution_guardrails.classify_verification_command(
-                    str(resolved_input.get("command") or "")
-                )
+                command_text = str(resolved_input.get("command") or "")
+                verification = execution_guardrails.classify_verification_command(command_text)
                 if verification.qualifies and verification.kind:
-                    verification_kind = verification.kind
                     new_evidence = execution_guardrails.evidence_snapshot()[evidence_before:]
-                    if not any(
-                        event.kind == "verification" and event.verification_kind == verification_kind
+                    if any(
+                        event.kind == "verification" and event.verification_kind == verification.kind
                         for event in new_evidence
                     ):
-                        execution_guardrails.record_verification(
-                            verification_kind,
-                            success=True,
+                        verification_kind = verification.kind
+                    else:
+                        recorded = execution_guardrails.record_shell_verification(
+                            command_text,
+                            returncode=0,
+                            cwd=resolved_input.get("cwd"),
                         )
+                        if recorded:
+                            verification_kind = verification.kind
 
             receipt_status = step_status
             if program_stop_status and step_status == "worked" and not mutates_state:

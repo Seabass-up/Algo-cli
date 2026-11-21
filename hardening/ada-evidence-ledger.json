@@ -4664,6 +4664,33 @@
           "timestamp": "2026-11-10T02:40:11Z",
           "scope": "Branch fix/bughunt-ship-files-20261109: protected diagnostics, 2026-11-09 bug-hunt repairs and the /ship --files fix; frozen source sha256:69828374d8c37dd7987cbc7635773528c2574d45e665cba9442e01e4bbe6e764",
           "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:ad83b7f5667801b7ecbdd2e55c17bd9f7b3813d8ceea9ec9ee1b6ab294e12c82",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-11-20T23:33:15Z",
+          "scope": "Branch docs/readme-dedupe-commands-tools: Go toolchain 1.26.11 for GO-2026-6859 in harness-gateway/go.mod with the matching CI and gate-test pins; frozen source sha256:2933d465ec3e952f303f1ce7452721db79bed3793aa3cfe216157e86b596b4c3",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:d459d08b51832aed83a06c6816b8f771307a160ef747b17379659240b8208886",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-11-21T02:52:35Z",
+          "scope": "Branch fix/critical-high-hardening-20261120: Critical/High hardening patch with review repairs (policy chain, Xenon broker, Boron isolation, execution guardrails, flow DAG, Git safe mode, effect ledger, path policy, native Austin); frozen source sha256:eb2b4ad8cd608cbc8f5e137e06044c4fcbb085d46b6dfcb79988acff024556d9",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:7354894115ed3f080ba2a8b8d2be3052e692e95c57612ae8433949303dd5717e",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-11-21T03:15:31Z",
+          "scope": "Branch fix/critical-high-hardening-20261120: wcmatch 11.2 on Python 3.11+ for CVE-2026-132276 (pyproject.toml and uv.lock), on top of the Critical/High hardening patch; frozen source sha256:ccedd73cdcef74abb691349bf9c578a9bd7af31565ed39be5c710bc32cc2969d",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
         }
       ]
     },
@@ -7839,6 +7866,51 @@
           "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
           "timestamp": "2026-11-10T02:40:11Z",
           "scope": "Branch fix/bughunt-ship-files-20261109: protected diagnostics, 2026-11-09 bug-hunt repairs and the /ship --files fix; frozen source sha256:d8443cd3727912092784458a6d8133836e778b8423faae1b7832a522f8e0990e",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:ad83b7f5667801b7ecbdd2e55c17bd9f7b3813d8ceea9ec9ee1b6ab294e12c82",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-11-20T23:33:15Z",
+          "scope": "Branch docs/readme-dedupe-commands-tools: Go toolchain 1.26.11 for GO-2026-6859 in harness-gateway/go.mod with the matching CI and gate-test pins; frozen source sha256:2933d465ec3e952f303f1ce7452721db79bed3793aa3cfe216157e86b596b4c3",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:d459d08b51832aed83a06c6816b8f771307a160ef747b17379659240b8208886",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-11-21T02:52:35Z",
+          "scope": "Branch fix/critical-high-hardening-20261120: Critical/High hardening patch with review repairs (policy chain, Xenon broker, Boron isolation, execution guardrails, flow DAG, Git safe mode, effect ledger, path policy, native Austin); frozen source sha256:eb2b4ad8cd608cbc8f5e137e06044c4fcbb085d46b6dfcb79988acff024556d9",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:a5eb863802fe01b8a7ac7f12b3e0b7f4b759ea58b49e095e485a68de9b0cc8a8",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-11-21T02:52:35Z",
+          "scope": "Branch fix/critical-high-hardening-20261120: Critical/High hardening patch with review repairs (policy chain, Xenon broker, Boron isolation, execution guardrails, flow DAG, Git safe mode, effect ledger, path policy, native Austin); frozen source sha256:03aeb635db41013ee31325dc0e7e8dcc122afb00bd3ea69fb4a3d91bb0de78d6",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:7354894115ed3f080ba2a8b8d2be3052e692e95c57612ae8433949303dd5717e",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-11-21T03:15:31Z",
+          "scope": "Branch fix/critical-high-hardening-20261120: wcmatch 11.2 on Python 3.11+ for CVE-2026-132276 (pyproject.toml and uv.lock), on top of the Critical/High hardening patch; frozen source sha256:ccedd73cdcef74abb691349bf9c578a9bd7af31565ed39be5c710bc32cc2969d",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:6b93e74f4976c37b43fccec81802a9affdfa5ace9f67c409aa897e6c7ed89dfe",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-11-21T03:15:31Z",
+          "scope": "Branch fix/critical-high-hardening-20261120: wcmatch 11.2 on Python 3.11+ for CVE-2026-132276 (pyproject.toml and uv.lock), on top of the Critical/High hardening patch; frozen source sha256:5df4bf93b515ebcd3cfde13afdb5547570832a4c9e774a5d9aec918ba093f093",
           "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
         }
       ]

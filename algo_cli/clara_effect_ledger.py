@@ -239,7 +239,7 @@ class EffectLedger:
         action_name = _safe_identifier(action, "action")
         if isinstance(fencing_token, bool) or not isinstance(fencing_token, int) or fencing_token <= 0:
             raise ValueError("fencing_token must be a positive integer")
-        with self._invocation_leases.acquire(f"invocation:{invocation_id_hash}"):
+        with self._invocation_leases.acquire("ledger:store"):
             with self._lock:
                 records = self.records()
                 existing = next(
@@ -274,30 +274,48 @@ class EffectLedger:
     ) -> EffectRecord:
         safe_reason = _safe_identifier(reason_code, "reason_code") if reason_code else ""
         safe_verifier = _safe_identifier(verifier, "verifier") if verifier else ""
-        with self._lock:
-            current = self.get(effect_id)
-            if current is None:
-                raise EffectLedgerError("effect does not exist")
-            if fencing_token != current.fencing_token:
-                raise StaleFencingToken("effect transition used a stale fencing token")
-            if new_state not in _ALLOWED_TRANSITIONS[current.state]:
-                raise InvalidEffectTransition(
-                    f"cannot transition effect from {current.state.value} to {new_state.value}"
+        with self._invocation_leases.acquire("ledger:store"):
+            with self._lock:
+                return self._transition_locked(
+                    effect_id,
+                    new_state,
+                    fencing_token=fencing_token,
+                    safe_reason=safe_reason,
+                    safe_verifier=safe_verifier,
                 )
-            updated = EffectRecord(
-                effect_id=current.effect_id,
-                idempotency_key=current.idempotency_key,
-                invocation_id_hash=current.invocation_id_hash,
-                action=current.action,
-                target_hash=current.target_hash,
-                state=new_state,
-                fencing_token=current.fencing_token,
-                sequence=current.sequence + 1,
-                reason_code=safe_reason,
-                verifier=safe_verifier,
+
+    def _transition_locked(
+        self,
+        effect_id: str,
+        new_state: EffectState,
+        *,
+        fencing_token: int,
+        safe_reason: str,
+        safe_verifier: str,
+    ) -> EffectRecord:
+        current = self.get(effect_id)
+        if current is None:
+            raise EffectLedgerError("effect does not exist")
+        if fencing_token != current.fencing_token:
+            raise StaleFencingToken("effect transition used a stale fencing token")
+        if new_state not in _ALLOWED_TRANSITIONS[current.state]:
+            raise InvalidEffectTransition(
+                f"cannot transition effect from {current.state.value} to {new_state.value}"
             )
-            self._append(updated, previous_state=current.state.value)
-            return updated
+        updated = EffectRecord(
+            effect_id=current.effect_id,
+            idempotency_key=current.idempotency_key,
+            invocation_id_hash=current.invocation_id_hash,
+            action=current.action,
+            target_hash=current.target_hash,
+            state=new_state,
+            fencing_token=current.fencing_token,
+            sequence=current.sequence + 1,
+            reason_code=safe_reason,
+            verifier=safe_verifier,
+        )
+        self._append(updated, previous_state=current.state.value)
+        return updated
 
     def reconcile(
         self,
@@ -323,25 +341,26 @@ class EffectLedger:
     ) -> EffectRecord:
         """Close a pre-dispatch crash using a strictly newer target fence."""
 
-        with self._lock:
-            current = self.get(effect_id)
-            if current is None:
-                raise EffectLedgerError("effect does not exist")
-            if current.state is not EffectState.PREPARED:
-                raise InvalidEffectTransition("only a prepared effect can be recovered as not dispatched")
-            if (
-                isinstance(recovery_fencing_token, bool)
-                or not isinstance(recovery_fencing_token, int)
-                or recovery_fencing_token <= current.fencing_token
-            ):
-                raise StaleFencingToken("pre-dispatch recovery requires a newer fencing token")
-            return self.transition(
-                effect_id,
-                EffectState.FAILED,
-                fencing_token=current.fencing_token,
-                reason_code="recovered_before_dispatch",
-                verifier="newer_target_fence",
-            )
+        with self._invocation_leases.acquire("ledger:store"):
+            with self._lock:
+                current = self.get(effect_id)
+                if current is None:
+                    raise EffectLedgerError("effect does not exist")
+                if current.state is not EffectState.PREPARED:
+                    raise InvalidEffectTransition("only a prepared effect can be recovered as not dispatched")
+                if (
+                    isinstance(recovery_fencing_token, bool)
+                    or not isinstance(recovery_fencing_token, int)
+                    or recovery_fencing_token <= current.fencing_token
+                ):
+                    raise StaleFencingToken("pre-dispatch recovery requires a newer fencing token")
+                return self._transition_locked(
+                    effect_id,
+                    EffectState.FAILED,
+                    fencing_token=current.fencing_token,
+                    safe_reason="recovered_before_dispatch",
+                    safe_verifier="newer_target_fence",
+                )
 
     def readiness(self) -> dict[str, Any]:
         readiness = self.store.readiness()

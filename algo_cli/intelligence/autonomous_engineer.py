@@ -494,10 +494,14 @@ class _MemoryBatch:
     def __enter__(self) -> MemoryEngine:
         memory = self.memory
         memory._lock.acquire()
-        if memory._transaction_depth == 0:
-            memory.conn.execute("BEGIN")
-            memory._transaction_rollback_only = False
-        memory._transaction_depth += 1
+        try:
+            if memory._transaction_depth == 0:
+                memory.conn.execute("BEGIN")
+                memory._transaction_rollback_only = False
+            memory._transaction_depth += 1
+        except BaseException:
+            memory._lock.release()
+            raise
         return memory
 
     def __exit__(self, exc_type, exc, tb) -> Literal[False]:
@@ -986,7 +990,7 @@ class PerformanceWorker(Worker):
                             "confidence": stats["confidence"],
                         })
                 results.append(result)
-        except Exception:
+        except BaseException:
             if batch_scope is not None:
                 batch_scope.__exit__(*sys.exc_info())
             raise

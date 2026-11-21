@@ -395,15 +395,18 @@ def install_ephemeral_xenon_ca(
         ca_path = profile_path / BORON_CA_PATH.name
         descriptor = os.open(ca_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         try:
-            with os.fdopen(descriptor, "wb", closefd=True) as handle:
+            handle = os.fdopen(descriptor, "wb", closefd=True)
+            descriptor = -1
+            with handle:
                 handle.write(ca_pem)
                 handle.flush()
                 os.fsync(handle.fileno())
         except BaseException:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
             raise
     except BoronPipeRejected:
         raise

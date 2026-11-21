@@ -30,7 +30,8 @@ dependencies = [
     "cryptography>=44.0",
     "keyring>=25.0",
     "pathspec<2,>=1.1.1",
-    "wcmatch<11,>=10.2.1",
+    'wcmatch<12,>=11.2; python_version >= "3.11"',
+    'wcmatch<11,>=10.2.1; python_version < "3.11"',
     'tomli>=2.0; python_version < "3.11"',
 ]
 

@@ -161,6 +161,12 @@ NULL_REDIRECTION_RE = re.compile(r"\b\d?\s*>{1,2}\s*(?:\$null\b|nul\b|/dev/null\
 _GIT_EXECUTABLE_RE = re.compile(r"(?:^|[\\/])git(?:\.exe)?$", re.IGNORECASE)
 _GIT_TEXT_RE = re.compile(r"(?<![\w-])git(?:\.exe)?(?:\s|$)", re.IGNORECASE)
 _GIT_PARSE_MAX_CHARS = 32_768
+# GIT_CONFIG_COUNT/GIT_CONFIG_KEY_n, GIT_EXTERNAL_DIFF, GIT_SSH_COMMAND and similar make Git
+# run a helper even for read-only subcommands, exactly like `git -c core.fsmonitor=...`.
+_GIT_ENV_ASSIGNMENT_RE = re.compile(r"^(GIT_[A-Z0-9_]+)=(.*)$", re.IGNORECASE | re.DOTALL)
+_GIT_SAFE_ENV_ASSIGNMENTS = frozenset(
+    {("GIT_PAGER", "cat"), ("GIT_TERMINAL_PROMPT", "0"), ("GIT_OPTIONAL_LOCKS", "0")}
+)
 _GIT_PARSE_MAX_TOKENS = 512
 _GIT_PARSE_MAX_GLOBAL_OPTIONS = 32
 _GIT_PARSE_MAX_READ_ONLY_OPTIONS = 128
@@ -420,8 +426,17 @@ def _git_invocation_mutates(tokens: list[str], git_index: int) -> bool:
             index += 1
             if index >= len(tokens) or _is_shell_control_token(tokens[index]) or not tokens[index]:
                 return True
-            if token == "-c" and ("=" not in tokens[index] or tokens[index].startswith("=")):
-                return True
+            if token == "-c":
+                if "=" not in tokens[index] or tokens[index].startswith("="):
+                    return True
+                cfg_key = tokens[index].split("=", 1)[0].strip().lower()
+                if cfg_key not in {
+                    "color.ui", "color.diff", "color.status", "color.branch",
+                    "core.quotepath", "core.autocrlf", "diff.algorithm",
+                    "diff.renames", "log.date", "status.showuntrackedfiles",
+                    "advice.detachedhead",
+                }:
+                    return True
             index += 1
         else:
             equals_option = _git_global_equals_option(token)
@@ -430,7 +445,7 @@ def _git_invocation_mutates(tokens: list[str], git_index: int) -> bool:
                 option, value = equals_option
                 if not value:
                     return True
-                if option == "--config-env" and ("=" not in value or value.startswith("=") or value.endswith("=")):
+                if option == "--config-env":
                     return True
                 index += 1
             elif token.startswith("-"):
@@ -464,11 +479,22 @@ def _git_invocation_mutates(tokens: list[str], git_index: int) -> bool:
     return global_options > 0
 
 
+def _git_env_assignment_is_unsafe(token: str) -> bool:
+    match = _GIT_ENV_ASSIGNMENT_RE.match(token)
+    if match is None:
+        return False
+    return (match.group(1).upper(), match.group(2)) not in _GIT_SAFE_ENV_ASSIGNMENTS
+
+
 def _git_command_mutates_workspace(command: str, *, _depth: int = 0) -> bool:
     if not _GIT_TEXT_RE.search(command):
         return False
     tokens = _tokenize_shell_for_git(command)
     if tokens is None:
+        return True
+    if any(_GIT_EXECUTABLE_RE.search(token) for token in tokens) and any(
+        _git_env_assignment_is_unsafe(token) for token in tokens
+    ):
         return True
     for index, token in enumerate(tokens):
         if _GIT_EXECUTABLE_RE.search(token) and _git_invocation_mutates(tokens, index):
