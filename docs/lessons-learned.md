@@ -3798,6 +3798,49 @@ strict chunk-size check rejects whitespace before a chunk extension, which RFC
 are still accepted by safe mode. `NeonInvocation.validate` gained a public
 `executablePath:` override with no in-repo caller.
 
+## 2026-11-20: A New wcmatch Advisory Failed The Audit, And Local Checks Had Skipped That Job
+
+**Symptom:** Hosted CI on pull request #102 failed "Runtime quality gates" at the
+locked dependency audit: `wcmatch 10.2.1`, CVE-2026-132276, fixed in 11.2. Pull
+request #101 had passed the same step on the same lockfile a few hours earlier.
+
+**Confirmed cause:** The advisory (GHSA-53pm-wgxf-c6qf: matching a crafted file
+name against a pattern with several `*` takes polynomial time) was published
+between the two runs. `wcmatch` is a direct runtime dependency pinned below 11,
+and the fixed release requires Python 3.11 while this project supports 3.10.
+The failure was first seen on GitHub because the local verification before
+opening #102 ran pytest, `ruff` on `algo_cli` and `tests`, the Swift package
+and the hardening scripts, but none of the quality job's own steps (`pip-audit`,
+the mypy contract, the two public scans, `ruff` over `scripts`, the coverage
+floor), and no packaging, wheel smoke, Rust, Go or Python 3.10 run.
+
+**Repair:** Pin by interpreter: `wcmatch>=11.2,<12` on Python 3.11 and later,
+`wcmatch>=10.2.1,<11` on Python 3.10, which has no patched release. The lock
+gains `wcmatch` 11.2 and `bracex` 3.2.4 beside the 3.10 entries. The only caller
+is the Irene search worker, which runs in a subprocess that is killed at its
+deadline, so on 3.10 the exposure is a search that times out. `pyproject.toml`
+and `uv.lock` are M8 and Nathan sources, so both reports were regenerated,
+their digests appended to HARD-080 and HARD-081 and the M9 audit rewritten.
+
+**Verification:** Local, macOS arm64. The audit step reproduced the failure
+(exit 1) before the change and reports no known vulnerabilities after it. The
+Irene search, path-policy and tools tests pass against `wcmatch` 11.2. The
+hardening gate, M9 verification and Nathan verification pass after the refresh.
+The complete local CI run for the pushed head is recorded in the pull request.
+
+**Prevention:** Run CI locally before every push, not through GitHub Actions
+(owner instruction, 2026-11-20): execute each job's own `run:` steps from the
+workflow files rather than a hand-picked subset, including the quality job, the
+packaging and wheel-smoke jobs, the native jobs and a Python 3.10 run. Do it in
+a clean clone that holds only the refs GitHub has plus the branch under test.
+In a worktree that shares its repository with other local branches, the
+reachable-history scan reads those branches too and fails on work that is not
+part of the pull request.
+
+**Remaining risk:** Python 3.10 stays on `wcmatch` 10.2.1 until 3.10 support is
+dropped or upstream backports the fix. Windows and Linux runners cannot be
+reproduced on this machine; the local run uses macOS for every job.
+
 ## Repair Log Checklist
 
 - Date and component.
