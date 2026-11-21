@@ -4682,6 +4682,15 @@
           "timestamp": "2026-11-21T02:52:35Z",
           "scope": "Branch fix/critical-high-hardening-20261120: Critical/High hardening patch with review repairs (policy chain, Xenon broker, Boron isolation, execution guardrails, flow DAG, Git safe mode, effect ledger, path policy, native Austin); frozen source sha256:eb2b4ad8cd608cbc8f5e137e06044c4fcbb085d46b6dfcb79988acff024556d9",
           "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
+        },
+        {
+          "kind": "qualification",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:7354894115ed3f080ba2a8b8d2be3052e692e95c57612ae8433949303dd5717e",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-11-21T03:15:31Z",
+          "scope": "Branch fix/critical-high-hardening-20261120: wcmatch 11.2 on Python 3.11+ for CVE-2026-132276 (pyproject.toml and uv.lock), on top of the Critical/High hardening patch; frozen source sha256:ccedd73cdcef74abb691349bf9c578a9bd7af31565ed39be5c710bc32cc2969d",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
         }
       ]
     },
@@ -7884,6 +7893,24 @@
           "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
           "timestamp": "2026-11-21T02:52:35Z",
           "scope": "Branch fix/critical-high-hardening-20261120: Critical/High hardening patch with review repairs (policy chain, Xenon broker, Boron isolation, execution guardrails, flow DAG, Git safe mode, effect ledger, path policy, native Austin); frozen source sha256:03aeb635db41013ee31325dc0e7e8dcc122afb00bd3ea69fb4a3d91bb0de78d6",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/grace-m8-local-qualification.json",
+          "digest": "sha256:7354894115ed3f080ba2a8b8d2be3052e692e95c57612ae8433949303dd5717e",
+          "result": "status blocked: 9 local metrics pass, 5 external metrics blocked, 0 failures; public_claim_eligible is false",
+          "timestamp": "2026-11-21T03:15:31Z",
+          "scope": "Branch fix/critical-high-hardening-20261120: wcmatch 11.2 on Python 3.11+ for CVE-2026-132276 (pyproject.toml and uv.lock), on top of the Critical/High hardening patch; frozen source sha256:ccedd73cdcef74abb691349bf9c578a9bd7af31565ed39be5c710bc32cc2969d",
+          "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
+        },
+        {
+          "kind": "benchmark",
+          "path_or_command": "hardening/nathan-agent-runtime-qualification.json",
+          "digest": "sha256:6b93e74f4976c37b43fccec81802a9affdfa5ace9f67c409aa897e6c7ed89dfe",
+          "result": "status pass: 17 correctness checks and 31 workloads pass; public_claim_eligible is false",
+          "timestamp": "2026-11-21T03:15:31Z",
+          "scope": "Branch fix/critical-high-hardening-20261120: wcmatch 11.2 on Python 3.11+ for CVE-2026-132276 (pyproject.toml and uv.lock), on top of the Critical/High hardening patch; frozen source sha256:5df4bf93b515ebcd3cfde13afdb5547570832a4c9e774a5d9aec918ba093f093",
           "limitations": "Local runtime qualification only; external browser/signing, other platforms and live provider inference are not qualified. No hosted CI run. No policy waiver."
         }
       ]
