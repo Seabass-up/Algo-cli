@@ -3829,7 +3829,8 @@ hardening gate, M9 verification and Nathan verification pass after the refresh.
 The complete local CI run for the pushed head is recorded in the pull request.
 
 **Prevention:** Run CI locally before every push, not through GitHub Actions
-(owner instruction, 2026-11-20): execute each job's own `run:` steps from the
+(owner instruction, 2026-11-20; made a standing rule on 2026-11-21 and written
+into `CLAUDE.md` and `AGENTS.md`): execute each job's own `run:` steps from the
 workflow files rather than a hand-picked subset, including the quality job, the
 packaging and wheel-smoke jobs, the native jobs and a Python 3.10 run. Do it in
 a clean clone that holds only the refs GitHub has plus the branch under test.
