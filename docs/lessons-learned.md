@@ -3842,6 +3842,61 @@ part of the pull request.
 dropped or upstream backports the fix. Windows and Linux runners cannot be
 reproduced on this machine; the local run uses macOS for every job.
 
+## 2026-11-24: The Test Suite Ran The Developer's Ollama CLI And Kept Opening The Ollama App
+
+**Symptom:** During a local CI run on 2026-11-23, the Ollama desktop app on the
+developer's Mac was launched six times in seventeen minutes, and its server
+restarted 1,283 times, failing each time. Tests in `tests/test_yolo_mode.py`,
+`tests/test_main_helpers.py` and `tests/test_repl_fixes.py` took 10 to 15
+seconds each. The owner stopped the run by hand, so the two plain test jobs were
+interrupted rather than failed; they passed on a rerun with the CLI blocked.
+
+**Confirmed cause:** 59 tests in seven files ran the real `ollama` binary, 129
+times per full run, all from inside the pytest process. Slash commands that
+refresh runtime status (`/mode`, `/policy`, toggles, reload) reach
+`model_info.fetch_model_info_from_cli`, which runs `ollama show <model>` whenever
+`shutil.which("ollama")` finds one, and two stream-interruption tests reach
+`theodore_runtime_services.start_local_ollama_host`, which runs `ollama serve`.
+The Mac had been restarted and no Ollama server was listening. The app log
+records a launch in that window each time, and each call took about five
+seconds: tests that made two or three calls took 10 and 15 seconds. CI runners
+have no Ollama, so hosted CI never ran the binary, and with a local server
+running the calls return quickly, so earlier local runs showed nothing. The
+"Testing" section of `CLAUDE.md` was right about results but not about side
+effects.
+
+**Repair:** An autouse `no_real_ollama` fixture in `tests/conftest.py`, beside
+`no_native_continuum`: `shutil.which` returns `None` for `ollama` and
+`ollama.exe`, and `subprocess.Popen` refuses to start a program of that name
+with `FileNotFoundError`, which is what a runner without Ollama raises. Tests
+that need CLI behaviour already patch in their own fakes and are unaffected.
+`tests/test_oliver_ci_no_real_ollama.py` checks the guard and its narrowness,
+that the doctor reports Ollama missing as on a runner, and that the model-info
+lookup, the local server start and `/mode yolo` never execute an `ollama` placed
+first on `PATH`; a positive control lifts the guard and sees that tripwire run.
+`tests/conftest.py` is an M8 and Nathan source, so both reports were regenerated,
+their digests appended to HARD-080 and HARD-081 and the M9 audit rewritten.
+
+**Verification:** Local, macOS arm64, Python 3.12, with a recording `ollama`
+tripwire first on `PATH`. Before: 7926 passed, 48 skipped in 232 s, 129 calls.
+After: 7930 passed, 48 skipped, zero calls, and the suite took 206 s; the slowest
+former caller now finishes in under 1.2 s. With the fixture overridden to a
+no-op, the regression test fails (the doctor reports Ollama ready and the lookup
+runs the tripwire). The complete local CI run for the pushed head is recorded in
+the pull request.
+
+**Prevention:** Tests must not reach the developer's own tools or services; a
+new call to an external CLI or service gets a guard in `tests/conftest.py` like
+these two. A test whose time is a multiple of a fixed delay is a sign of a real
+external call waiting on something. When running the suite of a branch without
+this guard on a developer machine, put an inert `ollama` first on `PATH`.
+
+**Remaining risk:** The guard covers programs started from the pytest process.
+A test that started a separate Python process running the CLI would not inherit
+it; none did here. Tests that build a real Ollama client may still send HTTP
+requests to a server at 127.0.0.1:11434 when one is running; that was not
+measured and is not addressed here.
+
 ## Repair Log Checklist
 
 - Date and component.
