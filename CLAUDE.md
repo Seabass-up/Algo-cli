@@ -351,6 +351,7 @@ The test suite runs fully offline — every model call (embedders, crystallizer 
 **Key fixture (`conftest.py`):**
 - `ALGO_CLI_CONFIG_DIR` is set to a temp directory **before any `algo_cli` imports** — this is critical because `CONFIG_DIR` is resolved at module import time. The legacy variable/package are also exercised for compatibility.
 - `clean_state` (autouse) wipes the temp config dir and clears all module-level caches (`identity._CACHE`, `identity._LESSONS_INDEX`, `harness._INDEX_CACHE`) around every test.
+- `no_real_ollama` (autouse) hides the `ollama` CLI from `shutil.which` and makes `subprocess.Popen` refuse it, as on a CI runner. Without it, tests ran the developer's real CLI, which opens the Ollama app when no server is running. Tests that need CLI behaviour patch in their own fake.
 - `make_fake_embed(dims)` returns a deterministic keyword-biased embedder for retrieval tests.
 
 ---

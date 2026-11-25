@@ -8,6 +8,7 @@ module-level caches via the autouse `clean_state` fixture.
 
 from __future__ import annotations
 
+import errno
 import os
 import random
 import shutil
@@ -119,6 +120,56 @@ def no_native_continuum(monkeypatch):
         )
 
     monkeypatch.setattr(continuum_memory, "_native_cli", unavailable)
+
+
+_REAL_WHICH = shutil.which
+_REAL_POPEN = subprocess.Popen
+_OLLAMA_PROGRAM_NAMES = frozenset({"ollama", "ollama.exe"})
+
+
+def _names_ollama(program: object) -> bool:
+    from_sequence = isinstance(program, (list, tuple))
+    if from_sequence:
+        program = program[0] if program else ""
+    if isinstance(program, (bytes, os.PathLike)):
+        program = os.fsdecode(program)
+    if not isinstance(program, str) or not program.strip():
+        return False
+    # A sequence names the program exactly; a string may also be a shell command line.
+    candidates = [program.strip()] if from_sequence else [program.strip(), program.split()[0]]
+    return any(
+        candidate.replace("\\", "/").rsplit("/", 1)[-1].casefold() in _OLLAMA_PROGRAM_NAMES
+        for candidate in candidates
+    )
+
+
+def _which_without_ollama(cmd, *args, **kwargs):
+    if _names_ollama(cmd):
+        return None
+    return _REAL_WHICH(cmd, *args, **kwargs)
+
+
+class _PopenWithoutOllama(_REAL_POPEN):
+    def __init__(self, args, *popen_args, **popen_kwargs):
+        executable = popen_kwargs.get("executable", popen_args[1] if len(popen_args) > 1 else None)
+        if _names_ollama(executable or args):
+            # Popen sets _child_created only after a child exists, so __del__ stays a no-op.
+            raise FileNotFoundError(
+                errno.ENOENT, "the test suite never runs a real Ollama CLI", str(executable or args)
+            )
+        super().__init__(args, *popen_args, **popen_kwargs)
+
+
+@pytest.fixture(autouse=True)
+def no_real_ollama(monkeypatch):
+    """Tests never run the developer's Ollama CLI; CI runners have none either.
+
+    On macOS a real `ollama` with no server running opens the Ollama app and
+    waits for it, so an unguarded suite launches the app over and over.
+    Tests that need CLI behaviour patch in their own fake.
+    """
+    monkeypatch.setattr(shutil, "which", _which_without_ollama)
+    monkeypatch.setattr(subprocess, "Popen", _PopenWithoutOllama)
 
 
 @pytest.fixture(autouse=True)
