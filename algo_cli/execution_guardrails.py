@@ -482,6 +482,8 @@ def _unwrap_verification_shell(command: str) -> str:
     parts = candidate.split("&&")
     if len(parts) != 2:
         return candidate
+    if _CONTROL_OPERATOR_RE.search(parts[0]):
+        return candidate
     try:
         prefix = _shell_split(parts[0].strip())
     except ValueError:
@@ -577,7 +579,12 @@ def _inline_python_verification(
 
     platform = os.name if platform_name is None else platform_name
     try:
-        tokens = _shell_split(command, platform_name=platform)
+        if platform != "nt":
+            lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+        else:
+            tokens = _shell_split(command, platform_name=platform)
     except ValueError:
         return None
     while platform != "nt" and tokens and _ENV_ASSIGNMENT_RE.match(tokens[0]):
@@ -611,7 +618,7 @@ def _verifier_chain(command: str) -> VerificationCommand | None:
         return None
     # A leading ``cd PATH`` segment is a working-directory wrapper, not a
     # verifier; drop it so the remaining segments are all verifiers.
-    if segments:
+    if segments and not _CONTROL_OPERATOR_RE.search(segments[0]):
         try:
             prefix = _shell_split(segments[0])
         except ValueError:

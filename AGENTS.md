@@ -61,6 +61,18 @@ uv sync --frozen --no-editable --extra dev --group supply-chain --reinstall-pack
 ALGO_TEST_REQUIRE_RIPGREP=1 .venv/bin/pytest tests
 ```
 
+Before every push, run CI locally; do not use GitHub Actions as the test loop.
+This is the repository owner's standing rule. Run every job a pull request to
+`main` triggers by executing each job's own `run:` steps from
+`.github/workflows/oliver-ci.yml` and `.github/workflows/henry-hardening-freeze.yml`,
+not a hand-picked subset: that includes the dependency audit, the public scans,
+packaging, the installed-wheel upgrade paths, the Rust, Go, Swift and website
+jobs, and the suite on Python 3.10 with the environment kept at `.venv`. Use a
+clean clone that holds only the refs GitHub has plus the branch under test,
+because the history scan reads every local ref. Name what the local run could
+not cover (other operating systems, the push-only Boron jobs) as unverified. If
+a hosted check fails anyway, reproduce it locally before fixing it.
+
 Continuum is a separately installed native service. Reinstall after source edits
 before checking installed-source parity. Regenerate source-bound qualification
 reports through their real runners when relevant source changes; do not copy an

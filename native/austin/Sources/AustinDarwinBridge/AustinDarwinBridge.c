@@ -1,11 +1,17 @@
 #include "AustinDarwinBridge.h"
 
+#include <bsm/audit.h>
 #include <bsm/libbsm.h>
 #include <libproc.h>
 #include <string.h>
 
 int32_t AustinCurrentAuditSession(void) {
-    return (int32_t)audit_session_self();
+    auditinfo_addr_t info;
+    memset(&info, 0, sizeof(info));
+    if (getaudit_addr(&info, sizeof(info)) != 0) {
+        return -1;
+    }
+    return (int32_t)info.ai_asid;
 }
 
 bool AustinProcessStartTime(pid_t pid, uint64_t *seconds, uint64_t *microseconds) {

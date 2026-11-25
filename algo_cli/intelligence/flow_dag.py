@@ -105,29 +105,43 @@ def _build_adjacency(flow: FlowDefinition) -> tuple[dict[str, list[str]], dict[s
     node_ids = {n.id for n in flow.nodes}
     for n in flow.nodes:
         in_deg.setdefault(n.id, 0)
+        seen_deps: set[str] = set()
         for val in n.inputs.values():
             if isinstance(val, str) and "${" in val:
                 try:
-                    ref = _extract_ref(val)
+                    refs = _extract_refs(val)
                 except FlowError as e:
                     raise FlowError(f"node {n.id!r}: {e}") from None
-                if ref and ref in node_ids:
-                    adj[ref].append(n.id)
-                    in_deg[n.id] += 1
+                for ref in refs:
+                    if ref and ref in node_ids and ref not in seen_deps:
+                        seen_deps.add(ref)
+                        adj[ref].append(n.id)
+                        in_deg[n.id] += 1
     return adj, in_deg
 
 
+def _extract_refs(expr: str) -> list[str]:
+    """Extract all node ids from ${node_id.field} or ${node_id} references."""
+    refs: list[str] = []
+    pos = 0
+    while True:
+        idx = expr.find("${", pos)
+        if idx == -1:
+            break
+        start = idx + 2
+        end = expr.find("}", start)
+        if end == -1:
+            raise FlowError(f"unterminated reference {expr!r}: missing '}}'")
+        ref = expr[start:end].split(".")[0]
+        refs.append(ref)
+        pos = end + 1
+    return refs
+
+
 def _extract_ref(expr: str) -> str | None:
-    """Extract node id from ${node_id.field} or ${node_id}."""
-    if "${" not in expr:
-        return None
-    start = expr.index("${") + 2
-    end = expr.find("}", start)
-    if end == -1:
-        raise FlowError(f"unterminated reference {expr!r}: missing '}}'")
-    ref = expr[start:end]
-    # strip field accessor
-    return ref.split(".")[0]
+    """Extract first node id from ${node_id.field} or ${node_id}."""
+    refs = _extract_refs(expr)
+    return refs[0] if refs else None
 
 
 def detect_cycles(flow: FlowDefinition) -> list[str] | None:
@@ -200,24 +214,46 @@ def topological_sort(flow: FlowDefinition) -> list[str]:
 # ── executor ──────────────────────────────────────────────────────────
 
 
-def _resolve_value(expr: Any, context: dict[str, Any]) -> Any:
-    """Resolve ${node.field} references from context."""
-    if not isinstance(expr, str) or "${" not in expr:
-        return expr
-    start = expr.index("${") + 2
-    end = expr.find("}", start)
-    if end == -1:
-        raise FlowError(f"unterminated reference {expr!r}: missing '}}'")
-    ref = expr[start:end]
-    parts = ref.split(".")
+def _lookup_ref(ref: str, context: dict[str, Any]) -> Any:
     val: Any = context
-    for p in parts:
+    for p in ref.split("."):
         if isinstance(val, dict):
             val = val.get(p)
+        elif p.startswith("_"):
+            # A reference must not walk object internals (``__class__`` and friends).
+            return None
         else:
             val = getattr(val, p, None)
-    # replace in string
-    return expr.replace(f"${{{ref}}}", str(val)) if isinstance(val, (str, int, float)) else val
+    return val
+
+
+def _resolve_value(expr: Any, context: dict[str, Any]) -> Any:
+    """Resolve all ${node.field} references from context."""
+    if not isinstance(expr, str) or "${" not in expr:
+        return expr
+    tokens: list[tuple[int, int, str]] = []
+    pos = 0
+    while True:
+        idx = expr.find("${", pos)
+        if idx == -1:
+            break
+        end = expr.find("}", idx + 2)
+        if end == -1:
+            raise FlowError(f"unterminated reference {expr!r}: missing '}}'")
+        tokens.append((idx, end + 1, expr[idx + 2 : end]))
+        pos = end + 1
+    if len(tokens) == 1 and tokens[0][0] == 0 and tokens[0][1] == len(expr):
+        val = _lookup_ref(tokens[0][2], context)
+        return str(val) if isinstance(val, (str, int, float)) else val
+    out: list[str] = []
+    cursor = 0
+    for start, end, ref in tokens:
+        out.append(expr[cursor:start])
+        val = _lookup_ref(ref, context)
+        out.append("" if val is None else str(val))
+        cursor = end
+    out.append(expr[cursor:])
+    return "".join(out)
 
 
 class FlowExecutor:
@@ -272,8 +308,44 @@ class FlowExecutor:
         success = all(trace.error is None for trace in traces) and all(eval_results.values())
         return FlowResult(outputs=outputs, traces=traces, eval_results=eval_results, success=success)
 
-    @staticmethod
-    def _run_python(source: str, inputs: dict) -> str:
+    _SAFE_BUILTINS: dict[str, Any] = {
+        "abs": abs, "all": all, "any": any, "bool": bool, "dict": dict,
+        "enumerate": enumerate, "filter": filter, "float": float, "int": int,
+        "len": len, "list": list, "map": map, "max": max, "min": min,
+        "pow": pow, "range": range, "reversed": reversed, "round": round,
+        "set": set, "sorted": sorted, "str": str, "sum": sum, "tuple": tuple,
+        "zip": zip, "True": True, "False": False, "None": None,
+        "isinstance": isinstance, "repr": repr,
+        "Exception": Exception, "ValueError": ValueError, "TypeError": TypeError,
+        "KeyError": KeyError, "IndexError": IndexError, "RuntimeError": RuntimeError,
+        "ArithmeticError": ArithmeticError, "ZeroDivisionError": ZeroDivisionError,
+        "AssertionError": AssertionError,
+    }
+    # Generator, coroutine, frame, traceback and code attributes lead back to the real
+    # builtins of the calling frame without any dunder name.
+    _INTROSPECTION_ATTRIBUTES = frozenset(
+        {
+            "gi_frame", "gi_code", "gi_yieldfrom", "cr_frame", "cr_code", "cr_await",
+            "ag_frame", "ag_code", "ag_await", "f_back", "f_builtins", "f_globals",
+            "f_locals", "f_code", "tb_frame", "tb_next", "func_globals", "func_code",
+        }
+    )
+
+    @classmethod
+    def _run_python(cls, source: str, inputs: dict) -> str:
+        # These checks reduce accidental misuse. They are not a sandbox: the module
+        # docstring's trusted-local rule still applies to every flow definition.
+        import ast
+        tree = ast.parse(source, mode="exec")
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                raise FlowError("imports are disallowed in python flow nodes")
+            if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
+                raise FlowError("dunder attribute access is disallowed in python flow nodes")
+            if isinstance(node, ast.Attribute) and node.attr in cls._INTROSPECTION_ATTRIBUTES:
+                raise FlowError("frame introspection is disallowed in python flow nodes")
+            if isinstance(node, ast.Name) and node.id.startswith("__"):
+                raise FlowError("dunder name access is disallowed in python flow nodes")
         local_ns = dict(inputs)
-        exec(source, {}, local_ns)
+        exec(compile(tree, "<flow_node>", "exec"), {"__builtins__": dict(cls._SAFE_BUILTINS)}, local_ns)
         return str(local_ns.get("result", ""))

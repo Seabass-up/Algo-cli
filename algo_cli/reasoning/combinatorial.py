@@ -77,28 +77,24 @@ class HuboProblem:
                 key = (subset[0], subset[1])
                 qubo[key] = qubo.get(key, 0.0) + weight
             elif len(subset) >= 3:
-                # Higher-order: reduce iteratively
+                # Higher-order: reduce iteratively with Rosenberg quadratic penalty
+                # P(x_i, x_j, x_a) = M * (3*x_a - 2*x_a*x_i - 2*x_a*x_j + x_i*x_j) >= 0,
+                # equal to 0 iff x_a == x_i * x_j.
+                penalty = M + 1.0
                 remaining = list(subset)
-                current_pair = (remaining[0], remaining[1])
-                # Create auxiliary variable for this pair
-                a = aux_var
-                aux_var += 1
-                # Penalty terms for substitution
-                qubo[(a, a)] = qubo.get((a, a), 0.0) - M * weight
-                qubo[(a, current_pair[0])] = qubo.get((a, current_pair[0]), 0.0) + M * weight
-                qubo[(a, current_pair[1])] = qubo.get((a, current_pair[1]), 0.0) + M * weight
-                qubo[(current_pair[0], current_pair[1])] = qubo.get(
-                    (current_pair[0], current_pair[1]), 0.0
-                ) - M * weight
-                # Remaining variables chain with auxiliary
-                for k in remaining[2:]:
+                a = remaining[0]
+                for k in remaining[1:-1]:
                     new_a = aux_var
                     aux_var += 1
-                    qubo[(new_a, new_a)] = qubo.get((new_a, new_a), 0.0) - M * weight
-                    qubo[(new_a, a)] = qubo.get((new_a, a), 0.0) + M * weight
-                    qubo[(new_a, k)] = qubo.get((new_a, k), 0.0) + M * weight
-                    qubo[(a, k)] = qubo.get((a, k), 0.0) - M * weight
+                    qubo[(new_a, new_a)] = qubo.get((new_a, new_a), 0.0) + 3.0 * penalty
+                    qubo[(a, new_a)] = qubo.get((a, new_a), 0.0) - 2.0 * penalty
+                    qubo[(k, new_a)] = qubo.get((k, new_a), 0.0) - 2.0 * penalty
+                    pair = (min(a, k), max(a, k))
+                    qubo[pair] = qubo.get(pair, 0.0) + penalty
                     a = new_a
+                last_var = remaining[-1]
+                obj_pair = (min(a, last_var), max(a, last_var))
+                qubo[obj_pair] = qubo.get(obj_pair, 0.0) + weight
 
         return qubo
 
@@ -126,6 +122,8 @@ def build_hubo_from_fragments(
     """
     n = len(fragments)
     problem = HuboProblem(n_variables=n, labels=fragments)
+    if n == 0:
+        return problem
 
     # Unary: popularity
     pop = popularity or [1.0 / n] * n
@@ -149,7 +147,11 @@ def build_hubo_from_fragments(
                     sim_ij = _cosine_sim(embeddings[i], embeddings[j])
                     sim_ik = _cosine_sim(embeddings[i], embeddings[k])
                     sim_jk = _cosine_sim(embeddings[j], embeddings[k])
-                    coherence = math.pow(max(0, sim_ij * sim_ik * sim_jk), 1.0 / 3)
+                    coherence = (
+                        math.pow(sim_ij * sim_ik * sim_jk, 1.0 / 3)
+                        if sim_ij > 0 and sim_ik > 0 and sim_jk > 0
+                        else 0.0
+                    )
                     if coherence > 0.01:
                         problem.weights[(i, j, k)] = coherence_weight * coherence
 
@@ -192,6 +194,8 @@ def simulated_annealing(
     """
     rng = random.Random(seed)
     n = problem.n_variables
+    if n == 0:
+        return [], 0.0
 
     # Initialize randomly
     current = [rng.randint(0, 1) for _ in range(n)]

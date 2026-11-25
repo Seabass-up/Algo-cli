@@ -483,7 +483,9 @@ class PrivateEventStore:
         try:
             if os.name == "posix":
                 os.fchmod(descriptor, _FILE_MODE)
-            with os.fdopen(descriptor, "wb") as handle:
+            handle = os.fdopen(descriptor, "wb")
+            descriptor = -1
+            with handle:
                 for line in lines:
                     handle.write(line)
                 handle.flush()
@@ -494,10 +496,11 @@ class PrivateEventStore:
             # before replace always leaves the old file intact.
             _fsync_directory(self.path.parent)
         except BaseException:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
             try:
                 temporary.unlink()
             except OSError:

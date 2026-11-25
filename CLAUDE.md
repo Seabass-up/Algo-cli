@@ -81,13 +81,34 @@ Install with dev tools (run from repo root):
 python -m pip install -e ".[dev]"
 ```
 
-**The full CI check suite (run these before committing):**
+**Quick checks while working (a subset of CI, not the whole of it):**
 
 ```bash
-python -m ruff check algo_cli tests   # lint: pyflakes + syntax errors only
-python -m compileall -q algo_cli      # compile check
-python -m pytest                        # offline test suite
+python -m ruff check algo_cli tests scripts   # lint: pyflakes + syntax errors only
+python -m compileall -q algo_cli ollama_cli   # compile check
+python -m pytest                              # offline test suite
 ```
+
+**Before every push: run CI locally.** This is the repository owner's standing
+rule. Do not use GitHub Actions as the test loop.
+
+- Run every job a pull request to `main` triggers by executing each job's own
+  `run:` steps from `.github/workflows/oliver-ci.yml` and
+  `.github/workflows/henry-hardening-freeze.yml`. The quick checks above are not
+  a substitute: CI also runs the locked dependency audit, the mypy contract, the
+  public-release and public-history scans, the coverage floor, packaging, the
+  installed-wheel upgrade paths, the Rust, Go, Swift and website jobs, and the
+  suite on Python 3.10.
+- Run it in a clean clone that holds only the refs GitHub has plus the branch
+  under test. The history scan reads every local ref, so a checkout or worktree
+  with other unpushed branches fails on work that is not part of the pull request.
+- For the Python 3.10 run, keep the environment at `.venv`; one test activates
+  it by path.
+- Name what the local run could not cover (from a Mac: the Linux and Windows
+  runners and the push-only Boron jobs) as unverified, never as passed.
+- If a hosted check fails anyway, reproduce it locally before fixing it. Reading
+  a hosted log to find the failing step is fine; iterating through hosted runs
+  is not.
 
 **Optional native components:**
 
@@ -116,17 +137,28 @@ algo-cli --cloud --model qwen3            # Ollama Cloud
 
 ---
 
-## CI Pipeline (`.github/workflows/oliver-ci.yml`)
+## CI Pipeline
 
-Three parallel jobs run on every push and PR to `main`:
+The workflow files are the authority; reread them rather than trusting this
+table. `.github/workflows/oliver-ci.yml` and
+`.github/workflows/henry-hardening-freeze.yml` run on every pull request to
+`main` and on pushes to `main`, `develop` and `hardening/**`.
 
-| Job | Matrix | Checks |
-|-----|--------|--------|
-| `python` | Ubuntu + Windows × py3.10 + py3.12 | ruff lint, compileall, pytest |
-| `rust` | ubuntu-latest | fmt, clippy (-D warnings), build, test |
-| `go` | ubuntu-latest | gofmt, vet, build, test |
+| Job | Runs on | Checks |
+|-----|---------|--------|
+| `quality` | Ubuntu, py3.12 | installed-source parity, ruff, public-release and public-history scans, release version, locked dependency audit, mypy contract, Agent runtime qualification, compileall, full suite with a branch-coverage floor |
+| `test` | Ubuntu py3.10, Windows py3.12, macOS py3.12 | installed-source parity, full suite, native runtime latency |
+| `native` | Ubuntu | Rust format, lint, tests and dependency audit; Go race, coverage, vet and vulnerability audit |
+| `browser-contracts` | Ubuntu 24.04 | Boron no-publish browser contracts |
+| `macos-native` | macOS 15 | Swift tests and release build, replay-store kill qualification, native boundary probes |
+| `website` | Ubuntu | render and route tests, lint, dependency audit |
+| `package` | Ubuntu, py3.12 | reproducible distributions, SBOM and checksums, metadata and public contents |
+| `package-smoke` | Ubuntu, Windows, macOS | install the built wheel in an isolated home, then five upgrade paths from the public predecessor |
+| `freeze` | Ubuntu, py3.12 | hardening gate, M9 completion audit, Agent runtime qualification, and tests of the gate and auditor |
 
-Superseded runs on the same ref are cancelled (`concurrency.cancel-in-progress: true`).
+Four further Boron jobs (`browser-authority`, `browser-isolation`,
+`browser-evidence-validation`, `browser-evidence-attestation`) run only on
+pushes to `main`.
 
 ---
 

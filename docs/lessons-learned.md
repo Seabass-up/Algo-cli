@@ -3688,6 +3688,160 @@ Windows path kills the direct child as before.
 takes over responsibility for every way the wait can end, not only the timeout.
 Test interruption alongside timeout whenever process-group handling changes.
 
+## 2026-11-20: New Next.js, React And Go Advisories Failed Hosted CI On A README Change
+
+**Symptom:** Hosted CI on a README-only pull request (#101) failed "Website
+build and safety gates" at `npm audit` and "Native helper checks" at
+`govulncheck`. `main` last passed both on 2026-11-10.
+
+**Confirmed cause:** Advisories published since that run: `next` 16.0.0 through
+16.4.4 (moderate; seven cache, cookie and image-optimizer advisories),
+`react-server-dom-webpack` 19.2.0 through 19.2.8 (critical,
+GHSA-xqc2-xf4c-x3h3) and GO-2026-6859 in `net/http` of Go 1.26.10. `main` would
+fail the same gates. This repeats the 2026-11-10 website entry ten days later.
+
+**Repair:** `next` and `eslint-config-next` 16.4.6; `react`, `react-dom` and
+`react-server-dom-webpack` 19.2.9, the patched release in the 19.2 line, so no
+minor-version jump. The lockfile changes only those two families. The Go
+toolchain moves to 1.26.11 in `harness-gateway/go.mod`, the CI `go-version` and
+the pin assertions in `tests/test_david_hardening_gate.py`. The workflow,
+`go.mod` and that test are M8 sources, so the M8 report was regenerated, its
+digest appended to HARD-080 and HARD-081 and the M9 audit rewritten. The Nathan
+report was not regenerated; its source set is unchanged.
+
+**Verification:** Local, macOS arm64. Website on Node 26/npm 11: clean `npm ci`,
+`npm test` (22 passed), `npm run lint` and `npm audit` (0 vulnerabilities).
+Gateway on Go 1.26.11: `gofmt`, `go vet`, `go test -race` and `govulncheck`
+1.6.0 (no vulnerabilities). M8 keeps nine local passes, five external blockers
+and no failures; the hardening gate, M9 verification and Nathan verification
+pass. The first full pytest run after the Go bump failed one test,
+`test_recorded_local_evidence_is_current_complete_and_honestly_blocked`, on the
+stale M8 source digest; that failure is retained here. After the refresh the
+suite passes (7907 passed, 48 skipped). Hosted Node 22, Linux and Windows CI
+are still to run.
+
+**Prevention:** The Go toolchain pin lives in three places (`go.mod`, the CI
+workflow and the gate test) and all three are M8 sources, so a toolchain bump
+needs an M8 refresh in the same change. Run `npm audit` and `govulncheck`
+before opening a pull request on a tree that has been idle; an advisory
+failure then shows up before hosted CI reports it.
+
+## 2026-11-20: A Pasted Hardening Patch Did Not Pass As Its Author Claimed
+
+**Symptom:** A patch written by another tool claimed 18 Critical and High fixes
+across 21 files and that all 14 of its regression tests passed. Applied byte
+for byte on PR #101's head it applied cleanly, but `ruff` failed on two unused
+imports, one of the 14 tests errored, and three existing verifier-chain tests
+failed. Two source-bound evidence tests also failed, as they do after any
+change to their source sets.
+
+**Confirmed cause:**
+
+- `execution_guardrails._verifier_chain`: the new control-operator guard gained
+  an `else`, which moved the `cd PATH` wrapper check into a branch where the
+  prefix is always empty. `cd DIR && verifier && verifier` stopped qualifying.
+- The new Boron test built a `docker inspect` fixture the broker verifier
+  rejects (`tmpfs_evidence`), so its seccomp and root-alias assertions never
+  ran. The "all pass" claim cannot have come from this tree.
+- The test file inserted the repository root at the front of `sys.path`,
+  installed a stub `ollama` module, called `os.symlink` unguarded and used a
+  single-quoted inline Python command that does not qualify on the Windows
+  code path. On macOS its path-policy test passed because `/var` is itself a
+  symlink, not because the alias was caught.
+- Review and probes found gaps the patch left open: Git configuration injected
+  through `GIT_*` environment variables passed safe mode like the `git -c` form
+  the patch blocks; the new flow python-node restrictions were bypassed by a
+  reference that walks object internals and by generator frame attributes (the
+  second returned the real `__import__`); the broker's accept-loop cap closed
+  over-limit connections without the denial record a worker refusal leaves;
+  redirect validation resolved DNS under the byte-accounting lock; and only the
+  chunked relay counted bytes before sending.
+
+**Repair:** The patch is committed unmodified (37326f6) and repaired in the next
+commit (42fbf0c): the wrapper check restored under the guard, the test file
+fixed and made portable, the `GIT_*` environment gap closed with three harmless
+assignments allowed, private attributes refused in flow references and
+frame/code introspection refused in python nodes, the broker refusal recorded
+with slack above the session limit, a separate redirect lock, count-before-send
+on the fixed-length, read-to-EOF and header paths, and a Swift test for the
+integer wrap the wire fix closes. The M8 and Nathan reports were regenerated,
+their digests appended to HARD-080 and HARD-081 and the M9 audit rewritten
+(51bdb71). The flow module remains trusted-local; its checks are not a sandbox.
+
+**Verification:** Local, macOS arm64, Python 3.12. The regression file was run
+three ways: against the pre-patch package 16 of 17 tests fail (the seventeenth
+is a positive control), against the patch as received the five tests added in
+review fail, and on the repaired tree all pass. Full pytest: as received 7915
+passed, 48 skipped, 6 failed; repaired 7924 passed and the two evidence tests
+failed; after the evidence refresh 7926 passed, 48 skipped, 0 failed. `ruff`
+and `compileall` pass. `swift test` passes (90 tests) and the release build
+succeeds with two deprecation warnings for `String(cString:)`. The Ada crash
+qualification (3 trials), `neon-probe` and `migration-probe` pass. The
+hardening gate, M9 verification and Nathan verification pass. Hosted Linux and
+Windows CI are still to run; the `xpc-probe` path, which loads a launch agent,
+was not run.
+
+**Prevention:** Treat a patch from another tool as a proposal: apply it
+unmodified in its own commit, run the full suite before reading its claims as
+results, and run each new regression test against the pre-patch code to prove
+it fails there. A test that errors before its assertions proves nothing, and a
+new test file needs a Windows and a symlink check before it reaches CI. When a
+fix blocks one form of a bypass, probe the sibling forms (here the environment
+form of `git -c`). Any change under `algo_cli/` or the listed tests needs the
+M8 and Nathan refresh in the same pull request.
+
+**Remaining risk:** `EffectLedger` now serializes every prepare and transition
+on one cross-process lease and reads the whole store while holding it; under
+sustained contention a caller gets `EffectLeaseBusy` after ten seconds. The
+strict chunk-size check rejects whitespace before a chunk extension, which RFC
+9112 permits. `git --exec-path`, `-C` and `--git-dir` on read-only subcommands
+are still accepted by safe mode. `NeonInvocation.validate` gained a public
+`executablePath:` override with no in-repo caller.
+
+## 2026-11-20: A New wcmatch Advisory Failed The Audit, And Local Checks Had Skipped That Job
+
+**Symptom:** Hosted CI on pull request #102 failed "Runtime quality gates" at the
+locked dependency audit: `wcmatch 10.2.1`, CVE-2026-132276, fixed in 11.2. Pull
+request #101 had passed the same step on the same lockfile a few hours earlier.
+
+**Confirmed cause:** The advisory (GHSA-53pm-wgxf-c6qf: matching a crafted file
+name against a pattern with several `*` takes polynomial time) was published
+between the two runs. `wcmatch` is a direct runtime dependency pinned below 11,
+and the fixed release requires Python 3.11 while this project supports 3.10.
+The failure was first seen on GitHub because the local verification before
+opening #102 ran pytest, `ruff` on `algo_cli` and `tests`, the Swift package
+and the hardening scripts, but none of the quality job's own steps (`pip-audit`,
+the mypy contract, the two public scans, `ruff` over `scripts`, the coverage
+floor), and no packaging, wheel smoke, Rust, Go or Python 3.10 run.
+
+**Repair:** Pin by interpreter: `wcmatch>=11.2,<12` on Python 3.11 and later,
+`wcmatch>=10.2.1,<11` on Python 3.10, which has no patched release. The lock
+gains `wcmatch` 11.2 and `bracex` 3.2.4 beside the 3.10 entries. The only caller
+is the Irene search worker, which runs in a subprocess that is killed at its
+deadline, so on 3.10 the exposure is a search that times out. `pyproject.toml`
+and `uv.lock` are M8 and Nathan sources, so both reports were regenerated,
+their digests appended to HARD-080 and HARD-081 and the M9 audit rewritten.
+
+**Verification:** Local, macOS arm64. The audit step reproduced the failure
+(exit 1) before the change and reports no known vulnerabilities after it. The
+Irene search, path-policy and tools tests pass against `wcmatch` 11.2. The
+hardening gate, M9 verification and Nathan verification pass after the refresh.
+The complete local CI run for the pushed head is recorded in the pull request.
+
+**Prevention:** Run CI locally before every push, not through GitHub Actions
+(owner instruction, 2026-11-20; made a standing rule on 2026-11-21 and written
+into `CLAUDE.md` and `AGENTS.md`): execute each job's own `run:` steps from the
+workflow files rather than a hand-picked subset, including the quality job, the
+packaging and wheel-smoke jobs, the native jobs and a Python 3.10 run. Do it in
+a clean clone that holds only the refs GitHub has plus the branch under test.
+In a worktree that shares its repository with other local branches, the
+reachable-history scan reads those branches too and fails on work that is not
+part of the pull request.
+
+**Remaining risk:** Python 3.10 stays on `wcmatch` 10.2.1 until 3.10 support is
+dropped or upstream backports the fix. Windows and Linux runners cannot be
+reproduced on this machine; the local run uses macOS for every job.
+
 ## Repair Log Checklist
 
 - Date and component.

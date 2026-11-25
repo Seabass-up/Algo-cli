@@ -165,11 +165,25 @@ public enum NeonInvocation {
         return Data(bytes)
     }
 
-    @discardableResult
-    public static func validate(arguments: [String]) throws -> String {
-        guard let executablePath = arguments.first else {
+    private static func currentExecutablePath() throws -> String {
+        var size: UInt32 = 0
+        _ = _NSGetExecutablePath(nil, &size)
+        guard size > 0 else {
             throw NeonNativeFailure("host_executable_path")
         }
+        var buffer = [CChar](repeating: 0, count: Int(size))
+        guard _NSGetExecutablePath(&buffer, &size) == 0 else {
+            throw NeonNativeFailure("host_executable_path")
+        }
+        return String(cString: buffer)
+    }
+
+    @discardableResult
+    public static func validate(
+        arguments: [String],
+        executablePath overridePath: String? = nil
+    ) throws -> String {
+        let executablePath = try overridePath ?? currentExecutablePath()
         let bundle = try enclosingApplicationBundleURL(executablePath: executablePath)
         try validateSealedApplicationBundle(bundle)
         let allowedOrigin = try loadAllowedOrigin(bundle: bundle)

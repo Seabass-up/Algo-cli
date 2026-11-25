@@ -25,7 +25,7 @@ if [[ "${AUSTIN_BUILD_LOCK_HELD:-0}" != "1" ]]; then
     [[ ! -L "$PACKAGE/.build" && -d "$PACKAGE/.build" ]] \
         || fail "build_path_unsafe"
     exec /usr/bin/lockf -k -t 120 "$BUILD_LOCK" \
-        /usr/bin/env AUSTIN_BUILD_LOCK_HELD=1 "$0" "$@"
+        /usr/bin/env AUSTIN_BUILD_LOCK_HELD=1 "$SCRIPT" "$@"
 fi
 
 sign_binary() {
@@ -164,17 +164,25 @@ probe_xpc() {
     local domain="gui/$(id -u)"
     local service="group.com.algo-cli.control.austin.tcc-adapter"
     cp "$RESOURCES/AustinLaunchAgent.plist" "$plist"
-    plutil -replace ProgramArguments -json \
-        "[\"$CONTENTS/Helpers/austin-tcc-adapter\"]" "$plist"
+    local prog_json env_json
+    prog_json="$(python3 -c 'import json, sys; print(json.dumps([sys.argv[1]]))' "$CONTENTS/Helpers/austin-tcc-adapter")"
+    env_json="$(python3 -c 'import json, sys; print(json.dumps({"ALGO_AUSTIN_ADHOC_TEST":"1","ALGO_AUSTIN_TEST_AUTHORITY_KEY":sys.argv[1],"ALGO_AUSTIN_TEST_STORE":sys.argv[2]}))' "$TEST_PUBLIC_KEY" "$store")"
+    plutil -replace ProgramArguments -json "$prog_json" "$plist"
     plutil -replace StandardErrorPath -string "$temporary/AustinAdapter.err" "$plist"
-    plutil -insert EnvironmentVariables -json \
-        "{\"ALGO_AUSTIN_ADHOC_TEST\":\"1\",\"ALGO_AUSTIN_TEST_AUTHORITY_KEY\":\"$TEST_PUBLIC_KEY\",\"ALGO_AUSTIN_TEST_STORE\":\"$store\"}" \
-        "$plist"
+    plutil -insert EnvironmentVariables -json "$env_json" "$plist"
     plutil -lint "$plist" >/dev/null
 
     launchctl bootout "$domain/$service" >/dev/null 2>&1 || true
     launchctl bootstrap "$domain" "$plist"
-    trap "rc=\$?; launchctl bootout '$domain/$service' >/dev/null 2>&1 || true; rm -rf '$temporary'; exit \$rc" EXIT INT TERM
+    _AUSTIN_CLEANUP_DOMAIN="$domain/$service"
+    _AUSTIN_CLEANUP_TMP="$temporary"
+    _austin_cleanup_xpc() {
+        local rc=$?
+        launchctl bootout "$_AUSTIN_CLEANUP_DOMAIN" >/dev/null 2>&1 || true
+        [[ -n "${_AUSTIN_CLEANUP_TMP:-}" ]] && rm -rf -- "$_AUSTIN_CLEANUP_TMP"
+        exit "$rc"
+    }
+    trap _austin_cleanup_xpc EXIT INT TERM
 
     local response
     local relay_status
@@ -213,7 +221,13 @@ probe_neon() {
 
     local temporary
     temporary="$(mktemp -d "${TMPDIR:-/tmp}/NeonNativeHost.XXXXXX")"
-    trap "rc=\$?; rm -rf '$temporary'; exit \$rc" EXIT INT TERM
+    _AUSTIN_CLEANUP_TMP="$temporary"
+    _austin_cleanup_tmp() {
+        local rc=$?
+        [[ -n "${_AUSTIN_CLEANUP_TMP:-}" ]] && rm -rf -- "$_AUSTIN_CLEANUP_TMP"
+        exit "$rc"
+    }
+    trap _austin_cleanup_tmp EXIT INT TERM
     local host="$CONTENTS/Helpers/neon-native-host"
 
     probe_neon_case() {
@@ -254,7 +268,13 @@ probe_migration() {
 
     local temporary
     temporary="$(mktemp -d "${TMPDIR:-/tmp}/AustinMigration.XXXXXX")"
-    trap "rc=\$?; rm -rf '$temporary'; exit \$rc" EXIT INT TERM
+    _AUSTIN_CLEANUP_TMP="$temporary"
+    _austin_cleanup_tmp() {
+        local rc=$?
+        [[ -n "${_AUSTIN_CLEANUP_TMP:-}" ]] && rm -rf -- "$_AUSTIN_CLEANUP_TMP"
+        exit "$rc"
+    }
+    trap _austin_cleanup_tmp EXIT INT TERM
     local output="$temporary/AdaMigration.out"
     local error="$temporary/AustinMigration.err"
     local exit_code

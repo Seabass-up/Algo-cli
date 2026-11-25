@@ -21,7 +21,8 @@ class Control(str, Enum):
 
     - REQUIRED: must pass; failure is recorded but the chain continues
       to gather full evidence (PAM "required" semantics).
-    - SUFFICIENT: pass short-circuits the chain to PASS (PAM "sufficient").
+    - SUFFICIENT: pass short-circuits the chain to PASS unless an earlier
+      required check already failed; a failure is ignored (PAM "sufficient").
     - REQUISITE: must pass; failure aborts the chain immediately
       (PAM "requisite" semantics — fail-fast).
     - INCLUDE: recursively evaluate a named chain. The chain name is
@@ -111,42 +112,57 @@ def evaluate_chain(
         structured reasons suitable for the audit log.
     """
     ctx = context or {}
+    visited = set(ctx.get("_policy_chain_visited", ()))
+    visited.add(chain_name)
     results: list[CheckResult] = []
     abort_reason = ""
+    prior_required_failed = False
 
     for control, check in checks:
         # INCLUDE — recursively evaluate a registered chain.
         if control == Control.INCLUDE:
-            if registry is None:
+            include_name = getattr(check, "__name__", "<include>")
+            if include_name in visited:
+                prior_required_failed = True
                 results.append(CheckResult(
-                    name=getattr(check, "__name__", "<include>"),
+                    name=include_name,
+                    passed=False,
+                    reason=f"include: cycle detected ({include_name})",
+                    control=Control.INCLUDE,
+                ))
+                continue
+            if registry is None:
+                prior_required_failed = True
+                results.append(CheckResult(
+                    name=include_name,
                     passed=False,
                     reason="include: no registry provided",
                     control=Control.INCLUDE,
                 ))
                 continue
-            sub_chain = registry(getattr(check, "__name__", ""))
+            sub_chain = registry(include_name)
             if sub_chain is None:
+                prior_required_failed = True
                 results.append(CheckResult(
-                    name=getattr(check, "__name__", "<include>"),
+                    name=include_name,
                     passed=False,
                     reason="include: chain not registered",
                     control=Control.INCLUDE,
                 ))
                 continue
+            sub_ctx = {**ctx, "_policy_chain_visited": frozenset(visited)}
             sub = evaluate_chain(
-                getattr(check, "__name__", "include"),
+                include_name,
                 sub_chain,
                 tool_call,
-                ctx,
+                sub_ctx,
                 registry=registry,
             )
             results.extend(sub.results)
-            # The include chain must itself pass; if it doesn't, propagate
-            # the failure but continue to the next check.
             if not sub.passed:
+                prior_required_failed = True
                 results.append(CheckResult(
-                    name=getattr(check, "__name__", "include"),
+                    name=include_name,
                     passed=False,
                     reason=f"included chain failed: {sub.abort_reason or 'see results'}",
                     control=Control.INCLUDE,
@@ -168,14 +184,20 @@ def evaluate_chain(
 
         # REQUISITE — abort on failure.
         if not result.passed and control == Control.REQUISITE:
+            prior_required_failed = True
             abort_reason = f"requisite failed: {result.name}: {result.reason}"
             break
 
-        # SUFFICIENT — pass short-circuits the chain.
-        if result.passed and control == Control.SUFFICIENT:
+        if not result.passed and control != Control.SUFFICIENT:
+            prior_required_failed = True
+
+        # SUFFICIENT — pass short-circuits the chain only if no prior required check failed.
+        if result.passed and control == Control.SUFFICIENT and not prior_required_failed:
             break
 
-    passed = (not abort_reason) and all(r.passed for r in results)
+    passed = (not abort_reason) and (not prior_required_failed) and all(
+        r.passed for r in results if r.control != Control.SUFFICIENT
+    )
     reasons = tuple(r.reason for r in results if r.reason)
     return ChainDecision(
         chain=chain_name,
@@ -209,16 +231,18 @@ def tier_check(min_tier: str) -> Check:
 
 def path_allowlist_check(allow: list[str] | tuple[str, ...], block: list[str] | tuple[str, ...] = ()) -> Check:
     """Check that the call's path is in the allowlist and not in the blocklist."""
-    allow_t = tuple(allow)
-    block_t = tuple(block)
+    from pathlib import Path
+    allow_t = tuple(Path(a).resolve(strict=False) for a in allow)
+    block_t = tuple(Path(b).resolve(strict=False) for b in block)
 
     def _check(tool_call: dict[str, Any], _ctx: dict[str, Any]) -> CheckResult:
         path = (tool_call.get("path") or tool_call.get("args", {}).get("path") or "").strip()
-        if not path:
+        if not path or "\x00" in path:
             return CheckResult(name="path_allowlist", passed=False, reason="no path in call")
-        if any(path.startswith(b) for b in block_t):
+        resolved = Path(path).resolve(strict=False)
+        if any(resolved.is_relative_to(b) for b in block_t):
             return CheckResult(name="path_allowlist", passed=False, reason=f"path {path!r} in blocklist")
-        if any(path.startswith(a) for a in allow_t):
+        if any(resolved.is_relative_to(a) for a in allow_t):
             return CheckResult(name="path_allowlist", passed=True)
         return CheckResult(name="path_allowlist", passed=False, reason=f"path {path!r} not in allowlist")
 

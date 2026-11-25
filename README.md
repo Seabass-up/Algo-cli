@@ -131,9 +131,6 @@ Common credential forms are redacted and connector/MCP JSON is metadata-only, bu
 | `/host URL` | Set local Ollama host |
 | `/cloud [on\|off\|status]` | Set/toggle direct Ollama Cloud API mode; local Ollama login can run `:cloud` models with `/cloud off` |
 | `/config [status\|setup PROVIDER\|auth PROVIDER ACTION]` | Focused provider setup from the REPL; prefer `algo-cli config ...` in a normal terminal |
-| `algo-cli config setup xai` | Store a redacted xAI API key; API calls may consume paid usage |
-| `algo-cli config setup google` | Configure Google Desktop-app OAuth and launch the PKCE login flow |
-| `algo-cli config setup chatgpt` | Authenticate ChatGPT/Codex outside the normal slash palette |
 | `/x-account status` | Check separate X account OAuth status through `xurl` |
 | `/x-account draft-post` / `draft-reply` | Create browser drafts for X posts/replies without publishing |
 | `/auto [on\|off\|status]` | Set/toggle auto-approve for tool calls |
@@ -142,7 +139,6 @@ Common credential forms are redacted and connector/MCP JSON is metadata-only, bu
 | `/thinking [on\|off\|status]` | Set/toggle reasoning-summary display |
 | `/thinking efforts` | Show independent Sol, Terra, and Luna reasoning settings |
 | `/thinking effort [MODEL] LEVEL` | Set Codex reasoning effort (`low`, `medium`, `high`, `xhigh`, or GPT-5.6 `max`) |
-| `/agent team ...` | Algo's multi-agent counterpart to Codex Ultra; fan out specialists, then integrate and verify |
 | `/memory-auto [on\|off\|status]` | Inspect or toggle bounded, privacy-gated automatic memory capture after successful turns |
 | `/skills [on\|off\|status\|crystallize]` | Opt in to local run-history capture and review local-only skill candidates |
 | `/remember FACT` | Save a long-term memory |
@@ -222,31 +218,16 @@ The built-in `code-change` plan block may perform up to four local read-only ins
 
 The model can call these tools during a conversation:
 
-**Files:** `read_file`, `read_pdf`, `render_pdf_pages`, `edit_file`, `write_file`, `list_directory`, `search_files`, `find_unique_anchor`, `batch_edit`
-
-**Shell:** `run_shell`
-
-**Web:** `web_search`, `web_fetch` (requires Ollama Cloud + API key)
-
-**X:** `x_search` uses optional xAI API-key access for read/search; configure it with `algo-cli config setup xai`. xAI API calls may consume paid usage. `x_account_status`, `x_account_draft_post`, `x_account_draft_reply`, `x_account_post`, `x_account_reply`, and `x_account_post_action` use the separate X API OAuth lane through `xurl`; write actions require explicit confirmation.
-
-`/x-account` requires the official X API CLI, `xurl`, to be installed and authenticated separately. The CLI only runs `xurl auth status` for status checks and never reads `~/.xurl` directly.
-
-**Memory:** `remember`, `append_lesson`, `update_user_profile`
-
-**Multimodal:** `vision_describe`
-
-**Programmatic actions:** `action_search` retrieves a small set of exact deferred action schemas; discovery does not bypass the active capability ceiling, runtime policy, or approval. `action_program` compiles a bounded typed dataflow plan—never arbitrary Python or JavaScript—and routes every nested action through its existing ActionSpec policy, guardrails, approval, attempt ledger, and telemetry. Its wall-clock budget is cooperative: the remaining budget is propagated into timeout-aware actions and checked around every step, while actions without a timeout contract can only be marked over-budget after they return. Large intermediate values are content-addressed in the private runtime store; compact results retain hash-chained mutation and verification receipts. Successful program verifiers reconcile into the outer completion ledger, so the latest passing post-mutation check supersedes earlier failures without relying on model phrasing.
-
-**Jev (optional):** `jev_question_contract` asks Jev, a small TypeSafe decision model, bounded advisory questions (classification, review, routing, claim checks) and `jev_kernel_status` checks readiness. It needs the separately installed `jev-workflows` companion: run `algo-cli config jev enable --cli /absolute/path/to/jev-workflows`. The companion holds its own credentials. `lint` mode is local; `review`, `run`, and `followup` send only the supplied question packet to TypeSafe and require session approval. Answers are advisory and never authorize or execute actions. `algo-cli config jev disable` turns inference off again.
-
-**Models:** `model_show`, `model_pull`, `model_copy`, `model_create`, `model_delete`
-
-**Files and Git:** `read_file`, `read_pdf`, `render_pdf_pages`, `edit_file`, `write_file`, `list_directory`, `search_files`, `find_unique_anchor`, `batch_edit`, `git_status`, `git_diff`
-
-**References:** `available_actions`, `harness_stats`, `harness_search`, `harness_read`, `harness_refresh`. These use lexical search, not an embedding provider.
-
-**Memory:** explicit scoped native Continuum tools. Retired graph/embedding commands refuse calls and do not select a fallback backend.
+- **Files and Git:** `read_file`, `read_pdf`, `render_pdf_pages`, `edit_file`, `write_file`, `list_directory`, `search_files`, `find_unique_anchor`, `batch_edit`, `git_status`, `git_diff`
+- **Shell:** `run_shell`
+- **Web:** `web_search`, `web_fetch` (requires Ollama Cloud + API key)
+- **X:** `x_search` uses optional xAI API-key access for read/search; configure it with `algo-cli config setup xai`. xAI API calls may consume paid usage. `x_account_status`, `x_account_draft_post`, `x_account_draft_reply`, `x_account_post`, `x_account_reply`, and `x_account_post_action` use the separate X API OAuth lane through `xurl`; write actions require explicit confirmation. (`/x-account` requires the official X API CLI, `xurl`, to be installed and authenticated separately. The CLI only runs `xurl auth status` for status checks and never reads `~/.xurl` directly.)
+- **Memory:** explicit scoped native Continuum tools (`memory_*`), plus `remember`, `append_lesson`, and `update_user_profile`. When Continuum is the selected memory authority, `remember` and `append_lesson` write to it and `update_user_profile` is refused in favor of an explicit `memory_remember`. Retired graph/embedding commands refuse calls and do not select a fallback backend.
+- **Multimodal:** `vision_describe`
+- **Models:** `model_show`, `model_pull`, `model_copy`, `model_create`, `model_delete`
+- **References:** `available_actions`, `harness_stats`, `harness_search`, `harness_read`, `harness_refresh`. These use lexical search, not an embedding provider.
+- **Programmatic actions:** `action_search` retrieves a small set of exact deferred action schemas; discovery does not bypass the active capability ceiling, runtime policy, or approval. `action_program` compiles a bounded typed dataflow plan—never arbitrary Python or JavaScript—and routes every nested action through its existing `ActionSpec` policy, guardrails, approval, attempt ledger, and telemetry. Its wall-clock budget is cooperative: the remaining budget is propagated into timeout-aware actions and checked around every step, while actions without a timeout contract can only be marked over-budget after they return. Large intermediate values are content-addressed in the private runtime store; compact results retain hash-chained mutation and verification receipts. Successful program verifiers reconcile into the outer completion ledger, so the latest passing post-mutation check supersedes earlier failures without relying on model phrasing.
+- **Jev (optional):** `jev_question_contract` asks Jev, a small TypeSafe decision model, bounded advisory questions (classification, review, routing, claim checks) and `jev_kernel_status` checks readiness. It needs the separately installed `jev-workflows` companion: run `algo-cli config jev enable --cli /absolute/path/to/jev-workflows`. The companion holds its own credentials. `lint` mode is local; `review`, `run`, and `followup` send only the supplied question packet to TypeSafe and require session approval. Answers are advisory and never authorize or execute actions. `algo-cli config jev disable` turns inference off again.
 
 `write_file`, `run_shell`, `model_delete`, and `model_create` require approval unless `/auto` is enabled. A typed program is not blanket-approved: each nested mutation or external action keeps its own approval decision, and restricted Agent Blocks supply their own runtime-owned capability ceiling. Safe mode blocks destructive shell patterns by default. Agent Blocks with `requires_change = true` are instructed prescriptively that file creation, edits, appends, and deletes must go through `write_file`; `run_shell` is restricted to read-only verification (status, tests, lint, diff, grep, ls). Shell-based file mutation (heredocs, output redirection, `sed -i`, `Set-Content`, `Out-File`, etc.) is not counted as evidence of a change, and the model is told to stop and report rather than route edits through shell when `write_file` is unavailable.
 

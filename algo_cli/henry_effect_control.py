@@ -229,17 +229,20 @@ class TargetLeaseManager:
             if os.name == "posix":
                 os.fchmod(descriptor, _FILE_MODE)
             payload = json.dumps(state, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            with os.fdopen(descriptor, "wb") as handle:
+            handle = os.fdopen(descriptor, "wb")
+            descriptor = -1
+            with handle:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, path)
             _fsync_directory(self.root)
         except BaseException:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
             temporary.unlink(missing_ok=True)
             raise
 
